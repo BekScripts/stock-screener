@@ -14,7 +14,8 @@ make check               # lint + types + tests
 
 If this is a fresh copy of the template, run `/init-project` in your agent
 (Claude Code, Codex, or Copilot). It interviews you for the project name,
-description, author, and which shared packages you want, then scaffolds them.
+description, author, and which shared packages you want, then scaffolds them,
+strips the template-only scaffolding, and sets up the GitHub remote.
 
 ## Layout
 
