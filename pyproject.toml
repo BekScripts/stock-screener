@@ -1,0 +1,196 @@
+# ============================================================================
+# Root project + uv workspace.
+#
+# The root is a real package (src/app) AND the workspace root. Shared libraries
+# live in packages/* and are registered below as workspace members, so they
+# resolve from source with a single shared uv.lock and one virtualenv.
+#
+# `/init-project` rewrites: name, version, description, authors, and renames
+# src/app -> src/<project_slug>.
+# ============================================================================
+
+[project]
+name = "app"
+version = "0.1.0"
+description = "TODO: one-line description of this project."
+readme = "README.md"
+requires-python = ">=3.12"
+license = "MIT"
+authors = [{ name = "TODO Author", email = "todo@example.com" }]
+
+dependencies = [
+    # Workspace packages: add each shared package you depend on here, and give
+    # it a matching entry under [tool.uv.sources] below.
+    # Third-party runtime dependencies.
+    "pydantic>=2.9",
+    "pydantic-settings>=2.6",
+    "structlog>=24.4",
+]
+
+[project.scripts]
+# Console entry point. Renamed by /init-project alongside the module.
+app = "app.__main__:main"
+
+# ----------------------------------------------------------------------------
+# Workspace
+# ----------------------------------------------------------------------------
+
+[tool.uv.workspace]
+members = ["packages/*"]
+
+[tool.uv.sources]
+# Every workspace package listed in [project.dependencies] needs an entry here,
+# otherwise uv resolves it from PyPI instead of from packages/.
+
+# ----------------------------------------------------------------------------
+# Dev dependencies (installed for the whole workspace by `uv sync`)
+# ----------------------------------------------------------------------------
+
+[dependency-groups]
+dev = [
+    { include-group = "test" },
+    { include-group = "lint" },
+    { include-group = "docs" },
+]
+test = [
+    "pytest>=8.3",
+    "pytest-cov>=6.0",
+    "pytest-asyncio>=0.24",
+    "pytest-randomly>=3.16",
+]
+lint = [
+    "ruff>=0.14",
+    "mypy>=1.14",
+    "pre-commit>=4.0",
+]
+docs = [
+    "mkdocs>=1.6",
+    "mkdocs-material>=9.5",
+    "mkdocstrings[python]>=0.27",
+]
+
+# ----------------------------------------------------------------------------
+# Build backend
+# ----------------------------------------------------------------------------
+
+[build-system]
+requires = ["uv_build>=0.11,<0.12"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = "app"
+module-root = "src"
+
+# ----------------------------------------------------------------------------
+# Ruff — lint + format (replaces black, isort, flake8, pyupgrade, bandit)
+# ----------------------------------------------------------------------------
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src", "packages/*/src", "tests"]
+
+[tool.ruff.lint]
+select = [
+    "E", "W",    # pycodestyle
+    "F",         # pyflakes
+    "I",         # isort
+    "N",         # pep8-naming
+    "UP",        # pyupgrade
+    "B",         # flake8-bugbear
+    "A",         # flake8-builtins
+    "C4",        # flake8-comprehensions
+    "DTZ",       # flake8-datetimez — no naive datetimes
+    "T20",       # flake8-print — no stray print()
+    "SIM",       # flake8-simplify
+    "TCH",       # flake8-type-checking
+    "PTH",       # flake8-use-pathlib
+    "RUF",       # ruff-specific
+    "S",         # flake8-bandit — security
+    "D",         # pydocstyle
+]
+ignore = [
+    "D107",      # missing docstring in __init__ — covered by the class docstring
+    "D203",      # conflicts with D211
+    "D213",      # conflicts with D212
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**/*.py" = ["S101", "D"]              # asserts and undocumented tests are fine
+"packages/*/tests/**/*.py" = ["S101", "D"]
+"scripts/**/*.py" = ["T20"]                  # scripts are allowed to print
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.ruff.lint.isort]
+# init-project appends each package and app import name here.
+known-first-party = ["app"]
+
+[tool.ruff.format]
+docstring-code-format = true
+
+# ----------------------------------------------------------------------------
+# mypy — strict type checking
+#
+# To trial Astral's `ty` instead, add it to the lint group and run `uv run ty
+# check`. As of mid-2026 ty is still preview, so mypy remains the gate in CI.
+# ----------------------------------------------------------------------------
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+warn_unreachable = true
+warn_unused_ignores = true
+disallow_any_generics = true
+no_implicit_reexport = true
+show_error_codes = true
+pretty = true
+# packages/ and scripts/ are appended by `make types`: mypy errors on a
+# configured path that matches nothing, and both may be absent or empty.
+files = ["src", "tests"]
+
+[[tool.mypy.overrides]]
+module = "tests.*"
+disallow_untyped_defs = false
+
+# ----------------------------------------------------------------------------
+# pytest
+# ----------------------------------------------------------------------------
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests", "packages/*/tests"]
+addopts = [
+    "--strict-markers",
+    "--strict-config",
+    "-ra",
+    "--import-mode=importlib",
+]
+markers = [
+    "unit: fast, isolated, no I/O",
+    "integration: touches a real dependency (DB, network, filesystem)",
+    "slow: takes more than a second",
+]
+asyncio_mode = "auto"
+filterwarnings = ["error"]
+
+# ----------------------------------------------------------------------------
+# Coverage
+# ----------------------------------------------------------------------------
+
+[tool.coverage.run]
+branch = true
+source = ["src", "packages"]
+omit = ["*/tests/*", "*/__main__.py"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
+fail_under = 80
+exclude_lines = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+    "@overload",
+]

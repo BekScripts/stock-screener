@@ -1,0 +1,40 @@
+# Install once per clone:  uv run pre-commit install
+# These hooks are the fast subset of `make check`. CI still runs the full gate —
+# hooks are a convenience, not the contract.
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: check-added-large-files
+      - id: check-merge-conflict
+      - id: check-toml
+      - id: check-yaml
+      - id: end-of-file-fixer
+      - id: trailing-whitespace
+      - id: mixed-line-ending
+      - id: detect-private-key
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.16.1
+    hooks:
+      - id: ruff-check
+        args: [--fix]
+      - id: ruff-format
+
+  - repo: https://github.com/astral-sh/uv-pre-commit
+    rev: 0.11.7
+    hooks:
+      - id: uv-lock
+
+  # mypy runs against the real workspace environment rather than an isolated
+  # hook venv, so it sees the same types CI does. Goes through `make` so the
+  # workspace member paths are resolved the same way everywhere.
+  - repo: local
+    hooks:
+      - id: mypy
+        name: mypy
+        entry: make types
+        language: system
+        types: [python]
+        pass_filenames: false

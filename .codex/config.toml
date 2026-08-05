@@ -1,0 +1,14 @@
+# Codex project configuration.
+#
+# Codex reads AGENTS.md automatically and discovers skills in .agents/skills/,
+# so neither needs declaring here. Personal overrides belong in
+# ~/.codex/config.toml, or in .codex/config.local.toml (gitignored).
+
+[mcp_servers.github]
+url = "https://api.githubcopilot.com/mcp/"
+
+[mcp_servers.github.headers]
+X-MCP-Toolsets = "context,repos,issues,pull_requests,actions"
+
+[mcp_servers.atlassian]
+url = "https://mcp.atlassian.com/v1/mcp/authv2"
