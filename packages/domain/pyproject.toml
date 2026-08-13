@@ -1,0 +1,18 @@
+[project]
+name = "domain"
+version = "0.1.0"
+description = "Screening rules and filter models, free of I/O."
+readme = "README.md"
+requires-python = ">=3.12"
+license = "MIT"
+authors = [{ name = "Aziz", email = "azizzbek.io@gmail.com" }]
+
+dependencies = []
+
+[build-system]
+requires = ["uv_build>=0.11,<0.12"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = "domain"
+module-root = "src"

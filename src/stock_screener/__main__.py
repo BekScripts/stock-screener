@@ -1,15 +1,15 @@
 """Console entry point.
 
-Wired to the `app` script in pyproject.toml. Keep this thin: parse input,
-build dependencies, delegate. Business logic belongs in modules, not here.
+Wired to the `stock-screener` script in pyproject.toml. Keep this thin: parse
+input, build dependencies, delegate. Business logic belongs in modules, not here.
 """
 
 from __future__ import annotations
 
 import structlog
 
-from app.config import get_settings
-from app.logging import configure_logging
+from stock_screener.config import get_settings
+from stock_screener.logging import configure_logging
 
 
 def main() -> int:

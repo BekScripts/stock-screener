@@ -1,6 +1,6 @@
 import pytest
 
-from app.config import Settings, get_settings
+from stock_screener.config import Settings, get_settings
 
 
 @pytest.mark.unit

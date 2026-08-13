@@ -1,9 +1,9 @@
-# app
+# stock-screener
 
-> TODO: one-line description of this project.
+> Screens equities against configurable fundamental and technical filters.
 
-A Python monorepo template with a uv workspace, a shared skills library that
-every AI coding agent reads, and CI wired up out of the box.
+Screening logic lives in `domain`, market data access in `api-clients` and
+`data-access`, and the deployable CLI in `src/stock_screener/`.
 
 ## Quick start
 
@@ -12,15 +12,10 @@ make setup               # create .venv, install everything, link agent skills
 make check               # lint + types + tests
 ```
 
-If this is a fresh copy of the template, run `/init-project` in your agent
-(Claude Code, Codex, or Copilot). It interviews you for the project name,
-description, author, and which shared packages you want, then scaffolds them,
-strips the template-only scaffolding, and sets up the GitHub remote.
-
 ## Layout
 
 ```
-src/app/              the application — the deployable
+src/stock_screener/   the application — the deployable
 tests/                tests for src/, split unit/ and integration/
 packages/<name>/      shared libraries
 docs/                 mkdocs site, organised by Diátaxis type
@@ -28,8 +23,8 @@ scripts/              standalone PEP 723 scripts — created when first needed
 .agents/skills/       the skills every agent follows (single source of truth)
 ```
 
-The template ships **no packages** — ask your agent for one and it follows the
-`python-package` skill to create it, either during `/init-project` or later.
+Shared packages are `api-clients`, `data-access`, and `domain`. To add another,
+ask your agent and it follows the `python-package` skill.
 
 Every shared package has three linked names — directory `api-clients`,
 distribution `api-clients`, import `api_clients`:

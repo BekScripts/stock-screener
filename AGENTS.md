@@ -32,7 +32,6 @@ into `.claude/skills/` for Claude Code. Invoke one directly with `/<name>` (or
 | `adr` | making a decision that is expensive to reverse |
 | `scripts` | adding a one-off or maintenance script |
 | `git-workflow` | branching, committing, or opening a PR |
-| `init-project` | setting up a fresh copy of this template |
 
 These are the skills that apply to any Python project. Domain-specific
 procedures — a database layer, an HTTP client convention, a queue protocol —
@@ -41,13 +40,19 @@ in `.agents/skills/` and a row in this table, then run `make sync-skills`.
 
 ## Project
 
-TODO: two or three sentences on what this project does. `/init-project` fills
-this in.
+Screens equities against configurable fundamental and technical filters. A
+filter set is defined as data, evaluated against a universe of securities, and
+the matches are returned for export or further analysis.
+
+The screening rules themselves live in the `domain` package, deliberately free
+of I/O. Market data arrives through `api-clients` (external HTTP providers) and
+is persisted or cached via `data-access`. `src/stock_screener/` is the thin
+deployable that wires those together behind a CLI.
 
 ## Layout
 
 ```
-src/app/              the application — the deployable
+src/stock_screener/   the application — the deployable
 tests/                tests for src/, split unit/ and integration/
 packages/<name>/      shared libraries, each a workspace member
 docs/                 mkdocs site, organised by Diátaxis type
@@ -56,7 +61,7 @@ scripts/              standalone PEP 723 scripts — created when first needed
 
 Where new code goes:
 
-- **One caller** → a module in `src/app/`.
+- **One caller** → a module in `src/stock_screener/`.
 - **Two or more callers** → a package in `packages/`. Never create one
   speculatively; extracting later is cheap.
 
@@ -106,8 +111,8 @@ used. Never invoke `pip`, `python -m venv`, or a bare `python`.
 
 - **Type everything.** mypy runs in strict mode. No bare `Any`, no untyped
   defs, no blanket `# type: ignore` — narrow it to a code and explain why.
-- **Never read `os.environ` directly.** Add a typed field to `src/app/config.py`
-  and a matching line in `.env.example`.
+- **Never read `os.environ` directly.** Add a typed field to
+  `src/stock_screener/config.py` and a matching line in `.env.example`.
 - **Never commit a secret.** Not in code, tests, fixtures, or docs. `.env` is
   gitignored; `.env.example` holds names with placeholder values only.
 - **Never edit `uv.lock` by hand.** Use `uv add` / `uv remove`.

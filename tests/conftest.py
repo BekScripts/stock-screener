@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from app.config import Settings
+from stock_screener.config import Settings
 
 if TYPE_CHECKING:
     from pathlib import Path

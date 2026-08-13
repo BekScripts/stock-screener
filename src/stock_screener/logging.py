@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING
 import structlog
 
 if TYPE_CHECKING:
-    from app.config import Settings
+    from stock_screener.config import Settings
 
 
 def configure_logging(settings: Settings) -> None:

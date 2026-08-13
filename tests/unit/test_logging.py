@@ -3,8 +3,8 @@ import logging
 import pytest
 import structlog
 
-from app.config import Settings
-from app.logging import configure_logging
+from stock_screener.config import Settings
+from stock_screener.logging import configure_logging
 
 
 @pytest.fixture(autouse=True)

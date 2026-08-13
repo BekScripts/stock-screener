@@ -9,7 +9,7 @@ Expose a new environment-driven value to the application.
 
 ## Steps
 
-1. Add a typed field to `Settings` in `src/app/config.py`. Use the narrowest
+1. Add a typed field to `Settings` in `src/stock_screener/config.py`. Use the narrowest
    type that fits — `Literal` for a fixed set, not `str`:
 
    ```python
@@ -42,7 +42,7 @@ Expose a new environment-driven value to the application.
 5. Read it through `get_settings()` — never `os.environ`:
 
    ```python
-   from app.config import get_settings
+   from stock_screener.config import get_settings
 
    timeout = get_settings().request_timeout
    ```

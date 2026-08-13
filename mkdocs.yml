@@ -1,5 +1,5 @@
-site_name: app
-site_description: "TODO: one-line description of this project."
+site_name: stock-screener
+site_description: "Screens equities against configurable fundamental and technical filters."
 
 theme:
   name: material

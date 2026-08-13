@@ -3,9 +3,9 @@ type: explanation
 title: Overview
 ---
 
-# app
+# stock-screener
 
-> TODO: one-line description of this project.
+> Screens equities against configurable fundamental and technical filters.
 
 ## Getting started
 
@@ -36,7 +36,7 @@ See the `documentation` skill before adding a page.
 
 | Path | Contains |
 | --- | --- |
-| `src/app/` | the application |
+| `src/stock_screener/` | the application |
 | `packages/*/` | shared libraries |
 | `tests/` | tests for `src/` |
 | `.agents/skills/` | the procedures AI agents follow in this repo |

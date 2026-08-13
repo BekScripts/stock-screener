@@ -1,26 +1,26 @@
 # ============================================================================
 # Root project + uv workspace.
 #
-# The root is a real package (src/app) AND the workspace root. Shared libraries
-# live in packages/* and are registered below as workspace members, so they
-# resolve from source with a single shared uv.lock and one virtualenv.
-#
-# `/init-project` rewrites: name, version, description, authors, and renames
-# src/app -> src/<project_slug>.
+# The root is a real package (src/stock_screener) AND the workspace root. Shared
+# libraries live in packages/* and are registered below as workspace members, so
+# they resolve from source with a single shared uv.lock and one virtualenv.
 # ============================================================================
 
 [project]
-name = "app"
+name = "stock-screener"
 version = "0.1.0"
-description = "TODO: one-line description of this project."
+description = "Screens equities against configurable fundamental and technical filters."
 readme = "README.md"
 requires-python = ">=3.12"
 license = "MIT"
-authors = [{ name = "TODO Author", email = "todo@example.com" }]
+authors = [{ name = "Aziz", email = "azizzbek.io@gmail.com" }]
 
 dependencies = [
     # Workspace packages: add each shared package you depend on here, and give
     # it a matching entry under [tool.uv.sources] below.
+    "api-clients",
+    "data-access",
+    "domain",
     # Third-party runtime dependencies.
     "pydantic>=2.9",
     "pydantic-settings>=2.6",
@@ -28,8 +28,8 @@ dependencies = [
 ]
 
 [project.scripts]
-# Console entry point. Renamed by /init-project alongside the module.
-app = "app.__main__:main"
+# Console entry point.
+stock-screener = "stock_screener.__main__:main"
 
 # ----------------------------------------------------------------------------
 # Workspace
@@ -41,6 +41,9 @@ members = ["packages/*"]
 [tool.uv.sources]
 # Every workspace package listed in [project.dependencies] needs an entry here,
 # otherwise uv resolves it from PyPI instead of from packages/.
+api-clients = { workspace = true }
+data-access = { workspace = true }
+domain = { workspace = true }
 
 # ----------------------------------------------------------------------------
 # Dev dependencies (installed for the whole workspace by `uv sync`)
@@ -78,7 +81,7 @@ requires = ["uv_build>=0.11,<0.12"]
 build-backend = "uv_build"
 
 [tool.uv.build-backend]
-module-name = "app"
+module-name = "stock_screener"
 module-root = "src"
 
 # ----------------------------------------------------------------------------
@@ -124,8 +127,8 @@ ignore = [
 convention = "google"
 
 [tool.ruff.lint.isort]
-# init-project appends each package and app import name here.
-known-first-party = ["app"]
+# Add each package's import name here.
+known-first-party = ["api_clients", "data_access", "domain", "stock_screener"]
 
 [tool.ruff.format]
 docstring-code-format = true

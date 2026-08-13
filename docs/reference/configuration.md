@@ -6,7 +6,7 @@ title: Configuration
 # Configuration
 
 Every value the application reads from the environment. Defined as typed fields
-on `Settings` in `src/app/config.py`; nothing else in the codebase reads the
+on `Settings` in `src/stock_screener/config.py`; nothing else in the codebase reads the
 environment.
 
 Values are read from environment variables, falling back to a `.env` file in the

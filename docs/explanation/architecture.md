@@ -10,7 +10,7 @@ title: Architecture
 ## Shape
 
 ```
-src/app/            the application
+src/stock_screener/ the application
   config.py         the only place that reads the environment
   logging.py        structlog setup
   <feature>/        one directory per feature
@@ -42,10 +42,10 @@ directory. That is what modules inside `src/` are for.
 ## Dependency direction
 
 ```
-src/app  →  packages/*  →  packages/*
+src/stock_screener  →  packages/*  →  packages/*
 ```
 
-Strictly one-way. A package never imports from `src/app`, and package
+Strictly one-way. A package never imports from `src/stock_screener`, and package
 dependencies never form a cycle. When a package needs something the application
 has, the dependency is inverted: the shared piece moves down into a package, or
 the application passes it in.
@@ -55,7 +55,7 @@ held up by review and by the `python-package` skill.
 
 ## Boundaries that matter
 
-- **Configuration has one door.** `src/app/config.py` is the only reader of the
+- **Configuration has one door.** `src/stock_screener/config.py` is the only reader of the
   environment; everything else receives a `Settings` object. Scattered
   `os.getenv` calls are untyped, unvalidated, and fail at first use rather than
   at startup.
