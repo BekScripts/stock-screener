@@ -1,6 +1,6 @@
 .DEFAULT_GOAL := help
 .PHONY: help setup sync check lint format format-check types test test-ci \
-        test-unit cov docs docs-build sync-skills clean
+        test-unit cov migrate migrate-down scan docs docs-build sync-skills clean
 
 UV := uv
 
@@ -44,6 +44,15 @@ test-ci:  ## Test suite with an XML coverage report, for CI
 
 test-unit:  ## Fast loop — unit tests only, no coverage
 	$(UV) run pytest -m unit -q
+
+migrate:  ## Apply database migrations (alembic upgrade head)
+	$(UV) run alembic upgrade head
+
+migrate-down:  ## Roll back the last migration
+	$(UV) run alembic downgrade -1
+
+scan:  ## Run the full pipeline and print the eligible companies
+	$(UV) run stock-screener run-scan
 
 cov:  ## Coverage report as HTML
 	$(UV) run pytest --cov --cov-report=html

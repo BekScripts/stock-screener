@@ -40,14 +40,27 @@ in `.agents/skills/` and a row in this table, then run `make sync-skills`.
 
 ## Project
 
-Screens equities against configurable fundamental and technical filters. A
-filter set is defined as data, evaluated against a universe of securities, and
-the matches are returned for export or further analysis.
+**Compounder Radar** scans U.S. equities and produces a short list worth
+researching. A filter set is defined as data, evaluated against a universe of
+securities, and the matches are returned for export or further analysis.
 
 The screening rules themselves live in the `domain` package, deliberately free
 of I/O. Market data arrives through `api-clients` (external HTTP providers) and
 is persisted or cached via `data-access`. `src/stock_screener/` is the thin
 deployable that wires those together behind a CLI.
+
+The MVP is built in four phases, specified in
+`docs/reference/project-intro.md`. **Phase 1 is complete**: ingestion, the
+derived-metric engine, eligibility filtering, the CLI and a minimal API.
+
+Two rules run through the whole codebase and are the ones most worth protecting:
+
+- **Missing is not zero.** A metric the data cannot support is `None` all the way
+  through — model, database column, CSV cell, JSON. `0.0` means the company
+  reported zero. Never conflate them in either direction.
+- **No score yet.** The Compounder Score, risk penalties and rankings are
+  Phase 2. Do not add a placeholder; a score field returning zero is a number
+  people will trust before it has been earned.
 
 ## Layout
 
@@ -55,6 +68,8 @@ deployable that wires those together behind a CLI.
 src/stock_screener/   the application — the deployable
 tests/                tests for src/, split unit/ and integration/
 packages/<name>/      shared libraries, each a workspace member
+migrations/           alembic revisions — one per schema change
+fixtures/             sample data the mock providers read
 docs/                 mkdocs site, organised by Diátaxis type
 scripts/              standalone PEP 723 scripts — created when first needed
 ```
