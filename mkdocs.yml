@@ -47,10 +47,15 @@ nav:
       - how-to/index.md
       - Add a shared package: how-to/add-a-shared-package.md
       - Add a configuration setting: how-to/add-a-setting.md
+      - Run a scan: how-to/run-a-scan.md
   - Reference:
       - reference/index.md
       - Configuration: reference/configuration.md
       - Commands: reference/commands.md
+      - Metrics: reference/metrics.md
+      - Project brief: reference/project-intro.md
+      - Phase 1 brief: reference/project-phases/phase1.md
+      - Phase 2 constraints: reference/project-phases/phase2-constraints.md
   - Explanation:
       - explanation/index.md
       - Architecture: explanation/architecture.md
@@ -58,3 +63,6 @@ nav:
       - adr/index.md
       - 0001 Record architecture decisions: adr/0001-record-architecture-decisions.md
       - 0002 Use uv workspaces: adr/0002-use-uv-workspaces.md
+      - 0003 Normalise provider data at the boundary: adr/0003-normalise-provider-data-at-the-boundary.md
+      - 0004 Liquidity threshold and consolidated volume: adr/0004-apply-the-liquidity-threshold-only-to-consolidated-volume.md
+      - 0005 Absent debt is unknown: adr/0005-absent-debt-is-unknown-not-zero.md

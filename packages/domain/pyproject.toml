@@ -7,7 +7,9 @@ requires-python = ">=3.12"
 license = "MIT"
 authors = [{ name = "Aziz", email = "azizzbek.io@gmail.com" }]
 
-dependencies = []
+dependencies = [
+    "pydantic>=2.9",
+]
 
 [build-system]
 requires = ["uv_build>=0.11,<0.12"]

@@ -3,16 +3,25 @@ type: explanation
 title: Overview
 ---
 
-# stock-screener
+# stock-screener — Compounder Radar
 
-> Screens equities against configurable fundamental and technical filters.
+> Scans U.S. equities and produces a short list worth researching.
+
+**Phase 1 is complete**: universe and data ingestion, the derived-metric engine,
+eligibility filtering, a CLI with CSV export, and a minimal API. There is
+deliberately no Compounder Score yet — that is Phase 2.
 
 ## Getting started
 
 ```bash
 make setup     # install dependencies, link agent skills, create .env
+make migrate   # create the database schema
+make scan      # run the pipeline against the sample fixture
 make check     # lint, types, tests
 ```
+
+No credentials are needed for that: both providers default to `mock`. See
+[Run a scan](how-to/run-a-scan.md) to switch to live data.
 
 ## How these docs are organised
 
@@ -36,7 +45,10 @@ See the `documentation` skill before adding a page.
 
 | Path | Contains |
 | --- | --- |
-| `src/stock_screener/` | the application |
-| `packages/*/` | shared libraries |
+| `src/stock_screener/` | the application — config, ingestion, scanner, CLI, API |
+| `packages/domain/` | the metric engine and eligibility rules, free of I/O |
+| `packages/api-clients/` | provider protocols and the Alpaca, FMP and mock adapters |
+| `packages/data-access/` | the three tables, idempotent writes, row↔model translation |
+| `migrations/` | Alembic revisions |
 | `tests/` | tests for `src/` |
 | `.agents/skills/` | the procedures AI agents follow in this repo |

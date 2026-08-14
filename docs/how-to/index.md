@@ -13,5 +13,6 @@ A how-to answers "how do I *X*?" and nothing else. It does not teach, and it
 does not explain why the design is the way it is; that belongs in
 [explanation](../explanation/index.md).
 
+- [Run a scan](run-a-scan.md)
 - [Add a shared package](add-a-shared-package.md)
 - [Add a configuration setting](add-a-setting.md)

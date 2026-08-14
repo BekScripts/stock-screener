@@ -41,6 +41,15 @@ jobs:
               - 'packages/**'
               - 'tests/**'
               - 'scripts/**'
+              # A migration is code: tests/integration/test_migrations.py
+              # applies the chain to a clean database and asserts the result
+              # still matches the models. Omitting these paths let a schema
+              # change merge with that check skipped.
+              - 'migrations/**'
+              - 'alembic.ini'
+              # The mock providers read this, so the integration suite depends
+              # on its shape.
+              - 'fixtures/**'
               - 'pyproject.toml'
               - 'uv.lock'
               - 'Makefile'

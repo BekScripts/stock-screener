@@ -5,66 +5,158 @@ title: Architecture
 
 # Architecture
 
-> TODO: replace this with the real architecture once the project has one.
+Compounder Radar reduces thousands of listings to a small group worth
+researching. Almost every structural decision here follows from one observation
+about that job: **the ranking is the product, and the ranking is only as good as
+the arithmetic underneath it.**
+
+That makes the metric engine the part worth protecting. Everything else —
+providers, persistence, the CLI, the API — exists to feed it or to display what
+it produced, and is arranged so that none of it can make the arithmetic harder to
+verify.
 
 ## Shape
 
+```text
+src/stock_screener/   the application — config, logging, ingestion, scanner, CLI, API
+  config.py           the only place that reads the environment
+  logging.py          structlog setup
+  providers.py        selects an adapter from settings
+  scanning/           the feature: ingestion, scanner, report
+
+packages/domain/      metric engine and eligibility rules — pure, no I/O
+packages/api-clients/ provider protocols and adapters
+packages/data-access/ tables, idempotent writes, row↔model translation
+migrations/           alembic revisions
 ```
-src/stock_screener/ the application
-  config.py         the only place that reads the environment
-  logging.py        structlog setup
-  <feature>/        one directory per feature
 
-packages/<name>/    shared libraries, one bounded concern each
-```
-
-The workspace is a single uv workspace: one lockfile, one virtualenv, every
-package installed editable.
-
-## One deployable per repository
-
-The application lives at `src/`, not in a directory alongside its siblings.
-There is no `apps/` tree, because a repository that builds one thing should not
-carry a directory implying it builds several.
-
-A genuinely separate deployable — a queue worker, a scheduled job, a companion
-service — gets its own repository, with shared code extracted into a package.
-That boundary is enforced by deployment reality rather than by convention, which
-makes it far harder to erode than a directory split.
-
-The cost is that splitting a service out later means creating a repository
-rather than a directory. In exchange, nothing in this repo can quietly grow a
-second lifecycle.
-
-Organising one app's code is not a reason to reach for another top-level
-directory. That is what modules inside `src/` are for.
+The `scanning/` directory is organised by feature rather than by technical layer.
+Ingestion, screening and reporting are one workflow, and splitting them into
+parallel `services/`, `schemas/` and `handlers/` trees would mean every change
+touched three directories to accomplish one thing.
 
 ## Dependency direction
 
-```
-src/stock_screener  →  packages/*  →  packages/*
+```text
+src/stock_screener  →  packages/*  →  packages/domain
 ```
 
-Strictly one-way. A package never imports from `src/stock_screener`, and package
-dependencies never form a cycle. When a package needs something the application
-has, the dependency is inverted: the shared piece moves down into a package, or
-the application passes it in.
+Strictly one-way. `domain` depends on nothing but pydantic, `api-clients` and
+`data-access` depend on `domain` for vocabulary, and the application composes all
+three. A package importing from `src/stock_screener` is always wrong.
 
-uv cannot enforce this — Python will happily import anything on the path. It is
-held up by review and by the `python-package` skill.
+uv cannot enforce this — Python will import anything on the path. It is held up
+by review and by the `python-package` skill.
+
+## Why the metric engine is a package with no I/O
+
+`domain` could have been a module inside `src/`. Making it a package with an
+empty dependency list buys one thing: it is impossible to accidentally reach for
+a database or an HTTP client from inside a calculation, because neither is
+installed as far as that package is concerned.
+
+The payoff is that every metric can be tested against a hand-worked example.
+`test_metrics.py` asserts that 135 against 100 four quarters ago is `0.35`, and
+that is a claim about arithmetic a reader can check in their head. A screener
+whose numbers are only verifiable by running it is a screener nobody can trust
+enough to act on.
+
+The same logic explains why the engine takes sequences of models rather than a
+session: a function that queries for its own inputs cannot be given inputs.
+
+## Missing is not zero
+
+This is the invariant that runs through every layer, and the one most likely to
+be broken by a well-meaning change.
+
+A company with three quarters of history has no trailing-twelve-month revenue.
+Returning `0` there would be a lie that survives every subsequent step: it would
+be summed into an average, sorted into a ranking, and eventually shown to someone
+as a fact. So `ttm_revenue` returns `None`, the column is nullable, the CSV cell
+is empty, and the API serialises `null`.
+
+The enforcement points are deliberate and repeated:
+
+- `_ratio` in the metric engine returns `None` for any absent or zero
+  denominator, so no individual formula has to remember.
+- Every financial column is nullable. A `NOT NULL DEFAULT 0` would reintroduce
+  the lie at the storage layer regardless of what the code does.
+- Adapters return `None` for a field a vendor omitted, including when the value
+  is present but unparseable.
+- The CSV writes an empty cell, because a spreadsheet average skips a blank and
+  counts a zero.
+
+The mirror case matters just as much: a company that reported exactly zero gross
+profit did report something, and that is `0.0`. `net_cash` of zero means cash
+offsets debt precisely. The two must never be conflated in either direction.
+
+## The provider boundary
+
+Vendors disagree about field names, sign conventions, pagination and coverage.
+`api-clients` absorbs all of that and returns `domain` models, so no vendor
+vocabulary reaches the metric engine — see
+[ADR-0003](../adr/0003-normalise-provider-data-at-the-boundary.md) for the
+decision and the alternatives rejected.
+
+One consequence worth stating plainly: the mock providers are not a testing
+crutch. They return the same domain models the real adapters do, so a clone with
+no credentials runs the entire pipeline, and the integration tests exercise real
+ingestion code rather than a parallel implementation.
+
+## Idempotency lives in the database
+
+The daily job re-fetches overlapping data on purpose: a restated quarter must
+replace the old one, and recent bars get corrected. That makes "insert if new,
+update if seen" the only write pattern that leaves the database correct after a
+second run.
+
+Rather than select-then-write — which has a race and costs two round trips per
+row — the repositories use dialect-aware `INSERT ... ON CONFLICT DO UPDATE`
+against the unique constraints on `(company_id, period_end)` and
+`(company_id, date)`. Those constraints are load-bearing. Removing one would not
+fail a test immediately; it would slowly accumulate duplicate quarters that
+quietly double a trailing-twelve-month total.
+
+## Failure is expected, not exceptional
+
+A market-wide scan touches thousands of symbols through a metered API. Some
+requests will fail. The ingestion loop therefore treats a per-ticker failure as
+data, not as an emergency: it is logged with its symbol, counted in an
+`IngestionReport`, and the loop continues.
+
+The distinction the report draws is between **failed** and **skipped**. A
+provider that has no coverage for a symbol is a gap, not an error, and lumping
+the two together would make a coverage hole look like an outage every night.
+
+Retry policy follows the same reasoning. Rate limits and server errors are
+transient and get exponential backoff; rejected credentials are not, and
+retrying them three thousand times is how an API key gets suspended.
 
 ## Boundaries that matter
 
-- **Configuration has one door.** `src/stock_screener/config.py` is the only reader of the
-  environment; everything else receives a `Settings` object. Scattered
-  `os.getenv` calls are untyped, unvalidated, and fail at first use rather than
-  at startup.
-- **A package's public API is its `__init__.py`.** Reaching into a submodule from
-  outside is a bug, not a shortcut — it turns an internal detail into something
-  you can't change without breaking a caller you don't know about.
-- **Entry points stay thin.** `__main__.py` wires dependencies together and
-  returns an exit code. A branch on business state there is a branch in the
-  wrong place.
+- **Configuration has one door.** `config.py` is the only reader of the
+  environment; everything else receives a `Settings` object. The eligibility
+  thresholds live there rather than as constants in the screening code, because
+  tuning them is the main thing this project does — that should be an
+  environment variable, not a commit.
+- **A package's public API is its `__init__.py`.** Reaching into a submodule
+  from outside turns an internal detail into something that cannot change.
+- **Entry points stay thin.** `__main__.py` delegates to `cli.run()`. A branch on
+  business state there is a branch in the wrong place.
+- **Dependencies are passed in.** Sessions and providers are arguments, which is
+  why the whole pipeline can be tested against SQLite and a fake transport with
+  no patching.
+
+## What is deliberately absent
+
+There is no score anywhere in the codebase, and no placeholder for one. Phase 1's
+job is to produce data good enough to score; a stub `compounder_score` field
+returning `0` would be a number people trust before it has been earned, and
+removing it later is harder than adding it now.
+
+Likewise there is no ranking. Scan output is sorted by ticker, because
+alphabetical is the honest ordering when nothing has been scored — sorting by
+revenue growth would imply a judgement the project has not made yet.
 
 ## Decisions
 

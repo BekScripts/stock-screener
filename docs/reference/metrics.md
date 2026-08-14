@@ -1,0 +1,225 @@
+---
+type: reference
+title: Metrics
+---
+
+# Metrics
+
+Every figure the scanner calculates, its formula, and the conditions under which
+it is unavailable. Implemented in `packages/domain/src/domain/metrics.py`; all
+functions are pure and take periods or bars in any order.
+
+## Conventions
+
+| Convention | Meaning |
+| --- | --- |
+| Decimal proportions | `0.35` is 35%. Nothing is stored pre-multiplied. |
+| Percentage points | Differences between two rates are `pp`, not `%`. |
+| `None` | The data cannot support the metric. Never rendered or stored as `0`. |
+| `0.0` | The company reported zero. |
+
+Input sequences are sorted oldest-first and de-duplicated by date before any
+calculation. Where two records share a date, the later one in the input wins.
+
+### Period matching
+
+Quarters are matched by **date**, not list position. A function looking for the
+year-ago quarter searches for a period ending within 45 days of 365 days before
+the reference period. A company that skipped a filing therefore yields `None`
+rather than a comparison against a fifteen-month-old quarter.
+
+Trailing-twelve-month windows additionally require their four periods to span
+228–318 days, which admits fiscal-calendar drift but rejects a window with a
+quarter missing from the middle.
+
+## Growth
+
+| Metric | Formula | `None` when |
+| --- | --- | --- |
+| `revenue_growth_yoy` | `(revenue − revenue₋₄) / revenue₋₄` | Either quarter absent, or prior revenue ≤ 0 |
+| `previous_revenue_growth_yoy` | Same, one quarter earlier | Either quarter of that pair absent |
+| `revenue_growth_acceleration` | `revenue_growth_yoy − previous_revenue_growth_yoy` | Either input is `None` |
+| `ttm_revenue` | Sum of the latest 4 quarters | Fewer than 4 consecutive quarters, or any lacks revenue |
+| `ttm_revenue_growth` | Latest TTM vs the preceding TTM | Fewer than 8 consecutive quarters |
+| `revenue_cagr_3y` | `(TTM / TTM₋₁₂)^(1/3) − 1` | Fewer than 16 quarters, or either TTM ≤ 0 |
+| `gross_profit_growth_yoy` | `(gross_profit − gross_profit₋₄) / gross_profit₋₄` | Either quarter absent, or prior value ≤ 0 |
+
+Growth from a non-positive base is `None`: "up 300% from minus one million" is
+arithmetic, not information.
+
+Acceleration is a **subtraction**, never a ratio. `0.35` following `0.18` gives
+`0.17`, meaning +17 percentage points.
+
+### Three-year CAGR methodology
+
+The latest trailing-twelve-month revenue against the trailing-twelve-month
+revenue ending twelve quarters earlier, requiring sixteen quarters of history.
+TTM is used rather than annual reports because ingestion stores quarterly
+statements, and TTM avoids comparing a partial fiscal year with a complete one.
+
+## Margins and balance sheet
+
+Margins are taken from the **latest reported quarter**, not a trailing year, so
+they move as soon as the business does.
+
+| Metric | Formula | `None` when |
+| --- | --- | --- |
+| `gross_margin` | `gross_profit / revenue` | Either absent, or revenue is 0 |
+| `operating_margin` | `operating_income / revenue` | Either absent, or revenue is 0 |
+| `fcf_margin` | `free_cash_flow / revenue` | FCF unavailable, or revenue is 0 |
+| `net_cash` | `cash − total_debt` | Either side absent |
+| `share_count_growth_yoy` | `(shares − shares₋₄) / shares₋₄` | Either observation absent, or prior ≤ 0 |
+
+**Which share count.** `shares_outstanding` holds **weighted-average diluted
+shares** — `WeightedAverageNumberOfDilutedSharesOutstanding` from EDGAR,
+`weightedAverageShsOutDil` from FMP. Dilution compares the field against itself
+a year earlier, so the concept must stay consistent: comparing a weighted
+average against a period-end count would manufacture a change that did not
+happen. A new adapter must map the same concept.
+
+A weighted average cannot be recovered by subtraction, so EDGAR yields no
+fiscal-Q4 share count and dilution is unavailable for a company whose most
+recent filing is its annual report.
+
+**Debt.** Absence is never read as zero. A filing tags the instruments it has and
+stops tagging them once they are repaid, so a debt-free company and one whose
+borrowing tag is unrecognised look identical — and crediting the second as
+debt-free would flatter exactly the companies a risk penalty exists to catch. An
+explicit zero in a filing is a reported value and is kept. Where a vendor gives
+no `totalDebt`, its short- and long-term components are summed only if **both**
+are present. See [ADR-0005](../adr/0005-absent-debt-is-unknown-not-zero.md).
+
+`net_cash` is a subtraction, so a result of `0.0` is a real observation: cash
+exactly offsets debt.
+
+### Free cash flow
+
+The reported figure is preferred. Otherwise:
+
+```text
+free_cash_flow = operating_cash_flow − abs(capital_expenditure)
+```
+
+`abs` is deliberate. Vendors disagree on the sign of capital expenditure, and
+adding a negative capex would turn cash burn into cash generation. Adapters
+normalise capex to a positive outflow before storage; the domain function
+defends against it a second time.
+
+## Price and liquidity
+
+| Metric | Definition | `None` when |
+| --- | --- | --- |
+| `price` | Latest close | No price history |
+| `average_dollar_volume_20d` | Mean of `close × volume` over the latest ≤20 sessions | No price history |
+| `trading_days_used` | `min(20, sessions available)` | Never — `0` when there is no history |
+| `return_6m` | `close / close_on_or_before(t − 182 days) − 1` | History does not reach back, or baseline close ≤ 0 |
+| `return_12m` | Same over 365 days | As above |
+| `high_52w` | Highest intraday high within 365 days | No price history |
+| `low_52w` | Lowest intraday low within 365 days | No price history |
+| `distance_from_52w_high` | `close / high_52w − 1` | No history, or high ≤ 0 |
+
+### Average dollar volume, and what it represents
+
+The figure is taken from a provider's **consolidated** average daily share
+volume where one exists — FMP supplies this on the same profile request already
+made — multiplied by the latest close. Only when no such average exists does it
+fall back to the mean of `close × volume` over the most recent sessions, up to
+twenty.
+
+The distinction matters and travels with the number as `liquidity_basis`:
+
+| Basis | Meaning | Threshold applied? |
+| --- | --- | --- |
+| `CONSOLIDATED` | Every U.S. venue | Yes |
+| `PARTIAL` | One exchange, e.g. a free IEX-only feed | **No** — warning instead |
+| `UNKNOWN` | No volume, or no statement of origin | **No** — warning instead |
+
+A single-exchange feed carries roughly 2–4% of consolidated volume, so applying
+a whole-market threshold to it would be about twenty-five times too strict. The
+screen therefore reports `LIQUIDITY_UNVERIFIED` rather than excluding. See
+[ADR-0004](../adr/0004-apply-the-liquidity-threshold-only-to-consolidated-volume.md).
+
+The **insufficient-history** check is separate and still excludes: it requires
+`trading_days_used >= MIN_TRADING_DAYS` (default 20) whatever the basis, so four
+sessions of heavy turnover never pass as a twenty-day average.
+
+### Return baselines
+
+Returns use the last session **on or before** the calendar target rather than
+assuming markets were open exactly 182 or 365 days ago. A target landing on a
+holiday falls back to the previous trading day.
+
+52-week high and low use intraday extremes, which is the conventional reading —
+this is why a stock can sit below its 52-week high on a day it closed at a
+record close.
+
+## Eligibility
+
+A security is eligible when every check passes. Thresholds come from
+[configuration](configuration.md).
+
+| Reason | Raised when |
+| --- | --- |
+| `PRICE_BELOW_MINIMUM` | `price < MIN_PRICE` |
+| `MARKET_CAP_BELOW_MINIMUM` | `market_cap < MIN_MARKET_CAP` |
+| `LOW_LIQUIDITY` | `trading_days_used < MIN_TRADING_DAYS`, or a **consolidated** ADV below `MIN_AVG_DOLLAR_VOLUME` |
+| `INACTIVE` | The provider reports the security as not trading |
+| `UNSUPPORTED_SECURITY_TYPE` | Not common stock on NASDAQ, NYSE or NYSE American |
+| `UNSUPPORTED_CURRENCY` | The company files its statements in a currency other than USD |
+| `MISSING_REQUIRED_DATA` | Price or market cap unavailable |
+
+A verdict may also carry warnings, which qualify it without excluding:
+
+| Warning | Raised when |
+| --- | --- |
+| `LIQUIDITY_UNVERIFIED` | Only partial-market volume was available, so the dollar threshold was not applied |
+
+A security can fail several checks at once, and all of them are reported. A
+value exactly at a threshold passes: the minimums are inclusive.
+
+`MISSING_REQUIRED_DATA` and a threshold breach are distinct. An absent market cap
+raises the former only — "we do not know" is not "too small".
+
+## Units and currency
+
+Every monetary figure is stored in **whole units of the reporting currency** —
+dollars, not thousands or millions. Providers that report in thousands would make
+a company appear 1,000x smaller; no scaling is applied, so a new adapter must
+convert to whole units before returning a model.
+
+Market capitalisation is quoted by the market in USD. A company filing its
+statements in another currency is therefore **excluded** with
+`UNSUPPORTED_CURRENCY` rather than screened, because every ratio built from the
+two would be wrong by an exchange rate. A provider that does not report a
+currency is treated as USD, which is true for the overwhelming majority of
+U.S.-listed common stock.
+
+## Plausibility
+
+Impossible observations are rejected at the boundary rather than stored:
+
+- a price bar whose `high` is below its `low`;
+- a negative price or a negative volume;
+- a negative market capitalisation.
+
+These surface as a `ProviderDataError` for one ticker, which ingestion logs and
+counts, so a garbled response costs one company rather than corrupting a ranking.
+
+Extreme-but-possible values are **not** rejected. A company really can grow
+revenue 400% in a quarter, and refusing to record it would hide exactly the kind
+of business this project exists to find.
+
+## Universe rules
+
+Accepted exchange codes: `NASDAQ`, `NYSE`, `AMEX` (Alpaca's code for NYSE
+American), and the written-out spellings of the last. `ARCA`, where U.S. ETFs
+list, is excluded.
+
+A listing is rejected as non-common when its symbol carries a `W`, `WS`, `WT`,
+`R`, `RT`, `U`, `UN`, `P` or `PR` suffix after a separator, or its registered
+name contains a fund, warrant, rights, units, preferred or depositary term. A
+class suffix such as `BRK.B` is not affected.
+
+These heuristics are deliberately shallow. Wrongly excluding an obscure listing
+costs one candidate; wrongly including a warrant puts a meaningless row near the
+top of a ranking.

@@ -38,3 +38,10 @@ site/
 .claude/settings.local.json
 CLAUDE.local.md
 .codex/config.local.toml
+
+# Local databases and scan exports. The SQLite default in .env.example writes
+# here; nothing about a local scan belongs in version control.
+*.db
+*.sqlite
+*.sqlite3
+/eligible_stocks.csv

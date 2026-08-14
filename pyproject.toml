@@ -17,14 +17,20 @@ authors = [{ name = "Aziz", email = "azizzbek.io@gmail.com" }]
 
 dependencies = [
     # Workspace packages: add each shared package you depend on here, and give
-    # it a matching entry under [tool.uv.sources] below.
+    # it a matching entry under [tool.uv.sources] below. `uv add` sorts this
+    # list alphabetically, so third-party names interleave with them.
     "api-clients",
     "data-access",
     "domain",
     # Third-party runtime dependencies.
+    "alembic>=1.14",
+    "fastapi>=0.115",
     "pydantic>=2.9",
     "pydantic-settings>=2.6",
+    "sqlalchemy>=2.0",
     "structlog>=24.4",
+    "typer>=0.15",
+    "uvicorn>=0.32",
 ]
 
 [project.scripts]
@@ -60,6 +66,8 @@ test = [
     "pytest-cov>=6.0",
     "pytest-asyncio>=0.24",
     "pytest-randomly>=3.16",
+    "httpx>=0.28",
+    "httpx2>=2.0",
 ]
 lint = [
     "ruff>=0.14",

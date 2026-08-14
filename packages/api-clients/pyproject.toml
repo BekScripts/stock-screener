@@ -7,7 +7,12 @@ requires-python = ">=3.12"
 license = "MIT"
 authors = [{ name = "Aziz", email = "azizzbek.io@gmail.com" }]
 
-dependencies = []
+dependencies = [
+    "domain",
+    "httpx>=0.28",
+    "pydantic>=2.9",
+    "structlog>=24.4",
+]
 
 [build-system]
 requires = ["uv_build>=0.11,<0.12"]
@@ -16,3 +21,6 @@ build-backend = "uv_build"
 [tool.uv.build-backend]
 module-name = "api_clients"
 module-root = "src"
+
+[tool.uv.sources]
+domain = { workspace = true }
