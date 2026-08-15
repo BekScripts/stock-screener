@@ -19,7 +19,12 @@ from api_clients import (
     ProviderAuthError,
     ProviderPlanError,
 )
-from data_access import CompanyRepository, FinancialSnapshotRepository, PriceHistoryRepository
+from data_access import (
+    BenchmarkPriceRepository,
+    CompanyRepository,
+    FinancialSnapshotRepository,
+    PriceHistoryRepository,
+)
 from domain import (
     CompanyProfile,
     EligibilityThresholds,
@@ -30,6 +35,7 @@ from domain import (
 from stock_screener.config import Settings
 from stock_screener.scanning import (
     scan_market,
+    update_benchmark,
     update_fundamentals,
     update_market_data,
     update_universe,
@@ -511,3 +517,54 @@ def test_force_restores_periods_the_incremental_skip_would_leave_stale(
 
     assert forced.succeeded == 1
     assert forced.skipped == 0
+
+
+@pytest.mark.integration
+def test_the_benchmark_series_is_stored_under_its_symbol(
+    session: Session,
+    make: type[Make],
+) -> None:
+    provider = MockMarketData([], {"SPY": make.bars(sessions=30)})
+
+    report = update_benchmark(session, provider, SETTINGS, today=LATEST_SESSION)
+    session.flush()
+
+    assert report.succeeded == 1
+    assert BenchmarkPriceRepository(session).latest_date("SPY") == LATEST_SESSION
+    # The benchmark is not a company, so nothing entered the scannable universe.
+    assert CompanyRepository(session).count() == 0
+
+
+@pytest.mark.integration
+def test_a_benchmark_the_provider_does_not_cover_is_skipped_not_failed(
+    session: Session,
+) -> None:
+    report = update_benchmark(session, MockMarketData([], {}), SETTINGS, today=LATEST_SESSION)
+
+    assert report.skipped == 1
+    assert report.failed == 0
+
+
+@pytest.mark.integration
+def test_a_failing_benchmark_fetch_is_counted_rather_than_raised(session: Session) -> None:
+    provider = MockMarketData([], {}, failing_tickers=["SPY"])
+
+    report = update_benchmark(session, provider, SETTINGS, today=LATEST_SESSION)
+
+    assert report.failed == 1
+    assert report.failures == ["SPY"]
+
+
+@pytest.mark.integration
+def test_re_running_the_benchmark_update_does_not_duplicate_sessions(
+    session: Session,
+    make: type[Make],
+) -> None:
+    provider = MockMarketData([], {"SPY": make.bars(sessions=30)})
+
+    update_benchmark(session, provider, SETTINGS, today=LATEST_SESSION)
+    session.flush()
+    update_benchmark(session, provider, SETTINGS, today=LATEST_SESSION)
+    session.flush()
+
+    assert BenchmarkPriceRepository(session).count() == 30

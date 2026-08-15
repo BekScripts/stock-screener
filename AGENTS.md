@@ -50,17 +50,34 @@ is persisted or cached via `data-access`. `src/stock_screener/` is the thin
 deployable that wires those together behind a CLI.
 
 The MVP is built in four phases, specified in
-`docs/reference/project-intro.md`. **Phase 1 is complete**: ingestion, the
-derived-metric engine, eligibility filtering, the CLI and a minimal API.
+`docs/reference/project-intro.md`. **Phases 1 and 2 are complete**: ingestion,
+the derived-metric engine, eligibility filtering, CompounderScore v1, risk
+penalties, daily score snapshots, the four ranking views, the CLI and a
+read-only API. Phase 3 (AI research) has not started and must not be.
 
-Two rules run through the whole codebase and are the ones most worth protecting:
+Three rules run through the whole codebase and are the ones most worth
+protecting:
 
 - **Missing is not zero.** A metric the data cannot support is `None` all the way
   through — model, database column, CSV cell, JSON. `0.0` means the company
-  reported zero. Never conflate them in either direction.
-- **No score yet.** The Compounder Score, risk penalties and rankings are
-  Phase 2. Do not add a placeholder; a score field returning zero is a number
-  people will trust before it has been earned.
+  reported zero. Never conflate them in either direction. In scoring, a missing
+  metric earns neither zero points nor full marks: its weight is carried by the
+  other metrics in the same component, never by another component.
+- **The score records its own rules.** Every snapshot carries a `score_version`,
+  and no comparison crosses versions. Changing a curve, a weight or a coverage
+  policy means a new version and a new `CURRENT_SCORE_VERSION` — never an edit
+  to an existing one — and `docs/reference/compounder-score.md` changes in the
+  same commit. `COMPOUNDER_V1_1` is current; `COMPOUNDER_V1` history is kept.
+- **Not every company gets a number.** A bank, an ineligible security and a
+  company with two quarters of history get a stored row carrying the status that
+  says why. Forcing a score onto them would put meaningless values into a
+  ranking that sorts on exactly that field.
+- **No metered provider gates the market.** The broad scan runs on Alpaca and
+  EDGAR alone; FMP is optional enrichment for the top candidates. A `PRELIMINARY`
+  ranking is a valid ranking; `FINAL` only means a vendor verified the market cap
+  and consolidated liquidity. A provider failure or `429` must never prevent
+  scanning, scoring or ranking. A figure that was calculated rather than supplied
+  carries its source — never let one become indistinguishable from the other.
 
 ## Layout
 

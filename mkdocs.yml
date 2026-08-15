@@ -48,13 +48,16 @@ nav:
       - Add a shared package: how-to/add-a-shared-package.md
       - Add a configuration setting: how-to/add-a-setting.md
       - Run a scan: how-to/run-a-scan.md
+      - Score and rank the market: how-to/score-and-rank.md
   - Reference:
       - reference/index.md
       - Configuration: reference/configuration.md
       - Commands: reference/commands.md
       - Metrics: reference/metrics.md
+      - CompounderScore: reference/compounder-score.md
       - Project brief: reference/project-intro.md
       - Phase 1 brief: reference/project-phases/phase1.md
+      - Phase 2 brief: reference/project-phases/phase2.md
       - Phase 2 constraints: reference/project-phases/phase2-constraints.md
   - Explanation:
       - explanation/index.md
@@ -66,3 +69,6 @@ nav:
       - 0003 Normalise provider data at the boundary: adr/0003-normalise-provider-data-at-the-boundary.md
       - 0004 Liquidity threshold and consolidated volume: adr/0004-apply-the-liquidity-threshold-only-to-consolidated-volume.md
       - 0005 Absent debt is unknown: adr/0005-absent-debt-is-unknown-not-zero.md
+      - 0006 Score snapshots are versioned: adr/0006-score-snapshots-are-versioned-and-immutable.md
+      - 0007 Missing metrics stay in their component: adr/0007-missing-metrics-are-carried-by-their-own-component.md
+      - 0008 Broad scan free, enrichment last: adr/0008-broad-scan-on-free-data-metered-enrichment-last.md

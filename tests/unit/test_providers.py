@@ -12,11 +12,12 @@ from api_clients import (
     MockMarketData,
     SecEdgarFundamentals,
 )
-from stock_screener.config import Settings
+from stock_screener.config import FundamentalsProviderName, Settings
 from stock_screener.providers import (
     ConfigurationError,
     build_fundamentals_provider,
     build_market_data_provider,
+    build_profile_provider,
 )
 
 FIXTURE = {"companies": [{"ticker": "XYZ", "name": "Example Corp", "exchange": "NASDAQ"}]}
@@ -151,3 +152,36 @@ def test_the_combined_provider_fails_without_the_fmp_key() -> None:
 
     with pytest.raises(ConfigurationError, match="FUNDAMENTALS_API_KEY"):
         build_fundamentals_provider(settings)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("provider", ["fmp", "edgar+fmp"])
+def test_the_profile_provider_is_the_vendor_alone(provider: FundamentalsProviderName) -> None:
+    # Not the composite. The composite swallows a rate-limit error and falls
+    # back to EDGAR, which during enrichment would turn a quota rejection into
+    # a lookup that merely returned no market cap — and the pass would work
+    # through every remaining candidate into the same wall.
+    settings = Settings(
+        environment="test",
+        fundamentals_provider=provider,
+        fundamentals_api_key=SecretStr("key"),
+        sec_user_agent="Compounder Radar test@example.com",
+    )
+
+    built = build_profile_provider(settings)
+
+    assert isinstance(built, FmpFundamentals)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("provider", ["edgar", "mock"])
+def test_a_provider_without_vendor_data_has_no_profile_source(
+    provider: FundamentalsProviderName,
+) -> None:
+    settings = Settings(
+        environment="test",
+        fundamentals_provider=provider,
+        sec_user_agent="Compounder Radar test@example.com",
+    )
+
+    assert build_profile_provider(settings) is None

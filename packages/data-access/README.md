@@ -25,8 +25,8 @@ data-access = { workspace = true }
 
 ## What it contains
 
-- `models` — the three Phase 1 tables: `companies`, `financial_snapshots`,
-  `price_history`.
+- `models` — the five tables: `companies`, `financial_snapshots`,
+  `price_history`, `benchmark_prices` and `score_snapshots`.
 - `session` — engine and session construction. No module-level engine.
 - `repositories` — reads and idempotent upserts for each table.
 - `converters` — translation between stored rows and `domain` models.
@@ -46,11 +46,19 @@ it never reads `DATABASE_URL`.
 
 ## Invariants
 
-**The unique constraints are load-bearing.** `(company_id, period_end)` and
-`(company_id, date)` are what make a re-run of the daily job an update rather
-than a duplicate. Removing one would not fail a test immediately — it would
-slowly accumulate duplicate quarters that quietly double a trailing-twelve-month
-total.
+**The unique constraints are load-bearing.** `(company_id, period_end)`,
+`(company_id, date)` and `(company_id, score_date, score_version)` are what make
+a re-run of the daily job an update rather than a duplicate. Removing one would
+not fail a test immediately — it would slowly accumulate duplicate quarters that
+quietly double a trailing-twelve-month total, or a second score for the same day.
+
+**A score is not a reported fact.** Scores live in `score_snapshots`, never as
+columns on `financial_snapshots`. Mixing derived opinion into a table of reported
+figures would make a restatement indistinguishable from a re-score.
+
+**Score reads take a version.** Every query and every prior-snapshot lookup
+filters on `score_version`; comparing across versions measures the formula rather
+than the business.
 
 **Every financial column is nullable.** A `NOT NULL DEFAULT 0` would convert "not
 reported" into "reported as zero" at the storage layer, defeating the care taken

@@ -44,10 +44,13 @@ from datetime import date, timedelta
 from typing import TYPE_CHECKING, Any
 
 import httpx
+import structlog
 
 from api_clients._http import RateLimiter, RetryPolicy, request_json
-from api_clients.errors import ProviderDataError
+from api_clients.errors import ProviderDataError, ProviderError
 from domain import CompanyProfile, FinancialPeriod, normalise_ticker
+
+log = structlog.get_logger(__name__)
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Mapping, Sequence
@@ -85,11 +88,58 @@ _REVENUE_TAGS = (
     "SalesRevenueGoodsNet",
 )
 _GROSS_PROFIT_TAGS = ("GrossProfit",)
+
+#: Cost of revenue, most preferred **last** — `_merge_chain` applies the chain in
+#: reverse so that a tag earlier in this tuple overwrites a later one for any
+#: period both cover.
+#:
+#: Only concepts that mean *the cost of producing what was sold* belong here.
+#: Broad concepts such as `CostsAndExpenses` (total operating cost, including
+#: selling, general, administrative and often impairments) are deliberately
+#: absent: subtracting one from revenue yields something close to operating
+#: income, and calling that a gross profit would produce a margin that is wrong
+#: by the entire operating expense base.
+#:
+#: | Concept | Means | Basis |
+#: | --- | --- | --- |
+#: | `CostOfGoodsAndServicesSold` | Goods and services sold | includes D&A |
+#: | `CostOfRevenue` | Total cost of revenue | includes D&A |
+#: | `CostOfGoodsSold` | Goods only | includes D&A |
+#: | `CostOfServices` | Services only; the service-company analogue of COGS | includes D&A |
+#: | `DirectOperatingCosts` | Costs directly attributable to revenue, used by
+#:   shipping, energy and media filers | includes D&A |
+#: | `...ExcludingDepreciationDepletionAndAmortization` | The same cost with
+#:   D&A stripped out | **excludes D&A** |
+#:
+#: The excluding-D&A variants are ranked last on purpose. A gross profit derived
+#: from one is **higher** than the GAAP figure by the depreciation charged to
+#: production, so they are a fallback for filers that publish nothing else, and
+#: the period records which concept produced it.
 _COST_OF_REVENUE_TAGS = (
     "CostOfGoodsAndServicesSold",
     "CostOfRevenue",
     "CostOfGoodsSold",
+    "CostOfServices",
+    "DirectOperatingCosts",
+    "CostOfGoodsAndServiceExcludingDepreciationDepletionAndAmortization",
+    "CostOfGoodsSoldExcludingDepreciationDepletionAndAmortization",
+    "CostOfRevenueExcludingDepreciationDepletionAndAmortization",
 )
+
+#: Concepts whose gross profit excludes depreciation, depletion and
+#: amortisation. Recorded on the period so a consumer can tell the two bases
+#: apart rather than comparing them as though they were the same measure.
+COST_BASIS_EXCLUDES_DA = frozenset(
+    {
+        "CostOfGoodsAndServiceExcludingDepreciationDepletionAndAmortization",
+        "CostOfGoodsSoldExcludingDepreciationDepletionAndAmortization",
+        "CostOfRevenueExcludingDepreciationDepletionAndAmortization",
+    }
+)
+
+GROSS_PROFIT_REPORTED = "GrossProfit"
+"""Basis recorded when the filer tagged gross profit directly."""
+
 _OPERATING_INCOME_TAGS = ("OperatingIncomeLoss",)
 _OPERATING_CASH_FLOW_TAGS = (
     "NetCashProvidedByUsedInOperatingActivities",
@@ -100,6 +150,23 @@ _CAPEX_TAGS = (
     "PaymentsToAcquireProductiveAssets",
 )
 _SHARES_TAGS = ("WeightedAverageNumberOfDilutedSharesOutstanding",)
+
+#: Point-in-time common shares outstanding, **not** the weighted average above.
+#:
+#: `dei:EntityCommonStockSharesOutstanding` is the cover-page count every 10-Q
+#: and 10-K carries, stated as of a date shortly before filing, which makes it
+#: the closest thing EDGAR has to a current share count. The us-gaap balance
+#: sheet concepts are the fallback for filers whose cover-page tag is missing.
+#:
+#: The distinction from `_SHARES_TAGS` is load-bearing. A weighted average is an
+#: income-statement figure covering a period; multiplying it by today's price
+#: would value the company on a share count that was never outstanding on any
+#: single day. Dilution needs the average; market capitalisation needs this.
+_COMMON_SHARES_DEI_TAGS = ("EntityCommonStockSharesOutstanding",)
+_COMMON_SHARES_GAAP_TAGS = (
+    "CommonStockSharesOutstanding",
+    "CommonStockSharesIssued",
+)
 
 _CASH_TAGS = (
     "CashAndCashEquivalentsAtCarryingValue",
@@ -134,6 +201,13 @@ _SHORT_TERM_DEBT_TAGS = (
 
 _USD = "USD"
 _SHARES = "shares"
+
+#: How far after a quarter end a cover-page share count may be dated, and how
+#: far before. A 10-Q lands within about six weeks of the quarter it reports and
+#: states its share count as of a date near filing; ninety days stops one
+#: quarter's count being read as the next one's.
+_COVER_PAGE_WINDOW_DAYS = 90
+_COVER_PAGE_BACKSTOP_DAYS = 3
 
 
 class SecEdgarFundamentals:
@@ -184,6 +258,7 @@ class SecEdgarFundamentals:
         self._retry = retry or RetryPolicy()
         self._cik_by_ticker: dict[str, int] | None = None
         self._facts_cache: tuple[str, dict[str, Any]] | None = None
+        self._submissions_cache: tuple[str, dict[str, Any]] | None = None
 
     def close(self) -> None:
         """Release the underlying HTTP connection."""
@@ -225,6 +300,11 @@ class SecEdgarFundamentals:
         return CompanyProfile(
             ticker=symbol,
             name=str(facts.get("entityName") or symbol),
+            # The registrant's own SIC description, e.g. "State Commercial
+            # Banks". Not a market-data sector taxonomy, but it is what makes the
+            # unsupported-sector rule work without a commercial provider — and it
+            # comes free with a request the adapter already needs.
+            industry=self._industry_for(cik),
             # Filings are in USD unless a filer says otherwise; the units key on
             # each fact is checked when the figures themselves are read.
             currency=_USD,
@@ -250,14 +330,18 @@ class SecEdgarFundamentals:
         if cik is None:
             return []
 
-        gaap = self._company_facts(cik).get("facts", {}).get("us-gaap", {})
+        payload = self._company_facts(cik)
+        all_facts = payload.get("facts", {})
+        gaap = all_facts.get("us-gaap", {})
         if not gaap:
             return []
+        dei = all_facts.get("dei", {})
 
+        cost_of_revenue, cost_sources = _sourced_quarterly_series(gaap, _COST_OF_REVENUE_TAGS)
         flows = {
             "revenue": _quarterly_series(gaap, _REVENUE_TAGS),
             "gross_profit": _quarterly_series(gaap, _GROSS_PROFIT_TAGS),
-            "cost_of_revenue": _quarterly_series(gaap, _COST_OF_REVENUE_TAGS),
+            "cost_of_revenue": cost_of_revenue,
             "operating_income": _quarterly_series(gaap, _OPERATING_INCOME_TAGS),
             "operating_cash_flow": _quarterly_series(gaap, _OPERATING_CASH_FLOW_TAGS),
             "capital_expenditure": _quarterly_series(gaap, _CAPEX_TAGS),
@@ -273,9 +357,16 @@ class SecEdgarFundamentals:
             "short_term_investments": _instant_series(gaap, _SHORT_TERM_INVESTMENTS_TAGS),
             "long_term_debt": _instant_series(gaap, _LONG_TERM_DEBT_TAGS),
             "short_term_debt": _instant_series(gaap, _SHORT_TERM_DEBT_TAGS),
+            # Cover-page count first, balance-sheet count as the fallback.
+            "common_shares_outstanding": {
+                **_instant_series(gaap, _COMMON_SHARES_GAAP_TAGS, unit=_SHARES),
+                **_instant_series(dei, _COMMON_SHARES_DEI_TAGS, unit=_SHARES),
+            },
         }
         period_ends = sorted({end for series in flows.values() for end in series})
-        periods = [_build_period(period_end, flows, instants) for period_end in period_ends]
+        periods = [
+            _build_period(period_end, flows, instants, cost_sources) for period_end in period_ends
+        ]
         return periods[-limit:] if limit > 0 else periods
 
     # -- internals ---------------------------------------------------------
@@ -314,6 +405,46 @@ class SecEdgarFundamentals:
         if not mapping:
             raise ProviderDataError("sec ticker map contained no usable entries")
         return mapping
+
+    def _industry_for(self, cik: int) -> str | None:
+        """Return the filer's SIC description, or None when the SEC has none.
+
+        The submissions document is small compared with company facts, and it is
+        the only free source of a business classification in the pipeline. A
+        failure here is not fatal: identity and statements are what this adapter
+        exists for, and a company with no industry is scored rather than
+        excluded.
+        """
+        try:
+            submissions = self._submissions(cik)
+        except ProviderError:
+            log.warning("sec submissions lookup failed", cik=cik)
+            return None
+
+        description = submissions.get("sicDescription")
+        if not isinstance(description, str) or not description.strip():
+            return None
+        return description.strip()
+
+    def _submissions(self, cik: int) -> dict[str, Any]:
+        """Fetch one filer's submission metadata, holding the most recent."""
+        key = f"{cik:010d}"
+        if self._submissions_cache is not None and self._submissions_cache[0] == key:
+            return self._submissions_cache[1]
+
+        payload = request_json(
+            self._client,
+            "GET",
+            f"{self._data_base_url}/submissions/CIK{key}.json",
+            provider=PROVIDER_NAME,
+            limiter=self._limiter,
+            retry=self._retry,
+        )
+        if not isinstance(payload, dict):
+            raise ProviderDataError(f"sec returned an unexpected submissions payload for {key}")
+
+        self._submissions_cache = (key, payload)
+        return payload
 
     def _company_facts(self, cik: int) -> dict[str, Any]:
         """Fetch every XBRL fact for one filer.
@@ -438,6 +569,34 @@ def _quarterly_series(
     return _merge_chain(build, gaap, tags, unit)
 
 
+def _sourced_quarterly_series(
+    gaap: Mapping[str, Any], tags: Sequence[str]
+) -> tuple[dict[date, float], dict[date, str]]:
+    """Return a quarterly series plus the concept each period came from.
+
+    Same merge order as `_quarterly_series` — least specific first, so a more
+    specific tag overwrites — but it also records the winning concept per
+    period. Which concept produced a cost figure decides whether the gross
+    profit derived from it includes depreciation, and that is not something a
+    reader should have to infer from the number.
+
+    Args:
+        gaap: The `us-gaap` block of a company-facts document.
+        tags: Concept fallback chain, most specific first.
+
+    Returns:
+        The merged series and a matching map of period end to concept name.
+    """
+    values: dict[date, float] = {}
+    sources: dict[date, str] = {}
+    for tag in reversed(tags):
+        series = _quarters_from_facts(_facts_for_tag(gaap, tag, _USD), additive=True)
+        values.update(series)
+        for period_end in series:
+            sources[period_end] = tag
+    return values, sources
+
+
 def _quarters_from_facts(facts: list[Mapping[str, Any]], *, additive: bool) -> dict[date, float]:
     """Turn one tag's duration facts into discrete quarters."""
     if not facts:
@@ -541,13 +700,20 @@ def _difference_ladder(series: dict[date, float], start: date, rungs: Mapping[da
         previous_end, previous_value = end, rungs[end]
 
 
-def _instant_series(gaap: Mapping[str, Any], tags: Sequence[str]) -> dict[date, float]:
-    """Return one balance-sheet value per reporting date for a concept.
+def _instant_series(
+    facts: Mapping[str, Any], tags: Sequence[str], unit: str = _USD
+) -> dict[date, float]:
+    """Return one point-in-time value per reporting date for a concept.
 
     Instant facts carry an `end` and no `start`, which is how they are told apart
     from the duration facts on the income and cash-flow statements.
+
+    Args:
+        facts: A taxonomy's facts — `us-gaap` or `dei`.
+        tags: Concept fallback chain, most specific first.
+        unit: The unit to read. Share counts are `shares`, not `USD`.
     """
-    return _merge_chain(_instants_from_facts, gaap, tags, _USD)
+    return _merge_chain(_instants_from_facts, facts, tags, unit)
 
 
 def _instants_from_facts(facts: list[Mapping[str, Any]]) -> dict[date, float]:
@@ -570,6 +736,34 @@ def _instants_from_facts(facts: list[Mapping[str, Any]]) -> dict[date, float]:
     return series
 
 
+def _cover_page_instant(series: Mapping[date, float], period_end: date) -> float | None:
+    """Return the share count filed alongside a quarter, or None.
+
+    The cover-page count is stated *as of a date shortly before the filing*, so
+    for a quarter ending 30 June it is typically dated in late July or early
+    August — weeks after the balance-sheet date the other instants share. Looking
+    only at the period end would find nothing, so the window runs forward to the
+    next quarter's filing and the most recent count inside it wins.
+
+    Multi-class filers tag one count per share class. Company-facts flattens the
+    class dimension away, so the newest-filed fact is taken rather than a sum:
+    summing risks double-counting a value re-filed in comparatives, and
+    understating a two-class company is the safer error — it can be caught by the
+    market-cap cross-check, whereas a doubled share count cannot.
+
+    Args:
+        series: Share counts by their stated date.
+        period_end: The quarter to find a count for.
+
+    Returns:
+        The latest count in the window, or None when the filer tagged none.
+    """
+    window_start = period_end - timedelta(days=_COVER_PAGE_BACKSTOP_DAYS)
+    window_end = period_end + timedelta(days=_COVER_PAGE_WINDOW_DAYS)
+    dated = [stated for stated in series if window_start <= stated <= window_end]
+    return series[max(dated)] if dated else None
+
+
 def _nearest_instant(series: Mapping[date, float], period_end: date) -> float | None:
     """Return a balance-sheet value at or very near a period end.
 
@@ -590,6 +784,7 @@ def _build_period(
     period_end: date,
     flows: Mapping[str, Mapping[date, float]],
     instants: Mapping[str, Mapping[date, float]],
+    cost_sources: Mapping[date, str] | None = None,
 ) -> FinancialPeriod:
     """Assemble one quarter from the collected series.
 
@@ -597,15 +792,21 @@ def _build_period(
         period_end: The quarter being built.
         flows: Duration-based series by field name.
         instants: Balance-sheet series by field name.
+        cost_sources: Which cost concept produced each period's figure, used to
+            record how a derived gross profit was arrived at.
     """
     revenue = flows["revenue"].get(period_end)
     gross_profit = flows["gross_profit"].get(period_end)
+    gross_profit_basis = GROSS_PROFIT_REPORTED if gross_profit is not None else None
     if gross_profit is None:
         # Not every filer tags gross profit; those that don't usually tag the
         # cost of revenue, and the subtraction is exact rather than an estimate.
+        # A directly reported figure is never overwritten by this — the branch
+        # only runs when the filer published none.
         cost = flows["cost_of_revenue"].get(period_end)
         if revenue is not None and cost is not None:
             gross_profit = revenue - cost
+            gross_profit_basis = (cost_sources or {}).get(period_end)
 
     capex = flows["capital_expenditure"].get(period_end)
     cash = _nearest_instant(instants["cash"], period_end)
@@ -617,6 +818,7 @@ def _build_period(
         period_end=period_end,
         revenue=revenue,
         gross_profit=gross_profit,
+        gross_profit_basis=gross_profit_basis,
         operating_income=flows["operating_income"].get(period_end),
         operating_cash_flow=flows["operating_cash_flow"].get(period_end),
         # XBRL reports capital expenditure as a positive payment, but the domain
@@ -625,6 +827,9 @@ def _build_period(
         cash=cash,
         total_debt=_total_debt(instants, period_end),
         shares_outstanding=flows["shares_outstanding"].get(period_end),
+        common_shares_outstanding=_cover_page_instant(
+            instants["common_shares_outstanding"], period_end
+        ),
         reported_currency=_USD,
         source=PROVIDER_NAME,
     )

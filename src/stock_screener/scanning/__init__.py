@@ -13,6 +13,7 @@ Nothing here constructs a provider or a database session. Both are passed in, by
 
 from stock_screener.scanning.ingestion import (
     IngestionReport,
+    update_benchmark,
     update_fundamentals,
     update_market_data,
     update_universe,
@@ -26,6 +27,7 @@ __all__ = [
     "ScanRow",
     "format_table",
     "scan_market",
+    "update_benchmark",
     "update_fundamentals",
     "update_market_data",
     "update_universe",

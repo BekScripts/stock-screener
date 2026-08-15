@@ -90,6 +90,12 @@ class FinancialPeriod(_Frozen):
             ordered by this field.
         revenue: Total revenue for the period.
         gross_profit: Revenue less cost of revenue.
+        gross_profit_basis: How `gross_profit` was arrived at — the provider's
+            concept name when it was reported directly, or the cost concept it
+            was derived from. Two derived figures are not always the same
+            measure: a cost concept that excludes depreciation yields a higher
+            gross profit than one that includes it, and only this field
+            distinguishes them.
         operating_income: Income from operations.
         operating_cash_flow: Net cash provided by operating activities.
         capital_expenditure: Capital spending as a positive outflow. Adapters
@@ -107,6 +113,11 @@ class FinancialPeriod(_Frozen):
             against a point-in-time count would manufacture a change that did
             not happen. Every adapter must map the same concept — which one each
             reads from is recorded in `docs/reference/metrics.md`.
+        common_shares_outstanding: Common shares outstanding at a point in time,
+            as stated on the filing's cover page. This is the count to multiply
+            by a price: a weighted average covers a period and was never the
+            number outstanding on any single day. Never used for dilution, and
+            never substituted for the field above.
         reported_currency: ISO code the statements were filed in, when the
             provider says. None means unknown.
         source: Identifier of the provider the period came from.
@@ -115,6 +126,7 @@ class FinancialPeriod(_Frozen):
     period_end: date
     revenue: float | None = None
     gross_profit: float | None = None
+    gross_profit_basis: str | None = None
     operating_income: float | None = None
     operating_cash_flow: float | None = None
     capital_expenditure: float | None = None
@@ -122,6 +134,7 @@ class FinancialPeriod(_Frozen):
     cash: float | None = None
     total_debt: float | None = None
     shares_outstanding: float | None = None
+    common_shares_outstanding: float | None = None
     reported_currency: str | None = None
     source: str = "unknown"
 
@@ -146,12 +159,43 @@ class VolumeBasis(StrEnum):
     """No volume, or no statement about where it came from."""
 
 
+class MarketCapSource(StrEnum):
+    """Where a market capitalisation came from.
+
+    A figure a vendor supplied and one this system multiplied out are not the
+    same claim, and the difference decides how much weight a discrepancy
+    deserves. Carrying the source stops an estimate being read as a quote.
+    """
+
+    PROVIDER = "PROVIDER"
+    """Supplied directly by the fundamentals provider."""
+
+    CALCULATED = "CALCULATED"
+    """Latest close times the most recent cover-page share count from filings.
+    Correct to within a share issuance since the last filing, and blind to share
+    classes the ticker does not represent."""
+
+    UNKNOWN = "UNKNOWN"
+    """Neither was available."""
+
+
 class EligibilityWarning(StrEnum):
     """A caveat about a verdict that is not grounds for exclusion."""
 
     LIQUIDITY_UNVERIFIED = "LIQUIDITY_UNVERIFIED"
     """Only partial-market volume was available, so the liquidity threshold was
     not applied. The company may or may not clear it."""
+
+    MARKET_CAP_CALCULATED = "MARKET_CAP_CALCULATED"
+    """Market capitalisation was multiplied out from filings and a price rather
+    than supplied by a provider. Good enough to screen on, worth verifying
+    before acting on."""
+
+    MARKET_CAP_DISCREPANCY = "MARKET_CAP_DISCREPANCY"
+    """The provider's market capitalisation and the calculated one disagree
+    materially. Neither is discarded and neither is averaged — the difference is
+    surfaced, because its usual causes (a stale share count, multiple share
+    classes, a recent issuance) each mean something different."""
 
 
 class CompanyProfile(_Frozen):
@@ -217,7 +261,15 @@ class CompanyMetrics(_Frozen):
     Attributes:
         ticker: The company the metrics describe.
         price: Latest close.
-        market_cap: Market capitalisation, carried through from the profile.
+        market_cap: Market capitalisation — the provider's figure when there is
+            one, otherwise the calculated one. Every ratio built on size uses
+            this field, so its source travels beside it.
+        market_cap_source: Which of the two `market_cap` is.
+        calculated_market_cap: Latest close times the most recent cover-page
+            share count, whenever both exist. Kept even when a provider figure
+            is preferred, so the two can be compared.
+        market_cap_discrepancy: How far apart the two are, as a proportion of
+            the provider's figure. None when only one exists.
         average_dollar_volume_20d: Average daily dollar volume. Taken from a
             provider's consolidated average where one exists, otherwise the mean
             of `close * volume` over the most recent sessions, up to twenty.
@@ -229,16 +281,28 @@ class CompanyMetrics(_Frozen):
         previous_revenue_growth_yoy: The prior quarter's equivalent comparison.
         revenue_growth_acceleration: The two above subtracted, in decimal
             percentage points.
+        recent_revenue_growth_yoy: Year-over-year growth for each of the latest
+            four quarters, newest first. Shorter than four when the history has
+            a gap — which means *unknown*, never a quarter that shrank.
         ttm_revenue: Sum of the latest four quarters.
         ttm_revenue_growth: Latest trailing year against the preceding one.
         revenue_cagr_3y: Compound annual growth over three years.
         gross_margin: Gross profit over revenue, latest quarter.
+        gross_margin_change: Gross margin against the year-ago quarter, in
+            decimal percentage points.
         gross_profit_growth_yoy: Gross profit against the year-ago quarter.
         operating_margin: Operating income over revenue, latest quarter.
+        operating_margin_change: Operating margin against the year-ago quarter,
+            in decimal percentage points.
         fcf_margin: Free cash flow over revenue, latest quarter.
+        fcf_margin_change: FCF margin against the year-ago quarter, in decimal
+            percentage points.
+        ttm_free_cash_flow: Free cash flow summed over the latest four quarters.
         cash: Cash and equivalents, latest quarter.
         debt: Total debt, latest quarter.
         net_cash: Cash less total debt.
+        enterprise_value: Market cap plus debt less cash. None when debt or cash
+            is unknown — never computed by treating absent debt as zero.
         share_count_growth_yoy: Dilution over the past year.
         return_6m: Total return over roughly six months.
         return_12m: Total return over roughly twelve months.
@@ -252,6 +316,9 @@ class CompanyMetrics(_Frozen):
 
     price: float | None = None
     market_cap: float | None = None
+    market_cap_source: MarketCapSource = MarketCapSource.UNKNOWN
+    calculated_market_cap: float | None = None
+    market_cap_discrepancy: float | None = None
     average_dollar_volume_20d: float | None = None
     liquidity_basis: VolumeBasis = VolumeBasis.UNKNOWN
     trading_days_used: int = 0
@@ -259,18 +326,24 @@ class CompanyMetrics(_Frozen):
     revenue_growth_yoy: float | None = None
     previous_revenue_growth_yoy: float | None = None
     revenue_growth_acceleration: float | None = None
+    recent_revenue_growth_yoy: tuple[float, ...] = ()
     ttm_revenue: float | None = None
     ttm_revenue_growth: float | None = None
     revenue_cagr_3y: float | None = None
 
     gross_margin: float | None = None
+    gross_margin_change: float | None = None
     gross_profit_growth_yoy: float | None = None
     operating_margin: float | None = None
+    operating_margin_change: float | None = None
     fcf_margin: float | None = None
+    fcf_margin_change: float | None = None
+    ttm_free_cash_flow: float | None = None
 
     cash: float | None = None
     debt: float | None = None
     net_cash: float | None = None
+    enterprise_value: float | None = None
 
     share_count_growth_yoy: float | None = None
 

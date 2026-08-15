@@ -70,15 +70,20 @@ startup, naming the variables to set.
 | Value | Statements | Profile | Cost |
 | --- | --- | --- | --- |
 | `mock` | fixture file | fixture file | free, no network |
-| `edgar` | SEC XBRL, every U.S. filer, full history | **none** — no market cap, so the screen excludes everything | free |
+| `edgar` | SEC XBRL, every U.S. filer, full history | identity, SIC industry, and a **calculated** market cap | free |
 | `edgar+fmp` | SEC XBRL | FMP profile | free tier sufficient |
 | `fmp` | FMP | FMP | needs a plan covering the symbols being scanned |
 
-`edgar+fmp` is the combination that works on free plans. EDGAR is the source the
-commercial vendors resell, so its statements are authoritative and complete down
-to micro caps, but it publishes no market data at all. FMP's profile endpoint
-supplies market cap and sector for every symbol even where its statement
-endpoints are gated.
+`edgar` alone is enough for a broad scan. EDGAR is the source the commercial
+vendors resell, so its statements are authoritative and complete down to micro
+caps; market capitalisation is calculated from the cover-page share count and the
+latest close, and the SIC description drives the unsupported-sector rule.
+
+`edgar+fmp` adds the second opinion: a vendor market cap to cross-check the
+calculated one, and consolidated average volume, which is the only figure the
+liquidity threshold may be applied to. On a metered plan that is a few hundred
+requests a day, so it belongs in the enrichment pass rather than in the scan —
+see [ADR-0008](../adr/0008-broad-scan-on-free-data-metered-enrichment-last.md).
 
 ## Provider behaviour
 
@@ -117,6 +122,28 @@ subscription. FMP's free tier allows five.
 Below the requirement a metric is `None`, not wrong — but acceleration is one of
 the signals the project exists to surface, so five quarters is a real constraint
 rather than a cosmetic one.
+
+## Scoring
+
+| Variable | Type | Default | Description |
+| --- | --- | --- | --- |
+| `BENCHMARK_SYMBOL` | str | `SPY` | The broad-market series relative strength is measured against. Fetched through the market-data provider and stored in `benchmark_prices`. |
+| `FMP_ENRICHMENT_LIMIT` | int ≥ 0 | `200` | How many top-ranked candidates the enrichment pass may spend metered requests on. |
+
+Changing the benchmark changes what every momentum score means. Scores computed
+against two different benchmarks are not comparable, so re-score the market after
+changing it rather than reading across the two.
+
+Without a stored benchmark series, relative strength cannot be calculated and
+every company ends the run as `INSUFFICIENT_DATA`. Run `update-benchmark` before
+`score`, or use `run-daily`, which does both.
+
+`FMP_ENRICHMENT_LIMIT` bounds the second pass, not the scan. The broad scan runs
+entirely on Alpaca and EDGAR; enrichment then spends one request per candidate to
+replace a calculated market cap with the vendor's and unverified volume with
+consolidated volume. Set it to what the plan's daily allowance can serve — a free
+FMP tier is a few hundred requests a day, and a pass that runs out stops rather
+than retrying into the wall.
 
 ## Eligibility thresholds
 

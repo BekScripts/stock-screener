@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING
 from domain import CompanyProfile, FinancialPeriod, PriceBar
 
 if TYPE_CHECKING:
-    from data_access.models import Company, FinancialSnapshot, PriceHistory
+    from data_access.models import BenchmarkPrice, Company, FinancialSnapshot, PriceHistory
 
 
 def to_company_profile(company: Company) -> CompanyProfile:
@@ -54,6 +54,7 @@ def to_financial_period(snapshot: FinancialSnapshot) -> FinancialPeriod:
         period_end=snapshot.period_end,
         revenue=snapshot.revenue,
         gross_profit=snapshot.gross_profit,
+        gross_profit_basis=snapshot.gross_profit_basis,
         operating_income=snapshot.operating_income,
         operating_cash_flow=snapshot.operating_cash_flow,
         capital_expenditure=snapshot.capital_expenditure,
@@ -61,16 +62,21 @@ def to_financial_period(snapshot: FinancialSnapshot) -> FinancialPeriod:
         cash=snapshot.cash,
         total_debt=snapshot.total_debt,
         shares_outstanding=snapshot.shares_outstanding,
+        common_shares_outstanding=snapshot.common_shares_outstanding,
         reported_currency=snapshot.reported_currency,
         source=snapshot.source,
     )
 
 
-def to_price_bar(row: PriceHistory) -> PriceBar:
+def to_price_bar(row: PriceHistory | BenchmarkPrice) -> PriceBar:
     """Convert a stored price row into a domain bar.
 
+    Accepts a benchmark row as well as a company one. The two tables are
+    separate because a benchmark is not a company, but a bar is a bar and the
+    return calculations must not be duplicated for one.
+
     Args:
-        row: The stored row.
+        row: The stored row, from `price_history` or `benchmark_prices`.
 
     Returns:
         The equivalent `PriceBar`.

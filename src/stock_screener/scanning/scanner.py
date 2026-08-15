@@ -2,13 +2,13 @@
 
 `scan_market` reads what ingestion stored, hands it to the metric engine, applies
 the eligibility screen, and returns the result. It performs no I/O of its own
-beyond the database reads, and it deliberately computes **no score** — ranking is
-Phase 2, and mixing it in here would make the eligibility gate untestable in
-isolation.
+beyond the database reads, and it deliberately computes **no score** — that
+happens in `stock_screener.scoring`, which consumes these rows. Mixing the two
+would make the eligibility gate untestable in isolation.
 
-Rows come back sorted by ticker. Alphabetical is the honest default when nothing
-has been scored yet; sorting by, say, revenue growth would imply a ranking the
-project has not earned.
+Rows come back sorted by ticker. Alphabetical is the honest default for a screen:
+sorting by, say, revenue growth would imply a ranking, and the ranking is a
+different step with its own rules.
 """
 
 from __future__ import annotations
