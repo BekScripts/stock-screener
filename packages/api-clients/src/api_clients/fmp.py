@@ -214,10 +214,14 @@ class FmpFundamentals:
         cash_flow = cash_flow or {}
 
         capex = _number(cash_flow.get("capitalExpenditure"))
+        gross_profit = _number(income.get("grossProfit"))
         return FinancialPeriod(
             period_end=period_end,
             revenue=_number(income.get("revenue")),
-            gross_profit=_number(income.get("grossProfit")),
+            gross_profit=gross_profit,
+            # FMP publishes a single computed gross profit rather than the
+            # underlying concept, so the basis is the field name itself.
+            gross_profit_basis="grossProfit" if gross_profit is not None else None,
             operating_income=_number(income.get("operatingIncome")),
             operating_cash_flow=_number(cash_flow.get("operatingCashFlow")),
             # Stored as a positive outflow regardless of FMP's sign convention.

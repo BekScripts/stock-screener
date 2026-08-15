@@ -10,25 +10,39 @@ Compounder Radar answers one question:
 It is not a trading system and it does not predict prices. It reduces thousands
 of listings to a small group, and explains what it saw.
 
-## Phase 1 scope — what exists today
+## Scope — what exists today
 
-The MVP is built in four phases. **Phase 1 is complete**: data in, screened
-companies out.
+The MVP is built in four phases. **Phases 1 and 2 are complete**: data in, a
+ranked and explainable shortlist out.
 
 ```text
-Market Data  →  Scanner  →  Financial Metrics  →  Eligible Company Dataset
+Alpaca + EDGAR  →  Scanner  →  Metrics  →  CompounderScore  →  Preliminary ranking
+                                                                      ↓
+                                              FMP enrichment of the top candidates
+                                                                      ↓
+                                                            Final ranking, Top 50
 ```
+
+The broad scan runs entirely on free data: Alpaca for prices, SEC EDGAR for
+filings, and a market capitalisation multiplied out from the cover-page share
+count. A metered provider is spent only on the few hundred companies a ranking
+actually shows — see [ADR-0008](docs/adr/0008-broad-scan-on-free-data-metered-enrichment-last.md).
 
 | Built | Not built yet |
 | --- | --- |
-| Universe loader, price and fundamentals ingestion | Compounder Score (Phase 2) |
-| The full derived-metric engine | Risk penalties, rankings (Phase 2) |
-| Eligibility filters with reasons | Hidden Gems, Improving Fast (Phase 2) |
-| CLI with CSV export | AI research (Phase 3) |
-| Minimal FastAPI foundation | Next.js dashboard (Phase 4) |
+| Universe loader, price, benchmark and fundamentals ingestion | AI research (Phase 3) |
+| A broad scan that needs no metered provider | |
+| The full derived-metric engine | Next.js dashboard (Phase 4) |
+| Eligibility filters with reasons | Watchlist and alerts (Phase 4) |
+| CompounderScore v1: growth, quality, valuation, market confirmation | |
+| Risk penalties, daily score snapshots, score history | |
+| Top Opportunities, Hidden Gems, Wrong Price, Improving Fast | |
+| CLI with CSV export and a per-company explanation | |
+| Read-only FastAPI over the rankings | |
 
-There is deliberately **no score** anywhere in the codebase. A placeholder score
-would be a number people trust before it has been earned.
+Every ranking is explainable: `stock-screener explain NVDA` prints the points
+each metric earned and the value it earned them on. A metric the data cannot
+support is shown as unavailable, never as zero.
 
 ## Architecture
 
@@ -40,18 +54,22 @@ src/stock_screener  →  packages/*  →  packages/domain
 
 | Where | Owns |
 | --- | --- |
-| `packages/domain/` | The metric engine and eligibility rules. Pure functions, zero I/O — every number is testable against a hand-worked example. |
+| `packages/domain/` | The metric engine, eligibility rules and CompounderScore. Pure functions, zero I/O — every number is testable against a hand-worked example. |
 | `packages/api-clients/` | Provider protocols and the Alpaca, EDGAR, FMP and mock adapters. Vendor field names stop here. |
-| `packages/data-access/` | The three tables, idempotent upserts, and row↔model translation. |
-| `src/stock_screener/` | Config, logging, ingestion, the scanner, the CLI and the API — the thin layer that wires the rest together. |
+| `packages/data-access/` | The five tables, idempotent upserts, and row↔model translation. |
+| `src/stock_screener/` | Config, logging, ingestion, the scanner, the scoring run, the CLI and the API — the thin layer that wires the rest together. |
 | `migrations/` | Alembic revisions. |
 
-Two rules run through all of it:
+Three rules run through all of it:
 
 - **Missing is not zero.** A metric the data cannot support is `None`, all the
   way through to a blank cell in the CSV. `0.0` means the company reported zero.
+  In scoring it is neither zero points nor full marks: its weight is carried by
+  the other metrics in the same component.
 - **No vendor vocabulary escapes `api-clients`.** The metric engine sees
   `revenue` and `PriceBar.close`, never `mktCap` or `"c"`.
+- **A score records the rules it was produced by.** Every snapshot carries
+  `COMPOUNDER_V1`, and no comparison crosses versions.
 
 Longer discussion in [docs/explanation/architecture.md](docs/explanation/architecture.md);
 the decision behind the boundary is [ADR-0003](docs/adr/0003-normalise-provider-data-at-the-boundary.md).
@@ -83,6 +101,7 @@ The ones that matter first:
 | `ALPACA_FEED` | `iex` | `sip` needs a paid data plan. IEX under-reports volume ~25x. |
 | `SEC_USER_AGENT` | unset | Required for EDGAR; the SEC blocks anonymous callers. |
 | `FUNDAMENTALS_API_KEY` | unset | Required when the provider involves `fmp`. |
+| `FMP_ENRICHMENT_LIMIT` | `200` | Candidates the enrichment pass may spend metered requests on. |
 | `MIN_PRICE` | `2.0` | Eligibility: minimum share price. |
 | `MIN_MARKET_CAP` | `100000000` | Eligibility: minimum market cap. |
 | `MIN_AVG_DOLLAR_VOLUME` | `1000000` | Eligibility: minimum 20-day average dollar volume. |
@@ -115,15 +134,18 @@ uv run alembic -x url=postgresql+psycopg://... upgrade head   # one-off override
 ```bash
 uv run stock-screener update-universe        # refresh the company list
 uv run stock-screener update-market          # refresh daily OHLCV
+uv run stock-screener update-benchmark       # refresh the SPY series scoring needs
 uv run stock-screener update-fundamentals    # refresh quarterly statements
 
 uv run stock-screener update-fundamentals --limit 50   # bound a metered first run
 ```
 
-The recommended real configuration is `FUNDAMENTALS_PROVIDER=edgar+fmp`:
-statements from SEC EDGAR, which is free and covers every U.S. filer with full
-history, and market cap and sector from FMP's profile endpoint, which EDGAR does
-not publish. See [Run a scan](docs/how-to/run-a-scan.md).
+`FUNDAMENTALS_PROVIDER=edgar` is enough to scan and rank the whole market: SEC
+EDGAR is free, covers every U.S. filer with full history, and supplies the
+cover-page share count that turns a price into a market capitalisation.
+`edgar+fmp` adds a vendor market cap and consolidated volume, which are metered
+and therefore spent by `enrich` on top candidates rather than on the scan. See
+[Run a scan](docs/how-to/run-a-scan.md).
 
 After changing anything about how a provider is parsed, re-check its mapping
 against a live response and re-ingest with `--force` — the incremental skip
@@ -163,12 +185,57 @@ NVEX    $1.2B       $38.59   42.5%       +1.6pp        38.2%         6.5%       
 Processed: 9   Eligible: 4   Failed: 0
 ```
 
-Rows are sorted by ticker. Nothing is ranked, because nothing is scored yet.
-`-` marks a metric the data could not support.
+Rows are sorted by ticker — the scan screens, it does not rank. `-` marks a
+metric the data could not support.
 
 The CSV always contains **every** company scanned, including exclusions and the
 reasons for them, because the manual review this project depends on needs to see
 what was thrown away.
+
+## Scoring and rankings
+
+```bash
+uv run stock-screener score                      # score everything, save today's snapshots
+uv run stock-screener enrich                     # verify the top candidates, re-score them
+uv run stock-screener rankings --limit 20        # Top Opportunities
+uv run stock-screener hidden-gems                # small, fast, already scoring well
+uv run stock-screener wrong-price                # strong business, poor valuation score
+uv run stock-screener improving                  # biggest score gain over 30 days
+uv run stock-screener explain NVDA               # why this company scored what it did
+uv run stock-screener run-daily                  # ingest, score and rank in one pass
+```
+
+### Example output
+
+```text
+Rank  Ticker  Score  Raw    Risk   Growth  Quality  Valuation  Momentum  Rev Growth  Mkt Cap   30D
+--------------------------------------------------------------------------------------------------
+1     NVEX    88.4   93.0   -4.6   32.1    22.4     22.7       15.0      51.0%       $1.2B     +8.0
+2     HLXB    84.7   87.0   -2.3   30.5    23.0     19.2       14.3      37.0%       $3.1B     -1.4
+```
+
+```text
+Growth: 30.4 / 35   [SCORED]
+  revenue_growth                    9.1 / 12   38.2%
+  growth_acceleration               6.1 / 8    +15.4pp
+  revenue_cagr_3y            unavailable / 6   -
+  gross_profit_growth               4.2 / 5    55.0%
+  growth_persistence                4.0 / 4    4  (4 of 4 comparable quarters observed)
+```
+
+The raw score, the risk penalty and the final score are always shown together,
+and `data_coverage` says how much of the company was actually measurable. Every
+rule is in [CompounderScore v1](docs/reference/compounder-score.md).
+
+Scoring reads only stored data, so it is cheap to re-run, and `--dry-run` lets a
+formula change be inspected before it enters the score history.
+
+Every ranking row carries a state. **`PRELIMINARY` is a valid ranking** built
+from Alpaca and EDGAR alone, with a calculated market cap and unverified
+liquidity. **`FINAL`** means `enrich` obtained a vendor market cap and checked
+the company against consolidated volume. Enrichment is optional and
+quota-dependent — a `429` stops that pass and nothing else, so scanning, scoring
+and ranking always work without it.
 
 ## API
 
@@ -176,8 +243,11 @@ what was thrown away.
 uv run uvicorn stock_screener.api:app --reload
 ```
 
-`GET /health`, `GET /api/companies`, `GET /api/scan`. A foundation for Phase 4,
-not a dashboard API.
+`GET /health`, `/api/companies`, `/api/scan`, `/api/rankings`,
+`/api/rankings/hidden-gems`, `/api/rankings/wrong-price`,
+`/api/rankings/improving`, `/api/companies/{ticker}/score`. Read-only, served
+from stored snapshots — the API calculates nothing, so it can never disagree with
+the CLI.
 
 ## Running the tests
 

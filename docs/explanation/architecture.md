@@ -18,22 +18,24 @@ verify.
 ## Shape
 
 ```text
-src/stock_screener/   the application — config, logging, ingestion, scanner, CLI, API
+src/stock_screener/   the application — config, logging, ingestion, scanner, scoring, CLI, API
   config.py           the only place that reads the environment
   logging.py          structlog setup
   providers.py        selects an adapter from settings
   scanning/           the feature: ingestion, scanner, report
+  scoring/            the feature: scoring run, rankings, report
 
-packages/domain/      metric engine and eligibility rules — pure, no I/O
+packages/domain/      metric engine, eligibility rules and CompounderScore — pure, no I/O
 packages/api-clients/ provider protocols and adapters
 packages/data-access/ tables, idempotent writes, row↔model translation
 migrations/           alembic revisions
 ```
 
-The `scanning/` directory is organised by feature rather than by technical layer.
-Ingestion, screening and reporting are one workflow, and splitting them into
-parallel `services/`, `schemas/` and `handlers/` trees would mean every change
-touched three directories to accomplish one thing.
+Both feature directories are organised by feature rather than by technical layer.
+Ingestion, screening and reporting are one workflow; scoring, ranking and
+explaining are another. Splitting either into parallel `services/`, `schemas/`
+and `handlers/` trees would mean every change touched three directories to
+accomplish one thing.
 
 ## Dependency direction
 
@@ -147,16 +149,69 @@ retrying them three thousand times is how an API key gets suspended.
   why the whole pipeline can be tested against SQLite and a fake transport with
   no patching.
 
+## Cheap data broadly, expensive data narrowly
+
+The three providers are not interchangeable, and the difference that matters is
+not quality but **quota**. Alpaca serves the whole universe in a few dozen
+batched requests; EDGAR serves any filer's entire history in two, for free, at
+ten requests a second. A commercial fundamentals plan answers a few hundred
+requests a *day*.
+
+Building the scan on the third would mean a market-wide refresh measured in
+weeks — and, when its quota ran out mid-run, a ranking of nothing at all. That is
+not hypothetical: it is what the first full-market run produced, because market
+capitalisation came only from that provider and a company without one is
+correctly excluded as unscreenable.
+
+So the pipeline is shaped by cost. The broad scan uses only what is free and
+complete, including a market capitalisation multiplied out from the cover-page
+share count in the filings. Only once there is a preliminary ranking is the
+metered provider asked anything, and only about the few hundred companies a
+reader will actually see — where it buys the two things filings cannot give: a
+quoted market cap to cross-check the calculated one, and consolidated volume,
+which is the only figure the liquidity threshold may be applied to.
+
+Every figure carries where it came from. `market_cap_source` distinguishes a
+quote from a calculation, `volume_basis` distinguishes whole-market volume from
+one exchange's share, and `ranking_state` says whether a row has been through the
+second pass. The formula is identical in both passes: enrichment replaces inputs,
+never rules. See
+[ADR-0008](../adr/0008-broad-scan-on-free-data-metered-enrichment-last.md).
+
+## Why the score is a pure function too
+
+CompounderScore lives in `domain` beside the metric engine, for the same reason:
+it takes calculated metrics and returns a score, touching nothing else. Every
+curve in it can be tested against the reference points printed in
+[CompounderScore v1](../reference/compounder-score.md) — "20% growth earns 6
+of 12 points" is a claim a reader can check without a database.
+
+The application layer does the rest, and the split is where the I/O is:
+`scoring/engine.py` reads stored rows, hands each company to the formula, and
+writes a snapshot; `scoring/rankings.py` reads those snapshots back as the four
+views. Neither knows a curve.
+
+Scores are stored in their own table rather than as columns on
+`financial_snapshots`. That table holds what a company reported; a score is an
+opinion derived from it under a named set of rules. Mixed together, a restatement
+and a re-score would be indistinguishable — and the daily history that makes
+"improving fast" possible would have nowhere to live.
+
+The version identifier on every row is the other half of that. A formula that
+changes without a new version turns a change in the rules into an apparent change
+in the business, which is exactly what the score-change views would surface
+first. See [ADR-0006](../adr/0006-score-snapshots-are-versioned-and-immutable.md).
+
 ## What is deliberately absent
 
-There is no score anywhere in the codebase, and no placeholder for one. Phase 1's
-job is to produce data good enough to score; a stub `compounder_score` field
-returning `0` would be a number people trust before it has been earned, and
-removing it later is harder than adding it now.
+Not every company gets a number. A bank, an ineligible security and a company
+with two quarters of history each get a stored row carrying the status that says
+why — `UNSUPPORTED_SECTOR`, `NOT_ELIGIBLE`, `INSUFFICIENT_DATA` — and no score.
+Forcing a number onto all three would put meaningless values into a ranking that
+sorts on exactly that field.
 
-Likewise there is no ranking. Scan output is sorted by ticker, because
-alphabetical is the honest ordering when nothing has been scored — sorting by
-revenue growth would imply a judgement the project has not made yet.
+There is no AI research layer and no dashboard. Both are later phases, and both
+depend on the ranking being worth reading first.
 
 ## Decisions
 

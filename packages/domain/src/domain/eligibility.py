@@ -20,12 +20,21 @@ from domain.models import (
     EligibilityThresholds,
     EligibilityWarning,
     ExclusionReason,
+    MarketCapSource,
     VolumeBasis,
 )
 from domain.universe import is_supported_listing
 
 if TYPE_CHECKING:
     from domain.models import CompanyMetrics, CompanyProfile
+
+MARKET_CAP_DISCREPANCY_THRESHOLD = 0.25
+"""How far a calculated market cap may sit from a provider's before it is flagged.
+
+A quarter is wide enough to absorb a share count that is a filing out of date
+and a price that moved since, and narrow enough to catch a missing share class
+or an issuance that changed the size of the company.
+"""
 
 
 def evaluate_eligibility(
@@ -54,6 +63,11 @@ def evaluate_eligibility(
     market cap is quoted in dollars while its revenue is not, so every ratio
     built from the two would be wrong by an exchange rate — silently, and by a
     factor that looks like a plausible valuation.
+
+    A market capitalisation calculated from filings and a price is screened on
+    exactly like a provider's, and carries a warning saying which it is. The
+    alternative — excluding every company no vendor covers — would shrink the
+    universe to whatever a metered plan could reach that day.
 
     Args:
         profile: Identity, exchange and activity status for the security.
@@ -87,6 +101,14 @@ def evaluate_eligibility(
         reasons.append(ExclusionReason.MARKET_CAP_BELOW_MINIMUM)
 
     warnings: list[EligibilityWarning] = []
+    if metrics.market_cap_source is MarketCapSource.CALCULATED:
+        warnings.append(EligibilityWarning.MARKET_CAP_CALCULATED)
+    if (
+        metrics.market_cap_discrepancy is not None
+        and metrics.market_cap_discrepancy > MARKET_CAP_DISCREPANCY_THRESHOLD
+    ):
+        warnings.append(EligibilityWarning.MARKET_CAP_DISCREPANCY)
+
     if metrics.trading_days_used < limits.min_trading_days:
         # Too little history to judge liquidity, whatever the feed.
         reasons.append(ExclusionReason.LOW_LIQUIDITY)

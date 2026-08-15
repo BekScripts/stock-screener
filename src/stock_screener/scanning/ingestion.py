@@ -28,6 +28,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from api_clients import ProviderAuthError, ProviderError, ProviderPlanError
 from data_access import (
+    BenchmarkPriceRepository,
     CompanyRepository,
     FinancialSnapshotRepository,
     PriceHistoryRepository,
@@ -293,6 +294,67 @@ def _fetch_individually(
             if bars:
                 results[ticker] = list(bars)
     return results
+
+
+def update_benchmark(
+    session: Session,
+    provider: MarketDataProvider,
+    settings: Settings,
+    *,
+    today: date | None = None,
+) -> IngestionReport:
+    """Refresh the broad-market benchmark's daily price history.
+
+    One extra symbol fetched through the same provider as every other price.
+    Relative strength is the company's return less this series', so without it
+    the market confirmation component cannot be scored at all — which is why
+    this runs before scoring rather than being folded into it.
+
+    Args:
+        session: Open database session. The caller commits.
+        provider: Source of the price bars.
+        settings: Supplies the benchmark symbol and the history window.
+        today: Treat this as the current date. Injected so tests are not
+            dependent on when they run.
+
+    Returns:
+        Counts for the pass, covering the single benchmark symbol.
+
+    Raises:
+        ProviderAuthError: If the credentials are rejected.
+    """
+    report = IngestionReport()
+    prices = BenchmarkPriceRepository(session)
+    symbol = normalise_ticker(settings.benchmark_symbol)
+
+    as_of = today or datetime.now(UTC).date()
+    stored = prices.latest_date(symbol)
+    start = (
+        stored - timedelta(days=_PRICE_OVERLAP_DAYS)
+        if stored is not None
+        else as_of - timedelta(days=settings.price_history_days)
+    )
+
+    report.processed += 1
+    try:
+        bars = provider.get_daily_prices(symbol, start, as_of)
+    except ProviderAuthError:
+        log.error("benchmark halted: the provider rejected the credentials")
+        raise
+    except ProviderError:
+        log.exception("benchmark fetch failed", symbol=symbol)
+        report.record_failure(symbol)
+        return report
+
+    if not bars:
+        report.skipped += 1
+        log.warning("benchmark returned no bars", symbol=symbol, start=str(start))
+        return report
+
+    report.rows_written += prices.upsert_bars(symbol, bars)
+    report.succeeded += 1
+    log.info("benchmark updated", symbol=symbol, summary=report.summary())
+    return report
 
 
 def update_fundamentals(

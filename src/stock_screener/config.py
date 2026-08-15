@@ -159,6 +159,33 @@ class Settings(BaseSettings):
         ),
     )
 
+    # -- scoring ----------------------------------------------------------
+
+    fmp_enrichment_limit: int = Field(
+        default=200,
+        ge=0,
+        description=(
+            "How many top-ranked candidates the enrichment pass may spend "
+            "metered requests on. The broad scan runs on Alpaca and EDGAR and "
+            "needs none of these; enrichment buys a vendor market cap and "
+            "consolidated volume for the companies a ranking actually shows. "
+            "Set it to what the plan's daily allowance can serve — a free FMP "
+            "tier is a few hundred requests a day."
+        ),
+    )
+
+    benchmark_symbol: str = Field(
+        default="SPY",
+        min_length=1,
+        description=(
+            "Broad-market series relative strength is measured against. SPY is "
+            "the default because it is the most liquid proxy for the U.S. market "
+            "and comes from the same market-data provider as everything else. "
+            "Changing it changes what every momentum score means, so re-score "
+            "the market after changing it rather than comparing across the two."
+        ),
+    )
+
     # -- eligibility ------------------------------------------------------
 
     min_price: float = Field(default=2.0, gt=0)

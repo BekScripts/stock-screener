@@ -116,9 +116,13 @@ def build_fundamentals_provider(settings: Settings) -> FundamentalsProvider:
         return fundamentals
 
     if settings.fundamentals_provider == "edgar":
-        log.warning(
-            "EDGAR supplies no market capitalisation, so every company will be "
-            "excluded as missing required data; use edgar+fmp to fill the profile"
+        # No longer a dead end: market capitalisation is calculated from the
+        # cover-page share count and the latest close, and the SIC description
+        # stands in for a sector. What is missing is a second opinion on both,
+        # which is what the enrichment pass buys.
+        log.info(
+            "EDGAR only: market caps will be calculated from filings and prices, "
+            "and liquidity will stay unverified until candidates are enriched"
         )
         return _build_edgar(settings)
 
@@ -131,6 +135,32 @@ def build_fundamentals_provider(settings: Settings) -> FundamentalsProvider:
         )
 
     return _build_fmp(settings)
+
+
+def build_profile_provider(settings: Settings) -> FundamentalsProvider | None:
+    """Return the metered profile source alone, for candidate enrichment.
+
+    Deliberately **not** the composite provider that ingestion uses. The
+    composite treats a profile failure as recoverable and falls back to EDGAR,
+    which is right during ingestion — a company still gets its name and industry
+    — but wrong here. Enrichment exists to obtain the two things only the vendor
+    has, and a quota rejection swallowed by a fallback would look like a
+    successful lookup that happened to carry no market cap. The pass would then
+    work through every remaining candidate into the same wall.
+
+    Args:
+        settings: Application settings.
+
+    Returns:
+        The vendor adapter, or None when the configured provider has no vendor
+        profile to offer and there is therefore nothing to enrich with.
+
+    Raises:
+        ConfigurationError: If the vendor is selected without an API key.
+    """
+    if settings.fundamentals_provider in {"fmp", "edgar+fmp"}:
+        return _build_fmp(settings)
+    return None
 
 
 def _build_edgar(settings: Settings) -> FundamentalsProvider:

@@ -27,10 +27,17 @@ api-clients = { workspace = true }
 - `base` — the `MarketDataProvider` and `FundamentalsProvider` protocols.
 - `alpaca` — the universe from `/v2/assets` and daily OHLCV from
   `/v2/stocks/bars`, batched and paginated.
-- `edgar` — quarterly statements from the SEC's XBRL company facts. Free, no
-  key, every U.S. filer, full history. No market cap or sector.
+- `edgar` — quarterly statements from the SEC's XBRL company facts, the
+  cover-page share count that turns a price into a market capitalisation, and the
+  filer's SIC description. Free, no key, every U.S. filer, full history. No
+  market cap and no consolidated volume of its own. Gross profit is taken as
+  filed where a filer tags it and otherwise derived from a cost-of-revenue
+  concept, with `gross_profit_basis` recording which one — the concepts differ in
+  whether they include depreciation.
 - `fmp` — quarterly statements and a company profile. The profile is the part
-  worth having on a free plan; its statement endpoints are usually gated.
+  worth having on a free plan; its statement endpoints are usually gated, and the
+  plan's daily allowance is small enough that it belongs in the enrichment pass
+  rather than in a market-wide scan.
 - `composite` — statements from one source, profile from another. `edgar+fmp`
   is the pairing that works without a paid plan.
 - `mock` — fixture-backed providers, used when no credentials are configured and

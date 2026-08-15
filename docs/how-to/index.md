@@ -14,5 +14,6 @@ does not explain why the design is the way it is; that belongs in
 [explanation](../explanation/index.md).
 
 - [Run a scan](run-a-scan.md)
+- [Score and rank the market](score-and-rank.md)
 - [Add a shared package](add-a-shared-package.md)
 - [Add a configuration setting](add-a-setting.md)

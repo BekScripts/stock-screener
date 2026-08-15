@@ -19,7 +19,13 @@ from sqlalchemy import inspect
 
 from data_access import Base, create_engine_from_url
 
-_TABLES = {"companies", "financial_snapshots", "price_history"}
+_TABLES = {
+    "companies",
+    "financial_snapshots",
+    "price_history",
+    "score_snapshots",
+    "benchmark_prices",
+}
 
 # The autouse `isolated_env` fixture chdirs into a tmp_path, so both paths are
 # resolved from this file rather than from the working directory.

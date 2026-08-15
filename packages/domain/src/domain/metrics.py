@@ -28,13 +28,14 @@ from datetime import timedelta
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Callable, Sequence
     from datetime import date
 
 from domain.models import (
     CompanyMetrics,
     CompanyProfile,
     FinancialPeriod,
+    MarketCapSource,
     PriceBar,
     VolumeBasis,
 )
@@ -222,6 +223,205 @@ def net_cash(period: FinancialPeriod) -> float | None:
     return period.cash - period.total_debt
 
 
+def _margin_change(
+    periods: Sequence[FinancialPeriod],
+    margin: Callable[[FinancialPeriod], float | None],
+) -> float | None:
+    """Return a margin's change against the year-ago quarter, in decimal points.
+
+    The comparison is year-over-year rather than sequential because a margin
+    moves with the seasons for most businesses, and a retailer's fourth quarter
+    against its third would read as a trend that is really a calendar.
+
+    Args:
+        periods: Quarterly periods in any order.
+        margin: The margin function to apply to each of the two quarters.
+
+    Returns:
+        `latest - year_ago` as a decimal difference (0.03 is +3 percentage
+        points), or None when either quarter or either margin is unavailable.
+    """
+    ordered = _ordered_periods(periods)
+    if not ordered:
+        return None
+
+    latest = ordered[-1]
+    prior = _period_near(ordered[:-1], latest.period_end - timedelta(days=_YEAR_DAYS))
+    if prior is None:
+        return None
+
+    current, previous = margin(latest), margin(prior)
+    if current is None or previous is None:
+        return None
+    return current - previous
+
+
+def gross_margin_change(periods: Sequence[FinancialPeriod]) -> float | None:
+    """Return the change in gross margin against the year-ago quarter."""
+    return _margin_change(periods, gross_margin)
+
+
+def operating_margin_change(periods: Sequence[FinancialPeriod]) -> float | None:
+    """Return the change in operating margin against the year-ago quarter."""
+    return _margin_change(periods, operating_margin)
+
+
+def fcf_margin_change(periods: Sequence[FinancialPeriod]) -> float | None:
+    """Return the change in free cash flow margin against the year-ago quarter."""
+    return _margin_change(periods, fcf_margin)
+
+
+def ttm_free_cash_flow(periods: Sequence[FinancialPeriod]) -> float | None:
+    """Return free cash flow summed over the latest four quarters.
+
+    A trailing year rather than the latest quarter, because cash flow is lumpy:
+    a single quarter of working-capital movement says nothing about whether a
+    business funds itself.
+
+    Args:
+        periods: Quarterly periods in any order.
+
+    Returns:
+        The trailing-twelve-month total, or None when fewer than four
+        consecutive quarters are available or any of them cannot produce a free
+        cash flow figure. Three quarters are never silently summed.
+    """
+    window = _ttm_window(_ordered_periods(periods))
+    if window is None:
+        return None
+
+    total = 0.0
+    for period in window:
+        value = free_cash_flow(period)
+        if value is None:
+            return None
+        total += value
+    return total
+
+
+def latest_common_shares(
+    periods: Sequence[FinancialPeriod], max_age_days: int = _YEAR_DAYS
+) -> float | None:
+    """Return the most recent cover-page share count, if it is recent enough.
+
+    Age is measured in **days from the latest reported quarter**, not in list
+    positions: a company that stopped filing for two years would otherwise have
+    a two-year-old share count read as current simply because it was the newest
+    row present.
+
+    Args:
+        periods: Quarterly periods in any order.
+        max_age_days: How old a count may be. A share count older than a year is
+            not a current one — a company can double its share base in that
+            time, and pricing it on the old count would understate its size by
+            exactly the amount that mattered.
+
+    Returns:
+        The count, or None when no recent enough quarter carries one.
+    """
+    ordered = _ordered_periods(periods)
+    if not ordered:
+        return None
+
+    cutoff = ordered[-1].period_end - timedelta(days=max_age_days)
+    for period in reversed(ordered):
+        if period.period_end < cutoff:
+            return None
+        if period.common_shares_outstanding is not None and period.common_shares_outstanding > 0:
+            return period.common_shares_outstanding
+    return None
+
+
+def calculated_market_cap(price: float | None, shares: float | None) -> float | None:
+    """Return price times share count, or None when either is unavailable.
+
+    The share count must be a point-in-time common-share figure — the cover-page
+    count. Multiplying a price by a weighted-average diluted count would value
+    the company on a share base that was never outstanding on any single day.
+
+    Args:
+        price: Latest close.
+        shares: Common shares outstanding at a point in time.
+
+    Returns:
+        Market capitalisation, or None. A non-positive input yields None rather
+        than a zero or negative capitalisation.
+    """
+    if price is None or shares is None or price <= 0 or shares <= 0:
+        return None
+    return price * shares
+
+
+def market_cap_discrepancy(provider: float | None, calculated: float | None) -> float | None:
+    """Return how far a calculated market cap sits from a provider's.
+
+    Args:
+        provider: The provider's figure.
+        calculated: The figure multiplied out from filings and a price.
+
+    Returns:
+        The absolute difference as a proportion of the provider's figure — 0.4
+        means 40% apart — or None when either is missing or the provider's is
+        not positive. Neither figure is adjusted or averaged: the causes of a
+        gap (a stale count, a second share class, an issuance since the last
+        filing) call for different responses, and picking one silently would
+        hide which happened.
+    """
+    if provider is None or calculated is None or provider <= 0:
+        return None
+    return abs(provider - calculated) / provider
+
+
+def resolve_market_cap(
+    provider: float | None, calculated: float | None
+) -> tuple[float | None, MarketCapSource]:
+    """Choose which market capitalisation to screen and score on.
+
+    A provider's figure wins when there is one: it is a current quote against a
+    current share count, including classes this ticker does not represent. The
+    calculated figure is the fallback that lets a company be scored at all when
+    no provider covers it — which, on a metered plan, is most of the market.
+
+    Args:
+        provider: The provider's figure.
+        calculated: The figure multiplied out from filings and a price.
+
+    Returns:
+        The figure to use and where it came from.
+    """
+    if provider is not None:
+        return provider, MarketCapSource.PROVIDER
+    if calculated is not None:
+        return calculated, MarketCapSource.CALCULATED
+    return None, MarketCapSource.UNKNOWN
+
+
+def enterprise_value(
+    market_cap: float | None, cash: float | None, debt: float | None
+) -> float | None:
+    """Return market capitalisation plus debt less cash.
+
+    Computed rather than fetched, because all three inputs are already
+    normalised and a vendor endpoint for it may not be on the current plan.
+
+    Absent debt is **not** treated as zero. A company whose borrowing tag went
+    unrecognised would otherwise be handed the enterprise value of a debt-free
+    one, which flatters exactly the balance sheets valuation exists to judge.
+
+    Args:
+        market_cap: Market capitalisation in whole dollars.
+        cash: Cash and equivalents.
+        debt: Total debt.
+
+    Returns:
+        The enterprise value, or None when any of the three is unavailable. The
+        result may be negative — a company trading below its net cash.
+    """
+    if market_cap is None or cash is None or debt is None:
+        return None
+    return market_cap + debt - cash
+
+
 def yoy_revenue_growth(periods: Sequence[FinancialPeriod]) -> float | None:
     """Return revenue growth of the latest quarter against the year-ago quarter.
 
@@ -273,6 +473,43 @@ def previous_yoy_revenue_growth(periods: Sequence[FinancialPeriod]) -> float | N
     if prior_year is None:
         return None
     return _growth(previous.revenue, prior_year.revenue)
+
+
+def recent_revenue_growth(
+    periods: Sequence[FinancialPeriod], count: int = _QUARTERS_PER_YEAR
+) -> tuple[float, ...]:
+    """Return the year-over-year growth of each of the latest quarters.
+
+    Each of the most recent `count` quarters is compared with its **own**
+    year-ago quarter, so the result is a run of comparable observations rather
+    than a sequence of quarter-on-quarter changes. Growth persistence is counted
+    from these.
+
+    A quarter whose year-ago comparison cannot be made is omitted rather than
+    recorded as zero or negative, so fewer than `count` values means the history
+    has a gap — which the caller must treat as missing data, not as a company
+    that failed to grow.
+
+    Args:
+        periods: Quarterly periods in any order.
+        count: How many recent quarters to examine.
+
+    Returns:
+        Growth rates as decimals, newest first, at most `count` long.
+    """
+    ordered = _ordered_periods(periods)
+    observations: list[float] = []
+
+    for index in range(len(ordered) - 1, max(len(ordered) - count, 0) - 1, -1):
+        period = ordered[index]
+        prior = _period_near(ordered[:index], period.period_end - timedelta(days=_YEAR_DAYS))
+        if prior is None:
+            continue
+        growth = _growth(period.revenue, prior.revenue)
+        if growth is not None:
+            observations.append(growth)
+
+    return tuple(observations)
 
 
 def growth_acceleration(current: float | None, previous: float | None) -> float | None:
@@ -598,26 +835,42 @@ def build_company_metrics(
     current_growth = yoy_revenue_growth(ordered)
     prior_growth = previous_yoy_revenue_growth(ordered)
 
+    calculated = calculated_market_cap(price, latest_common_shares(ordered))
+    market_cap, market_cap_source = resolve_market_cap(profile.market_cap, calculated)
+
     return CompanyMetrics(
         ticker=profile.ticker,
         price=price,
-        market_cap=profile.market_cap,
+        market_cap=market_cap,
+        market_cap_source=market_cap_source,
+        calculated_market_cap=calculated,
+        market_cap_discrepancy=market_cap_discrepancy(profile.market_cap, calculated),
         average_dollar_volume_20d=liquidity,
         liquidity_basis=basis,
         trading_days_used=trading_days_used(bars, liquidity_window),
         revenue_growth_yoy=current_growth,
         previous_revenue_growth_yoy=prior_growth,
         revenue_growth_acceleration=growth_acceleration(current_growth, prior_growth),
+        recent_revenue_growth_yoy=recent_revenue_growth(ordered),
         ttm_revenue=ttm_revenue(ordered),
         ttm_revenue_growth=ttm_revenue_growth(ordered),
         revenue_cagr_3y=revenue_cagr_3y(ordered),
         gross_margin=gross_margin(latest) if latest else None,
+        gross_margin_change=gross_margin_change(ordered),
         gross_profit_growth_yoy=gross_profit_growth_yoy(ordered),
         operating_margin=operating_margin(latest) if latest else None,
+        operating_margin_change=operating_margin_change(ordered),
         fcf_margin=fcf_margin(latest) if latest else None,
+        fcf_margin_change=fcf_margin_change(ordered),
+        ttm_free_cash_flow=ttm_free_cash_flow(ordered),
         cash=latest.cash if latest else None,
         debt=latest.total_debt if latest else None,
         net_cash=net_cash(latest) if latest else None,
+        enterprise_value=enterprise_value(
+            market_cap,
+            latest.cash if latest else None,
+            latest.total_debt if latest else None,
+        ),
         share_count_growth_yoy=share_count_growth_yoy(ordered),
         return_6m=return_6m(bars),
         return_12m=return_12m(bars),

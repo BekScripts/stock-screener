@@ -1,9 +1,13 @@
 """Minimal FastAPI application.
 
-Phase 1 needs an API foundation, not an API. Three read-only endpoints prove the
-wiring — settings, database session, domain models — so Phase 4's dashboard has
-somewhere to grow from, and stop there. Building the full dashboard surface now
-would mean designing endpoints for a UI that does not exist.
+Read-only endpoints over what the pipeline already stored: the company list, the
+eligibility scan, and the Phase 2 rankings. Nothing here calculates a score —
+`/api/rankings` serves the snapshots the `score` command wrote, so the API and
+the CLI can never disagree about what a company scored today.
+
+The dashboard surface is still deliberately unbuilt. These endpoints are the
+ones Phase 2 needs to be inspectable; designing the rest for a UI that does not
+exist would mean guessing.
 
 The session is a FastAPI dependency rather than a global, so a test can override
 it with an in-memory database in one line.
@@ -11,19 +15,30 @@ it with an in-memory database in one line.
 
 from __future__ import annotations
 
+from dataclasses import asdict
 from functools import lru_cache
 from typing import TYPE_CHECKING, Annotated, Any
 
-from fastapi import Depends, FastAPI, Query
+from fastapi import Depends, FastAPI, HTTPException, Query
 
 from data_access import CompanyRepository, build_session_factory, create_engine_from_url
 from stock_screener.config import get_settings
 from stock_screener.scanning import scan_market
+from stock_screener.scoring import (
+    DEFAULT_RANKING_LIMIT,
+    great_company_wrong_price,
+    hidden_gems,
+    improving_fast,
+    latest_score,
+    top_opportunities,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
     from sqlalchemy.orm import Session, sessionmaker
+
+    from stock_screener.scoring import RankingRow
 
 _DEFAULT_LIMIT = 50
 _MAX_LIMIT = 500
@@ -61,8 +76,8 @@ SessionDep = Annotated["Session", Depends(get_session)]
 
 app = FastAPI(
     title="Compounder Radar",
-    version="0.1.0",
-    summary="Phase 1: data ingestion and the eligibility scanner.",
+    version="0.2.0",
+    summary="Ingestion, the eligibility scanner, and CompounderScore rankings.",
 )
 
 
@@ -149,3 +164,106 @@ def scan(
             for row in rows[:limit]
         ],
     }
+
+
+@app.get("/api/rankings")
+def rankings(
+    session: SessionDep,
+    limit: Annotated[int, Query(ge=1, le=_MAX_LIMIT)] = DEFAULT_RANKING_LIMIT,
+    min_score: Annotated[float | None, Query(ge=0, le=100)] = None,
+) -> dict[str, Any]:
+    """Return Top Opportunities from the most recent scoring run.
+
+    Args:
+        session: Database session, injected.
+        limit: Maximum rows to return.
+        min_score: Only companies at or above this final score.
+
+    Returns:
+        The ranked rows. Empty until `stock-screener score` has been run.
+    """
+    return _ranking_response(top_opportunities(session, limit=limit, min_score=min_score))
+
+
+@app.get("/api/rankings/hidden-gems")
+def rankings_hidden_gems(
+    session: SessionDep,
+    limit: Annotated[int, Query(ge=1, le=_MAX_LIMIT)] = DEFAULT_RANKING_LIMIT,
+) -> dict[str, Any]:
+    """Return small, fast-growing companies that already score well.
+
+    Args:
+        session: Database session, injected.
+        limit: Maximum rows to return.
+
+    Returns:
+        The ranked rows.
+    """
+    return _ranking_response(hidden_gems(session, limit=limit))
+
+
+@app.get("/api/rankings/wrong-price")
+def rankings_wrong_price(
+    session: SessionDep,
+    limit: Annotated[int, Query(ge=1, le=_MAX_LIMIT)] = DEFAULT_RANKING_LIMIT,
+) -> dict[str, Any]:
+    """Return strong companies whose valuation score is poor.
+
+    Args:
+        session: Database session, injected.
+        limit: Maximum rows to return.
+
+    Returns:
+        The ranked rows.
+    """
+    return _ranking_response(great_company_wrong_price(session, limit=limit))
+
+
+@app.get("/api/rankings/improving")
+def rankings_improving(
+    session: SessionDep,
+    limit: Annotated[int, Query(ge=1, le=_MAX_LIMIT)] = DEFAULT_RANKING_LIMIT,
+    window_days: Annotated[int, Query(ge=1, le=365)] = 30,
+) -> dict[str, Any]:
+    """Return the companies whose score has risen most over the window.
+
+    Args:
+        session: Database session, injected.
+        limit: Maximum rows to return.
+        window_days: How far back to compare.
+
+    Returns:
+        The ranked rows, ordered by improvement. Empty until there is score
+        history to compare against.
+    """
+    return _ranking_response(improving_fast(session, limit=limit, window_days=window_days))
+
+
+@app.get("/api/companies/{ticker}/score")
+def company_score(session: SessionDep, ticker: str) -> dict[str, Any]:
+    """Return one company's latest score and its full breakdown.
+
+    Args:
+        session: Database session, injected.
+        ticker: The symbol to look up.
+
+    Returns:
+        The score detail, including the component-by-component explanation. A
+        company that could not be scored returns its status and no number,
+        which is the answer to why it is missing from the ranking.
+
+    Raises:
+        HTTPException: 404 when the company is unknown or has never been scored.
+    """
+    detail = latest_score(session, ticker)
+    if detail is None:
+        raise HTTPException(status_code=404, detail=f"no score stored for {ticker.upper()}")
+
+    payload = asdict(detail)
+    payload["score_date"] = detail.score_date.isoformat()
+    return payload
+
+
+def _ranking_response(rows: list[RankingRow]) -> dict[str, Any]:
+    """Wrap ranking rows in a response envelope."""
+    return {"count": len(rows), "rows": [asdict(row) for row in rows]}

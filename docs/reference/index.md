@@ -16,6 +16,8 @@ reference page, that sentence belongs in
 - [Configuration](configuration.md) — every setting the app reads
 - [Commands](commands.md) — every `make` target and CLI command
 - [Metrics](metrics.md) — every calculation, its formula, and when it is unavailable
+- [CompounderScore v1](compounder-score.md) — every scoring rule, penalty and status
 - [Project brief](project-intro.md) — the full Compounder Radar MVP specification
-- [Phase 1 brief](project-phases/phase1.md) — the scope this codebase implements
+- [Phase 1 brief](project-phases/phase1.md) — the data and screening scope
+- [Phase 2 brief](project-phases/phase2.md) — the scoring and ranking scope
 - [Phase 2 constraints](project-phases/phase2-constraints.md) — decisions the scoring work inherits

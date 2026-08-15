@@ -43,6 +43,7 @@ quarter missing from the middle.
 | `ttm_revenue_growth` | Latest TTM vs the preceding TTM | Fewer than 8 consecutive quarters |
 | `revenue_cagr_3y` | `(TTM / TTM₋₁₂)^(1/3) − 1` | Fewer than 16 quarters, or either TTM ≤ 0 |
 | `gross_profit_growth_yoy` | `(gross_profit − gross_profit₋₄) / gross_profit₋₄` | Either quarter absent, or prior value ≤ 0 |
+| `recent_revenue_growth_yoy` | Year-over-year growth of each of the latest four quarters, newest first | A quarter whose year-ago comparison cannot be made is **omitted**, so fewer than four values means a gap in the history — never a quarter that shrank |
 
 Growth from a non-positive base is `None`: "up 300% from minus one million" is
 arithmetic, not information.
@@ -62,6 +63,37 @@ statements, and TTM avoids comparing a partial fiscal year with a complete one.
 Margins are taken from the **latest reported quarter**, not a trailing year, so
 they move as soon as the business does.
 
+### Where gross profit comes from
+
+A filer that tags `GrossProfit` supplies it directly. Most do not, and XBRL has no
+single cost-of-revenue concept — so it is derived as `revenue − cost of revenue`
+from the first concept in this chain the filer used for that quarter:
+
+| Concept | Means | Basis |
+| --- | --- | --- |
+| `GrossProfit` | Reported directly; never overwritten by a derived figure | as filed |
+| `CostOfGoodsAndServicesSold` | Goods and services sold | includes D&A |
+| `CostOfRevenue` | Total cost of revenue | includes D&A |
+| `CostOfGoodsSold` | Goods only | includes D&A |
+| `CostOfServices` | Services only — the service-company analogue of COGS | includes D&A |
+| `DirectOperatingCosts` | Costs directly attributable to revenue; shipping, energy and media filers | includes D&A |
+| `CostOf…ExcludingDepreciationDepletionAndAmortization` | The same cost with D&A stripped out | **excludes D&A** |
+
+The chain exists because filers migrate between concepts: HF Sinclair's
+`CostOfGoodsAndServicesSold` stops in 2024, Expedia's `CostOfRevenue` in 2019 and
+Expand Energy's `GrossProfit` in 2011, while all three keep reporting revenue.
+Without the later entries their gross margin is simply absent.
+
+Concepts that are **not** cost of revenue are deliberately excluded, above all
+`CostsAndExpenses` — total operating cost including SG&A. Revenue less that is
+closer to operating income, and calling it a gross profit would be wrong by the
+entire operating expense base.
+
+`gross_profit_basis` records which concept produced the figure. It matters
+because the excluding-D&A variants yield a **higher** gross profit than the GAAP
+one, so two companies on different bases are not measuring the same thing — and
+neither are two quarters of one company whose filer switched concepts mid-history.
+
 | Metric | Formula | `None` when |
 | --- | --- | --- |
 | `gross_margin` | `gross_profit / revenue` | Either absent, or revenue is 0 |
@@ -69,6 +101,66 @@ they move as soon as the business does.
 | `fcf_margin` | `free_cash_flow / revenue` | FCF unavailable, or revenue is 0 |
 | `net_cash` | `cash − total_debt` | Either side absent |
 | `share_count_growth_yoy` | `(shares − shares₋₄) / shares₋₄` | Either observation absent, or prior ≤ 0 |
+
+### Margin trends and trailing cash flow
+
+Scoring reads direction as well as level, so each margin has a year-over-year
+change beside it. The comparison is against the same quarter a year earlier
+rather than the previous quarter, because a margin moves with the seasons for
+most businesses and a retailer's Q4 against its Q3 would read as a trend that is
+really a calendar.
+
+| Metric | Formula | `None` when |
+| --- | --- | --- |
+| `gross_margin_change` | `gross_margin − gross_margin₋₄` | Either quarter absent, or either margin unavailable |
+| `operating_margin_change` | `operating_margin − operating_margin₋₄` | As above |
+| `fcf_margin_change` | `fcf_margin − fcf_margin₋₄` | As above |
+| `ttm_free_cash_flow` | Sum of free cash flow over the latest 4 quarters | Fewer than 4 consecutive quarters, or any quarter cannot produce an FCF figure |
+
+Changes are **percentage points**: `0.03` is +3pp, not 3%.
+
+### Two share counts, two purposes
+
+| Field | Concept | Used for |
+| --- | --- | --- |
+| `shares_outstanding` | Weighted-average diluted shares, a period figure | Dilution |
+| `common_shares_outstanding` | Cover-page common shares outstanding, a point-in-time figure | Market capitalisation |
+
+They must never be substituted for one another. A weighted average was never the
+number outstanding on any single day, so multiplying it by a price values the
+company on a share base that did not exist; and a point-in-time count differenced
+against itself measures issuance plus timing rather than dilution.
+
+From EDGAR the second comes from `dei:EntityCommonStockSharesOutstanding`, the
+count every 10-Q and 10-K states on its cover page. It is dated near the filing
+rather than at the quarter end, so it is matched to the quarter it was filed with
+— within 90 days after it — rather than to the balance-sheet date.
+
+## Valuation
+
+| Metric | Formula | `None` when |
+| --- | --- | --- |
+| `market_cap` | The provider's figure, else `price × common_shares_outstanding` | Neither is available |
+| `calculated_market_cap` | `price × common_shares_outstanding`, whenever both exist | Either is missing, or the share count is over a year old |
+| `market_cap_discrepancy` | `abs(provider − calculated) / provider` | Either figure is missing |
+| `enterprise_value` | `market_cap + debt − cash` | Market cap, debt **or** cash is unavailable |
+
+`market_cap_source` records which of the two `market_cap` is — `PROVIDER`,
+`CALCULATED` or `UNKNOWN`. The calculated figure is what lets the screen run
+across the whole market without a metered provider answering for every company;
+it is blind to share classes the ticker does not represent, which is why the two
+are compared rather than merged.
+
+Enterprise value is computed, never fetched: all three inputs are already
+normalised and stored. Absent debt is not read as zero, so a company whose
+borrowing tag went unrecognised has no enterprise value rather than the
+enterprise value of a debt-free company — see
+[ADR-0005](../adr/0005-absent-debt-is-unknown-not-zero.md). The result may be
+negative, which means the company is valued below its net cash.
+
+Multiples built on it — EV/revenue, price-to-sales, FCF yield — are calculated
+inside the scoring engine, where the choice between them is part of the rule.
+See [CompounderScore v1](compounder-score.md).
 
 **Which share count.** `shares_outstanding` holds **weighted-average diluted
 shares** — `WeightedAverageNumberOfDilutedSharesOutstanding` from EDGAR,
@@ -207,7 +299,8 @@ counts, so a garbled response costs one company rather than corrupting a ranking
 
 Extreme-but-possible values are **not** rejected. A company really can grow
 revenue 400% in a quarter, and refusing to record it would hide exactly the kind
-of business this project exists to find.
+of business this project exists to find. Scoring caps the *points* such a figure
+can earn; the metric itself is stored and displayed unaltered.
 
 ## Universe rules
 
