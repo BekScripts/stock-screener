@@ -45,3 +45,6 @@ CLAUDE.local.md
 *.sqlite
 *.sqlite3
 /eligible_stocks.csv
+
+# Rescued API dumps from a deleted database — local artefacts, not source.
+/rescue-*/

@@ -21,6 +21,13 @@ working directory. Field names map to upper-case variables: `log_level` reads
 | `LOG_LEVEL` | `DEBUG` \| `INFO` \| `WARNING` \| `ERROR` | `INFO` | Minimum level emitted. |
 | `LOG_JSON` | bool | `false` | Emit JSON logs instead of console-formatted. |
 
+Credentials carried in a URL query string are redacted before any handler
+writes them. `httpx` logs every request at `INFO`, URL included, so a provider
+that authenticates with a query parameter — FMP's `apikey` — would otherwise
+put its key in the log. The value is replaced with `REDACTED`; the rest of the
+URL is left readable. `SecretStr` does not cover this: by that point the value
+is part of a URL a third-party library formatted.
+
 ## Database
 
 | Variable | Type | Default | Description |
