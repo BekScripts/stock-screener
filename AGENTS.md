@@ -71,13 +71,17 @@ dashboard lives in `frontend/`, the endpoints that feed it in
 table. Its scope and known limitations are documented in
 `docs/reference/project-phases/phase4.md`.
 
-**Phase 5 (run control) is complete.** The dashboard can now run the pipeline,
-not just read it. `src/stock_screener/jobs.py` spawns existing CLI commands as
-subprocesses and tracks them in the `jobs` table; the `/api/jobs` endpoints
-start and report them; `frontend/app/jobs/` is the control panel. Also added:
-ticker search, because the rankings cap at 500 rows over a universe of
-thousands, and CSV export of a ranking view. Documented in
+**Phase 5 (run control) is complete and frozen.** The dashboard can now run the
+pipeline, not just read it. `src/stock_screener/jobs.py` spawns existing CLI
+commands as subprocesses and tracks them in the `jobs` table; the `/api/jobs`
+endpoints start and report them; `frontend/app/jobs/` is the control panel. Also
+added: ticker search, because the rankings cap at 500 rows over a universe of
+thousands, and CSV export of a ranking view. `make dev` starts both processes
+and stops both. Its scope and known limitations are documented in
 `docs/reference/project-phases/phase5.md`.
+
+The MVP is finished. Phases 1 through 5 are all complete, and none of them is a
+place to add to without being asked.
 
 Three rules govern that layer:
 

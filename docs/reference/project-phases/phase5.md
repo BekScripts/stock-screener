@@ -133,3 +133,26 @@ market-wide run writes several megabytes.
 **Polling, not streaming.** The interface asks every two seconds while something
 is in flight and stops when nothing is. Server-sent events would be tidier and
 would add a long-lived connection to a single-user tool that does not need one.
+
+## Deliberately absent
+
+Not oversights, and not a backlog. Each is a thing this phase decided against,
+recorded so it is not re-argued later.
+
+**No scheduler.** Nothing here runs a command at a time of day. A daily run is a
+person pressing Run Daily, or `run-daily` from a crontab the operating system
+owns — which is one line, already works, and does not need the application to
+grow a second way of starting things.
+
+**No retries.** A failed job stays failed and says so. Commands are idempotent,
+so the fix for a transient provider failure is pressing the button again, and a
+retry that ran on its own would spend money on a schedule nobody watched.
+
+**No queue and no workers.** One mutating job runs at a time and a second
+request is told what is already going. A queue would exist to hold work that has
+nowhere to run, and on one machine with one database there is no such work.
+
+**No arbitrary flags.** `JOB_KINDS` maps a key to a fixed argument list. The
+maintenance commands take `--ticker`, `--limit` and `--force` from a terminal
+and none of them from the interface: the moment a caller can supply an argument,
+the allowlist stops being one.
