@@ -12,8 +12,9 @@ of listings to a small group, and explains what it saw.
 
 ## Scope — what exists today
 
-The MVP is built in four phases. **Phases 1, 2 and 3 are complete**: data in, a
-ranked and explainable shortlist out, and AI research that cites its evidence.
+The MVP is built in four phases, and **all four are complete**: data in, a
+ranked and explainable shortlist out, AI research that cites its evidence, and a
+dashboard to read it on.
 
 ```text
 Alpaca + EDGAR  →  Scanner  →  Metrics  →  CompounderScore  →  Preliminary ranking
@@ -61,19 +62,26 @@ the guardrails and the known limitations.
 
 ## Architecture
 
-One deployable, three shared packages, dependencies pointing one way:
+Two deployables, four shared packages, dependencies pointing one way:
 
 ```text
-src/stock_screener  →  packages/*  →  packages/domain
+frontend  →  src/stock_screener  →  packages/*  →  packages/domain
 ```
 
 | Where | Owns |
 | --- | --- |
 | `packages/domain/` | The metric engine, eligibility rules and CompounderScore. Pure functions, zero I/O — every number is testable against a hand-worked example. |
 | `packages/api-clients/` | Provider protocols and the Alpaca, EDGAR, FMP and mock adapters. Vendor field names stop here. |
-| `packages/data-access/` | The five tables, idempotent upserts, and row↔model translation. |
+| `packages/data-access/` | The nine tables, idempotent upserts, and row↔model translation. |
+| `packages/research/` | The AI research contract, prompt and validation. Also zero I/O. |
 | `src/stock_screener/` | Config, logging, ingestion, the scanner, the scoring run, the CLI and the API — the thin layer that wires the rest together. |
+| `frontend/` | The dashboard. Renders what the API returns and calculates nothing. |
 | `migrations/` | Alembic revisions. |
+
+The frontend is the second deployable and the only exception to what was a
+one-deployable rule. It lives here because its types mirror these endpoints, so
+a response-shape change lands on both sides in one commit. A third deployable
+would need an ADR first — see [AGENTS.md](AGENTS.md).
 
 Three rules run through all of it:
 
@@ -101,6 +109,11 @@ make scan         # run the whole pipeline against the sample fixture
 
 That works with **no credentials**: both providers default to `mock`, which
 reads `fixtures/sample_universe.json`.
+
+Add `uv run stock-screener score` to have something for the rankings to show,
+or run `uv run stock-screener run-daily` to ingest, score and rank in one pass.
+The dashboard is optional and needs Node — see
+[Running the dashboard](#running-the-dashboard).
 
 ## Environment variables
 
@@ -255,14 +268,54 @@ and ranking always work without it.
 ## API
 
 ```bash
-uv run uvicorn stock_screener.api:app --reload
+uv run uvicorn stock_screener.api:app --reload      # http://localhost:8000
 ```
 
-`GET /health`, `/api/companies`, `/api/scan`, `/api/rankings`,
-`/api/rankings/hidden-gems`, `/api/rankings/wrong-price`,
-`/api/rankings/improving`, `/api/companies/{ticker}/score`. Read-only, served
-from stored snapshots — the API calculates nothing, so it can never disagree with
-the CLI.
+Served entirely from stored snapshots — the API calculates nothing, so it can
+never disagree with the CLI.
+
+| Method | Path | Returns |
+| --- | --- | --- |
+| `GET` | `/health` | Liveness |
+| `GET` | `/api/companies` | Stored companies |
+| `GET` | `/api/scan` | The eligibility scan |
+| `GET` | `/api/rankings` | Top Opportunities |
+| `GET` | `/api/rankings/hidden-gems` | Small, fast, already scoring well |
+| `GET` | `/api/rankings/wrong-price` | Strong business, poor valuation score |
+| `GET` | `/api/rankings/improving` | Biggest score gain over 30 days |
+| `GET` | `/api/companies/{ticker}/score` | One company's snapshot |
+| `GET` | `/api/stocks/{ticker}` | Overview, score breakdown, metrics, watched flag |
+| `GET` | `/api/stocks/{ticker}/research` | The latest validated research report |
+| `GET` | `/api/watchlist` | Watched companies with their current scores |
+| `POST` | `/api/watchlist/{ticker}` | Adds a company — idempotent |
+| `DELETE` | `/api/watchlist/{ticker}` | Removes a company |
+
+The watchlist is the only write in the surface, and the only thing a person
+decides rather than the pipeline. Because of it, CORS names
+`localhost:3000` and `127.0.0.1:3000` explicitly rather than wildcarding —
+a wildcard would let any page a browser happens to be on edit the watchlist.
+
+## Running the dashboard
+
+Two processes. The API first, then the Next.js dashboard in front of it:
+
+```bash
+uv run uvicorn stock_screener.api:app --reload      # http://localhost:8000
+cd frontend && npm install && npm run dev           # http://localhost:3000
+```
+
+Open <http://localhost:3000>. Four ranking tabs, a company page with the score
+breakdown and its grounded research, and the watchlist.
+
+The pages render stored snapshots and nothing else, so **run `score` before
+expecting anything to appear** — a database that has been scanned but never
+scored produces empty rankings, correctly. `stock-screener run-daily` does the
+whole pipeline in one pass.
+
+The dashboard calculates nothing: every score, subscore, metric and claim on a
+screen came out of the API. A metric the data cannot support renders as an em
+dash, never as `0`. More in [frontend/README.md](frontend/README.md) and the
+[Phase 4 brief](docs/reference/project-phases/phase4.md).
 
 ## Running the tests
 
