@@ -8,6 +8,9 @@ import { day } from "@/lib/format";
 
 const POLL_MS = 2000;
 
+/** How often to retry after a request failed, rather than giving up on it. */
+const RETRY_MS = 5000;
+
 /**
  * Every command the API will run, plus what happened last time.
  *
@@ -35,14 +38,36 @@ export function JobConsole() {
       return inFlight;
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "could not reach the API");
-      return [];
+      // Null, not an empty list. "Nothing is running" ends the poll; "the
+      // request failed" has to schedule another one, and returning `[]` for
+      // both made a failure look like an idle console that never recovered.
+      return null;
     }
   }, []);
 
+  // Retried until it succeeds: without the kinds there are no controls to press,
+  // so giving up here leaves an empty panel even once the API is back.
   useEffect(() => {
-    fetchJobKinds()
-      .then(setKinds)
-      .catch(() => setError("jobs are disabled, or the API is unreachable"));
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+
+    function load() {
+      fetchJobKinds()
+        .then((loaded) => {
+          if (!cancelled) setKinds(loaded);
+        })
+        .catch(() => {
+          if (cancelled) return;
+          setError("jobs are disabled, or the API is unreachable");
+          timer = setTimeout(load, RETRY_MS);
+        });
+    }
+
+    load();
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
   }, []);
 
   useEffect(() => {
@@ -52,8 +77,8 @@ export function JobConsole() {
     async function poll() {
       const inFlight = await refresh();
       if (cancelled) return;
-      if (inFlight.length > 0) {
-        timer = setTimeout(poll, POLL_MS);
+      if (inFlight === null || inFlight.length > 0) {
+        timer = setTimeout(poll, inFlight === null ? RETRY_MS : POLL_MS);
       }
     }
 

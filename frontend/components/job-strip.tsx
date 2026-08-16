@@ -8,6 +8,15 @@ import { fetchJobs, type Job } from "@/lib/api";
 /** How often to ask while something is in flight. */
 const POLL_MS = 2000;
 
+/** How often to retry after the API could not be reached.
+ *
+ * Slower than the running poll: nothing is known to be happening, and the usual
+ * reason for a failed request is the API restarting under `--reload`, which
+ * takes a second or two. Without a retry the strip latched on the first failure
+ * and claimed the API was down until the page was reloaded — long after it had
+ * come back. */
+const RETRY_MS = 5000;
+
 /**
  * What is running, visible from every page.
  *
@@ -47,7 +56,11 @@ export function JobStrip() {
           timer = setTimeout(poll, POLL_MS);
         }
       } catch {
-        if (!cancelled) setReachable(false);
+        if (cancelled) return;
+        setReachable(false);
+        // Keep asking. A dev-server reload is the common cause and it fixes
+        // itself; the banner should disappear on its own when it does.
+        timer = setTimeout(poll, RETRY_MS);
       }
     }
 
