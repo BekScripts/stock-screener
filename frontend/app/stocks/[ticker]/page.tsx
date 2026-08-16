@@ -28,11 +28,19 @@ export default async function StockPage({ params }: { params: Promise<{ ticker: 
           <h1>
             {detail.ticker} · {detail.name}
           </h1>
-          <div className="sub">{detail.industry ?? detail.sector ?? "Industry unknown"}</div>
+          {/* The registrant's own SIC description from EDGAR, which is a filing
+              classification rather than a judgement about what the business does
+              today — a diversified acquirer keeps whatever code it first
+              registered under. Attributed so it is not read as ours. */}
+          <div className="sub">
+            {detail.industry ?? detail.sector
+              ? `SEC industry (SIC): ${detail.industry ?? detail.sector}`
+              : "SEC industry (SIC) unknown"}
+          </div>
           <div className="chips">
             <ScoreBadge value={detail.score?.final_score ?? null} />
             <CategoryBadge value={breakdown?.category ?? null} />
-            <RiskBadge level={breakdown?.risk.level ?? null} />
+            <RiskBadge level={breakdown?.risk.level ?? null} labelled />
             <StateBadge state={detail.ranking_state} />
           </div>
         </div>

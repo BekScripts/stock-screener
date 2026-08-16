@@ -493,7 +493,109 @@ def test_operating_lease_schedules_are_not_treated_as_debt() -> None:
     assert period.total_debt == pytest.approx(200.0)
 
 
+@pytest.mark.unit
+def test_borrowings_a_filer_holds_at_once_are_summed_rather_than_substituted() -> None:
+    # A revolver and a term loan are separate instruments outstanding together,
+    # not two names for one balance. Resolving them as a fallback chain would
+    # report whichever won and silently drop the other.
+    document = facts_document(
+        Revenues={"USD": [duration("2025-01-01", "2025-03-31", 100.0)]},
+        CashAndCashEquivalentsAtCarryingValue={"USD": [instant("2025-03-31", 500.0)]},
+        LineOfCredit={"USD": [instant("2025-03-31", 58_500.0)]},
+        SecuredDebt={"USD": [instant("2025-03-31", 35_519.0)]},
+    )
+
+    period = by_end(adapter(document).get_financial_statements("AAPL"))[date(2025, 3, 31)]
+
+    assert period.total_debt == pytest.approx(94_019.0)
+
+
+@pytest.mark.unit
+def test_zero_current_maturities_do_not_hide_the_facilities_still_outstanding() -> None:
+    # The regression this exists for: a filer states nil current maturities
+    # while carrying its borrowings under instrument concepts. Reading the
+    # stated zero as the whole of the debt reported a leveraged company as
+    # debt-free — the worst direction for this field to be wrong in.
+    document = facts_document(
+        Revenues={"USD": [duration("2025-01-01", "2025-03-31", 100.0)]},
+        CashAndCashEquivalentsAtCarryingValue={"USD": [instant("2025-03-31", 500.0)]},
+        LongTermDebtCurrent={"USD": [instant("2025-03-31", 0.0)]},
+        LineOfCredit={"USD": [instant("2025-03-31", 58_500.0)]},
+        SecuredDebt={"USD": [instant("2025-03-31", 35_519.0)]},
+    )
+
+    period = by_end(adapter(document).get_financial_statements("AAPL"))[date(2025, 3, 31)]
+
+    assert period.total_debt == pytest.approx(94_019.0)
+
+
+@pytest.mark.unit
+def test_a_stated_total_is_preferred_over_the_instruments_composing_it() -> None:
+    # Where the filer gives its own total, that total is the carrying amount
+    # net of issue costs. Adding the instruments to it would double-count.
+    document = facts_document(
+        Revenues={"USD": [duration("2025-01-01", "2025-03-31", 100.0)]},
+        CashAndCashEquivalentsAtCarryingValue={"USD": [instant("2025-03-31", 500.0)]},
+        LongTermDebt={"USD": [instant("2025-03-31", 91_900.0)]},
+        LineOfCredit={"USD": [instant("2025-03-31", 59_500.0)]},
+        SecuredDebt={"USD": [instant("2025-03-31", 32_566.0)]},
+    )
+
+    period = by_end(adapter(document).get_financial_statements("AAPL"))[date(2025, 3, 31)]
+
+    assert period.total_debt == pytest.approx(91_900.0)
+
+
+@pytest.mark.unit
+def test_current_and_non_current_instruments_are_counted_in_their_own_right() -> None:
+    # Current maturities sit on their own balance-sheet line beside the
+    # non-current facilities, so the two classifications add.
+    document = facts_document(
+        Revenues={"USD": [duration("2025-01-01", "2025-03-31", 100.0)]},
+        CashAndCashEquivalentsAtCarryingValue={"USD": [instant("2025-03-31", 500.0)]},
+        LongTermDebtCurrent={"USD": [instant("2025-03-31", 2_400.0)]},
+        LineOfCredit={"USD": [instant("2025-03-31", 66_500.0)]},
+        SecuredDebt={"USD": [instant("2025-03-31", 45_088.0)]},
+    )
+
+    period = by_end(adapter(document).get_financial_statements("AAPL"))[date(2025, 3, 31)]
+
+    assert period.total_debt == pytest.approx(113_988.0)
+
+
 # -- signs and units ---------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_capital_expenditure_is_read_from_an_industry_specific_concept() -> None:
+    # An extractive filer tags its whole capital programme as oil and gas
+    # property and never tags the general concept. Without this the quarter has
+    # no capital spending and free cash flow cannot be derived at all.
+    document = facts_document(
+        Revenues={"USD": [duration("2025-01-01", "2025-03-31", 100.0)]},
+        PaymentsToAcquireOilAndGasProperty={"USD": [duration("2025-01-01", "2025-03-31", 8_454.0)]},
+    )
+
+    period = by_end(adapter(document).get_financial_statements("AAPL"))[date(2025, 3, 31)]
+
+    assert period.capital_expenditure == pytest.approx(8_454.0)
+
+
+@pytest.mark.unit
+def test_the_general_capex_concept_wins_where_a_filer_tags_both() -> None:
+    # Filers that re-tag the same line under both concepts must not have it
+    # counted twice, and the general concept is the one to trust.
+    document = facts_document(
+        Revenues={"USD": [duration("2025-01-01", "2025-03-31", 100.0)]},
+        PaymentsToAcquirePropertyPlantAndEquipment={
+            "USD": [duration("2025-01-01", "2025-03-31", 2_090.0)]
+        },
+        PaymentsToAcquireOilAndGasProperty={"USD": [duration("2025-01-01", "2025-03-31", 2_090.0)]},
+    )
+
+    period = by_end(adapter(document).get_financial_statements("AAPL"))[date(2025, 3, 31)]
+
+    assert period.capital_expenditure == pytest.approx(2_090.0)
 
 
 @pytest.mark.unit

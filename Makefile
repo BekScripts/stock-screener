@@ -26,8 +26,12 @@ check: lint format-check types test  ## Everything CI runs — the gate before y
 # Deliberately not a prerequisite of `check`. The Python gate runs in CI without
 # a node toolchain, and making it depend on one would mean every backend change
 # waits for an npm install. Run this one when you touch frontend/.
+#
+# The build writes to its own `distDir`. Sharing one with `next dev` means
+# running this gate during a dev session corrupts that session's module graph,
+# and the error it throws names webpack rather than the cause.
 check-web:  ## The frontend gate: typecheck, lint, production build (needs Node)
-	cd frontend && npm run typecheck && npm run lint && npm run build
+	cd frontend && npm run typecheck && npm run lint && NEXT_DIST_DIR=.next-check npm run build
 
 API_PORT ?= 8000
 WEB_PORT ?= 3000

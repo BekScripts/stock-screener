@@ -560,7 +560,13 @@ def _gross_margin_points(metrics: CompanyMetrics) -> tuple[float | None, str | N
         return level, "level only; no comparable year-ago margin"
 
     adjustment = interpolate(GROSS_MARGIN_TREND_CURVE, metrics.gross_margin_change)
-    return max(0.0, min(level + adjustment, 7.0)), f"level {level:.0f} trend {adjustment:+.2f}"
+    # Both halves are points, and the note says so. Written as "level 2 trend
+    # +1.00" the second number reads like a margin or a direction code, and a
+    # reader repeating it produced "a positive trend of +1.00 level".
+    return (
+        max(0.0, min(level + adjustment, 7.0)),
+        f"{level:.0f} points on margin level, {adjustment:+.2f} points on margin trend",
+    )
 
 
 def _fcf_margin_points(metrics: CompanyMetrics) -> tuple[float | None, str | None]:

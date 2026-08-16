@@ -34,7 +34,7 @@ from domain import (
     score_company,
 )
 from research import SelectionReason
-from stock_screener.research import SCORE_SOURCE, assemble_brief
+from stock_screener.research import SCORE_SOURCE, assemble_brief, prepare_filing_evidence
 from stock_screener.research.brief import (
     _PRESERVED_SUBSCORES,
     MAX_EXCERPT_CHARS,
@@ -713,6 +713,29 @@ def test_an_mda_excerpt_starts_at_its_first_useful_heading(
 
 
 @pytest.mark.integration
+def test_an_anchor_phrase_used_as_prose_does_not_start_the_excerpt(
+    session: Session, settings: Settings, with_filings: str
+) -> None:
+    # Every MD&A warns that something "may harm our business, results of
+    # operations, and financial condition" long before the section of that name.
+    # Anchoring on the prose copy started the excerpt mid-clause, in a paragraph
+    # about a different subject entirely.
+    prose = "An acquisition may harm our results of operations, and dilute our holders. " * 8
+    _store_mda(
+        session,
+        with_filings,
+        f"{PREAMBLE}{prose}Results of Operations\n{'Revenue rose on licensing. ' * 12}",
+    )
+
+    brief = assemble_brief(session, settings, with_filings)
+
+    assert brief is not None
+    excerpt = next(e for e in brief.excerpts if e.section == "mda")
+    assert excerpt.text.startswith("Results of Operations")
+    assert "Revenue rose on licensing." in excerpt.text
+
+
+@pytest.mark.integration
 def test_an_mda_prefers_the_company_overview_to_a_later_heading(
     session: Session, settings: Settings, with_filings: str
 ) -> None:
@@ -1119,3 +1142,73 @@ def test_a_brief_lists_no_filings_when_none_were_ingested(
 
     assert brief is not None
     assert brief.filings == ()
+
+
+# --- preparing one company's evidence before a paid run ---------------------
+
+
+@pytest.mark.integration
+def test_preparation_stores_both_the_index_and_the_text(
+    session: Session, make: type[Make], seed: type[Seed]
+) -> None:
+    # The whole point of the flag: a company nobody has ingested filings for
+    # ends up with citable evidence before a brief is assembled.
+    seed.company(session, make, "XYZ")
+    provider = MockFundamentals(
+        filings={"XYZ": [_filing("a-1", filed=SCORE_DATE)]},
+        excerpts={"XYZ": list(_excerpt_fixtures().values())},
+    )
+
+    preparation = prepare_filing_evidence(session, provider, "XYZ")
+
+    assert not preparation.failed
+    assert FilingRepository(session).count() == 1
+    assert FilingExcerptRepository(session).count() >= 1
+
+
+@pytest.mark.integration
+def test_preparing_twice_re_reads_no_documents(
+    session: Session, make: type[Make], seed: type[Seed]
+) -> None:
+    # Documents are one request each. A second preparation must cost none of
+    # them, which is what makes the flag safe to put behind a button.
+    seed.company(session, make, "XYZ")
+    provider = MockFundamentals(
+        filings={"XYZ": [_filing("a-1", filed=SCORE_DATE)]},
+        excerpts={"XYZ": list(_excerpt_fixtures().values())},
+    )
+    prepare_filing_evidence(session, provider, "XYZ")
+
+    second = prepare_filing_evidence(session, provider, "XYZ")
+
+    assert not second.failed
+    assert second.text.skipped == 1
+    assert second.text.rows_written == 0
+
+
+@pytest.mark.integration
+def test_preparation_reports_failure_when_the_index_cannot_be_fetched(
+    session: Session, make: type[Make], seed: type[Seed]
+) -> None:
+    # A caller that asked for evidence and did not get it needs to know, so it
+    # can decline to buy the report the evidence was for.
+    seed.company(session, make, "XYZ")
+    provider = MockFundamentals(failing_tickers=["XYZ"])
+
+    preparation = prepare_filing_evidence(session, provider, "XYZ")
+
+    assert preparation.failed
+    assert preparation.ticker == "XYZ"
+
+
+@pytest.mark.integration
+def test_preparation_lower_cases_are_accepted(
+    session: Session, make: type[Make], seed: type[Seed]
+) -> None:
+    seed.company(session, make, "XYZ")
+    provider = MockFundamentals(filings={"XYZ": [_filing("a-1", filed=SCORE_DATE)]})
+
+    preparation = prepare_filing_evidence(session, provider, "xyz")
+
+    assert preparation.ticker == "XYZ"
+    assert FilingRepository(session).count() == 1

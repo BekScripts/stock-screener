@@ -162,6 +162,27 @@ not recognise ("out of a possible 100").
 outside the eight-filing index window cannot be read, so those companies describe
 themselves through MD&A instead — usually enough, occasionally not.
 
+**Grounding proves provenance, not truth.** Validation establishes that a claim
+traces to the brief it was given. It cannot establish that the brief was right.
+A `DETERMINISTIC` claim is exactly as correct as the extraction behind it, and a
+wrong figure produces a wrong claim that passes every check — correctly, because
+the claim does faithfully report what it was shown.
+
+This is not hypothetical. An EDGAR chain that could not see a filer's revolver
+and term loan stored one company's debt as `0`, and the report said debt "rose
+sharply from 0" and that "new financing was taken on". Both sentences were
+properly grounded. Both were false: the debt had been there throughout and was
+being *paid down*. See the debt and free-cash-flow notes in
+[metrics](../metrics.md) for how those concepts are read now.
+
+Two things follow. An extraction bug is a **report-integrity** bug, not only a
+metric bug, so a fix to a normalisation chain means the reports resting on those
+periods are stale and their claims must be re-checked rather than assumed. And
+confidence in a claim can never exceed confidence in the pipeline that fed it —
+which is why the deterministic layer carries the test suite it does, and why the
+answer here is extraction tests rather than a second validation framework
+checking the first one.
+
 **8-K Item 2.02 is often boilerplate.** The substance of an earnings 8-K lives in
 Exhibit 99.1, and exhibits are not fetched. What gets stored is the "furnished,
 not filed" legend. Reports say so plainly rather than pretending otherwise.

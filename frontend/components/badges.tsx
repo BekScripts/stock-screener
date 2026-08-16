@@ -15,9 +15,22 @@ export function CategoryBadge({ value }: { value: string | null }) {
   return <span className={`badge ${CATEGORY_CLASS[value] ?? "neutral"}`}>{title(value)}</span>;
 }
 
-export function RiskBadge({ level }: { level: string | null }) {
+/** The risk engine prices three things and only three: dilution, cash runway
+ *  and leverage. It reads a balance sheet, so a LOW here means the finances are
+ *  sound — not that the business is. Business-model, integration, commodity and
+ *  capital-allocation risk are outside what the score can see, and an unqualified
+ *  "Risk: LOW" claims more than the algorithm knows. `labelled` names the measure
+ *  where the badge stands alone; in a table the column heading does that job. */
+export function RiskBadge({ level, labelled }: { level: string | null; labelled?: boolean }) {
   if (!level) return <span className="badge neutral">—</span>;
-  return <span className={`badge risk-${level.toLowerCase()}`}>{level}</span>;
+  return (
+    <span
+      className={`badge risk-${level.toLowerCase()}`}
+      title="Financial risk only: dilution, cash runway and leverage"
+    >
+      {labelled ? `Financial risk: ${level}` : level}
+    </span>
+  );
 }
 
 /** PRELIMINARY until the metered enrichment pass has verified market cap and

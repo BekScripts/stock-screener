@@ -315,3 +315,58 @@ def test_update_filings_can_restrict_itself_to_candidates(scored_cli: CliRunner)
 
     assert result.exit_code == 0
     assert "research candidate(s)" in result.output
+
+
+# --- preparing filing evidence before a paid run ----------------------------
+
+
+@pytest.mark.integration
+@pytest.mark.slow
+def test_prepare_without_a_ticker_is_refused(scored_cli: CliRunner) -> None:
+    # Preparing every candidate would crawl the SEC for filings no brief has
+    # asked for. The flag is per-company on purpose.
+    result = scored_cli.invoke(app, ["research", "run", "--prepare"])
+
+    assert result.exit_code == 1
+    assert "needs a ticker" in result.output
+
+
+@pytest.mark.integration
+@pytest.mark.slow
+def test_prepare_runs_both_sec_passes_before_the_brief(scored_cli: CliRunner) -> None:
+    # Paired with --dry-run so the assertion is about preparation happening
+    # first, and costs nothing to make.
+    result = scored_cli.invoke(app, ["research", "run", "XYZ", "--prepare", "--dry-run"])
+
+    assert result.exit_code == 0
+    assert "filings:" in result.output
+    assert "filing text:" in result.output
+    assert result.output.index("filings:") < result.output.index("CompounderScore")
+
+
+@pytest.mark.integration
+@pytest.mark.slow
+def test_failed_preparation_blocks_generation_and_stores_nothing(
+    scored_cli: CliRunner, cli_database: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The rule the flag exists for: asked for evidence, did not get it, so do
+    # not buy the evidence-poor report anyway.
+    monkeypatch.setenv("RESEARCH_PROVIDER", "anthropic")
+    monkeypatch.setenv("RESEARCH_API_KEY", "sk-ant-not-a-real-key")
+    get_settings.cache_clear()
+
+    from stock_screener.scanning.ingestion import IngestionReport
+
+    def failing(*args: Any, **kwargs: Any) -> IngestionReport:
+        report = IngestionReport(processed=1)
+        report.record_failure("XYZ")
+        return report
+
+    monkeypatch.setattr("stock_screener.research.runner.update_filings", failing)
+
+    result = scored_cli.invoke(app, ["research", "run", "XYZ", "--prepare"])
+
+    assert result.exit_code == 2
+    assert "filing preparation failed" in result.output
+    assert "nothing was spent" in result.output
+    assert _count(cli_database, "research_reports") == 0

@@ -146,9 +146,19 @@ _OPERATING_CASH_FLOW_TAGS = (
     "NetCashProvidedByUsedInOperatingActivities",
     "NetCashProvidedByUsedInOperatingActivitiesContinuingOperations",
 )
+#: The investing-section line for additions to long-lived operating assets.
+#:
+#: Ordered most-specific first, so a filer tagging the general concept keeps it
+#: and the industry-specific ones only fill in where it is absent. Extractive
+#: filers tag their entire capital programme as
+#: `PaymentsToAcquireOilAndGasProperty` and never tag the general concept at
+#: all; without it their capital spending reads as absent and free cash flow
+#: cannot be derived.
 _CAPEX_TAGS = (
     "PaymentsToAcquirePropertyPlantAndEquipment",
     "PaymentsToAcquireProductiveAssets",
+    "PaymentsToAcquireOilAndGasProperty",
+    "PaymentsForCapitalImprovements",
 )
 _SHARES_TAGS = ("WeightedAverageNumberOfDilutedSharesOutstanding",)
 
@@ -182,17 +192,40 @@ _SHORT_TERM_INVESTMENTS_TAGS = (
 #: are deliberately absent: they are not borrowings, and the schedules filers tag
 #: (`LesseeOperatingLeaseLiabilityPaymentsDue*`) are future minimum payments
 #: rather than a balance-sheet amount.
-_LONG_TERM_DEBT_TAGS = (
+#:
+#: Each classification splits into two tiers, because XBRL debt concepts are of
+#: two different kinds and mixing them is what makes a filer's borrowings
+#: disappear:
+#:
+#: * **Totals** roll every borrowing of that classification into one figure.
+#:   They are alternatives to one another — a filer tags one — so they resolve
+#:   through the usual most-specific-wins chain.
+#: * **Components** are individual instruments. A filer with a revolver *and* a
+#:   term loan tags both, and they **co-exist**, so they are summed with each
+#:   other rather than overriding one another.
+#:
+#: A total is preferred where the filer states one, since it is that filer's own
+#: carrying amount net of issue costs. Components are summed only where no total
+#: was tagged. Summing the two tiers together would double-count.
+_LONG_TERM_DEBT_TOTAL_TAGS = (
     "LongTermDebtNoncurrent",
     "LongTermDebt",
+)
+_LONG_TERM_DEBT_COMPONENT_TAGS = (
+    "LineOfCredit",
+    "SecuredDebt",
     "ConvertibleDebtNoncurrent",
     "ConvertibleNotesPayable",
     "NotesPayableRelatedPartiesNoncurrent",
     "FinanceLeaseLiabilityNoncurrent",
 )
-_SHORT_TERM_DEBT_TAGS = (
+_SHORT_TERM_DEBT_TOTAL_TAGS = (
     "LongTermDebtCurrent",
     "DebtCurrent",
+)
+_SHORT_TERM_DEBT_COMPONENT_TAGS = (
+    "LinesOfCreditCurrent",
+    "SecuredDebtCurrent",
     "ShortTermBorrowings",
     "ConvertibleDebtCurrent",
     "ConvertibleNotesPayableCurrent",
@@ -368,8 +401,14 @@ class SecEdgarFundamentals:
         instants = {
             "cash": _instant_series(gaap, _CASH_TAGS),
             "short_term_investments": _instant_series(gaap, _SHORT_TERM_INVESTMENTS_TAGS),
-            "long_term_debt": _instant_series(gaap, _LONG_TERM_DEBT_TAGS),
-            "short_term_debt": _instant_series(gaap, _SHORT_TERM_DEBT_TAGS),
+            "long_term_debt_total": _instant_series(gaap, _LONG_TERM_DEBT_TOTAL_TAGS),
+            "long_term_debt_components": _summed_instant_series(
+                gaap, _LONG_TERM_DEBT_COMPONENT_TAGS
+            ),
+            "short_term_debt_total": _instant_series(gaap, _SHORT_TERM_DEBT_TOTAL_TAGS),
+            "short_term_debt_components": _summed_instant_series(
+                gaap, _SHORT_TERM_DEBT_COMPONENT_TAGS
+            ),
             # Cover-page count first, balance-sheet count as the fallback.
             "common_shares_outstanding": {
                 **_instant_series(gaap, _COMMON_SHARES_GAAP_TAGS, unit=_SHARES),
@@ -887,6 +926,33 @@ def _instant_series(
     return _merge_chain(_instants_from_facts, facts, tags, unit)
 
 
+def _summed_instant_series(
+    facts: Mapping[str, Any], tags: Sequence[str], unit: str = _USD
+) -> dict[date, float]:
+    """Return the sum across concepts that co-exist rather than substitute.
+
+    `_instant_series` resolves a chain of *alternative* names for one measure.
+    This is its counterpart for concepts that are separate things: a revolving
+    credit facility and a term loan are both outstanding at once, so a filer
+    tagging `LineOfCredit` and `SecuredDebt` owes the sum of the two. Taking
+    only the most specific would report one loan and silently drop the other.
+
+    Args:
+        facts: A taxonomy's facts — `us-gaap` or `dei`.
+        tags: Concepts to add together.
+        unit: The unit to read.
+
+    Returns:
+        A value per reporting date, summed over whichever concepts that date
+        carries. Dates no concept covers are absent rather than zero.
+    """
+    summed: dict[date, float] = {}
+    for tag in tags:
+        for period_end, value in _instants_from_facts(_facts_for_tag(facts, tag, unit)).items():
+            summed[period_end] = summed.get(period_end, 0.0) + value
+    return summed
+
+
 def _instants_from_facts(facts: list[Mapping[str, Any]]) -> dict[date, float]:
     """Turn one tag's instant facts into a value per reporting date."""
     grouped: dict[date, list[Mapping[str, Any]]] = {}
@@ -1014,6 +1080,13 @@ def _total_debt(instants: Mapping[str, Mapping[date, float]], period_end: date) 
     is therefore correct rather than partial — unlike a vendor's `totalDebt`
     fallback, where a missing component means the vendor omitted it.
 
+    Each classification is read as a stated total where the filer gives one, and
+    otherwise as the sum of the instruments it tagged. Both tiers matter: a
+    filer that states only current maturities while carrying its revolver and
+    term loan under instrument concepts would otherwise report those maturities
+    as its entire debt — and where the maturities are zero, report no debt at
+    all while owing the sum of the two facilities.
+
     **Absence is not zero.** A filer tags a line item only while it exists, so a
     company that repaid its borrowings stops tagging them and looks identical to
     one whose borrowing tag this chain does not recognise. Reading absence as
@@ -1030,11 +1103,31 @@ def _total_debt(instants: Mapping[str, Mapping[date, float]], period_end: date) 
         Total debt, `0.0` where the filing states zero, or None where no
         borrowing was tagged at all.
     """
-    long_term = _nearest_instant(instants["long_term_debt"], period_end)
-    short_term = _nearest_instant(instants["short_term_debt"], period_end)
+    long_term = _classified_debt(instants, "long_term_debt", period_end)
+    short_term = _classified_debt(instants, "short_term_debt", period_end)
     if long_term is None and short_term is None:
         return None
     return (long_term or 0.0) + (short_term or 0.0)
+
+
+def _classified_debt(
+    instants: Mapping[str, Mapping[date, float]], field: str, period_end: date
+) -> float | None:
+    """Return one classification's borrowings, preferring the filer's own total.
+
+    Args:
+        instants: Balance-sheet series by field name.
+        field: The classification prefix, `long_term_debt` or `short_term_debt`.
+        period_end: The quarter being built.
+
+    Returns:
+        The stated total where there is one, otherwise the sum of the tagged
+        instruments, or None where the filing tagged neither.
+    """
+    total = _nearest_instant(instants[f"{field}_total"], period_end)
+    if total is not None:
+        return total
+    return _nearest_instant(instants[f"{field}_components"], period_end)
 
 
 def _as_date(value: object) -> date | None:

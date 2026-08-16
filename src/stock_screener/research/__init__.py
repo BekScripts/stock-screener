@@ -42,8 +42,10 @@ from stock_screener.research.report import (
 )
 from stock_screener.research.runner import (
     RESERVED_PROMPT_TOKENS,
+    FilingPreparation,
     ResearchOutcome,
     ResearchSkip,
+    prepare_filing_evidence,
     research_candidates,
     research_company,
 )
@@ -71,6 +73,7 @@ __all__ = [
     "TOP_RANKED_LIMIT",
     "USABLE_STATUSES",
     "Candidate",
+    "FilingPreparation",
     "ResearchOutcome",
     "ResearchSkip",
     "ResearchStorageError",
@@ -81,6 +84,7 @@ __all__ = [
     "format_brief",
     "format_candidates",
     "format_research_run",
+    "prepare_filing_evidence",
     "research_candidates",
     "research_company",
     "save_report",

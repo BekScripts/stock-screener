@@ -181,6 +181,17 @@ explicit zero in a filing is a reported value and is kept. Where a vendor gives
 no `totalDebt`, its short- and long-term components are summed only if **both**
 are present. See [ADR-0005](../adr/0005-absent-debt-is-unknown-not-zero.md).
 
+XBRL debt concepts come in two kinds, and each classification is read
+accordingly. A **total** — `LongTermDebt`, `LongTermDebtCurrent` — rolls up every
+borrowing of that classification, and the filer's own total is preferred because
+it is stated net of issue costs. **Instruments** — `LineOfCredit`, `SecuredDebt`
+and the rest — co-exist, so they are summed with one another and used only where
+no total was tagged. Reading instruments as alternatives would report a revolver
+and drop the term loan beside it; adding them to a stated total would count the
+same borrowing twice. Where a filer states nil current maturities while carrying
+its facilities under instrument concepts, the two tiers together are what stop
+that nil being read as the whole of the debt.
+
 `net_cash` is a subtraction, so a result of `0.0` is a real observation: cash
 exactly offsets debt.
 
@@ -196,6 +207,15 @@ free_cash_flow = operating_cash_flow − abs(capital_expenditure)
 adding a negative capex would turn cash burn into cash generation. Adapters
 normalise capex to a positive outflow before storage; the domain function
 defends against it a second time.
+
+The derivation is only as available as its inputs, so capital expenditure is
+read from the industry-specific concepts as well as the general one: an
+extractive filer tags its whole capital programme as
+`PaymentsToAcquireOilAndGasProperty` and never tags
+`PaymentsToAcquirePropertyPlantAndEquipment` at all. The general concept wins
+where a filer tags both, which is common in the year one is retired for the
+other. Free cash flow stays `None` when either input is genuinely absent — it is
+never derived from one half.
 
 ## Price and liquidity
 

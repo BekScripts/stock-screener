@@ -114,6 +114,17 @@ nav.top a:hover {
   margin: 0 0 14px;
 }
 
+/* The ranking is wider than the card on a narrow window. It scrolls inside its
+   own box so the card keeps its edges; letting it overflow leaves the last
+   columns standing on the page background with no card behind them. The
+   negative margin lets a scrolled row run to the card's padding edge rather
+   than stopping short of it. */
+.table-scroll {
+  overflow-x: auto;
+  margin: 0 -20px;
+  padding: 0 20px;
+}
+
 table.rankings {
   width: 100%;
   border-collapse: collapse;

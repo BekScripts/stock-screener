@@ -22,8 +22,13 @@ export function RankingTable({ rows }: { rows: RankingRow[] }) {
     );
   }
 
+  // Every cell is `white-space: nowrap`, so the table has a minimum width that
+  // a narrow window — or one more column — will exceed. Without somewhere to
+  // scroll it overflows the card instead, and the columns past the edge sit on
+  // the page background with no card behind them.
   return (
-    <table className="rankings">
+    <div className="table-scroll">
+      <table className="rankings">
       <thead>
         <tr>
           <th>#</th>
@@ -34,7 +39,7 @@ export function RankingTable({ rows }: { rows: RankingRow[] }) {
           <th>Quality</th>
           <th>Value</th>
           <th>Momentum</th>
-          <th>Risk</th>
+          <th>Financial risk</th>
           <th>Coverage</th>
           <th>State</th>
           <th>Market cap</th>
@@ -77,6 +82,7 @@ export function RankingTable({ rows }: { rows: RankingRow[] }) {
           </tr>
         ))}
       </tbody>
-    </table>
+      </table>
+    </div>
   );
 }
