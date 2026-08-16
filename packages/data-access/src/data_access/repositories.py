@@ -22,7 +22,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import and_, func, select
+from sqlalchemy import and_, case, func, or_, select
 from sqlalchemy.dialects.postgresql import insert as postgres_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
@@ -184,6 +184,41 @@ class CompanyRepository:
         return self._session.scalars(
             select(Company).where(Company.ticker == ticker.upper())
         ).one_or_none()
+
+    def search(self, query: str, *, limit: int = 20) -> list[Company]:
+        """Find companies whose ticker or name matches a fragment.
+
+        Ordered so an exact ticker wins, then a ticker prefix, then everything
+        else alphabetically. Typing `MU` should reach Micron before every
+        company with "mu" somewhere in its name.
+
+        Args:
+            query: Ticker or name fragment. Case-insensitive.
+            limit: Maximum companies to return.
+
+        Returns:
+            The matches, best first. Empty when the fragment is blank.
+        """
+        fragment = query.strip()
+        if not fragment:
+            return []
+
+        upper = fragment.upper()
+        pattern = f"%{fragment}%"
+        rank = case(
+            (Company.ticker == upper, 0),
+            (Company.ticker.istartswith(fragment), 1),
+            else_=2,
+        )
+
+        return list(
+            self._session.scalars(
+                select(Company)
+                .where(or_(Company.ticker.icontains(fragment), Company.name.ilike(pattern)))
+                .order_by(rank, Company.ticker)
+                .limit(limit)
+            )
+        )
 
     def list_all(self, *, active_only: bool = False) -> list[Company]:
         """Return every stored company, ordered by ticker.

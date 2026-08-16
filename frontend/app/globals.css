@@ -435,3 +435,283 @@ table.rankings tbody tr:hover {
   flex-wrap: wrap;
   margin-top: 8px;
 }
+
+/* -- Phase 5: search, run controls and job status ------------------------- */
+
+.masthead-right {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+}
+
+/* Search ------------------------------------------------------------------ */
+
+.search {
+  position: relative;
+}
+
+.search input {
+  width: 190px;
+  padding: 6px 10px;
+  font: inherit;
+  font-size: 13px;
+  color: var(--ink);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.search input:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
+}
+
+.hits {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 20;
+  width: 340px;
+  max-height: 320px;
+  overflow-y: auto;
+  margin: 0;
+  padding: 4px;
+  list-style: none;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgb(18 22 28 / 12%);
+}
+
+.hits button {
+  display: grid;
+  grid-template-columns: 62px 1fr auto;
+  gap: 10px;
+  align-items: baseline;
+  width: 100%;
+  padding: 7px 8px;
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  color: var(--ink);
+  background: none;
+  border: 0;
+  border-radius: 5px;
+  cursor: pointer;
+}
+
+.hits button:hover {
+  background: var(--bg);
+}
+
+.hit-ticker {
+  font-weight: 600;
+}
+
+.hit-name {
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.hit-score {
+  color: var(--faint);
+  font-variant-numeric: tabular-nums;
+  font-size: 12px;
+}
+
+/* Status strip ------------------------------------------------------------ */
+
+.strip {
+  display: flex;
+  gap: 18px;
+  align-items: center;
+  margin: -8px 0 18px;
+  padding: 8px 12px;
+  font-size: 13px;
+  border-radius: 7px;
+  border: 1px solid var(--border);
+}
+
+.strip[data-state="running"] {
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 7%, var(--surface));
+  border-color: color-mix(in srgb, var(--accent) 25%, var(--border));
+}
+
+.strip[data-state="down"] {
+  color: var(--bad);
+  background: color-mix(in srgb, var(--bad) 7%, var(--surface));
+  border-color: color-mix(in srgb, var(--bad) 25%, var(--border));
+}
+
+.strip-job {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.pulse {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentcolor;
+  animation: pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+
+  50% {
+    opacity: 0.25;
+  }
+}
+
+/* A run that never resolves should not strobe forever behind someone's work. */
+@media (prefers-reduced-motion: reduce) {
+  .pulse {
+    animation: none;
+  }
+}
+
+/* Run controls ------------------------------------------------------------ */
+
+button.run {
+  font: inherit;
+  font-size: 13px;
+  padding: 5px 12px;
+  color: var(--surface);
+  background: var(--ink);
+  border: 1px solid var(--ink);
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+button.run:hover:not(:disabled) {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+button.run:disabled {
+  color: var(--muted);
+  background: var(--bg);
+  border-color: var(--border);
+  cursor: default;
+}
+
+.run-error {
+  margin-left: 8px;
+  font-size: 12px;
+  color: var(--bad);
+}
+
+button.link {
+  font: inherit;
+  font-size: 12px;
+  color: var(--accent);
+  background: none;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+  text-decoration: underline;
+}
+
+.cost {
+  margin-left: 5px;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--warn);
+}
+
+.export {
+  float: right;
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--accent);
+}
+
+.research-run {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+/* Jobs page --------------------------------------------------------------- */
+
+table.jobs {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+table.jobs th {
+  text-align: left;
+  font-weight: 600;
+  color: var(--muted);
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border);
+}
+
+table.jobs td {
+  padding: 8px;
+  border-bottom: 1px solid var(--border);
+  vertical-align: middle;
+}
+
+table.jobs tr:last-child td {
+  border-bottom: 0;
+}
+
+.state {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  padding: 2px 7px;
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--muted);
+}
+
+.state[data-status="RUNNING"] {
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, var(--surface));
+}
+
+.state[data-status="SUCCEEDED"] {
+  color: var(--good);
+  background: color-mix(in srgb, var(--good) 12%, var(--surface));
+}
+
+.state[data-status="FAILED"] {
+  color: var(--bad);
+  background: color-mix(in srgb, var(--bad) 12%, var(--surface));
+}
+
+.state[data-status="UNKNOWN"] {
+  color: var(--warn);
+  background: color-mix(in srgb, var(--warn) 12%, var(--surface));
+}
+
+pre.log {
+  max-height: 380px;
+  overflow: auto;
+  margin: 0;
+  padding: 12px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--ink);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.muted {
+  color: var(--muted);
+  font-size: 13px;
+}

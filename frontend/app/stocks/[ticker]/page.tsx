@@ -3,6 +3,7 @@ import { notFound } from "next/navigation";
 
 import { CategoryBadge, RiskBadge, ScoreBadge, StateBadge } from "@/components/badges";
 import { Research } from "@/components/research";
+import { ResearchButton } from "@/components/research-button";
 import { WatchButton } from "@/components/watch-button";
 import { fetchResearch, fetchStock, type Component } from "@/lib/api";
 import { change, metricValue, money, percent, score, title } from "@/lib/format";
@@ -91,14 +92,24 @@ export default async function StockPage({ params }: { params: Promise<{ ticker: 
       </div>
 
       {report ? (
-        <Research report={report} />
+        <>
+          <Research report={report} />
+          <div className="card">
+            <ResearchButton ticker={detail.ticker} hasReport />
+            <p className="muted">
+              A re-run reuses the stored report unless the evidence, the scoring rules or the
+              prompt have changed, so pressing this again usually costs nothing.
+            </p>
+          </div>
+        </>
       ) : (
         <div className="card">
           <h2>AI research</h2>
           <p className="empty">
-            No research stored for {detail.ticker}. Run{" "}
-            <code>stock-screener research run {detail.ticker}</code> to generate one.
+            No research stored for {detail.ticker}.
+            {detail.score ? "" : " A company without a score has no brief to research from."}
           </p>
+          <ResearchButton ticker={detail.ticker} hasReport={false} />
         </div>
       )}
     </>

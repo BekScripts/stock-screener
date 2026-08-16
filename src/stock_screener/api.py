@@ -16,11 +16,14 @@ it with an in-memory database in one line.
 
 from __future__ import annotations
 
+import csv
+import io
 from dataclasses import asdict
+from datetime import date
 from functools import lru_cache
 from typing import TYPE_CHECKING, Annotated, Any
 
-from fastapi import Body, Depends, FastAPI, HTTPException, Query
+from fastapi import Body, Depends, FastAPI, HTTPException, Query, Response
 from fastapi.middleware.cors import CORSMiddleware
 
 from data_access import (
@@ -51,7 +54,7 @@ from stock_screener.scoring import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Callable, Iterator
 
     from sqlalchemy.orm import Session, sessionmaker
 
@@ -59,6 +62,16 @@ if TYPE_CHECKING:
 
 _DEFAULT_LIMIT = 50
 _MAX_LIMIT = 500
+
+#: The four ranking views, by the key the dashboard uses for each. Keeping the
+#: mapping here means the CSV export and the JSON endpoints can never drift into
+#: serving different rows for the same view.
+_RANKING_VIEWS: dict[str, Callable[[Session, int], list[RankingRow]]] = {
+    "top": lambda session, limit: top_opportunities(session, limit=limit),
+    "hidden-gems": lambda session, limit: hidden_gems(session, limit=limit),
+    "wrong-price": lambda session, limit: great_company_wrong_price(session, limit=limit),
+    "improving": lambda session, limit: improving_fast(session, limit=limit),
+}
 
 
 @lru_cache(maxsize=1)
@@ -431,6 +444,82 @@ def watchlist_remove(session: SessionDep, ticker: str) -> dict[str, Any]:
     removed = WatchlistRepository(session).remove(company.id)
     session.commit()
     return {"ticker": company.ticker, "removed": removed}
+
+
+@app.get("/api/rankings/{view}/export")
+def rankings_export(session: SessionDep, view: str, limit: int = _MAX_LIMIT) -> Response:
+    """Serve one ranking view as CSV.
+
+    The same rows the screen shows, for review somewhere a browser is not. Built
+    here rather than in the dashboard for the reason everything else is: a file
+    assembled client-side could disagree with the page it came from.
+
+    Args:
+        session: Database session, injected.
+        view: Which ranking. One of the four keys in `_RANKING_VIEWS`.
+        limit: Maximum rows.
+
+    Returns:
+        A CSV attachment named for the view and the score date.
+
+    Raises:
+        HTTPException: 404 when the view is not one of the four.
+    """
+    if view not in _RANKING_VIEWS:
+        raise HTTPException(status_code=404, detail=f"unknown ranking {view}")
+
+    rows = _RANKING_VIEWS[view](session, min(limit, _MAX_LIMIT))
+    buffer = io.StringIO()
+
+    if rows:
+        writer = csv.DictWriter(buffer, fieldnames=list(asdict(rows[0])))
+        writer.writeheader()
+        for row in rows:
+            # `None` writes as an empty cell, never as 0 — a spreadsheet average
+            # then skips it instead of counting a zero that was never reported.
+            writer.writerow(asdict(row))
+
+    filename = f"{view}-{date.today().isoformat()}.csv"  # noqa: DTZ011 - a local filename
+    return Response(
+        content=buffer.getvalue(),
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@app.get("/api/companies/search")
+def company_search(
+    session: SessionDep,
+    q: Annotated[str, Query(min_length=1, max_length=40)],
+    limit: Annotated[int, Query(ge=1, le=50)] = 20,
+) -> dict[str, Any]:
+    """Find companies by ticker or name.
+
+    The rankings cap at 500 rows, so most of a scored universe is unreachable by
+    browsing. This is how a person gets to a company that is not near the top —
+    including one that is not ranked at all, whose page then says why.
+
+    Args:
+        session: Database session, injected.
+        q: Ticker or name fragment.
+        limit: Maximum hits to return.
+
+    Returns:
+        Matching companies with their current score, exact ticker first.
+    """
+    matches = CompanyRepository(session).search(q, limit=limit)
+    hits = []
+    for company in matches:
+        detail = latest_score(session, company.ticker)
+        hits.append(
+            {
+                "ticker": company.ticker,
+                "name": company.name,
+                "final_score": detail.final_score if detail else None,
+                "scoring_status": detail.scoring_status if detail else None,
+            }
+        )
+    return {"count": len(hits), "hits": hits}
 
 
 @app.get("/api/jobs/kinds")

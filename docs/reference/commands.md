@@ -14,6 +14,7 @@ used.
 | `make sync` | `uv sync --all-packages --all-groups` |
 | `make check` | `lint`, `format-check`, `types`, `test` |
 | `make check-web` | In `frontend/`: `npm run typecheck`, `npm run lint`, `npm run build` |
+| `make dev` | The API and the dashboard together; Ctrl-C stops both |
 | `make lint` | `ruff check .` |
 | `make format` | `ruff format .` then `ruff check --fix .` |
 | `make format-check` | `ruff format --check .` |

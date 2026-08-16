@@ -1,5 +1,5 @@
 .DEFAULT_GOAL := help
-.PHONY: help setup sync check check-web lint format format-check types test test-ci \
+.PHONY: help setup sync check check-web dev lint format format-check types test test-ci \
         test-unit cov migrate migrate-down scan docs docs-build sync-skills clean
 
 UV := uv
@@ -28,6 +28,24 @@ check: lint format-check types test  ## Everything CI runs — the gate before y
 # waits for an npm install. Run this one when you touch frontend/.
 check-web:  ## The frontend gate: typecheck, lint, production build (needs Node)
 	cd frontend && npm run typecheck && npm run lint && npm run build
+
+API_PORT ?= 8000
+WEB_PORT ?= 3000
+
+dev:  ## Run the API and the dashboard together; Ctrl-C stops both
+	@command -v npm >/dev/null || { echo "npm is required for the dashboard"; exit 1; }
+	@test -d frontend/node_modules || (cd frontend && npm install)
+	@echo "API  http://localhost:$(API_PORT)"
+	@echo "Web  http://localhost:$(WEB_PORT)"
+	@echo
+	# One trap for both children. Without it a Ctrl-C reaches only the
+	# foreground process and leaves the other holding its port, which is exactly
+	# the mess that makes the next `make dev` start on a different port.
+	@trap 'kill 0' EXIT INT TERM; \
+	  $(UV) run uvicorn stock_screener.api:app --reload --port $(API_PORT) & \
+	  NEXT_PUBLIC_API_URL=http://localhost:$(API_PORT) \
+	    npm --prefix frontend run dev -- --port $(WEB_PORT) & \
+	  wait
 
 lint:  ## Ruff lint
 	$(UV) run ruff check .

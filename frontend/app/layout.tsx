@@ -1,6 +1,9 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 
+import { JobStrip } from "@/components/job-strip";
+import { TickerSearch } from "@/components/ticker-search";
+
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -20,11 +23,16 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
               </h1>
               <div className="tagline">Stocks worth researching, and why.</div>
             </div>
-            <nav className="top">
-              <Link href="/">Rankings</Link>
-              <Link href="/watchlist">Watchlist</Link>
-            </nav>
+            <div className="masthead-right">
+              <TickerSearch />
+              <nav className="top">
+                <Link href="/">Rankings</Link>
+                <Link href="/watchlist">Watchlist</Link>
+                <Link href="/jobs">Jobs</Link>
+              </nav>
+            </div>
           </header>
+          <JobStrip />
           {children}
         </div>
       </body>

@@ -64,17 +64,41 @@ selection, brief assembly, the generate-validate-persist pipeline, persistence,
 caching and a run-cost guard; and the `research` CLI group. Its workflow and
 known limitations are documented in `docs/reference/project-phases/phase3.md`.
 
-**Phase 4 (dashboard and watchlist) is complete and frozen.** The MVP is done.
-The dashboard lives in `frontend/`, the endpoints that feed it in
+**Phase 4 (dashboard and watchlist) is complete.** The MVP is done. The
+dashboard lives in `frontend/`, the endpoints that feed it in
 `src/stock_screener/api.py`, their read models in
-`src/stock_screener/dashboard.py`, and the one persistent write in the
-`watchlist` table. Its scope and known limitations are documented in
+`src/stock_screener/dashboard.py`, and the watchlist write in the `watchlist`
+table. Its scope and known limitations are documented in
 `docs/reference/project-phases/phase4.md`.
 
+**Phase 5 (run control) is complete.** The dashboard can now run the pipeline,
+not just read it. `src/stock_screener/jobs.py` spawns existing CLI commands as
+subprocesses and tracks them in the `jobs` table; the `/api/jobs` endpoints
+start and report them; `frontend/app/jobs/` is the control panel. Also added:
+ticker search, because the rankings cap at 500 rows over a universe of
+thousands, and CSV export of a ranking view. Documented in
+`docs/reference/project-phases/phase5.md`.
+
+Three rules govern that layer:
+
+- **A job is an existing command, never new pipeline code.** `JOB_KINDS` maps a
+  key to a CLI argument list and is the entire allowlist — a caller picks a
+  key, never an argument. Adding a stage means adding a CLI command first.
+- **A job carries no result.** Every command persists what it produces, so a
+  finished job is read through the endpoint serving that thing. A job record
+  answers "is it running, did it work", and nothing else.
+- **One run per kind.** Two concurrent market-wide runs would race on the same
+  rows and double the load on the providers they read, so a second request
+  returns the one in flight rather than starting a competitor.
+
 Not built, and not to be started without being asked: a second LLM provider,
-filing exhibits, and any Phase 5 work. The dashboard's own exclusions are
-deliberate and are not a backlog — no alerts, authentication, deployment
-config, charts, portfolios, positions, price targets or notifications.
+filing exhibits, alerts, notifications, authentication, deployment config,
+charts, portfolios, positions and price targets. Those exclusions are
+deliberate, not a backlog.
+
+**The job endpoints spend money and have no authentication.** They are only
+reasonable because the API binds localhost. `JOBS_ENABLED=false` is the off
+switch, and binding the API anywhere else without one is a mistake.
 
 Three rules govern that layer:
 
@@ -195,6 +219,7 @@ used. Never invoke `pip`, `python -m venv`, or a bare `python`.
 | --- | --- |
 | `make check` | Everything CI runs. Run this before saying you are done. |
 | `make check-web` | The frontend gate: tsc, ESLint, `next build`. Needs Node. |
+| `make dev` | Run the API and the dashboard together. Ctrl-C stops both. |
 | `make test` | pytest with coverage (fails under 80%) |
 | `make lint` / `make format` | Ruff check / Ruff write |
 | `make types` | mypy strict |

@@ -12,9 +12,10 @@ of listings to a small group, and explains what it saw.
 
 ## Scope — what exists today
 
-The MVP is built in four phases, and **all four are complete**: data in, a
-ranked and explainable shortlist out, AI research that cites its evidence, and a
-dashboard to read it on.
+The MVP was built in four phases and all four are complete: data in, a ranked
+and explainable shortlist out, AI research that cites its evidence, and a
+dashboard to read it on. A fifth added run control — the pipeline starts from
+the dashboard rather than only from a terminal.
 
 ```text
 Alpaca + EDGAR  →  Scanner  →  Metrics  →  CompounderScore  →  Preliminary ranking
@@ -47,6 +48,8 @@ actually shows — see [ADR-0008](docs/adr/0008-broad-scan-on-free-data-metered-
 | Deterministic SEC filing-text extraction | |
 | AI research whose every claim cites the evidence it rests on | |
 | Next.js dashboard and a persistent watchlist | |
+| Running the pipeline from the dashboard, with job history | |
+| Ticker search across the whole universe, and CSV export | |
 
 Every ranking is explainable: `stock-screener explain NVDA` prints the points
 each metric earned and the value it earned them on. A metric the data cannot
@@ -297,7 +300,13 @@ a wildcard would let any page a browser happens to be on edit the watchlist.
 
 ## Running the dashboard
 
-Two processes. The API first, then the Next.js dashboard in front of it:
+One command starts both:
+
+```bash
+make dev            # API on :8000, dashboard on :3000, Ctrl-C stops both
+```
+
+Or run them separately, which is what `make dev` does under the hood:
 
 ```bash
 uv run uvicorn stock_screener.api:app --reload      # http://localhost:8000
@@ -305,7 +314,13 @@ cd frontend && npm install && npm run dev           # http://localhost:3000
 ```
 
 Open <http://localhost:3000>. Four ranking tabs, a company page with the score
-breakdown and its grounded research, and the watchlist.
+breakdown and its grounded research, the watchlist, and a **Jobs** tab that runs
+the pipeline: the daily run, scoring, enrichment and the individual ingest
+stages, with history and a live log. AI research runs per company, from that
+company's page.
+
+Search in the masthead reaches any company by ticker or name — necessary
+because the rankings cap at 500 rows over a universe of thousands.
 
 The pages render stored snapshots and nothing else, so **run `score` before
 expecting anything to appear** — a database that has been scanned but never
@@ -338,6 +353,7 @@ you touch `frontend/`.
 | --- | --- |
 | `make check` | Everything CI runs — the Python gate |
 | `make check-web` | The frontend gate: tsc, ESLint, `next build` (needs Node) |
+| `make dev` | The API and the dashboard together; Ctrl-C stops both |
 | `make migrate` | Apply database migrations |
 | `make scan` | Full pipeline, then print the table |
 | `make test` / `make test-unit` | Tests with coverage / fast unit loop |

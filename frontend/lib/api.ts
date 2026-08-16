@@ -7,7 +7,7 @@
  * about what a company scored today.
  */
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+export const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
 export type RankingRow = {
   rank: number;
@@ -191,4 +191,97 @@ export async function setWatched(ticker: string, watched: boolean): Promise<void
   if (!response.ok) {
     throw new Error(`could not update the watchlist (${response.status})`);
   }
+}
+
+/* -- jobs ------------------------------------------------------------------
+ *
+ * A job is a pipeline command running in a process the API spawned. Nothing
+ * here carries a result: every command persists what it produces, so a
+ * finished job means the page should refetch, not read something from the job.
+ */
+
+export type JobStatus = "RUNNING" | "SUCCEEDED" | "FAILED" | "UNKNOWN";
+
+export type Job = {
+  id: number;
+  kind: string;
+  label: string;
+  target: string | null;
+  status: JobStatus;
+  exit_code: number | null;
+  started_at: string;
+  finished_at: string | null;
+  /** Only present when a single job is fetched by id. */
+  log?: string;
+};
+
+export type JobKind = {
+  kind: string;
+  label: string;
+  needs_target: boolean;
+  spends_money: boolean;
+  minutes: number;
+};
+
+/** Thrown when a job is already running, carrying the one that is. */
+export class JobConflictError extends Error {
+  constructor(readonly running: Job) {
+    super(`${running.label} is already running`);
+    this.name = "JobConflictError";
+  }
+}
+
+export async function fetchJobKinds(): Promise<JobKind[]> {
+  const { kinds } = await get<{ kinds: JobKind[] }>("/api/jobs/kinds");
+  return kinds;
+}
+
+export async function fetchJobs(): Promise<{ running: Job[]; recent: Job[] }> {
+  return get<{ running: Job[]; recent: Job[] }>("/api/jobs");
+}
+
+export async function fetchJob(id: number): Promise<Job> {
+  return get<Job>(`/api/jobs/${id}`);
+}
+
+/**
+ * Start a command.
+ *
+ * A 409 is not a failure — it means the button was pressed twice and the run is
+ * already going. It surfaces as `JobConflictError` so a caller can show the job
+ * in flight rather than an error.
+ */
+export async function startJob(kind: string, target?: string): Promise<Job> {
+  const response = await fetch(`${API_URL}/api/jobs`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ kind, target: target ?? null }),
+  });
+
+  if (response.status === 409) {
+    const body = (await response.json()) as { detail: { job: Job } };
+    throw new JobConflictError(body.detail.job);
+  }
+  if (!response.ok) {
+    const body = (await response.json().catch(() => null)) as { detail?: string } | null;
+    throw new Error(body?.detail ?? `could not start ${kind} (${response.status})`);
+  }
+
+  return (await response.json()) as Job;
+}
+
+/* -- search ---------------------------------------------------------------- */
+
+export type SearchHit = {
+  ticker: string;
+  name: string;
+  final_score: number | null;
+  scoring_status: string | null;
+};
+
+export async function searchCompanies(query: string): Promise<SearchHit[]> {
+  const { hits } = await get<{ hits: SearchHit[] }>(
+    `/api/companies/search?q=${encodeURIComponent(query)}`,
+  );
+  return hits;
 }
