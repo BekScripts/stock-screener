@@ -22,6 +22,7 @@ dependencies = [
     "api-clients",
     "data-access",
     "domain",
+    "research",
     # Third-party runtime dependencies.
     "alembic>=1.14",
     "fastapi>=0.115",
@@ -50,6 +51,7 @@ members = ["packages/*"]
 api-clients = { workspace = true }
 data-access = { workspace = true }
 domain = { workspace = true }
+research = { workspace = true }
 
 # ----------------------------------------------------------------------------
 # Dev dependencies (installed for the whole workspace by `uv sync`)
@@ -136,7 +138,7 @@ convention = "google"
 
 [tool.ruff.lint.isort]
 # Add each package's import name here.
-known-first-party = ["api_clients", "data_access", "domain", "stock_screener"]
+known-first-party = ["api_clients", "data_access", "domain", "research", "stock_screener"]
 
 [tool.ruff.format]
 docstring-code-format = true

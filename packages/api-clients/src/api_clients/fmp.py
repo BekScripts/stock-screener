@@ -35,7 +35,7 @@ import httpx
 
 from api_clients._http import RateLimiter, RetryPolicy, request_json
 from api_clients.errors import ProviderDataError
-from domain import CompanyProfile, FinancialPeriod, normalise_ticker
+from domain import CompanyProfile, Filing, FilingExcerpt, FinancialPeriod, normalise_ticker
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -171,6 +171,39 @@ class FmpFundamentals:
         ]
 
     # -- internals ---------------------------------------------------------
+
+    def get_filings(self, ticker: str, limit: int = 8) -> list[Filing]:
+        """Return nothing: filings come from EDGAR, which is free and complete.
+
+        FMP does publish a filings endpoint, but spending a metered request on an
+        index EDGAR serves for nothing would put a quota between the screener and
+        data it can already reach. Returning empty keeps this adapter conformant
+        without making it the source of something it should not be.
+
+        Args:
+            ticker: Ignored.
+            limit: Ignored.
+
+        Returns:
+            An empty list, always.
+        """
+        return []
+
+    def get_filing_excerpts(self, ticker: str, filing: Filing) -> list[FilingExcerpt]:
+        """Return nothing: filing documents are read from EDGAR.
+
+        Same reasoning as `get_filings`. The documents are free at the source,
+        and a metered request to read one would put a quota between the screener
+        and text it can already fetch.
+
+        Args:
+            ticker: Ignored.
+            filing: Ignored.
+
+        Returns:
+            An empty list, always.
+        """
+        return []
 
     def _get(self, endpoint: str, params: dict[str, Any] | None = None) -> Any:
         """Issue a GET against the API root, with the key appended to the query."""

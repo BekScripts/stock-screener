@@ -19,11 +19,15 @@ import structlog
 
 from api_clients import (
     AlpacaMarketData,
+    AnthropicResearch,
     CompositeFundamentals,
     FmpFundamentals,
     FundamentalsProvider,
     MarketDataProvider,
+    MockResearch,
+    ProviderConfigurationError,
     RateLimiter,
+    ResearchProvider,
     RetryPolicy,
     SecEdgarFundamentals,
     load_fixture_providers,
@@ -161,6 +165,45 @@ def build_profile_provider(settings: Settings) -> FundamentalsProvider | None:
     if settings.fundamentals_provider in {"fmp", "edgar+fmp"}:
         return _build_fmp(settings)
     return None
+
+
+def build_research_provider(settings: Settings) -> ResearchProvider:
+    """Return the configured research provider.
+
+    Args:
+        settings: Supplies the selector, the credential and the model.
+
+    Returns:
+        The adapter named by `RESEARCH_PROVIDER`, already preflighted.
+
+    Raises:
+        ConfigurationError: If the provider cannot serve requests as configured —
+            a real provider with no credential, or the default mock with nothing
+            loaded. Raised **before** any request and before any database write,
+            so a misconfigured run costs nothing and stores nothing. This is
+            deliberately not the same thing as a provider failing at runtime: a
+            timeout or a 429 is recorded as a `FAILED` report, a missing key is
+            an operator error with nothing worth recording.
+    """
+    provider: ResearchProvider
+    if settings.research_provider == "mock":
+        provider = MockResearch()
+    else:
+        key = settings.research_api_key
+        provider = AnthropicResearch(
+            key.get_secret_value() if key is not None else "",
+            model=settings.research_model,
+            max_output_tokens=settings.research_max_output_tokens,
+            effort=settings.research_effort,
+            timeout_seconds=settings.research_timeout_seconds,
+            max_attempts=settings.provider_max_attempts,
+        )
+
+    try:
+        provider.preflight()
+    except ProviderConfigurationError as exc:
+        raise ConfigurationError(str(exc)) from exc
+    return provider
 
 
 def _build_edgar(settings: Settings) -> FundamentalsProvider:

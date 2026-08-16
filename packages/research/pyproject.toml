@@ -1,0 +1,24 @@
+[project]
+name = "research"
+version = "0.1.0"
+description = "The AI research contract: what the model is given, and what it is allowed to return."
+readme = "README.md"
+requires-python = ">=3.12"
+license = "MIT"
+authors = [{ name = "Aziz", email = "azizzbek.io@gmail.com" }]
+
+dependencies = [
+    "domain",
+    "pydantic>=2.9",
+]
+
+[build-system]
+requires = ["uv_build>=0.11,<0.12"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = "research"
+module-root = "src"
+
+[tool.uv.sources]
+domain = { workspace = true }

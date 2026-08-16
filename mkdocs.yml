@@ -59,6 +59,7 @@ nav:
       - Phase 1 brief: reference/project-phases/phase1.md
       - Phase 2 brief: reference/project-phases/phase2.md
       - Phase 2 constraints: reference/project-phases/phase2-constraints.md
+      - Phase 3 brief: reference/project-phases/phase3.md
   - Explanation:
       - explanation/index.md
       - Architecture: explanation/architecture.md
@@ -72,3 +73,4 @@ nav:
       - 0006 Score snapshots are versioned: adr/0006-score-snapshots-are-versioned-and-immutable.md
       - 0007 Missing metrics stay in their component: adr/0007-missing-metrics-are-carried-by-their-own-component.md
       - 0008 Broad scan free, enrichment last: adr/0008-broad-scan-on-free-data-metered-enrichment-last.md
+      - 0009 The research contract is its own package: adr/0009-the-research-contract-is-its-own-package.md

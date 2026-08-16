@@ -58,6 +58,23 @@ Installed as `stock-screener`; also reachable as `python -m stock_screener`.
 | `explain` | One company's latest score, metric by metric. Takes a ticker. |
 | `run-daily` | The whole nightly job: every update, then `score`, then `enrich`, then the ranking. |
 
+### AI research (Phase 3)
+
+`candidates`, `brief` and `update-filings` are inspection and ingestion; only
+`run` calls a model. Assembling a brief touches no provider at all — it reads the
+database and nothing else.
+
+A research run never fails a pipeline. A quota, a timeout or an outage becomes a
+`FAILED` report for that company and the run continues, so scanning, scoring and
+ranking never depend on a model being reachable.
+
+| Command | Does |
+| --- | --- |
+| `research candidates` | Lists the companies a research run would spend a model call on: the top of the ranking, the biggest score movers, and the hidden gems, deduplicated and capped at 25. |
+| `research brief <TICKER>` | Assembles one company's research brief and summarises the evidence it carries — facts, score items, quarters, filings, and everything unknown. |
+| `research update-filings` | Refreshes the stored SEC filing index that briefs cite. Metadata only; no filing text is fetched. `--candidates` restricts the pass to the current research set. |
+| `research run [TICKER]` | Generates AI research, validates it, and stores what validation accepted. With no ticker, researches every candidate. Reuses a stored report whenever the evidence, the scoring rules and the prompt are all unchanged. |
+
 | Option | Applies to | Effect |
 | --- | --- | --- |
 | `--ticker` / `-t` | the update commands, `scan`, `score` | Restrict to a symbol. Repeatable. |
@@ -72,6 +89,12 @@ Installed as `stock-screener`; also reachable as `python -m stock_screener`.
 | `--min-score` | `rankings` | Only companies at or above this final score. |
 | `--window` | `improving` | Days to compare back over. Default 30. |
 | `--min-change` | `improving` | Minimum improvement, in score points. |
+| `--limit` / `-n` | `research candidates` | Cap the selection across every source. Default 25. |
+| `--json` | `research brief` | Print the whole brief as JSON, exactly as a model would receive it. |
+| `--ticker` / `-t`, `--limit` / `-n` | `research update-filings` | Restrict the pass, as for the other update commands. |
+| `--candidates` | `research update-filings` | Restrict the pass to the current research candidates. A full-universe refresh costs thousands of requests for filings no brief will cite. |
+| `--dry-run` | `research run` | Print the exact prompt and brief that would be sent, then stop. No model is called and nothing is stored. |
+| `--force` | `research run` | Ignore a stored report and generate a new one. |
 
 Every command is idempotent: a second run updates rows rather than duplicating
 them, including `score`, whose rows are unique per company, day and formula
@@ -79,7 +102,8 @@ version. A per-ticker provider failure is logged and counted, and does not end
 the run.
 
 Exit codes: `0` on success, `1` when `explain` has no stored score for the
-ticker, `2` when a selected provider is missing its credentials.
+ticker or `research brief` has no scored company to build one from, `2` when a
+selected provider is missing its credentials.
 
 ## Scripts
 

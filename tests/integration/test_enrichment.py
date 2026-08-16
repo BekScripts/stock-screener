@@ -26,6 +26,8 @@ from data_access import (
 from domain import (
     CURRENT_SCORE_VERSION,
     CompanyProfile,
+    Filing,
+    FilingExcerpt,
     FinancialPeriod,
     MarketCapSource,
     PriceBar,
@@ -82,6 +84,14 @@ class FakeProfiles:
     def get_financial_statements(self, ticker: str, limit: int = 20) -> list[FinancialPeriod]:
         """Never called: enrichment buys profiles, not statements."""
         raise AssertionError("enrichment must not re-fetch statements")
+
+    def get_filings(self, ticker: str, limit: int = 8) -> list[Filing]:
+        """Never called: enrichment buys profiles, not filings."""
+        raise AssertionError("enrichment must not fetch filings")
+
+    def get_filing_excerpts(self, ticker: str, filing: Filing) -> list[FilingExcerpt]:
+        """Never called: enrichment buys profiles, not documents."""
+        raise AssertionError("enrichment must not fetch filing documents")
 
 
 def _bars(*, annual_return: float, end_price: float = 40.0) -> list[PriceBar]:

@@ -1,4 +1,13 @@
-"""Shared pytest fixtures for the root application test suite."""
+"""Shared pytest fixtures for the root application test suite.
+
+`Make` builds synthetic price and fundamental history; `Seed` writes it into a
+database along with a score snapshot, so a test that needs a scored company
+starts from one rather than from twenty lines of setup.
+
+Both live here rather than in a second `conftest.py` under `tests/integration/`:
+mypy refuses two modules with the same name on one path, and one shared file is
+cheaper than the package plumbing that would silence it.
+"""
 
 from __future__ import annotations
 
@@ -8,8 +17,37 @@ from typing import TYPE_CHECKING
 import pytest
 
 from api_clients import MockFundamentals, MockMarketData
-from data_access import build_session_factory, create_all, create_engine_from_url
-from domain import CompanyProfile, FinancialPeriod, PriceBar
+from data_access import (
+    PRELIMINARY,
+    CompanyRepository,
+    FinancialSnapshotRepository,
+    PriceHistoryRepository,
+    ScoreRecord,
+    ScoreSnapshotRepository,
+    build_session_factory,
+    create_all,
+    create_engine_from_url,
+)
+from domain import (
+    CURRENT_SCORE_VERSION,
+    CompanyMetrics,
+    CompanyProfile,
+    CompanyScore,
+    ComponentScore,
+    ComponentStatus,
+    FinancialPeriod,
+    MarketCapSource,
+    MetricUnit,
+    PriceBar,
+    RiskAssessment,
+    RiskLevel,
+    ScoreCategory,
+    ScoreWarning,
+    ScoringStatus,
+    SubScore,
+    ValuationBasis,
+    VolumeBasis,
+)
 from stock_screener.config import Settings, get_settings
 
 if TYPE_CHECKING:
@@ -47,6 +85,12 @@ _SETTINGS_ENV_VARS = (
     "FUNDAMENTALS_QUARTERS",
     "BENCHMARK_SYMBOL",
     "FMP_ENRICHMENT_LIMIT",
+    "RESEARCH_PROVIDER",
+    "RESEARCH_API_KEY",
+    "RESEARCH_MODEL",
+    "RESEARCH_MAX_OUTPUT_TOKENS",
+    "RESEARCH_EFFORT",
+    "RESEARCH_TIMEOUT_SECONDS",
     "MIN_PRICE",
     "MIN_MARKET_CAP",
     "MIN_AVG_DOLLAR_VOLUME",
@@ -167,3 +211,191 @@ def providers(eligible_profile: CompanyProfile) -> tuple[MockMarketData, MockFun
             {eligible_profile.ticker: eligible_profile}, {eligible_profile.ticker: periods}
         ),
     )
+
+
+SCORE_DATE = date(2026, 6, 30)
+"""The day every seeded score describes. Fixed so nothing depends on today."""
+
+
+class Seed:
+    """Writes companies, history and scores into a test database."""
+
+    score_date = SCORE_DATE
+
+    @staticmethod
+    def company(
+        session: Session,
+        make: type[Make],
+        ticker: str,
+        *,
+        name: str | None = None,
+        quarters: int = 8,
+        sessions: int = 60,
+        revenue: float = 100_000_000.0,
+    ) -> int:
+        """Store one company with fundamentals and price history.
+
+        Returns:
+            The stored company's primary key.
+        """
+        profile = CompanyProfile(
+            ticker=ticker,
+            name=name or f"{ticker} Corporation",
+            exchange="NASDAQ",
+            sector="Technology",
+            industry="Software",
+            market_cap=1_200_000_000.0,
+        )
+        companies = CompanyRepository(session)
+        companies.upsert_profile(profile)
+        stored = companies.get_by_ticker(ticker)
+        assert stored is not None
+
+        FinancialSnapshotRepository(session).upsert_periods(
+            stored.id, make.quarters(count=quarters, revenue=revenue)
+        )
+        PriceHistoryRepository(session).upsert_bars(stored.id, make.bars(sessions=sessions))
+        session.flush()
+        return stored.id
+
+    @staticmethod
+    def score(
+        session: Session,
+        company_id: int,
+        ticker: str,
+        *,
+        final: float = 80.0,
+        coverage: float = 1.0,
+        growth: float = 30.0,
+        quality: float = 20.0,
+        valuation: float = 18.0,
+        status: ScoringStatus = ScoringStatus.SCORED,
+        score_date: date = SCORE_DATE,
+        score_version: str = CURRENT_SCORE_VERSION,
+        ranking_state: str = PRELIMINARY,
+        market_cap: float | None = 1_200_000_000.0,
+        revenue_growth: float | None = 0.35,
+        market_cap_source: MarketCapSource = MarketCapSource.CALCULATED,
+        liquidity_basis: VolumeBasis = VolumeBasis.PARTIAL,
+    ) -> None:
+        """Store one score snapshot, breakdown included."""
+        ScoreSnapshotRepository(session).upsert_scores(
+            [
+                ScoreRecord(
+                    company_id=company_id,
+                    score=Seed.company_score(
+                        ticker,
+                        final=final,
+                        coverage=coverage,
+                        growth=growth,
+                        quality=quality,
+                        valuation=valuation,
+                        status=status,
+                        score_version=score_version,
+                    ),
+                    metrics=CompanyMetrics(
+                        ticker=ticker,
+                        market_cap=market_cap,
+                        market_cap_source=market_cap_source,
+                        liquidity_basis=liquidity_basis,
+                        average_dollar_volume_20d=12_500_000.0,
+                        revenue_growth_yoy=revenue_growth,
+                        revenue_growth_acceleration=0.12,
+                        enterprise_value=1_000_000_000.0,
+                    ),
+                    ranking_state=ranking_state,
+                )
+            ],
+            score_date,
+        )
+        session.flush()
+
+    @staticmethod
+    def company_score(
+        ticker: str,
+        *,
+        final: float = 80.0,
+        coverage: float = 1.0,
+        growth: float = 30.0,
+        quality: float = 20.0,
+        valuation: float = 18.0,
+        status: ScoringStatus = ScoringStatus.SCORED,
+        score_version: str = CURRENT_SCORE_VERSION,
+    ) -> CompanyScore:
+        """Build a complete score, including one unavailable sub-score.
+
+        The unavailable sub-score is the point: a brief must carry the metrics
+        the score could *not* use, and a fixture with perfect data would never
+        exercise that.
+        """
+        if status is not ScoringStatus.SCORED:
+            return CompanyScore(ticker=ticker, score_version=score_version, status=status)
+
+        return CompanyScore(
+            ticker=ticker,
+            score_version=score_version,
+            status=status,
+            growth=_component("growth", "revenue_growth", growth, 35.0, coverage),
+            quality=_component("quality", "gross_margin", quality, 25.0, coverage),
+            valuation=_component("valuation", "valuation_multiple", valuation, 25.0, coverage),
+            momentum=_component("momentum", "position_52w", 12.0, 15.0, coverage),
+            raw_score=growth + quality + valuation + 12.0,
+            risk=RiskAssessment(
+                dilution_penalty=0.0,
+                runway_penalty=None,
+                balance_sheet_penalty=0.0,
+                total_penalty=0.0,
+                level=RiskLevel.LOW,
+                coverage=0.67,
+                share_count_growth_yoy=0.02,
+                warnings=(ScoreWarning.RUNWAY_NOT_ASSESSED,),
+            ),
+            final_score=final,
+            category=ScoreCategory.STRONG_RESEARCH_CANDIDATE,
+            data_coverage=coverage,
+            valuation_basis=ValuationBasis.EV_TO_REVENUE,
+            warnings=(ScoreWarning.WEIGHT_REDISTRIBUTED,),
+        )
+
+
+def _component(
+    name: str, primary: str, score: float, maximum: float, coverage: float
+) -> ComponentScore:
+    """Build a component with one scored and one unavailable sub-score.
+
+    The scored one is named after a real sub-score the engine emits, so the
+    brief's preserve map actually fires in these tests. The unavailable one is
+    the point of the fixture: a brief must carry what the score could not judge.
+    """
+    return ComponentScore(
+        name=name,
+        status=ComponentStatus.SCORED,
+        score=score,
+        max_points=maximum,
+        coverage=coverage,
+        subscores=(
+            SubScore(
+                name=primary,
+                points=score,
+                max_points=maximum - 5.0,
+                observed=0.35,
+                unit=MetricUnit.PERCENT,
+            ),
+            SubScore(name=f"{name}_secondary", points=None, max_points=5.0, observed=None),
+        ),
+        redistributed=True,
+    )
+
+
+@pytest.fixture
+def seed() -> type[Seed]:
+    """Return the builders that put companies and scores in the database."""
+    return Seed
+
+
+@pytest.fixture
+def scored_company(session: Session, make: type, seed: type[Seed]) -> str:
+    """Store one fully scored company and return its ticker."""
+    company_id = seed.company(session, make, "XYZ")
+    seed.score(session, company_id, "XYZ")
+    return "XYZ"

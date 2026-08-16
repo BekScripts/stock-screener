@@ -24,10 +24,12 @@ src/stock_screener/   the application — config, logging, ingestion, scanner, s
   providers.py        selects an adapter from settings
   scanning/           the feature: ingestion, scanner, report
   scoring/            the feature: scoring run, rankings, report
+  research/           the feature: candidates, brief assembly, storage, report
 
 packages/domain/      metric engine, eligibility rules and CompounderScore — pure, no I/O
 packages/api-clients/ provider protocols and adapters
 packages/data-access/ tables, idempotent writes, row↔model translation
+packages/research/    the AI research contract and its checks — pure, no I/O
 migrations/           alembic revisions
 ```
 
@@ -43,9 +45,10 @@ accomplish one thing.
 src/stock_screener  →  packages/*  →  packages/domain
 ```
 
-Strictly one-way. `domain` depends on nothing but pydantic, `api-clients` and
-`data-access` depend on `domain` for vocabulary, and the application composes all
-three. A package importing from `src/stock_screener` is always wrong.
+Strictly one-way. `domain` depends on nothing but pydantic, and `api-clients`,
+`data-access` and `research` depend on `domain` for vocabulary while the
+application composes all four. A package importing from `src/stock_screener` is
+always wrong.
 
 uv cannot enforce this — Python will import anything on the path. It is held up
 by review and by the `python-package` skill.
@@ -210,8 +213,37 @@ why — `UNSUPPORTED_SECTOR`, `NOT_ELIGIBLE`, `INSUFFICIENT_DATA` — and no sco
 Forcing a number onto all three would put meaningless values into a ranking that
 sorts on exactly that field.
 
-There is no AI research layer and no dashboard. Both are later phases, and both
-depend on the ranking being worth reading first.
+There is no dashboard. That is a later phase, and it depends on the ranking being
+worth reading first.
+
+## Research sits on top, and reads only
+
+AI research explains a stored score; it never participates in producing one.
+Nothing in `src/stock_screener/research/` writes to a score snapshot, and a
+provider being unreachable cannot stop a scan, a scoring run or a ranking — a
+failed call becomes a `FAILED` report and the run continues.
+
+The flow adds four steps to the end of the pipeline and no new dependency
+direction:
+
+```text
+ranking  →  candidate selection  →  SEC filing excerpts  →  ResearchBrief
+                                                                  ↓
+                          Claude DraftReport  →  validation  →  ResearchReport
+```
+
+Two boundaries carry the weight. A **brief is assembled from the database
+alone** — no provider is reachable while one is built, and every input is bounded
+by the `score_date` it explains, so a report cannot quietly explain last week's
+score with this week's numbers. And **only validation constructs a
+`ResearchReport`**, which is the type persistence accepts, so an unvalidated
+draft has no path to the database.
+
+Filing evidence is split in two on purpose: `D.` ids say a filing exists, `X.`
+ids quote what one says, and only the second can support a claim about a
+business. Numbers found in filing text are scoped to the claim citing that
+excerpt rather than pooled across the brief. The full workflow, guardrails and
+limitations are in the [Phase 3 brief](../reference/project-phases/phase3.md).
 
 ## Decisions
 
