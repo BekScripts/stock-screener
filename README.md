@@ -304,6 +304,7 @@ One command starts both:
 
 ```bash
 make dev            # API on :8000, dashboard on :3000, Ctrl-C stops both
+make dev FORCE=1    # same, first reclaiming ports this project left behind
 ```
 
 Or run them separately, which is what `make dev` does under the hood:
@@ -353,7 +354,7 @@ you touch `frontend/`.
 | --- | --- |
 | `make check` | Everything CI runs — the Python gate |
 | `make check-web` | The frontend gate: tsc, ESLint, `next build` (needs Node) |
-| `make dev` | The API and the dashboard together; Ctrl-C stops both |
+| `make dev` | The API and the dashboard together; Ctrl-C stops both. `FORCE=1` reclaims ports held by this project, never by anything else |
 | `make migrate` | Apply database migrations |
 | `make scan` | Full pipeline, then print the table |
 | `make test` / `make test-unit` | Tests with coverage / fast unit loop |

@@ -100,6 +100,22 @@ make dev
 Starts the API and the dashboard together and stops both on Ctrl-C. `API_PORT`
 and `WEB_PORT` override the defaults.
 
+A busy port stops the run rather than producing a Node stack trace, and the
+message names the invocation holding it — walking up from the socket, because a
+reloading uvicorn answers from a fork child whose command line is a bare
+interpreter path.
+
+```bash
+make dev FORCE=1
+```
+
+Reclaims the ports, but only from this application: it looks for our own uvicorn
+invocation in the holder's ancestry and refuses anything it does not recognise.
+Port 8000 is a port half the tools on a laptop want, and killing whatever answers
+there would eventually kill something else. Note that stopping the API does not
+stop a job it spawned — jobs are detached, so the work continues and its row
+reconciles to `UNKNOWN`.
+
 ## Security
 
 **The job endpoints spend money and have no authentication.** They are only
