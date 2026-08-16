@@ -32,15 +32,27 @@ check-web:  ## The frontend gate: typecheck, lint, production build (needs Node)
 API_PORT ?= 8000
 WEB_PORT ?= 3000
 
+# `trap 'kill 0'` signals the whole process group, not just the two children.
+# Both `uvicorn --reload` and `next dev` spawn workers of their own, and killing
+# only the direct children would leave those grandchildren holding the ports —
+# which is what makes the *next* `make dev` fail with EADDRINUSE.
+#
+# The ports are checked first because that failure is otherwise a Node stack
+# trace that says nothing about which process is in the way.
 dev:  ## Run the API and the dashboard together; Ctrl-C stops both
 	@command -v npm >/dev/null || { echo "npm is required for the dashboard"; exit 1; }
 	@test -d frontend/node_modules || (cd frontend && npm install)
+	@for port in $(API_PORT) $(WEB_PORT); do \
+	  holder=$$(lsof -nP -iTCP:$$port -sTCP:LISTEN -t 2>/dev/null | head -1); \
+	  if [ -n "$$holder" ]; then \
+	    echo "port $$port is already in use by pid $$holder ($$(ps -p $$holder -o comm= 2>/dev/null))"; \
+	    echo "stop it, or choose other ports:  make dev API_PORT=8002 WEB_PORT=3002"; \
+	    exit 1; \
+	  fi; \
+	done
 	@echo "API  http://localhost:$(API_PORT)"
 	@echo "Web  http://localhost:$(WEB_PORT)"
 	@echo
-	# One trap for both children. Without it a Ctrl-C reaches only the
-	# foreground process and leaves the other holding its port, which is exactly
-	# the mess that makes the next `make dev` start on a different port.
 	@trap 'kill 0' EXIT INT TERM; \
 	  $(UV) run uvicorn stock_screener.api:app --reload --port $(API_PORT) & \
 	  NEXT_PUBLIC_API_URL=http://localhost:$(API_PORT) \
