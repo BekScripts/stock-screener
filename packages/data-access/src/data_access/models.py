@@ -364,6 +364,44 @@ class WatchlistEntry(Base):
     company: Mapped[Company] = relationship(back_populates="watchlist_entry")
 
 
+class JobRecord(Base):
+    """One pipeline command started from outside the CLI.
+
+    The dashboard runs commands by spawning them, and this is the record of
+    that: what was asked for, whether it is still going, and where its output
+    went. It stores no results — every command already persists what it
+    produces, so a finished job is read through the endpoint that serves the
+    thing it produced, never from here.
+
+    `pid` is what makes a stale row recoverable. A run interrupted by an API
+    restart leaves `RUNNING` behind with no process attached, and the pid is
+    the only way to tell that from a run still in progress.
+
+    Rows accumulate deliberately: "when did this last run, and did it work" is
+    the question the history answers, and it cannot be answered by a table that
+    keeps only what is in flight.
+    """
+
+    __tablename__ = "jobs"
+    __table_args__ = (
+        Index("ix_jobs_status", "status"),
+        Index("ix_jobs_recent", "started_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    kind: Mapped[str] = mapped_column(String(30), nullable=False)
+    #: The ticker for a per-company job, None for one that runs over everything.
+    target: Mapped[str | None] = mapped_column(String(20))
+    status: Mapped[str] = mapped_column(String(20), nullable=False)
+    pid: Mapped[int | None] = mapped_column(Integer)
+    exit_code: Mapped[int | None] = mapped_column(Integer)
+    log_path: Mapped[str | None] = mapped_column(String(500))
+    started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow, server_default=func.now()
+    )
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
 class FilingExcerptRecord(Base):
     """Verbatim text extracted from one section of one filing.
 

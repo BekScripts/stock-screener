@@ -32,6 +32,7 @@ from data_access.models import (
     FilingExcerptRecord,
     FilingRecord,
     FinancialSnapshot,
+    JobRecord,
     PriceHistory,
     ScoreSnapshot,
     StoredResearchReport,
@@ -78,6 +79,23 @@ but labelled, because it has not been checked against a second source.
 
 FINAL = "FINAL"
 """A score whose company has been through candidate enrichment."""
+
+JOB_RUNNING = "RUNNING"
+"""A spawned command with a live process behind it."""
+
+JOB_SUCCEEDED = "SUCCEEDED"
+"""A command whose process exited zero."""
+
+JOB_FAILED = "FAILED"
+"""A command whose process exited non-zero. Its log says why."""
+
+JOB_UNKNOWN = "UNKNOWN"
+"""A run whose process is gone without ever being closed.
+
+Distinct from `JOB_FAILED` on purpose. The API restarting mid-run leaves this
+behind, and the command itself may well have completed — calling that a failure
+would be asserting something nobody observed.
+"""
 
 _SCORED = ScoringStatus.SCORED.value
 """The only status a ranking or a score comparison reads.
@@ -919,6 +937,131 @@ class WatchlistRepository:
     def count(self) -> int:
         """Return how many companies are watched."""
         return self._session.scalar(select(func.count()).select_from(WatchlistEntry)) or 0
+
+
+class JobRepository:
+    """Reads and writes the `jobs` table.
+
+    Rows are append-only in spirit: `start` adds one, `finish` closes it, and
+    nothing else edits it. A job is never deleted, because the history is the
+    feature — "when did the last daily run happen and did it work" is not
+    answerable from a table that keeps only what is in flight.
+    """
+
+    def __init__(self, session: Session) -> None:
+        self._session = session
+
+    def start(
+        self, kind: str, *, target: str | None = None, pid: int | None = None, log_path: str | None
+    ) -> JobRecord:
+        """Record a job that has just been spawned.
+
+        Args:
+            kind: Which command is running.
+            target: The ticker, for a per-company job.
+            pid: The spawned process, used later to tell a live run from a
+                stale row.
+            log_path: Where the process's output is being written.
+
+        Returns:
+            The stored row, with its id populated.
+        """
+        record = JobRecord(
+            kind=kind,
+            target=target,
+            status=JOB_RUNNING,
+            pid=pid,
+            log_path=log_path,
+        )
+        self._session.add(record)
+        self._session.flush()
+        return record
+
+    def finish(self, job_id: int, *, exit_code: int) -> JobRecord | None:
+        """Close a job with the exit code its process returned.
+
+        Args:
+            job_id: The job to close.
+            exit_code: The process's exit status. Zero is a success.
+
+        Returns:
+            The updated row, or None when no such job exists.
+        """
+        record = self.get(job_id)
+        if record is None:
+            return None
+
+        record.exit_code = exit_code
+        record.status = JOB_SUCCEEDED if exit_code == 0 else JOB_FAILED
+        record.finished_at = datetime.now(UTC)
+        self._session.flush()
+        return record
+
+    def abandon(self, job_id: int) -> JobRecord | None:
+        """Mark a job whose process is gone but which was never closed.
+
+        A run interrupted by an API restart leaves `RUNNING` behind with nothing
+        attached to it. That is not a failure of the command — it may well have
+        finished — so it gets its own status rather than being called one.
+
+        Args:
+            job_id: The job to abandon.
+
+        Returns:
+            The updated row, or None when no such job exists.
+        """
+        record = self.get(job_id)
+        if record is None:
+            return None
+
+        record.status = JOB_UNKNOWN
+        record.finished_at = datetime.now(UTC)
+        self._session.flush()
+        return record
+
+    def get(self, job_id: int) -> JobRecord | None:
+        """Return one job, or None when the id is unknown."""
+        return self._session.get(JobRecord, job_id)
+
+    def running(self, kind: str, *, target: str | None = None) -> JobRecord | None:
+        """Return the running job for a kind, if there is one.
+
+        Args:
+            kind: The command to look for.
+            target: The ticker, for a per-company job. A research run on one
+                company does not block a research run on another.
+
+        Returns:
+            The in-flight job, or None.
+        """
+        return self._session.scalars(
+            select(JobRecord)
+            .where(
+                JobRecord.kind == kind,
+                JobRecord.target == target,
+                JobRecord.status == JOB_RUNNING,
+            )
+            .order_by(JobRecord.started_at.desc())
+            .limit(1)
+        ).one_or_none()
+
+    def all_running(self) -> list[JobRecord]:
+        """Return every job currently marked running, newest first."""
+        return list(
+            self._session.scalars(
+                select(JobRecord)
+                .where(JobRecord.status == JOB_RUNNING)
+                .order_by(JobRecord.started_at.desc())
+            )
+        )
+
+    def recent(self, *, limit: int = 20) -> list[JobRecord]:
+        """Return the most recently started jobs, newest first."""
+        return list(
+            self._session.scalars(
+                select(JobRecord).order_by(JobRecord.started_at.desc()).limit(limit)
+            )
+        )
 
 
 class FilingExcerptRepository:

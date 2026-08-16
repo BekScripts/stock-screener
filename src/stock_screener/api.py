@@ -25,12 +25,21 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from data_access import (
     CompanyRepository,
+    JobRecord,
+    JobRepository,
     WatchlistRepository,
     build_session_factory,
     create_engine_from_url,
 )
 from stock_screener.config import get_settings
 from stock_screener.dashboard import research_view, stock_detail, watchlist_view
+from stock_screener.jobs import (
+    JOB_KINDS,
+    JobAlreadyRunningError,
+    JobRunner,
+    TargetRequiredError,
+    UnknownJobKindError,
+)
 from stock_screener.scanning import scan_market
 from stock_screener.scoring import (
     DEFAULT_RANKING_LIMIT,
@@ -82,10 +91,35 @@ def get_session() -> Iterator[Session]:
 
 SessionDep = Annotated["Session", Depends(get_session)]
 
+
+@lru_cache(maxsize=1)
+def _runner() -> JobRunner:
+    """Return the process-wide job runner.
+
+    One per process, because it holds the handles of the children it spawned —
+    a second instance would not recognise the first one's jobs and would report
+    them abandoned the moment it reconciled.
+    """
+    return JobRunner(get_settings())
+
+
+def get_runner() -> JobRunner:
+    """Return the job runner for one request.
+
+    Overridden in tests via `app.dependency_overrides[get_runner]`.
+
+    Returns:
+        The shared runner.
+    """
+    return _runner()
+
+
+RunnerDep = Annotated["JobRunner", Depends(get_runner)]
+
 app = FastAPI(
     title="Compounder Radar",
-    version="0.3.0",
-    summary="Rankings, company detail, grounded research and a watchlist.",
+    version="0.4.0",
+    summary="Rankings, company detail, grounded research, a watchlist and job control.",
 )
 
 # The dashboard is a separate process on a different port in development, which
@@ -397,6 +431,167 @@ def watchlist_remove(session: SessionDep, ticker: str) -> dict[str, Any]:
     removed = WatchlistRepository(session).remove(company.id)
     session.commit()
     return {"ticker": company.ticker, "removed": removed}
+
+
+@app.get("/api/jobs/kinds")
+def job_kinds() -> dict[str, Any]:
+    """Return the commands the dashboard may run.
+
+    The interface builds its controls from this rather than hard-coding a list,
+    so a kind added to `JOB_KINDS` appears without a frontend change.
+
+    Returns:
+        One entry per kind, with the label and the warnings a caller should show.
+
+    Raises:
+        HTTPException: 404 when jobs are disabled.
+    """
+    _require_jobs_enabled()
+    return {
+        "kinds": [
+            {
+                "kind": kind,
+                "label": spec.label,
+                "needs_target": spec.needs_target,
+                "spends_money": spec.spends_money,
+                "minutes": spec.minutes,
+            }
+            for kind, spec in JOB_KINDS.items()
+        ]
+    }
+
+
+@app.post("/api/jobs", status_code=202)
+def job_start(
+    session: SessionDep,
+    runner: RunnerDep,
+    kind: Annotated[str, Body(embed=True)],
+    target: Annotated[str | None, Body(embed=True)] = None,
+) -> dict[str, Any]:
+    """Start a pipeline command.
+
+    Returns `202` rather than `201`: the work has been accepted and is running
+    somewhere else, and nothing about its result exists yet.
+
+    Args:
+        session: Database session, injected.
+        runner: Job runner, injected.
+        kind: Which command to run. Must be a key of `JOB_KINDS`.
+        target: The ticker, for a per-company command.
+
+    Returns:
+        The job record, whose id the caller polls.
+
+    Raises:
+        HTTPException: 404 when jobs are disabled, 400 for an unknown kind or a
+            bad ticker, 409 when an identical job is already running.
+    """
+    _require_jobs_enabled()
+
+    try:
+        record = runner.start(session, kind, target=target)
+    except UnknownJobKindError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except TargetRequiredError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except JobAlreadyRunningError as exc:
+        session.commit()
+        raise HTTPException(
+            status_code=409,
+            detail={"message": str(exc), "job": _job_payload(exc.running)},
+        ) from exc
+
+    session.commit()
+    return _job_payload(record)
+
+
+@app.get("/api/jobs")
+def jobs(
+    session: SessionDep,
+    runner: RunnerDep,
+    limit: Annotated[int, Query(ge=1, le=_MAX_LIMIT)] = 20,
+) -> dict[str, Any]:
+    """Return recent jobs, newest first.
+
+    Reconciles before reading, so a job whose process has exited is never
+    reported as still running.
+
+    Args:
+        session: Database session, injected.
+        runner: Job runner, injected.
+        limit: How many to return.
+
+    Returns:
+        The history, and separately whatever is in flight.
+
+    Raises:
+        HTTPException: 404 when jobs are disabled.
+    """
+    _require_jobs_enabled()
+
+    runner.reconcile(session)
+    session.commit()
+
+    repository = JobRepository(session)
+    return {
+        "running": [_job_payload(record) for record in repository.all_running()],
+        "recent": [_job_payload(record) for record in repository.recent(limit=limit)],
+    }
+
+
+@app.get("/api/jobs/{job_id}")
+def job(session: SessionDep, runner: RunnerDep, job_id: int) -> dict[str, Any]:
+    """Return one job, with the tail of its output.
+
+    Args:
+        session: Database session, injected.
+        runner: Job runner, injected.
+        job_id: The job to read.
+
+    Returns:
+        The record and the last lines it wrote, which is what a progress view
+        polls.
+
+    Raises:
+        HTTPException: 404 when jobs are disabled or the id is unknown.
+    """
+    _require_jobs_enabled()
+
+    runner.reconcile(session)
+    session.commit()
+
+    record = JobRepository(session).get(job_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail=f"unknown job {job_id}")
+
+    payload = _job_payload(record)
+    payload["log"] = runner.read_log(record)
+    return payload
+
+
+def _require_jobs_enabled() -> None:
+    """Reject job requests when the feature is switched off.
+
+    Raises:
+        HTTPException: 404 when `JOBS_ENABLED` is false. A 404 rather than a 403
+            because a disabled feature should look absent, not guarded.
+    """
+    if not get_settings().jobs_enabled:
+        raise HTTPException(status_code=404, detail="jobs are disabled")
+
+
+def _job_payload(record: JobRecord) -> dict[str, Any]:
+    """Flatten a job row for JSON."""
+    return {
+        "id": record.id,
+        "kind": record.kind,
+        "label": JOB_KINDS[record.kind].label if record.kind in JOB_KINDS else record.kind,
+        "target": record.target,
+        "status": record.status,
+        "exit_code": record.exit_code,
+        "started_at": record.started_at.isoformat(),
+        "finished_at": record.finished_at.isoformat() if record.finished_at else None,
+    }
 
 
 def _ranking_response(session: Session, rows: list[RankingRow]) -> dict[str, Any]:
