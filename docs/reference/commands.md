@@ -13,6 +13,7 @@ used.
 | `make setup` | `uv sync --all-packages --all-groups`, links agent skills, creates `.env` |
 | `make sync` | `uv sync --all-packages --all-groups` |
 | `make check` | `lint`, `format-check`, `types`, `test` |
+| `make check-web` | In `frontend/`: `npm run typecheck`, `npm run lint`, `npm run build` |
 | `make lint` | `ruff check .` |
 | `make format` | `ruff format .` then `ruff check --fix .` |
 | `make format-check` | `ruff format --check .` |
@@ -28,7 +29,11 @@ used.
 | `make sync-skills` | Symlinks `.agents/skills/` into `.claude/skills/` |
 | `make clean` | Removes caches and build artifacts |
 
-`make check` is what CI runs. Every check in CI is reachable through it.
+`make check` is what CI runs. Every Python check in CI is reachable through it.
+
+`make check-web` is the frontend equivalent and is not a prerequisite of
+`make check`: the Python gate runs without a node toolchain installed. It
+requires Node and an `npm install` in `frontend/`.
 
 ## CLI commands
 

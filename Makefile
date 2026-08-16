@@ -1,5 +1,5 @@
 .DEFAULT_GOAL := help
-.PHONY: help setup sync check lint format format-check types test test-ci \
+.PHONY: help setup sync check check-web lint format format-check types test test-ci \
         test-unit cov migrate migrate-down scan docs docs-build sync-skills clean
 
 UV := uv
@@ -22,6 +22,12 @@ sync:  ## Reinstall the workspace after dependency changes
 	$(UV) sync --all-packages --all-groups
 
 check: lint format-check types test  ## Everything CI runs — the gate before you push
+
+# Deliberately not a prerequisite of `check`. The Python gate runs in CI without
+# a node toolchain, and making it depend on one would mean every backend change
+# waits for an npm install. Run this one when you touch frontend/.
+check-web:  ## The frontend gate: typecheck, lint, production build (needs Node)
+	cd frontend && npm run typecheck && npm run lint && npm run build
 
 lint:  ## Ruff lint
 	$(UV) run ruff check .

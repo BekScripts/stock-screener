@@ -32,19 +32,20 @@ filings, and a market capitalisation multiplied out from the cover-page share
 count. A metered provider is spent only on the few hundred companies a ranking
 actually shows — see [ADR-0008](docs/adr/0008-broad-scan-on-free-data-metered-enrichment-last.md).
 
-| Built | Not built yet |
+| Built | Not built |
 | --- | --- |
-| Universe loader, price, benchmark and fundamentals ingestion | Next.js dashboard (Phase 4) |
-| A broad scan that needs no metered provider | Watchlist and alerts (Phase 4) |
-| The full derived-metric engine | A second LLM provider |
-| Eligibility filters with reasons | Filing exhibits (99.1 earnings releases) |
-| CompounderScore v1: growth, quality, valuation, market confirmation | |
+| Universe loader, price, benchmark and fundamentals ingestion | A second LLM provider |
+| A broad scan that needs no metered provider | Filing exhibits (99.1 earnings releases) |
+| The full derived-metric engine | Alerts and notifications |
+| Eligibility filters with reasons | Authentication and deployment config |
+| CompounderScore v1: growth, quality, valuation, market confirmation | Charts, portfolios, positions, price targets |
 | Risk penalties, daily score snapshots, score history | |
 | Top Opportunities, Hidden Gems, Wrong Price, Improving Fast | |
 | CLI with CSV export and a per-company explanation | |
-| Read-only FastAPI over the rankings | |
+| FastAPI over the rankings, company detail and research | |
 | Deterministic SEC filing-text extraction | |
 | AI research whose every claim cites the evidence it rests on | |
+| Next.js dashboard and a persistent watchlist | |
 
 Every ranking is explainable: `stock-screener explain NVDA` prints the points
 each metric earned and the value it earned them on. A metric the data cannot
@@ -268,16 +269,22 @@ the CLI.
 ```bash
 make check       # the gate: lint, format, mypy strict, tests with coverage
 make test-unit   # the fast loop
+make check-web   # the frontend gate: tsc, ESLint, next build
 ```
 
 No test reaches the network. Provider adapters are exercised through
 `httpx.MockTransport`, and the database tests run against SQLite.
 
+`make check-web` is separate on purpose: the Python gate runs in CI without a
+node toolchain, so a backend change never waits for an npm install. Run it when
+you touch `frontend/`.
+
 ## Commands
 
 | Command | What it does |
 | --- | --- |
-| `make check` | Everything CI runs |
+| `make check` | Everything CI runs — the Python gate |
+| `make check-web` | The frontend gate: tsc, ESLint, `next build` (needs Node) |
 | `make migrate` | Apply database migrations |
 | `make scan` | Full pipeline, then print the table |
 | `make test` / `make test-unit` | Tests with coverage / fast unit loop |

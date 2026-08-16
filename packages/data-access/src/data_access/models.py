@@ -98,6 +98,9 @@ class Company(Base):
     scores: Mapped[list[ScoreSnapshot]] = relationship(
         back_populates="company", cascade="all, delete-orphan"
     )
+    watchlist_entry: Mapped[WatchlistEntry | None] = relationship(
+        back_populates="company", cascade="all, delete-orphan", passive_deletes=True
+    )
     filing_excerpts: Mapped[list[FilingExcerptRecord]] = relationship(
         back_populates="company", cascade="all, delete-orphan", passive_deletes=True
     )
@@ -332,6 +335,33 @@ class FilingRecord(Base):
     )
 
     company: Mapped[Company] = relationship(back_populates="filings")
+
+
+class WatchlistEntry(Base):
+    """One company a person chose to keep an eye on.
+
+    The whole feature. A ticker, when it was added, and an optional note — no
+    target price, no position size, no folders. Those belong to a portfolio
+    tool, and adding them here would turn a shortlist into an accounting system
+    nobody asked for.
+
+    One row per company, enforced by the database rather than by the caller, so
+    adding a company twice is idempotent instead of a duplicate.
+    """
+
+    __tablename__ = "watchlist"
+    __table_args__ = (UniqueConstraint("company_id", name="uq_watchlist_company"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    company_id: Mapped[int] = mapped_column(
+        ForeignKey("companies.id", ondelete="CASCADE"), nullable=False
+    )
+    note: Mapped[str | None] = mapped_column(String(500))
+    added_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow, server_default=func.now()
+    )
+
+    company: Mapped[Company] = relationship(back_populates="watchlist_entry")
 
 
 class FilingExcerptRecord(Base):

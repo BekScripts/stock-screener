@@ -5,9 +5,10 @@ eligibility scan, and the Phase 2 rankings. Nothing here calculates a score —
 `/api/rankings` serves the snapshots the `score` command wrote, so the API and
 the CLI can never disagree about what a company scored today.
 
-The dashboard surface is still deliberately unbuilt. These endpoints are the
-ones Phase 2 needs to be inspectable; designing the rest for a UI that does not
-exist would mean guessing.
+The dashboard reads through here and nowhere else. It has no score arithmetic of
+its own: every number on a screen came out of a stored snapshot, so a formula
+change lands in one place rather than two. The only write in the whole surface is
+the watchlist, which is the only thing a person decides rather than the pipeline.
 
 The session is a FastAPI dependency rather than a global, so a test can override
 it with an in-memory database in one line.
@@ -19,10 +20,17 @@ from dataclasses import asdict
 from functools import lru_cache
 from typing import TYPE_CHECKING, Annotated, Any
 
-from fastapi import Depends, FastAPI, HTTPException, Query
+from fastapi import Body, Depends, FastAPI, HTTPException, Query
+from fastapi.middleware.cors import CORSMiddleware
 
-from data_access import CompanyRepository, build_session_factory, create_engine_from_url
+from data_access import (
+    CompanyRepository,
+    WatchlistRepository,
+    build_session_factory,
+    create_engine_from_url,
+)
 from stock_screener.config import get_settings
+from stock_screener.dashboard import research_view, stock_detail, watchlist_view
 from stock_screener.scanning import scan_market
 from stock_screener.scoring import (
     DEFAULT_RANKING_LIMIT,
@@ -76,8 +84,20 @@ SessionDep = Annotated["Session", Depends(get_session)]
 
 app = FastAPI(
     title="Compounder Radar",
-    version="0.2.0",
-    summary="Ingestion, the eligibility scanner, and CompounderScore rankings.",
+    version="0.3.0",
+    summary="Rankings, company detail, grounded research and a watchlist.",
+)
+
+# The dashboard is a separate process on a different port in development, which
+# makes every request cross-origin. Origins are listed rather than wildcarded:
+# this API has a write endpoint, and a wildcard would let any page a browser
+# happens to be on add to someone's watchlist.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "DELETE"],
+    allow_headers=["Content-Type"],
 )
 
 
@@ -182,7 +202,7 @@ def rankings(
     Returns:
         The ranked rows. Empty until `stock-screener score` has been run.
     """
-    return _ranking_response(top_opportunities(session, limit=limit, min_score=min_score))
+    return _ranking_response(session, top_opportunities(session, limit=limit, min_score=min_score))
 
 
 @app.get("/api/rankings/hidden-gems")
@@ -199,7 +219,7 @@ def rankings_hidden_gems(
     Returns:
         The ranked rows.
     """
-    return _ranking_response(hidden_gems(session, limit=limit))
+    return _ranking_response(session, hidden_gems(session, limit=limit))
 
 
 @app.get("/api/rankings/wrong-price")
@@ -216,7 +236,7 @@ def rankings_wrong_price(
     Returns:
         The ranked rows.
     """
-    return _ranking_response(great_company_wrong_price(session, limit=limit))
+    return _ranking_response(session, great_company_wrong_price(session, limit=limit))
 
 
 @app.get("/api/rankings/improving")
@@ -236,7 +256,7 @@ def rankings_improving(
         The ranked rows, ordered by improvement. Empty until there is score
         history to compare against.
     """
-    return _ranking_response(improving_fast(session, limit=limit, window_days=window_days))
+    return _ranking_response(session, improving_fast(session, limit=limit, window_days=window_days))
 
 
 @app.get("/api/companies/{ticker}/score")
@@ -264,6 +284,134 @@ def company_score(session: SessionDep, ticker: str) -> dict[str, Any]:
     return payload
 
 
-def _ranking_response(rows: list[RankingRow]) -> dict[str, Any]:
-    """Wrap ranking rows in a response envelope."""
-    return {"count": len(rows), "rows": [asdict(row) for row in rows]}
+@app.get("/api/stocks/{ticker}")
+def stock(session: SessionDep, ticker: str) -> dict[str, Any]:
+    """Return one company's overview, score breakdown and headline metrics.
+
+    Args:
+        session: Database session, injected.
+        ticker: The symbol to look up.
+
+    Returns:
+        The detail view. A company that exists but was never scored comes back
+        with `score` as null rather than as a 404 — "stored but unscored" is a
+        real state with a real explanation.
+
+    Raises:
+        HTTPException: 404 when the company is not stored.
+    """
+    detail = stock_detail(session, get_settings(), ticker)
+    if detail is None:
+        raise HTTPException(status_code=404, detail=f"unknown company {ticker.upper()}")
+    return asdict(detail)
+
+
+@app.get("/api/stocks/{ticker}/research")
+def stock_research(session: SessionDep, ticker: str) -> dict[str, Any]:
+    """Return the latest validated research report for one company.
+
+    Only what validation accepted is served; there is no endpoint that returns a
+    model draft, because nothing stores one.
+
+    Args:
+        session: Database session, injected.
+        ticker: The symbol to look up.
+
+    Returns:
+        The report, with its claims grouped into the thirteen sections in
+        reading order.
+
+    Raises:
+        HTTPException: 404 when the company has no report yet.
+    """
+    payload = research_view(session, ticker)
+    if payload is None:
+        raise HTTPException(status_code=404, detail=f"no research stored for {ticker.upper()}")
+    return payload
+
+
+@app.get("/api/watchlist")
+def watchlist(session: SessionDep) -> dict[str, Any]:
+    """Return the watched companies with their current scores.
+
+    Args:
+        session: Database session, injected.
+
+    Returns:
+        One entry per watched company, most recently added first.
+    """
+    entries = watchlist_view(session)
+    return {"count": len(entries), "entries": entries}
+
+
+@app.post("/api/watchlist/{ticker}", status_code=201)
+def watchlist_add(
+    session: SessionDep,
+    ticker: str,
+    note: Annotated[str | None, Body(embed=True, max_length=500)] = None,
+) -> dict[str, Any]:
+    """Add a company to the watchlist.
+
+    Idempotent: adding a company already watched updates its note and returns
+    the same entry, because the caller asked for a state rather than an event.
+
+    Args:
+        session: Database session, injected.
+        ticker: The symbol to watch.
+        note: Optional free text.
+
+    Returns:
+        The stored entry.
+
+    Raises:
+        HTTPException: 404 when the company is not stored.
+    """
+    company = CompanyRepository(session).get_by_ticker(ticker)
+    if company is None:
+        raise HTTPException(status_code=404, detail=f"unknown company {ticker.upper()}")
+
+    entry = WatchlistRepository(session).add(company.id, note=note)
+    session.commit()
+    return {"ticker": company.ticker, "note": entry.note, "added_at": entry.added_at.isoformat()}
+
+
+@app.delete("/api/watchlist/{ticker}")
+def watchlist_remove(session: SessionDep, ticker: str) -> dict[str, Any]:
+    """Remove a company from the watchlist.
+
+    Args:
+        session: Database session, injected.
+        ticker: The symbol to stop watching.
+
+    Returns:
+        Whether a row was removed. Removing a company that was never watched is
+        not an error — the state afterwards is what was asked for either way.
+
+    Raises:
+        HTTPException: 404 when the company is not stored.
+    """
+    company = CompanyRepository(session).get_by_ticker(ticker)
+    if company is None:
+        raise HTTPException(status_code=404, detail=f"unknown company {ticker.upper()}")
+
+    removed = WatchlistRepository(session).remove(company.id)
+    session.commit()
+    return {"ticker": company.ticker, "removed": removed}
+
+
+def _ranking_response(session: Session, rows: list[RankingRow]) -> dict[str, Any]:
+    """Wrap ranking rows in a response envelope, marking the watched ones.
+
+    The flag is resolved here rather than per row in the frontend: a dashboard
+    that fetched the watchlist separately and joined it client-side would show a
+    row as unwatched for as long as the second request took.
+    """
+    watched = WatchlistRepository(session).watched_company_ids()
+    companies = CompanyRepository(session)
+    payload = []
+    for row in rows:
+        company = companies.get_by_ticker(row.ticker)
+        entry = asdict(row)
+        entry["watched"] = company is not None and company.id in watched
+        payload.append(entry)
+    return {"count": len(payload), "rows": payload}

@@ -35,6 +35,7 @@ from data_access.models import (
     PriceHistory,
     ScoreSnapshot,
     StoredResearchReport,
+    WatchlistEntry,
     _utcnow,
 )
 from domain import ScoringStatus
@@ -845,6 +846,79 @@ class FilingRepository:
     def count(self) -> int:
         """Return how many filings are stored."""
         return self._session.scalar(select(func.count()).select_from(FilingRecord)) or 0
+
+
+class WatchlistRepository:
+    """Reads and writes the `watchlist` table.
+
+    Adding is an upsert on the company, so pressing the button twice is the same
+    as pressing it once. Removing a company that is not on the list is not an
+    error either — both operations answer "is this company watched", and the
+    answer afterwards is what the caller asked for.
+    """
+
+    def __init__(self, session: Session) -> None:
+        self._session = session
+
+    def add(self, company_id: int, *, note: str | None = None) -> WatchlistEntry:
+        """Add a company to the watchlist, or update the note on one already there.
+
+        Args:
+            company_id: The company to watch.
+            note: Optional free text. Replaces any existing note when given, and
+                leaves it alone when None, so adding twice cannot silently erase
+                what was written the first time.
+
+        Returns:
+            The stored entry.
+        """
+        existing = self.get(company_id)
+        if existing is not None:
+            if note is not None:
+                existing.note = note
+            return existing
+
+        entry = WatchlistEntry(company_id=company_id, note=note)
+        self._session.add(entry)
+        self._session.flush()
+        return entry
+
+    def remove(self, company_id: int) -> bool:
+        """Remove a company from the watchlist.
+
+        Args:
+            company_id: The company to stop watching.
+
+        Returns:
+            Whether a row was removed. False means it was never on the list,
+            which is not a failure.
+        """
+        entry = self.get(company_id)
+        if entry is None:
+            return False
+        self._session.delete(entry)
+        self._session.flush()
+        return True
+
+    def get(self, company_id: int) -> WatchlistEntry | None:
+        """Return one company's entry, or None when it is not watched."""
+        return self._session.scalars(
+            select(WatchlistEntry).where(WatchlistEntry.company_id == company_id)
+        ).one_or_none()
+
+    def list_all(self) -> list[WatchlistEntry]:
+        """Return every entry, most recently added first."""
+        return list(
+            self._session.scalars(select(WatchlistEntry).order_by(WatchlistEntry.added_at.desc()))
+        )
+
+    def watched_company_ids(self) -> set[int]:
+        """Return the ids of every watched company, for marking a ranking."""
+        return set(self._session.scalars(select(WatchlistEntry.company_id)))
+
+    def count(self) -> int:
+        """Return how many companies are watched."""
+        return self._session.scalar(select(func.count()).select_from(WatchlistEntry)) or 0
 
 
 class FilingExcerptRepository:

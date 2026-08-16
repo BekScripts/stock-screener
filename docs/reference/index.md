@@ -21,3 +21,5 @@ reference page, that sentence belongs in
 - [Phase 1 brief](project-phases/phase1.md) — the data and screening scope
 - [Phase 2 brief](project-phases/phase2.md) — the scoring and ranking scope
 - [Phase 2 constraints](project-phases/phase2-constraints.md) — decisions the scoring work inherits
+- [Phase 3 brief](project-phases/phase3.md) — the grounded AI research scope and its limits
+- [Phase 4 brief](project-phases/phase4.md) — the dashboard and watchlist scope and its limits

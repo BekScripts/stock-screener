@@ -32,6 +32,7 @@ from data_access.models import (
     PriceHistory,
     ScoreSnapshot,
     StoredResearchReport,
+    WatchlistEntry,
 )
 from data_access.repositories import (
     FINAL,
@@ -46,6 +47,7 @@ from data_access.repositories import (
     ScoreRecord,
     ScoreSnapshotRepository,
     UnsupportedDialectError,
+    WatchlistRepository,
 )
 from data_access.session import (
     build_session_factory,
@@ -76,6 +78,8 @@ __all__ = [
     "ScoreSnapshotRepository",
     "StoredResearchReport",
     "UnsupportedDialectError",
+    "WatchlistEntry",
+    "WatchlistRepository",
     "build_session_factory",
     "create_all",
     "create_engine_from_url",
