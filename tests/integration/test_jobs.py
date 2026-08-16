@@ -115,7 +115,26 @@ def test_a_per_company_job_passes_the_ticker(
 ) -> None:
     runner.start(session, "research", target="nvda")
 
-    assert spawner.calls[0][1:] == ["-m", "stock_screener", "research", "run", "NVDA"]
+    assert spawner.calls[0][-1] == "NVDA"
+
+
+@pytest.mark.integration
+def test_research_prepares_filing_evidence_before_it_generates(
+    session: Session, runner: JobRunner, spawner: StubSpawner
+) -> None:
+    # A company nobody has ingested filings for would otherwise be researched
+    # anyway, and pay full price for a report whose filing-dependent sections
+    # can only answer UNKNOWN.
+    runner.start(session, "research", target="NVDA")
+
+    assert spawner.calls[0][1:] == [
+        "-m",
+        "stock_screener",
+        "research",
+        "run",
+        "--prepare",
+        "NVDA",
+    ]
 
 
 @pytest.mark.integration
@@ -132,6 +151,54 @@ def test_a_second_identical_job_is_refused_while_the_first_runs(
 
     with pytest.raises(JobAlreadyRunningError) as caught:
         runner.start(session, "daily")
+
+    assert caught.value.running.id == first.id
+
+
+@pytest.mark.integration
+def test_a_different_pipeline_kind_is_refused_while_one_runs(
+    session: Session, runner: JobRunner
+) -> None:
+    # Guarding each kind separately let `scan` and `score` write the same rows
+    # at once. They are different commands over one database, not independent
+    # work, so only one pipeline job runs at a time.
+    first = runner.start(session, "score")
+
+    with pytest.raises(JobAlreadyRunningError) as caught:
+        runner.start(session, "scan")
+
+    assert caught.value.running.id == first.id
+    assert caught.value.running.kind == "score"
+
+
+@pytest.mark.integration
+def test_research_runs_alongside_a_pipeline_job(session: Session, runner: JobRunner) -> None:
+    # Research reads a snapshot that is already stored and writes only its own
+    # company's report, so it neither blocks a pipeline run nor waits for one.
+    runner.start(session, "score")
+
+    research = runner.start(session, "research", target="NVDA")
+
+    assert research.status == JOB_RUNNING
+
+
+@pytest.mark.integration
+def test_a_pipeline_job_runs_while_research_is_going(session: Session, runner: JobRunner) -> None:
+    runner.start(session, "research", target="NVDA")
+
+    pipeline = runner.start(session, "score")
+
+    assert pipeline.status == JOB_RUNNING
+
+
+@pytest.mark.integration
+def test_a_second_research_job_for_the_same_ticker_is_refused(
+    session: Session, runner: JobRunner
+) -> None:
+    first = runner.start(session, "research", target="NVDA")
+
+    with pytest.raises(JobAlreadyRunningError) as caught:
+        runner.start(session, "research", target="nvda")
 
     assert caught.value.running.id == first.id
 

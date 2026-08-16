@@ -101,6 +101,7 @@ ranking never depend on a model being reachable.
 | `--candidates` | `research update-filings` | Restrict the pass to the current research candidates. A full-universe refresh costs thousands of requests for filings no brief will cite. |
 | `--dry-run` | `research run` | Print the exact prompt and brief that would be sent, then stop. No model is called and nothing is stored. |
 | `--force` | `research run` | Ignore a stored report and generate a new one. |
+| `--prepare` | `research run` | Fetch this company's SEC filing index and text first, so filing-dependent sections have evidence to cite. One ticker only, and nothing is generated if the fetch fails. |
 
 Every command is idempotent: a second run updates rows rather than duplicating
 them, including `score`, whose rows are unique per company, day and formula

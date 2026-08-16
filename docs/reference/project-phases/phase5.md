@@ -36,7 +36,7 @@ The record answers "is it running, did it work", and nothing else.
 | `scan` | `scan` | no |
 | `score` | `score` | no |
 | `enrich` | `enrich` | **yes** — metered FMP requests |
-| `research` | `research run <ticker>` | **yes** — a model call |
+| `research` | `research run --prepare <ticker>` | **yes** — a model call |
 | `update-universe` | `update-universe` | no |
 | `update-market` | `update-market` | no |
 | `update-benchmark` | `update-benchmark` | no |
@@ -66,11 +66,17 @@ assert something nobody observed.
 
 ## Concurrency
 
-One running job per kind, and per `(kind, target)` for research. A second
-request returns `409` with the job already in flight rather than starting a
-competitor: two concurrent market-wide runs would race on the same rows and
-double the load on EDGAR, while research on one company has no reason to block
-research on another.
+One running pipeline job at a time, and one research job per ticker. Every
+kind except `research` writes the shared tables, so any of them blocks any
+other: `scan` and `score` are different commands over the same rows, and
+`update-fundamentals` beside `score` means scoring a market that is changing
+underneath it. A second request returns `409` with the job already in flight
+rather than starting a competitor.
+
+`research` is outside that guard. It reads a snapshot that is already stored and
+writes only its own company's report, so it neither blocks a pipeline run nor
+waits for one, and research on one company has no reason to block research on
+another.
 
 ## Also in this phase
 

@@ -2,7 +2,8 @@
 
 Every job here is an existing CLI command, spawned as a subprocess. Nothing in
 this module reimplements a stage — `daily` is `run-daily`, `research` is
-`research run <ticker>`, and the argument lists below are the whole mapping.
+`research run --prepare <ticker>`, and the argument lists below are the whole
+mapping.
 
 **Why a subprocess rather than calling the function.** A market-wide run takes
 the better part of an hour. FastAPI serves a `def` endpoint from a threadpool,
@@ -104,7 +105,11 @@ class TargetRequiredError(JobError):
 
 
 class JobAlreadyRunningError(JobError):
-    """An identical job is already in flight.
+    """A job this one would collide with is already in flight.
+
+    For a pipeline kind that is any other pipeline kind; for research it is the
+    same ticker. Either way the running job is carried on the error, because
+    "something else is going" is only useful to a caller that can say what.
 
     Attributes:
         running: The job that is already going, so a caller can report it
@@ -112,7 +117,8 @@ class JobAlreadyRunningError(JobError):
     """
 
     def __init__(self, running: JobRecord) -> None:
-        super().__init__(f"{running.kind} is already running (job {running.id})")
+        target = f" for {running.target}" if running.target else ""
+        super().__init__(f"{running.kind}{target} is already running (job {running.id})")
         self.running = running
 
 
@@ -144,14 +150,36 @@ JOB_KINDS: dict[str, JobKind] = {
     "scan": JobKind(("scan",), "Eligibility scan", minutes=1),
     "score": JobKind(("score",), "Score the market", minutes=1),
     "enrich": JobKind(("enrich",), "Enrich top candidates", spends_money=True, minutes=5),
+    # `--prepare` fetches this company's filing index and text from EDGAR before
+    # the brief is assembled. Without it a company nobody has ingested filings
+    # for is still researched, and pays full price for a report whose
+    # filing-dependent sections can only answer UNKNOWN.
     "research": JobKind(
-        ("research", "run"), "AI research", needs_target=True, spends_money=True, minutes=2
+        ("research", "run", "--prepare"),
+        "AI research",
+        needs_target=True,
+        spends_money=True,
+        minutes=2,
     ),
     "update-universe": JobKind(("update-universe",), "Refresh the universe", minutes=1),
     "update-market": JobKind(("update-market",), "Refresh prices", minutes=10),
     "update-benchmark": JobKind(("update-benchmark",), "Refresh the benchmark", minutes=1),
     "update-fundamentals": JobKind(("update-fundamentals",), "Refresh fundamentals", minutes=45),
 }
+
+
+MUTATING_KINDS = frozenset(JOB_KINDS) - {"research"}
+"""Kinds that write the shared pipeline tables, of which one may run at a time.
+
+Not one per kind. `scan` and `score` are different commands over the same rows,
+and `update-fundamentals` running beside `score` means scoring a market that is
+changing underneath it. Guarding each kind separately allowed exactly that: two
+different kinds, no collision detected, both writing.
+
+Research is deliberately absent. It writes one company's report and reads a
+snapshot that is already stored, so it neither blocks a pipeline run nor is
+blocked by one — it is guarded per ticker instead.
+"""
 
 
 def normalise_target(kind: str, target: str | None) -> str | None:
@@ -222,7 +250,8 @@ class JobRunner:
         Raises:
             UnknownJobKindError: If the kind is not one that may be run.
             TargetRequiredError: If the ticker is missing, malformed, or unwanted.
-            JobAlreadyRunningError: If an identical job is already in flight. Two
+            JobAlreadyRunningError: If a colliding job is already in flight —
+                any other pipeline kind, or research on the same ticker. Two
                 concurrent market-wide runs would race on the same rows and
                 double the load on the providers they read.
         """
@@ -232,9 +261,11 @@ class JobRunner:
         ticker = normalise_target(kind, target)
         repository = JobRepository(session)
 
+        # Reconcile first: a job whose process has since exited must not go on
+        # blocking the next one.
         self.reconcile(session)
 
-        existing = repository.running(kind, target=ticker)
+        existing = self._blocking_job(repository, kind, ticker)
         if existing is not None:
             raise JobAlreadyRunningError(existing)
 
@@ -263,6 +294,28 @@ class JobRunner:
             command=shlex.join(argv),
         )
         return record
+
+    @staticmethod
+    def _blocking_job(repository: JobRepository, kind: str, target: str | None) -> JobRecord | None:
+        """Return the running job that stops this one starting, if there is one.
+
+        The two kinds of collision are different questions. A pipeline job
+        collides with *any* other pipeline job, because they share the tables a
+        run writes. Research collides only with research on the same company.
+
+        Args:
+            repository: Where running jobs are read from.
+            kind: The kind being started.
+            target: Its ticker, for a per-company kind.
+
+        Returns:
+            The job in the way, or None when there is nothing to wait for.
+        """
+        if kind in MUTATING_KINDS:
+            return next(
+                (job for job in repository.all_running() if job.kind in MUTATING_KINDS), None
+            )
+        return repository.running(kind, target=target)
 
     def reconcile(self, session: Session) -> list[JobRecord]:
         """Close out any job whose process is no longer alive.

@@ -87,9 +87,12 @@ Three rules govern that layer:
 - **A job carries no result.** Every command persists what it produces, so a
   finished job is read through the endpoint serving that thing. A job record
   answers "is it running, did it work", and nothing else.
-- **One run per kind.** Two concurrent market-wide runs would race on the same
-  rows and double the load on the providers they read, so a second request
-  returns the one in flight rather than starting a competitor.
+- **One pipeline run at a time, and research beside it.** Every kind except
+  `research` writes the shared tables, so only one of them runs at once — `scan`
+  and `score` are different commands over the same rows, and a second request
+  returns the one in flight rather than starting a competitor. `research` writes
+  only its own company's report and reads a stored snapshot, so it neither
+  blocks a pipeline run nor waits for one; it is guarded per ticker instead.
 
 Not built, and not to be started without being asked: a second LLM provider,
 filing exhibits, alerts, notifications, authentication, deployment config,
