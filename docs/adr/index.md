@@ -22,3 +22,4 @@ See the `adr` skill for when to write one and the format to use.
 | [0006](0006-score-snapshots-are-versioned-and-immutable.md) | Score snapshots are versioned, and history is never re-scored | Accepted |
 | [0007](0007-missing-metrics-are-carried-by-their-own-component.md) | A missing metric is carried by its own component | Accepted |
 | [0008](0008-broad-scan-on-free-data-metered-enrichment-last.md) | Scan on free data; spend metered requests on candidates only | Accepted |
+| [0009](0009-the-research-contract-is-its-own-package.md) | The AI research contract is its own package, and holds no model client | Accepted |

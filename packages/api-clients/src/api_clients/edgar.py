@@ -46,9 +46,10 @@ from typing import TYPE_CHECKING, Any
 import httpx
 import structlog
 
-from api_clients._http import RateLimiter, RetryPolicy, request_json
+from api_clients._http import RateLimiter, RetryPolicy, request_json, request_text
 from api_clients.errors import ProviderDataError, ProviderError
-from domain import CompanyProfile, FinancialPeriod, normalise_ticker
+from api_clients.filing_text import clean_filing_text, extract_sections
+from domain import CompanyProfile, Filing, FilingExcerpt, FinancialPeriod, normalise_ticker
 
 log = structlog.get_logger(__name__)
 
@@ -206,6 +207,18 @@ _SHARES = "shares"
 #: far before. A 10-Q lands within about six weeks of the quarter it reports and
 #: states its share count as of a date near filing; ninety days stops one
 #: quarter's count being read as the next one's.
+FILING_FORMS = frozenset({"10-K", "10-Q", "8-K"})
+"""Forms a research brief may cite.
+
+The recent-filings index is dominated by ownership reports and prospectus
+supplements. These three are the ones that carry the business: the annual and
+quarterly reports, and the current report a company files when something happens
+between them.
+"""
+
+DEFAULT_FILING_LIMIT = 8
+"""Filings returned per company unless asked for more."""
+
 _COVER_PAGE_WINDOW_DAYS = 90
 _COVER_PAGE_BACKSTOP_DAYS = 3
 
@@ -369,7 +382,101 @@ class SecEdgarFundamentals:
         ]
         return periods[-limit:] if limit > 0 else periods
 
+    def get_filings(self, ticker: str, limit: int = DEFAULT_FILING_LIMIT) -> list[Filing]:
+        """Return the company's most recent filings, newest first.
+
+        Read from the submissions document the adapter already fetches for the
+        SIC description, so this costs no request the profile lookup does not
+        make anyway. Only the forms in `FILING_FORMS` are kept: the recent index
+        is mostly ownership reports and prospectus supplements, and a research
+        brief that cited those would be citing noise.
+
+        Args:
+            ticker: The symbol to look up.
+            limit: Maximum filings to return, most recent kept.
+
+        Returns:
+            Index entries, newest first. Empty when the SEC does not cover the
+            symbol or the filer has no recent filing of a relevant form. No
+            document is fetched — `Filing` is metadata.
+
+        Raises:
+            ProviderError: If a request failed or the payload was unusable.
+        """
+        symbol = normalise_ticker(ticker)
+        cik = self._cik_for(symbol)
+        if cik is None:
+            return []
+
+        recent = self._submissions(cik).get("filings", {})
+        if not isinstance(recent, dict):
+            return []
+        index = recent.get("recent")
+        if not isinstance(index, dict):
+            return []
+
+        filings = _filings_from_index(index, cik)
+        filings.sort(key=lambda filing: (filing.filed, filing.accession), reverse=True)
+        return filings[:limit] if limit > 0 else filings
+
     # -- internals ---------------------------------------------------------
+
+    def get_filing_excerpts(self, ticker: str, filing: Filing) -> list[FilingExcerpt]:
+        """Fetch one filing's document and return the sections worth quoting.
+
+        Separate from `get_filings` on purpose. Indexing a company's filings is
+        one cheap request; reading them is one request per document, and a
+        research brief needs the text of a handful of filings rather than all of
+        them. Keeping the two apart is what lets the index stay complete while
+        extraction stays selective.
+
+        Never called while a brief is assembled — a brief reads what extraction
+        already stored, so assembling one touches no network.
+
+        Args:
+            ticker: The symbol the filing belongs to, for the error message.
+            filing: The stored index entry. Its `primary_document` names the
+                document to fetch; without one there is nothing to read.
+
+        Returns:
+            One excerpt per section located, in reading order. Empty when the
+            filing names no primary document, the form is one this extractor
+            does not read, or no heading could be found confidently.
+
+        Raises:
+            ProviderRequestError: If the document could not be fetched.
+            ProviderRateLimitError: If the SEC is rate limiting.
+        """
+        if not filing.primary_document:
+            log.debug("filing has no primary document", ticker=ticker, accession=filing.accession)
+            return []
+
+        cik = self._cik_for(ticker)
+        if cik is None:
+            return []
+
+        url = _document_url(cik, filing.accession, filing.primary_document)
+        document = request_text(
+            self._client,
+            "GET",
+            url,
+            provider=PROVIDER_NAME,
+            limiter=self._limiter,
+            retry=self._retry,
+        )
+        sections = extract_sections(filing.form, clean_filing_text(document))
+        return [
+            FilingExcerpt(
+                accession=filing.accession,
+                form=filing.form,
+                section=section.section,
+                text=section.text,
+                filed=filing.filed,
+                url=url,
+                source=PROVIDER_NAME,
+            )
+            for section in sections
+        ]
 
     def _cik_for(self, symbol: str) -> int | None:
         """Return the SEC filer number for a ticker, loading the map once."""
@@ -470,6 +577,70 @@ class SecEdgarFundamentals:
 
         self._facts_cache = (key, payload)
         return payload
+
+
+def _filings_from_index(index: Mapping[str, Any], cik: int) -> list[Filing]:
+    """Turn the submissions index's parallel arrays into filings.
+
+    The SEC publishes the recent-filings index column-wise: one array per field,
+    aligned by position. A filer whose arrays disagree in length would otherwise
+    pair a form with the wrong accession number, so the shortest array bounds the
+    read and the surplus is ignored rather than zipped against nothing.
+    """
+    accessions = _string_column(index, "accessionNumber")
+    forms = _string_column(index, "form")
+    filed = _string_column(index, "filingDate")
+    periods = _string_column(index, "reportDate")
+    documents = _string_column(index, "primaryDocument")
+
+    rows = min(len(accessions), len(forms), len(filed))
+    filings: list[Filing] = []
+    for position in range(rows):
+        form = forms[position].strip().upper()
+        filed_on = _as_date(filed[position])
+        accession = accessions[position].strip()
+        if form not in FILING_FORMS or filed_on is None or not accession:
+            continue
+
+        document = documents[position] if position < len(documents) else ""
+        filings.append(
+            Filing(
+                accession=accession,
+                form=form,
+                filed=filed_on,
+                period_end=_as_date(periods[position]) if position < len(periods) else None,
+                primary_document=document or None,
+                url=_filing_url(cik, accession, document),
+                source=PROVIDER_NAME,
+            )
+        )
+    return filings
+
+
+def _string_column(index: Mapping[str, Any], key: str) -> list[str]:
+    """Return one column of the submissions index as strings."""
+    column = index.get(key)
+    if not isinstance(column, list):
+        return []
+    return [str(value) if value is not None else "" for value in column]
+
+
+def _document_url(cik: int, accession: str, document: str) -> str:
+    """Return the canonical location of one document inside a filing."""
+    plain = accession.replace("-", "")
+    return f"{DEFAULT_WWW_URL}/Archives/edgar/data/{cik}/{plain}/{document}"
+
+
+def _filing_url(cik: int, accession: str, document: str) -> str:
+    """Return the canonical SEC location of one filing.
+
+    The archive path strips the dashes from the accession number; the printed
+    form keeps them. Both appear in the same URL, which is why this is built
+    rather than taken from a field.
+    """
+    plain = accession.replace("-", "")
+    base = f"{DEFAULT_WWW_URL}/Archives/edgar/data/{cik}/{plain}"
+    return f"{base}/{document}" if document else f"{base}/{accession}-index.htm"
 
 
 def _latest_filed(facts: Iterable[Mapping[str, Any]]) -> Mapping[str, Any] | None:

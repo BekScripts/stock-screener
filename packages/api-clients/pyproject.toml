@@ -8,9 +8,11 @@ license = "MIT"
 authors = [{ name = "Aziz", email = "azizzbek.io@gmail.com" }]
 
 dependencies = [
+    "anthropic>=0.116",
     "domain",
     "httpx>=0.28",
     "pydantic>=2.9",
+    "research",
     "structlog>=24.4",
 ]
 
@@ -24,3 +26,4 @@ module-root = "src"
 
 [tool.uv.sources]
 domain = { workspace = true }
+research = { workspace = true }

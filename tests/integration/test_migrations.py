@@ -25,6 +25,8 @@ _TABLES = {
     "price_history",
     "score_snapshots",
     "benchmark_prices",
+    "research_reports",
+    "filings",
 }
 
 # The autouse `isolated_env` fixture chdirs into a tmp_path, so both paths are

@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from api_clients.errors import ProviderDataError
-from domain import CompanyProfile, FinancialPeriod, PriceBar
+from domain import CompanyProfile, Filing, FilingExcerpt, FinancialPeriod, PriceBar
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping, Sequence
@@ -115,6 +115,8 @@ class MockFundamentals:
         profiles: Profiles by ticker. A ticker absent from the mapping returns
             None, mirroring a vendor that does not cover it.
         statements: Quarterly history by ticker.
+        filings: Filing index entries by ticker. Absent by default, which is
+            what a fixture-driven run looks like until filings are seeded.
         failing_tickers: Symbols that raise `ProviderDataError` on any lookup.
     """
 
@@ -123,11 +125,19 @@ class MockFundamentals:
         profiles: Mapping[str, CompanyProfile] | None = None,
         statements: Mapping[str, Sequence[FinancialPeriod]] | None = None,
         *,
+        filings: Mapping[str, Sequence[Filing]] | None = None,
+        excerpts: Mapping[str, Sequence[FilingExcerpt]] | None = None,
         failing_tickers: Iterable[str] = (),
     ) -> None:
         self._profiles = {ticker.upper(): profile for ticker, profile in (profiles or {}).items()}
         self._statements = {
             ticker.upper(): list(periods) for ticker, periods in (statements or {}).items()
+        }
+        self._filings = {
+            ticker.upper(): list(entries) for ticker, entries in (filings or {}).items()
+        }
+        self._excerpts = {
+            ticker.upper(): list(entries) for ticker, entries in (excerpts or {}).items()
         }
         self._failing = {ticker.upper() for ticker in failing_tickers}
 
@@ -149,6 +159,33 @@ class MockFundamentals:
         symbol = self._check(ticker)
         periods = sorted(self._statements.get(symbol, []), key=lambda p: p.period_end)
         return periods[-limit:] if limit > 0 else periods
+
+    def get_filings(self, ticker: str, limit: int = 8) -> list[Filing]:
+        """Return the configured filings, newest first, capped at `limit`.
+
+        Raises:
+            ProviderDataError: If the ticker was configured to fail.
+        """
+        symbol = self._check(ticker)
+        entries = sorted(self._filings.get(symbol, []), key=lambda f: f.filed, reverse=True)
+        return entries[:limit] if limit > 0 else entries
+
+    def get_filing_excerpts(self, ticker: str, filing: Filing) -> list[FilingExcerpt]:
+        """Return the configured excerpts for one filing, or none.
+
+        Fixtures carry filing metadata and, when a test needs quotable text, the
+        excerpts to go with it. A mock that invented text would let a test pass
+        while the real path had never read a document.
+
+        Raises:
+            ProviderDataError: If the ticker was configured to fail.
+        """
+        symbol = self._check(ticker)
+        return [
+            excerpt
+            for excerpt in self._excerpts.get(symbol, [])
+            if excerpt.accession == filing.accession
+        ]
 
     def _check(self, ticker: str) -> str:
         """Upper-case the ticker, raising if it is configured to fail."""
@@ -174,7 +211,9 @@ def load_fixture_providers(path: Path | str) -> tuple[MockMarketData, MockFundam
           "market_cap": 1200000000,
           "bars": [{"date": "2026-01-02", "open": 10, "high": 11,
                     "low": 9, "close": 10.5, "volume": 1200000}],
-          "periods": [{"period_end": "2025-12-31", "revenue": 100000000}]
+          "periods": [{"period_end": "2025-12-31", "revenue": 100000000}],
+          "filings": [{"accession": "0000000000-26-000001", "form": "10-K",
+                       "filed": "2026-02-01", "period_end": "2025-12-31"}]
         }
       ]
     }
@@ -200,6 +239,7 @@ def load_fixture_providers(path: Path | str) -> tuple[MockMarketData, MockFundam
     profiles: list[CompanyProfile] = []
     bars: dict[str, list[PriceBar]] = {}
     statements: dict[str, list[FinancialPeriod]] = {}
+    filings: dict[str, list[Filing]] = {}
 
     for entry in payload["companies"]:
         if not isinstance(entry, dict):
@@ -210,14 +250,19 @@ def load_fixture_providers(path: Path | str) -> tuple[MockMarketData, MockFundam
         statements[profile.ticker] = [
             FinancialPeriod(source=PROVIDER_NAME, **period) for period in entry.get("periods", [])
         ]
+        filings[profile.ticker] = [
+            Filing(source=PROVIDER_NAME, **filing) for filing in entry.get("filings", [])
+        ]
 
     return (
         MockMarketData(profiles, bars),
-        MockFundamentals({p.ticker: p for p in profiles}, statements),
+        MockFundamentals({p.ticker: p for p in profiles}, statements, filings=filings),
     )
 
 
 def _fixture_profile(entry: dict[str, Any]) -> CompanyProfile:
-    """Build a profile from a fixture entry, ignoring its bars and periods."""
-    fields = {key: value for key, value in entry.items() if key not in {"bars", "periods"}}
+    """Build a profile from a fixture entry, ignoring its history and filings."""
+    fields = {
+        key: value for key, value in entry.items() if key not in {"bars", "periods", "filings"}
+    }
     return CompanyProfile(**fields)

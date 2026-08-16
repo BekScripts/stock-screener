@@ -27,21 +27,26 @@ import structlog
 from sqlalchemy.exc import SQLAlchemyError
 
 from api_clients import ProviderAuthError, ProviderError, ProviderPlanError
+from api_clients.edgar import DEFAULT_FILING_LIMIT
 from data_access import (
     BenchmarkPriceRepository,
     CompanyRepository,
+    FilingExcerptRepository,
+    FilingRepository,
     FinancialSnapshotRepository,
     PriceHistoryRepository,
+    to_filing,
 )
 from domain import is_supported_listing, normalise_ticker
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Iterable, Sequence
     from datetime import date
 
     from sqlalchemy.orm import Session
 
     from api_clients import FundamentalsProvider, MarketDataProvider
+    from data_access import FilingRecord
     from domain import PriceBar
     from stock_screener.config import Settings
 
@@ -438,6 +443,227 @@ def update_fundamentals(
             report.rows_written += written
 
     log.info("fundamentals updated", summary=report.summary())
+    return report
+
+
+DEFAULT_TEXT_FILINGS = 6
+"""Filings read per company when extracting text.
+
+Fewer than the eight the index keeps, because each one costs a request and a
+brief carries at most five excerpts anyway.
+"""
+
+TEXT_FORMS = ("10-K", "10-Q", "8-K")
+"""Forms this pipeline can read. Anything else is not worth a request."""
+
+_PERIODIC_QUARTERS = 2
+"""Quarterly reports reserved before 8-Ks may fill the remaining slots."""
+
+
+def _form(row: FilingRecord) -> str:
+    """Return a filing's form, normalised so an amendment reads as its parent."""
+    return row.form.strip().upper().removesuffix("/A")
+
+
+def select_text_filings(
+    rows: Sequence[FilingRecord], *, limit: int = DEFAULT_TEXT_FILINGS
+) -> list[FilingRecord]:
+    """Choose which filings are worth reading, by form rather than by date alone.
+
+    Newest-first selection has a failure mode this exists to fix: a filer with a
+    busy month of 8-Ks fills every slot with governance minutiae — bylaw
+    amendments, share conversions, officer changes — and the periodic report that
+    says what the company *does* never gets read. DELL was exactly this, and its
+    research could describe a redomestication in detail while answering "what is
+    this business" with UNKNOWN.
+
+    So the annual report is reserved a slot, the two most recent quarterlies get
+    one each, and 8-Ks fill what remains. A company that has not filed a 10-K
+    recently simply gets more 8-Ks; nothing is held back waiting for a form that
+    does not exist.
+
+    Args:
+        rows: The company's stored index entries, any order.
+        limit: Most filings to select.
+
+    Returns:
+        The selected entries, at most `limit`, without duplicate accessions.
+    """
+    eligible = sorted(
+        (row for row in rows if _form(row) in TEXT_FORMS),
+        key=lambda row: (row.filed, row.accession),
+        reverse=True,
+    )
+
+    picked: list[FilingRecord] = []
+    seen: set[str] = set()
+
+    def take(candidates: Iterable[FilingRecord], count: int) -> None:
+        remaining = count
+        for row in candidates:
+            if remaining <= 0 or len(picked) >= limit:
+                return
+            if row.accession in seen:
+                continue
+            picked.append(row)
+            seen.add(row.accession)
+            remaining -= 1
+
+    take((row for row in eligible if _form(row) == "10-K"), 1)
+    take((row for row in eligible if _form(row) == "10-Q"), _PERIODIC_QUARTERS)
+    take((row for row in eligible if _form(row) == "8-K"), limit)
+    # Whatever is left over, newest first: a company with three 10-Qs and no
+    # 8-K should still fill its slots rather than stop at three.
+    take(eligible, limit)
+    return picked
+
+
+def update_filing_text(
+    session: Session,
+    provider: FundamentalsProvider,
+    *,
+    tickers: Sequence[str] | None = None,
+    limit: int | None = None,
+    per_company: int = DEFAULT_TEXT_FILINGS,
+    force: bool = False,
+) -> IngestionReport:
+    """Read the documents behind stored filings and keep the quotable sections.
+
+    One request per filing, which is why this is its own pass and why it is
+    driven by an explicit ticker list rather than run over the market. The index
+    is cheap and complete; the text is expensive and selective.
+
+    Filings already extracted are skipped, so a second pass costs nothing and a
+    nightly one costs only the filings that appeared since. `force` re-reads them
+    anyway, which is what a changed extractor needs.
+
+    A filing whose form this extractor does not read, or whose headings cannot be
+    located, contributes nothing and is not an error — missing text is a section
+    answering `UNKNOWN`, which is the honest outcome.
+
+    Args:
+        session: Open database session. The caller commits.
+        provider: Source of filing documents.
+        tickers: Restrict to these symbols. Defaults to every stored company,
+            which is rarely what you want here.
+        limit: Process at most this many companies, in ticker order.
+        per_company: Most filings to select per company. Which ones is decided
+            by `select_text_filings`, not by date alone.
+        force: Re-read filings whose text is already stored.
+
+    Returns:
+        Counts for the pass. `rows_written` counts excerpts, not filings.
+
+    Raises:
+        ProviderAuthError: If the credentials are rejected. Every subsequent
+            company would fail the same way.
+    """
+    report = IngestionReport()
+    companies = CompanyRepository(session)
+    filings = FilingRepository(session)
+    excerpts = FilingExcerptRepository(session)
+
+    for company_id, ticker in _select_companies(companies, tickers, limit):
+        report.processed += 1
+        already = set() if force else excerpts.accessions_with_text(company_id)
+        selected = select_text_filings(filings.list_for_company(company_id), limit=per_company)
+        pending = [to_filing(row) for row in selected if row.accession not in already]
+
+        if not pending:
+            report.skipped += 1
+            log.debug("filing text already extracted", ticker=ticker, filings=len(selected))
+            continue
+
+        written = 0
+        for filing in pending:
+            try:
+                extracted = provider.get_filing_excerpts(ticker, filing)
+            except ProviderAuthError:
+                log.error("filing text halted: the provider rejected the credentials")
+                raise
+            except ProviderError:
+                log.warning("filing text failed", ticker=ticker, accession=filing.accession)
+                report.record_failure(ticker)
+                continue
+
+            if not extracted:
+                log.debug(
+                    "no section located",
+                    ticker=ticker,
+                    accession=filing.accession,
+                    form=filing.form,
+                )
+                continue
+            written += excerpts.upsert_excerpts(company_id, extracted)
+
+        if written:
+            report.succeeded += 1
+            report.rows_written += written
+        else:
+            report.skipped += 1
+
+    log.info("filing text updated", summary=report.summary())
+    return report
+
+
+def update_filings(
+    session: Session,
+    provider: FundamentalsProvider,
+    *,
+    tickers: Sequence[str] | None = None,
+    limit: int | None = None,
+    per_company: int = DEFAULT_FILING_LIMIT,
+) -> IngestionReport:
+    """Refresh the stored SEC filing index.
+
+    Kept apart from `update_fundamentals` rather than folded into it. The two
+    have different shapes — statements are skipped when nothing has been
+    reported since the last pass, filings are upserted every time because a
+    company files between reporting periods — and merging them would mean one
+    pass whose skip logic was right for half of what it did.
+
+    Provider failures are counted, never raised. A missing filing index costs a
+    brief its citations; it must not cost the run its fundamentals.
+
+    Args:
+        session: Open database session. The caller commits.
+        provider: Source of the filing index.
+        tickers: Restrict to these symbols. Defaults to every stored company.
+        limit: Process at most this many companies, in ticker order.
+        per_company: Filings to request per company.
+
+    Returns:
+        Counts for the pass.
+
+    Raises:
+        ProviderAuthError: If the credentials are rejected. Every subsequent
+            company would fail the same way.
+    """
+    report = IngestionReport()
+    companies = CompanyRepository(session)
+    filings = FilingRepository(session)
+
+    for company_id, ticker in _select_companies(companies, tickers, limit):
+        report.processed += 1
+        try:
+            entries = provider.get_filings(ticker, limit=per_company)
+        except ProviderAuthError:
+            log.error("filings halted: the provider rejected the credentials")
+            raise
+        except ProviderError:
+            report.record_failure(ticker)
+            log.warning("filings failed", ticker=ticker)
+            continue
+
+        if not entries:
+            report.skipped += 1
+            log.debug("no filings returned", ticker=ticker)
+            continue
+
+        report.succeeded += 1
+        report.rows_written += filings.upsert_filings(company_id, entries)
+
+    log.info("filings updated", summary=report.summary())
     return report
 
 

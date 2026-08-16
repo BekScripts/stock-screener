@@ -1,9 +1,10 @@
 """Command-line interface.
 
-The Phase 1 ingestion and scan commands, `run-scan` which chains them, and the
-Phase 2 scoring and ranking commands. Each is thin: build the dependencies, call
-into `scanning` or `scoring`, print the outcome. Any logic worth testing lives in
-a module, not in a command body.
+The Phase 1 ingestion and scan commands, `run-scan` which chains them, the Phase
+2 scoring and ranking commands, and a `research` group for inspecting what a
+Phase 3 run would do. Each is thin: build the dependencies, call into `scanning`,
+`scoring` or `research`, print the outcome. Any logic worth testing lives in a
+module, not in a command body.
 
 Commands write their results to stdout with `typer.echo` rather than a logger.
 The table and the summary are the program's *output*, not diagnostics — they
@@ -20,7 +21,9 @@ from typing import TYPE_CHECKING, Annotated
 import structlog
 import typer
 
+from api_clients import ProviderInvalidRequestError
 from data_access import build_session_factory, create_engine_from_url, session_scope
+from research import build_system_prompt, render_brief
 from stock_screener.config import Settings, get_settings
 from stock_screener.logging import configure_logging
 from stock_screener.providers import (
@@ -28,11 +31,24 @@ from stock_screener.providers import (
     build_fundamentals_provider,
     build_market_data_provider,
     build_profile_provider,
+    build_research_provider,
+)
+from stock_screener.research import (
+    MAX_CANDIDATES,
+    assemble_brief,
+    format_brief,
+    format_candidates,
+    format_research_run,
+    research_candidates,
+    research_company,
+    select_candidates,
 )
 from stock_screener.scanning import (
     format_table,
     scan_market,
     update_benchmark,
+    update_filing_text,
+    update_filings,
     update_fundamentals,
     update_market_data,
     update_universe,
@@ -462,6 +478,188 @@ def explain_command(
         raise typer.Exit(code=1)
 
     typer.echo(format_explanation(detail))
+
+
+research_app = typer.Typer(
+    name="research",
+    help="Inspect what an AI research run would do. No model is called.",
+    no_args_is_help=True,
+)
+app.add_typer(research_app)
+
+
+@research_app.command("candidates")
+def research_candidates_command(
+    limit: Annotated[
+        int,
+        typer.Option("--limit", "-n", min=1, help="Cap the selection across every source."),
+    ] = MAX_CANDIDATES,
+) -> None:
+    """List the companies a research run would spend a model call on."""
+    settings = _bootstrap()
+    with _database(settings) as factory, session_scope(factory) as session:
+        candidates = select_candidates(session, limit=limit)
+
+    typer.echo(format_candidates(candidates))
+
+
+@research_app.command("brief")
+def research_brief_command(
+    ticker: Annotated[str, typer.Argument(help="The symbol to assemble a brief for.")],
+    as_json: Annotated[
+        bool,
+        typer.Option("--json", help="Print the whole brief as JSON, exactly as a model sees it."),
+    ] = False,
+) -> None:
+    """Assemble one company's research brief and show what it contains.
+
+    Reads the database only. No provider is called, and no model is called.
+    """
+    settings = _bootstrap()
+    with _database(settings) as factory, session_scope(factory) as session:
+        brief = assemble_brief(session, settings, ticker)
+
+    if brief is None:
+        typer.echo(
+            f"No brief for {ticker.upper()}. The company must be stored and scored "
+            "under the current version — run `score` first."
+        )
+        raise typer.Exit(code=1)
+
+    typer.echo(brief.model_dump_json(indent=2) if as_json else format_brief(brief))
+
+
+@research_app.command("update-filings")
+def research_update_filings_command(
+    tickers: TickerOption = None,
+    limit: CompanyLimitOption = None,
+    candidates: Annotated[
+        bool,
+        typer.Option(
+            "--candidates",
+            help="Restrict the pass to the current research candidates. "
+            "A full-universe refresh costs thousands of requests for filings "
+            "no brief will cite.",
+        ),
+    ] = False,
+) -> None:
+    """Refresh the stored SEC filing index used for brief citations."""
+    settings = _bootstrap()
+    provider = build_fundamentals_provider(settings)
+    with _database(settings) as factory, session_scope(factory) as session:
+        selected = list(tickers) if tickers else None
+        if candidates:
+            selected = [candidate.ticker for candidate in select_candidates(session)]
+            typer.echo(f"restricting to {len(selected)} research candidate(s)")
+        report = update_filings(session, provider, tickers=selected, limit=limit)
+
+    typer.echo(f"filings: {report.summary()}")
+
+
+@research_app.command("update-filing-text")
+def research_update_filing_text_command(
+    tickers: TickerOption = None,
+    limit: CompanyLimitOption = None,
+    candidates: Annotated[
+        bool,
+        typer.Option(
+            "--candidates",
+            help="Restrict the pass to the current research candidates.",
+        ),
+    ] = False,
+    force: Annotated[
+        bool,
+        typer.Option("--force", help="Re-read filings whose text is already stored."),
+    ] = False,
+) -> None:
+    """Read stored filings and keep the sections a brief may quote.
+
+    One request per filing, so this is driven by an explicit list rather than run
+    over the market. Filings already extracted are skipped unless `--force`.
+    """
+    settings = _bootstrap()
+    provider = build_fundamentals_provider(settings)
+    with _database(settings) as factory, session_scope(factory) as session:
+        selected = list(tickers) if tickers else None
+        if candidates:
+            selected = [candidate.ticker for candidate in select_candidates(session)]
+            typer.echo(f"restricting to {len(selected)} research candidate(s)")
+        if selected is None and limit is None:
+            typer.echo(
+                "refusing to read every company's filings: pass --tickers, --limit "
+                "or --candidates. One request per filing adds up."
+            )
+            raise typer.Exit(code=1)
+        report = update_filing_text(session, provider, tickers=selected, limit=limit, force=force)
+
+    typer.echo(f"filing text: {report.summary()}")
+
+
+@research_app.command("run")
+def research_run_command(
+    ticker: Annotated[
+        str | None,
+        typer.Argument(help="The symbol to research. Omitted, researches every candidate."),
+    ] = None,
+    force: Annotated[
+        bool,
+        typer.Option("--force", help="Ignore a stored report and generate a new one."),
+    ] = False,
+    dry_run: Annotated[
+        bool,
+        typer.Option(
+            "--dry-run",
+            help="Print the exact prompt and brief that would be sent, and stop. "
+            "No model is called and nothing is stored.",
+        ),
+    ] = False,
+) -> None:
+    """Generate AI research, validate it, and store what validation accepted.
+
+    Reuses a stored report whenever the evidence, the scoring rules and the
+    prompt are all unchanged, so a re-run costs nothing.
+    """
+    settings = _bootstrap()
+
+    if dry_run:
+        if ticker is None:
+            typer.echo("--dry-run needs a ticker: there is one prompt per company.")
+            raise typer.Exit(code=1)
+        with _database(settings) as factory, session_scope(factory) as session:
+            brief = assemble_brief(session, settings, ticker)
+        if brief is None:
+            typer.echo(f"No brief for {ticker.upper()}. Run `score` first.")
+            raise typer.Exit(code=1)
+        typer.echo(build_system_prompt())
+        typer.echo("\n" + "=" * 78 + "\n")
+        typer.echo(render_brief(brief))
+        return
+
+    try:
+        provider = build_research_provider(settings)
+    except ConfigurationError as exc:
+        typer.echo(f"research provider not configured: {exc}")
+        raise typer.Exit(code=2) from exc
+
+    try:
+        with _database(settings) as factory, session_scope(factory) as session:
+            if ticker is not None:
+                outcomes = [research_company(session, settings, provider, ticker, force=force)]
+            else:
+                selected = select_candidates(session)
+                outcomes = research_candidates(
+                    session,
+                    settings,
+                    provider,
+                    [(candidate.ticker, candidate.selection) for candidate in selected],
+                    force=force,
+                    budget_usd=settings.research_max_run_cost_usd,
+                )
+    except ProviderInvalidRequestError as exc:
+        typer.echo(f"research aborted — the provider rejected the request:\n  {exc}")
+        raise typer.Exit(code=2) from exc
+
+    typer.echo(format_research_run(outcomes))
 
 
 @app.command("run-daily")

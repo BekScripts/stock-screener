@@ -22,7 +22,7 @@ from api_clients.errors import ProviderError
 
 if TYPE_CHECKING:
     from api_clients.base import FundamentalsProvider
-    from domain import CompanyProfile, FinancialPeriod
+    from domain import CompanyProfile, Filing, FilingExcerpt, FinancialPeriod
 
 log = structlog.get_logger(__name__)
 
@@ -92,3 +92,42 @@ class CompositeFundamentals:
                 this is not recoverable from elsewhere.
         """
         return self._statements.get_financial_statements(ticker, limit=limit)
+
+    def get_filings(self, ticker: str, limit: int = 8) -> list[Filing]:
+        """Return filing metadata from the statement source.
+
+        Filings belong with the statements for the same reason the statements
+        belong where they do: both come from the filer's own submissions, and a
+        profile provider that happened to expose an index would be answering a
+        question about a different corpus.
+
+        Args:
+            ticker: The symbol to look up.
+            limit: Maximum filings to return.
+
+        Returns:
+            Index entries newest first, or empty when the source has none.
+
+        Raises:
+            ProviderError: If the statement source failed.
+        """
+        return self._statements.get_filings(ticker, limit=limit)
+
+    def get_filing_excerpts(self, ticker: str, filing: Filing) -> list[FilingExcerpt]:
+        """Return quotable filing text from the statement source.
+
+        The same source that indexed the filing reads it. Asking one provider
+        which documents exist and another what they say would let the two
+        disagree about which document an accession names.
+
+        Args:
+            ticker: The symbol the filing belongs to.
+            filing: The index entry naming the document to read.
+
+        Returns:
+            One excerpt per section located, or empty.
+
+        Raises:
+            ProviderError: If the statement source failed.
+        """
+        return self._statements.get_filing_excerpts(ticker, filing)

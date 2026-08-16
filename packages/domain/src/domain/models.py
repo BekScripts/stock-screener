@@ -139,6 +139,38 @@ class FinancialPeriod(_Frozen):
     source: str = "unknown"
 
 
+class Filing(_Frozen):
+    """One regulatory filing, as an index entry rather than a document.
+
+    Metadata only, on purpose. The accession number, the form and the dates are
+    enough to say *that* a company filed, *when*, and *for which period* — which
+    is what a research brief needs to cite a filing rather than allude to one.
+    The document behind the URL is deliberately not fetched: extracting text is a
+    separate concern with its own failure modes, and a citation to a filing
+    nobody read is still a verifiable citation.
+
+    Attributes:
+        accession: The SEC accession number, which identifies the filing
+            uniquely. Kept in its dashed form, as the SEC prints it.
+        form: Filing type — `10-K`, `10-Q`, `8-K`.
+        filed: The date the filing was submitted.
+        period_end: The reporting period it covers, when it states one. An `8-K`
+            usually does not, which is not a gap.
+        primary_document: File name of the filing's main document, when the
+            index names one.
+        url: Canonical location of the filing on the SEC's site.
+        source: Identifier of the provider the entry came from.
+    """
+
+    accession: str
+    form: str
+    filed: date
+    period_end: date | None = None
+    primary_document: str | None = None
+    url: str = ""
+    source: str = "unknown"
+
+
 class VolumeBasis(StrEnum):
     """How much of the market a volume figure represents.
 
@@ -196,6 +228,40 @@ class EligibilityWarning(StrEnum):
     materially. Neither is discarded and neither is averaged — the difference is
     surfaced, because its usual causes (a stale share count, multiple share
     classes, a recent issuance) each mean something different."""
+
+
+class FilingExcerpt(_Frozen):
+    """Verbatim text lifted from one section of one filing.
+
+    The counterpart to `Filing`, and deliberately a separate type. A `Filing`
+    says a document exists; an excerpt says what part of it reads. Only the
+    second can support a claim about a business, which is why they are never
+    merged into one record — a citation that cannot distinguish "this 8-K was
+    filed" from "this 8-K says" is a citation that proves nothing.
+
+    Extraction is deterministic: headings are located by pattern, the body
+    between them is taken verbatim, and nothing is summarised, paraphrased or
+    inferred. A section that cannot be located confidently is absent rather than
+    approximated.
+
+    Attributes:
+        accession: The filing this came from, in the SEC's dashed form.
+        form: Filing type — `10-K`, `10-Q`, `8-K`.
+        section: Which part of the filing, as a stable slug: `business`,
+            `risk_factors`, `mda`, or `item_2.02` for an 8-K item.
+        text: The extracted text, verbatim and bounded in length.
+        filed: The date the filing was submitted.
+        url: Where the document can be read.
+        source: Identifier of the provider the text came from.
+    """
+
+    accession: str
+    form: str
+    section: str
+    text: str
+    filed: date
+    url: str = ""
+    source: str = "unknown"
 
 
 class CompanyProfile(_Frozen):

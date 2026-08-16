@@ -19,6 +19,7 @@ ingestion tests run against in-memory SQLite with no patching.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import and_, func, select
@@ -28,9 +29,12 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from data_access.models import (
     BenchmarkPrice,
     Company,
+    FilingExcerptRecord,
+    FilingRecord,
     FinancialSnapshot,
     PriceHistory,
     ScoreSnapshot,
+    StoredResearchReport,
     _utcnow,
 )
 from domain import ScoringStatus
@@ -41,7 +45,16 @@ if TYPE_CHECKING:
 
     from sqlalchemy.orm import Session
 
-    from domain import CompanyMetrics, CompanyProfile, CompanyScore, FinancialPeriod, PriceBar
+    from domain import (
+        CompanyMetrics,
+        CompanyProfile,
+        CompanyScore,
+        Filing,
+        FilingExcerpt,
+        FinancialPeriod,
+        PriceBar,
+    )
+    from research import ResearchReport
 
 
 #: Rows per `INSERT`, and identifiers per `IN` clause.
@@ -250,6 +263,33 @@ class FinancialSnapshotRepository:
             )
         )
 
+    def period_counts(self, company_ids: Sequence[int]) -> dict[int, int]:
+        """Return how many stored periods each company has.
+
+        Counted in the database rather than by loading the rows: the callers
+        that need this — the research candidate filter, for one — ask about
+        dozens of companies at a time and care only about the number.
+
+        Args:
+            company_ids: The companies to count for.
+
+        Returns:
+            A count per company. A company with no stored periods is absent
+            rather than present with a zero, so a caller must use `.get(id, 0)`.
+        """
+        if not company_ids:
+            return {}
+
+        counts: dict[int, int] = {}
+        for chunk in _chunks(company_ids, _IN_CLAUSE_CHUNK):
+            rows = self._session.execute(
+                select(FinancialSnapshot.company_id, func.count())
+                .where(FinancialSnapshot.company_id.in_(chunk))
+                .group_by(FinancialSnapshot.company_id)
+            )
+            counts.update({row[0]: row[1] for row in rows})
+        return counts
+
     def count(self) -> int:
         """Return how many snapshots are stored."""
         return self._session.scalar(select(func.count()).select_from(FinancialSnapshot)) or 0
@@ -319,12 +359,18 @@ class PriceHistoryRepository:
             select(func.max(PriceHistory.date)).where(PriceHistory.company_id == company_id)
         )
 
-    def list_for_company(self, company_id: int, *, since: date | None = None) -> list[PriceHistory]:
+    def list_for_company(
+        self, company_id: int, *, since: date | None = None, until: date | None = None
+    ) -> list[PriceHistory]:
         """Return stored bars for one company, oldest first.
 
         Args:
             company_id: The owning company's primary key.
             since: Only return sessions on or after this date.
+            until: Only return sessions on or before this date. A research brief
+                explaining a score passes the score's own date, so the metrics
+                behind the brief cannot be calculated from bars that did not
+                exist when the score was.
 
         Returns:
             Bars in date order.
@@ -336,6 +382,8 @@ class PriceHistoryRepository:
         )
         if since is not None:
             statement = statement.where(PriceHistory.date >= since)
+        if until is not None:
+            statement = statement.where(PriceHistory.date <= until)
         return list(self._session.scalars(statement))
 
     def count(self) -> int:
@@ -678,9 +726,346 @@ class ScoreSnapshotRepository:
 
         return [(row[0], row[1]) for row in self._session.execute(statement)]
 
+    def history_for_company(
+        self, company_id: int, *, score_version: str, limit: int | None = None
+    ) -> list[ScoreSnapshot]:
+        """Return one company's score history, newest first.
+
+        Filtered to a single `score_version`, like every other read here. A
+        history that mixed versions would show the day the formula changed as a
+        jump in the business.
+
+        Args:
+            company_id: The company to read.
+            score_version: The formula version to read.
+            limit: Most snapshots to return. None returns all of them.
+
+        Returns:
+            The snapshots, newest first.
+        """
+        statement = (
+            select(ScoreSnapshot)
+            .where(
+                ScoreSnapshot.company_id == company_id,
+                ScoreSnapshot.score_version == score_version,
+            )
+            .order_by(ScoreSnapshot.score_date.desc())
+        )
+        if limit is not None:
+            statement = statement.limit(limit)
+        return list(self._session.scalars(statement))
+
     def count(self) -> int:
         """Return how many score snapshots are stored."""
         return self._session.scalar(select(func.count()).select_from(ScoreSnapshot)) or 0
+
+
+class FilingRepository:
+    """Reads and writes the `filings` table.
+
+    Args:
+        session: The session to operate in. Not owned; the caller commits.
+    """
+
+    _UPDATABLE = ("form", "filed", "period_end", "primary_document", "url", "source")
+
+    def __init__(self, session: Session) -> None:
+        self._session = session
+
+    def upsert_filings(self, company_id: int, filings: Iterable[Filing]) -> int:
+        """Insert or replace one company's filing index entries.
+
+        Upserted rather than appended because the SEC's recent-filings index
+        overlaps heavily between runs, and because a filer occasionally corrects
+        a period or a document name on an accession already stored.
+
+        Args:
+            company_id: The owning company.
+            filings: Index entries to store.
+
+        Returns:
+            How many rows were written.
+        """
+        rows = [
+            {
+                "company_id": company_id,
+                "accession": filing.accession,
+                "form": filing.form,
+                "filed": filing.filed,
+                "period_end": filing.period_end,
+                "primary_document": filing.primary_document,
+                "url": filing.url,
+                "source": filing.source,
+            }
+            for filing in filings
+        ]
+        if not rows:
+            return 0
+
+        for chunk in _chunks(rows, _INSERT_CHUNK_ROWS):
+            insert = _insert_for(self._session)
+            statement = insert(FilingRecord).values(list(chunk))
+            self._session.execute(
+                statement.on_conflict_do_update(
+                    index_elements=[FilingRecord.company_id, FilingRecord.accession],
+                    set_={key: statement.excluded[key] for key in self._UPDATABLE},
+                )
+            )
+        return len(rows)
+
+    def list_for_company(
+        self, company_id: int, *, until: date | None = None, limit: int | None = None
+    ) -> list[FilingRecord]:
+        """Return one company's filings, newest first.
+
+        Args:
+            company_id: The company to read.
+            until: Latest filing date to include. A research brief explaining a
+                score passes the score's own date here, so the brief cannot cite
+                a filing that did not exist when the score was calculated.
+            limit: Most filings to return.
+
+        Returns:
+            The filings, newest first.
+        """
+        statement = select(FilingRecord).where(FilingRecord.company_id == company_id)
+        if until is not None:
+            statement = statement.where(FilingRecord.filed <= until)
+        statement = statement.order_by(FilingRecord.filed.desc(), FilingRecord.accession.desc())
+        if limit is not None:
+            statement = statement.limit(limit)
+        return list(self._session.scalars(statement))
+
+    def latest_filed(self, company_id: int) -> date | None:
+        """Return the most recent filing date stored for one company, or None."""
+        return self._session.scalar(
+            select(func.max(FilingRecord.filed)).where(FilingRecord.company_id == company_id)
+        )
+
+    def count(self) -> int:
+        """Return how many filings are stored."""
+        return self._session.scalar(select(func.count()).select_from(FilingRecord)) or 0
+
+
+class FilingExcerptRepository:
+    """Reads and writes the `filing_excerpts` table.
+
+    The store behind "what does this filing actually say". Writes are upserts on
+    the company, accession and section, so re-extracting a filing is idempotent:
+    a second pass over the same document rewrites the same rows rather than
+    stacking near-duplicate paragraphs a brief would then have to deduplicate.
+    """
+
+    _UPDATABLE = ("form", "text", "filed", "url", "source", "extracted_at")
+
+    def __init__(self, session: Session) -> None:
+        self._session = session
+
+    def upsert_excerpts(self, company_id: int, excerpts: Iterable[FilingExcerpt]) -> int:
+        """Insert or replace extracted text for one company.
+
+        Args:
+            company_id: The owning company.
+            excerpts: Extracted sections to store.
+
+        Returns:
+            How many rows were written.
+        """
+        now = datetime.now(UTC)
+        rows = [
+            {
+                "company_id": company_id,
+                "accession": excerpt.accession,
+                "form": excerpt.form,
+                "section": excerpt.section,
+                "text": excerpt.text,
+                "filed": excerpt.filed,
+                "url": excerpt.url,
+                "source": excerpt.source,
+                "extracted_at": now,
+            }
+            for excerpt in excerpts
+        ]
+        if not rows:
+            return 0
+
+        for chunk in _chunks(rows, _INSERT_CHUNK_ROWS):
+            insert = _insert_for(self._session)
+            statement = insert(FilingExcerptRecord).values(list(chunk))
+            self._session.execute(
+                statement.on_conflict_do_update(
+                    index_elements=[
+                        FilingExcerptRecord.company_id,
+                        FilingExcerptRecord.accession,
+                        FilingExcerptRecord.section,
+                    ],
+                    set_={key: statement.excluded[key] for key in self._UPDATABLE},
+                )
+            )
+        return len(rows)
+
+    def list_for_company(
+        self, company_id: int, *, until: date | None = None, limit: int | None = None
+    ) -> list[FilingExcerptRecord]:
+        """Return one company's extracted sections, newest filing first.
+
+        Args:
+            company_id: The company to read.
+            until: Latest filing date to include. A brief explaining a score
+                passes the score's own date, so it cannot quote a filing that
+                did not exist when the score was calculated.
+            limit: Most rows to return.
+
+        Returns:
+            The excerpts, newest first, ordered within a filing by section so a
+            brief assembled twice from the same data is byte-identical.
+        """
+        statement = select(FilingExcerptRecord).where(FilingExcerptRecord.company_id == company_id)
+        if until is not None:
+            statement = statement.where(FilingExcerptRecord.filed <= until)
+        statement = statement.order_by(
+            FilingExcerptRecord.filed.desc(),
+            FilingExcerptRecord.accession.desc(),
+            FilingExcerptRecord.section.asc(),
+        )
+        if limit is not None:
+            statement = statement.limit(limit)
+        return list(self._session.scalars(statement))
+
+    def accessions_with_text(self, company_id: int) -> set[str]:
+        """Return the accessions already extracted, so a pass can skip them."""
+        return set(
+            self._session.scalars(
+                select(FilingExcerptRecord.accession).where(
+                    FilingExcerptRecord.company_id == company_id
+                )
+            )
+        )
+
+    def count(self) -> int:
+        """Return how many excerpts are stored."""
+        return self._session.scalar(select(func.count()).select_from(FilingExcerptRecord)) or 0
+
+
+class ResearchReportRepository:
+    """Reads and writes the `research_reports` table.
+
+    Two things this repository will not do, both deliberate.
+
+    It **only accepts a validated report.** `save` takes a
+    `research.ResearchReport`, which is the type `research.validate_report`
+    produces and nothing else does. A `DraftReport` — unchecked model output —
+    is not merely discouraged here, it does not type-check and does not have the
+    fields this table needs. That is the whole reason the contract splits the
+    two.
+
+    It **never writes to `score_snapshots`.** A research report explains a score;
+    it cannot revise one. Phase 3 has no write path to the scoring tables at all.
+
+    Args:
+        session: The session to operate in. Not owned; the caller commits.
+    """
+
+    def __init__(self, session: Session) -> None:
+        self._session = session
+
+    def save(self, company_id: int, report: ResearchReport) -> StoredResearchReport:
+        """Insert or replace one report, keyed on the cache key.
+
+        Re-validating the same draft against the same brief writes the same row
+        rather than a second one, which is what makes a re-run idempotent.
+
+        Args:
+            company_id: The company the report is about.
+            report: A validated report. There is no way to pass an unvalidated
+                one: only `validate_report` and `failed_report` construct this
+                type.
+
+        Returns:
+            The stored row.
+        """
+        existing = self.find(
+            company_id,
+            score_version=report.score_version,
+            brief_fingerprint=report.brief_fingerprint,
+            prompt_version=report.prompt_version,
+        )
+        values = _research_values(company_id, report)
+
+        if existing is None:
+            row = StoredResearchReport(**values)
+            self._session.add(row)
+            self._session.flush()
+            return row
+
+        for key, value in values.items():
+            setattr(existing, key, value)
+        self._session.flush()
+        return existing
+
+    def find(
+        self,
+        company_id: int,
+        *,
+        score_version: str,
+        brief_fingerprint: str,
+        prompt_version: str,
+    ) -> StoredResearchReport | None:
+        """Return the row for one cache key, or None.
+
+        Args:
+            company_id: The company.
+            score_version: The formula version the report explains.
+            brief_fingerprint: Hash of the evidence it was written from.
+            prompt_version: The prompt that produced it.
+
+        Returns:
+            The stored row, whatever its status. Deciding whether a `FAILED` row
+            counts as a hit is the caller's judgement, not the storage layer's.
+        """
+        return self._session.scalars(
+            select(StoredResearchReport).where(
+                StoredResearchReport.company_id == company_id,
+                StoredResearchReport.score_version == score_version,
+                StoredResearchReport.brief_fingerprint == brief_fingerprint,
+                StoredResearchReport.prompt_version == prompt_version,
+            )
+        ).one_or_none()
+
+    def latest_for_company(
+        self, company_id: int, *, score_version: str
+    ) -> StoredResearchReport | None:
+        """Return a company's most recently generated report under one version."""
+        return self._session.scalars(
+            select(StoredResearchReport)
+            .where(
+                StoredResearchReport.company_id == company_id,
+                StoredResearchReport.score_version == score_version,
+            )
+            .order_by(StoredResearchReport.generated_at.desc())
+            .limit(1)
+        ).one_or_none()
+
+    def count(self) -> int:
+        """Return how many research reports are stored."""
+        return self._session.scalar(select(func.count()).select_from(StoredResearchReport)) or 0
+
+
+def _research_values(company_id: int, report: ResearchReport) -> dict[str, Any]:
+    """Flatten one validated report into the `research_reports` column layout."""
+    return {
+        "company_id": company_id,
+        "score_version": report.score_version,
+        "score_date": report.score_date,
+        "brief_fingerprint": report.brief_fingerprint,
+        "contract_version": report.contract_version,
+        "prompt_version": report.prompt_version,
+        "model_id": report.model_id,
+        "status": report.status.value,
+        "generated_at": report.generated_at,
+        "report": report.model_dump(mode="json"),
+        "issues": [issue.model_dump(mode="json") for issue in report.issues],
+    }
 
 
 def _score_values(record: ScoreRecord, score_date: date) -> dict[str, Any]:

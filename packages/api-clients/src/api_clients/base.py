@@ -19,7 +19,7 @@ if TYPE_CHECKING:
     from collections.abc import Sequence
     from datetime import date
 
-    from domain import CompanyProfile, FinancialPeriod, PriceBar
+    from domain import CompanyProfile, Filing, FilingExcerpt, FinancialPeriod, PriceBar
 
 
 @runtime_checkable
@@ -121,5 +121,54 @@ class FundamentalsProvider(Protocol):
 
         Raises:
             ProviderError: If the request failed.
+        """
+        ...
+
+    def get_filings(self, ticker: str, limit: int = 8) -> list[Filing]:
+        """Return recent filing index entries, newest first.
+
+        Metadata only — form, dates, accession number and location. No document
+        is fetched, so this is cheap enough to run beside a fundamentals refresh.
+
+        Every provider implements this, and a provider that has no filings index
+        returns an empty list rather than raising. Absence of filings is a fact
+        about a source's coverage, not a failure, and a research brief that
+        carries none is still a valid brief.
+
+        Args:
+            ticker: The symbol to look up.
+            limit: Maximum filings to return, most recent kept.
+
+        Returns:
+            Index entries newest first, or an empty list.
+
+        Raises:
+            ProviderError: If the request failed.
+        """
+        ...
+
+    def get_filing_excerpts(self, ticker: str, filing: Filing) -> list[FilingExcerpt]:
+        """Return quotable sections from one filing's document.
+
+        The expensive counterpart to `get_filings`: one request per document,
+        so callers read a handful of filings rather than a market's worth.
+        Extraction is deterministic — headings located by pattern, text taken
+        verbatim — and a provider that cannot read documents returns an empty
+        list rather than raising.
+
+        A form this provider does not parse, or a document whose sections cannot
+        be located confidently, yields nothing. That is the intended outcome: a
+        research section resting on filing text then answers `UNKNOWN`, which is
+        preferable to quoting a table of contents as a business description.
+
+        Args:
+            ticker: The symbol the filing belongs to.
+            filing: The index entry naming the document to read.
+
+        Returns:
+            One excerpt per section located, or an empty list.
+
+        Raises:
+            ProviderError: If the document could not be fetched.
         """
         ...

@@ -46,14 +46,40 @@ securities, and the matches are returned for export or further analysis.
 
 The screening rules themselves live in the `domain` package, deliberately free
 of I/O. Market data arrives through `api-clients` (external HTTP providers) and
-is persisted or cached via `data-access`. `src/stock_screener/` is the thin
+is persisted or cached via `data-access`. The `research` package holds the AI
+research contract — also free of I/O. `src/stock_screener/` is the thin
 deployable that wires those together behind a CLI.
 
 The MVP is built in four phases, specified in
 `docs/reference/project-intro.md`. **Phases 1 and 2 are complete**: ingestion,
 the derived-metric engine, eligibility filtering, CompounderScore v1, risk
 penalties, daily score snapshots, the four ranking views, the CLI and a
-read-only API. Phase 3 (AI research) has not started and must not be.
+read-only API.
+
+**Phase 3 (AI research) is complete and frozen.** The contract and prompt live in
+`packages/research`; the `ResearchProvider` boundary and its one real
+implementation in `api-clients`; deterministic SEC filing-text extraction beside
+it; the application layer in `src/stock_screener/research/` — candidate
+selection, brief assembly, the generate-validate-persist pipeline, persistence,
+caching and a run-cost guard; and the `research` CLI group. Not built, and not to
+be started without being asked: a second LLM provider, filing exhibits, and any
+Phase 4 work. Its workflow and known limitations are documented in
+`docs/reference/project-phases/phase3.md`.
+
+Three rules govern that layer:
+
+- **A brief is bounded by the `score_date` of the snapshot it explains**, and
+  prefers the figures the score itself recorded. A brief that reached a provider,
+  or that explained an old score with new data, would be the two failures it
+  exists to prevent.
+- **Nothing reaches the database without passing validation.** The order is
+  brief → draft → `validate_report` → persist, and `save_report` takes a
+  `ResearchReport`, which only validation builds.
+- **A provider failure is a `FAILED` report, never an exception that ends a
+  run.** Scanning, scoring and ranking never depend on a model being reachable.
+- **`D.` proves a filing exists; `X.` quotes what it says.** An `EXTRACTED` claim
+  must cite an `X.` excerpt, and a number found in filing text supports only a
+  claim citing the excerpt it appears in — never pooled across a brief.
 
 Three rules run through the whole codebase and are the ones most worth
 protecting:

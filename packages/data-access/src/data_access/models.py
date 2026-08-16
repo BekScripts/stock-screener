@@ -1,6 +1,7 @@
-"""SQLAlchemy tables for companies, fundamentals, prices and scores.
+"""SQLAlchemy tables for companies, fundamentals, prices, scores and research.
 
-Three tables carry Phase 1, and two more carry Phase 2. Their unique constraints
+Three tables carry Phase 1, two more carry Phase 2, and one carries Phase 3's
+research reports. Their unique constraints
 are load-bearing: they are what makes re-running the daily job idempotent, and
 they are what the upsert helpers in `repositories` target. Removing one would not
 fail a test immediately — it would slowly fill the database with duplicate
@@ -32,6 +33,7 @@ from sqlalchemy import (
     Index,
     Integer,
     String,
+    Text,
     UniqueConstraint,
     func,
 )
@@ -94,6 +96,15 @@ class Company(Base):
         back_populates="company", cascade="all, delete-orphan"
     )
     scores: Mapped[list[ScoreSnapshot]] = relationship(
+        back_populates="company", cascade="all, delete-orphan"
+    )
+    filing_excerpts: Mapped[list[FilingExcerptRecord]] = relationship(
+        back_populates="company", cascade="all, delete-orphan", passive_deletes=True
+    )
+    filings: Mapped[list[FilingRecord]] = relationship(
+        back_populates="company", cascade="all, delete-orphan"
+    )
+    research_reports: Mapped[list[StoredResearchReport]] = relationship(
         back_populates="company", cascade="all, delete-orphan"
     )
 
@@ -275,3 +286,161 @@ class ScoreSnapshot(Base):
     breakdown: Mapped[dict[str, object] | None] = mapped_column(JSON)
 
     company: Mapped[Company] = relationship(back_populates="scores")
+
+
+class FilingRecord(Base):
+    """One regulatory filing's index entry.
+
+    Metadata only — no document text. The table exists so a research brief can
+    cite a filing without any provider being called while the brief is being
+    assembled, which is the property that keeps a research run working from what
+    the nightly scan already fetched.
+
+    Named `FilingRecord` rather than `Filing` because `domain.Filing` is the
+    value object this row translates to, and a module holding both should not
+    have to disambiguate them.
+
+    Accession numbers are unique SEC-wide, but the constraint is scoped to the
+    company as well: it is the pair that a re-run upserts on, and scoping it that
+    way keeps a filer that appears twice under two tickers from silently
+    colliding.
+    """
+
+    __tablename__ = "filings"
+    __table_args__ = (
+        UniqueConstraint("company_id", "accession", name="uq_filing_accession"),
+        Index("ix_filings_company_filed", "company_id", "filed"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    company_id: Mapped[int] = mapped_column(
+        ForeignKey("companies.id", ondelete="CASCADE"), nullable=False
+    )
+
+    accession: Mapped[str] = mapped_column(String(30), nullable=False)
+    form: Mapped[str] = mapped_column(String(20), nullable=False)
+    filed: Mapped[date] = mapped_column(Date, nullable=False)
+    # The period the filing reports on, when it states one. An 8-K usually does
+    # not, so NULL here is normal rather than missing data.
+    period_end: Mapped[date | None] = mapped_column(Date)
+    primary_document: Mapped[str | None] = mapped_column(String(255))
+    url: Mapped[str] = mapped_column(String(500), nullable=False, default="")
+
+    source: Mapped[str] = mapped_column(String(50), nullable=False, default="unknown")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow, server_default=func.now()
+    )
+
+    company: Mapped[Company] = relationship(back_populates="filings")
+
+
+class FilingExcerptRecord(Base):
+    """Verbatim text extracted from one section of one filing.
+
+    A separate table from `filings`, not a column on it, because the two answer
+    different questions and one filing yields several sections. The pair that
+    identifies an excerpt is the accession and the section slug, scoped to the
+    company — re-running extraction over a filing already read replaces its rows
+    rather than accumulating copies of the same paragraphs.
+
+    Nothing here is summarised. The text is what the filer wrote, cut to a bound,
+    and the row exists so that a research claim about a business can cite
+    something a person can go and read.
+    """
+
+    __tablename__ = "filing_excerpts"
+    __table_args__ = (
+        UniqueConstraint("company_id", "accession", "section", name="uq_filing_excerpt_section"),
+        Index("ix_filing_excerpts_company_filed", "company_id", "filed"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    company_id: Mapped[int] = mapped_column(
+        ForeignKey("companies.id", ondelete="CASCADE"), nullable=False
+    )
+
+    accession: Mapped[str] = mapped_column(String(30), nullable=False)
+    form: Mapped[str] = mapped_column(String(20), nullable=False)
+    # `business`, `risk_factors`, `mda`, or `item_2.02` for an 8-K item. Part of
+    # the citation handle a report quotes, so it may not drift.
+    section: Mapped[str] = mapped_column(String(40), nullable=False)
+    text: Mapped[str] = mapped_column(Text, nullable=False)
+    filed: Mapped[date] = mapped_column(Date, nullable=False)
+    url: Mapped[str] = mapped_column(String(500), nullable=False, default="")
+
+    source: Mapped[str] = mapped_column(String(50), nullable=False, default="unknown")
+    # When the text was pulled, as distinct from when the filing was filed. A
+    # re-extraction under a changed extractor moves this and not `filed`.
+    extracted_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow, server_default=func.now()
+    )
+
+    company: Mapped[Company] = relationship(back_populates="filing_excerpts")
+
+
+class StoredResearchReport(Base):
+    """One validated AI research report about one company.
+
+    Named for what it is rather than for the contract it carries, because
+    `research.ResearchReport` is the validated value object and this is the row
+    it was written to. Code that touches both should never have to wonder which
+    one it is holding.
+
+    The unique constraint spans `(company_id, score_version, brief_fingerprint,
+    prompt_version)`, and those four together are the cache key: the company, the
+    scoring rules it was explained under, a hash of every piece of evidence
+    supplied, and the prompt that turned that evidence into prose. Change any one
+    and the report is a different reading of a different thing. Change none and
+    regenerating it would spend a model call to produce what is already stored.
+
+    The report is kept as JSON rather than as a column per section. It is read
+    whole — by a person, or by an API response — and never queried section by
+    section, which is exactly the case `score_snapshots.breakdown` already makes.
+    `issues` is stored beside it, denormalised out of the same document, because
+    "which reports had claims dropped" is a question worth answering without
+    parsing every report in the table.
+    """
+
+    __tablename__ = "research_reports"
+    __table_args__ = (
+        UniqueConstraint(
+            "company_id",
+            "score_version",
+            "brief_fingerprint",
+            "prompt_version",
+            name="uq_research_report_cache_key",
+        ),
+        Index("ix_research_reports_company_generated", "company_id", "generated_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    company_id: Mapped[int] = mapped_column(
+        ForeignKey("companies.id", ondelete="CASCADE"), nullable=False
+    )
+
+    # Which score the report explains. Carried so a report can be paired with
+    # the exact snapshot it was written about, and so a report produced under one
+    # formula version is never shown beside a score from another.
+    score_version: Mapped[str] = mapped_column(String(40), nullable=False)
+    score_date: Mapped[date] = mapped_column(Date, nullable=False)
+
+    # The evidence, the contract and the prompt that produced it.
+    brief_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    contract_version: Mapped[str] = mapped_column(String(40), nullable=False)
+    prompt_version: Mapped[str] = mapped_column(String(40), nullable=False)
+    model_id: Mapped[str] = mapped_column(String(120), nullable=False)
+
+    # COMPLETE, PARTIAL or FAILED. A failed row records that a run tried and
+    # could not, which is why it is stored rather than swallowed — and why the
+    # cache treats it as a miss.
+    status: Mapped[str] = mapped_column(String(20), nullable=False)
+
+    generated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow, server_default=func.now()
+    )
+
+    report: Mapped[dict[str, object]] = mapped_column(JSON, nullable=False)
+    issues: Mapped[list[object] | None] = mapped_column(JSON)
+
+    company: Mapped[Company] = relationship(back_populates="research_reports")

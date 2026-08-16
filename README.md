@@ -12,8 +12,8 @@ of listings to a small group, and explains what it saw.
 
 ## Scope — what exists today
 
-The MVP is built in four phases. **Phases 1 and 2 are complete**: data in, a
-ranked and explainable shortlist out.
+The MVP is built in four phases. **Phases 1, 2 and 3 are complete**: data in, a
+ranked and explainable shortlist out, and AI research that cites its evidence.
 
 ```text
 Alpaca + EDGAR  →  Scanner  →  Metrics  →  CompounderScore  →  Preliminary ranking
@@ -21,6 +21,10 @@ Alpaca + EDGAR  →  Scanner  →  Metrics  →  CompounderScore  →  Prelimina
                                               FMP enrichment of the top candidates
                                                                       ↓
                                                             Final ranking, Top 50
+                                                                      ↓
+                              research candidates  →  SEC filing excerpts  →  brief
+                                                                      ↓
+                                    Claude draft  →  validation  →  grounded report
 ```
 
 The broad scan runs entirely on free data: Alpaca for prices, SEC EDGAR for
@@ -30,19 +34,29 @@ actually shows — see [ADR-0008](docs/adr/0008-broad-scan-on-free-data-metered-
 
 | Built | Not built yet |
 | --- | --- |
-| Universe loader, price, benchmark and fundamentals ingestion | AI research (Phase 3) |
-| A broad scan that needs no metered provider | |
-| The full derived-metric engine | Next.js dashboard (Phase 4) |
-| Eligibility filters with reasons | Watchlist and alerts (Phase 4) |
+| Universe loader, price, benchmark and fundamentals ingestion | Next.js dashboard (Phase 4) |
+| A broad scan that needs no metered provider | Watchlist and alerts (Phase 4) |
+| The full derived-metric engine | A second LLM provider |
+| Eligibility filters with reasons | Filing exhibits (99.1 earnings releases) |
 | CompounderScore v1: growth, quality, valuation, market confirmation | |
 | Risk penalties, daily score snapshots, score history | |
 | Top Opportunities, Hidden Gems, Wrong Price, Improving Fast | |
 | CLI with CSV export and a per-company explanation | |
 | Read-only FastAPI over the rankings | |
+| Deterministic SEC filing-text extraction | |
+| AI research whose every claim cites the evidence it rests on | |
 
 Every ranking is explainable: `stock-screener explain NVDA` prints the points
 each metric earned and the value it earned them on. A metric the data cannot
 support is shown as unavailable, never as zero.
+
+Research is grounded the same way. `stock-screener research run` writes a report
+per candidate in which every claim cites a score line, a metric, a reported
+quarter or a verbatim SEC filing excerpt — and validation drops anything the
+evidence does not support before it is stored. A section with no evidence behind
+it answers `UNKNOWN` rather than sounding informative. See the
+[Phase 3 brief](docs/reference/project-phases/phase3.md) for the full workflow,
+the guardrails and the known limitations.
 
 ## Architecture
 

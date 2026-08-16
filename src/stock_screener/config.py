@@ -29,6 +29,7 @@ from domain import EligibilityThresholds, VolumeBasis
 Environment = Literal["local", "test", "staging", "production"]
 MarketDataProviderName = Literal["alpaca", "mock"]
 FundamentalsProviderName = Literal["edgar", "edgar+fmp", "fmp", "mock"]
+ResearchProviderName = Literal["anthropic", "mock"]
 
 
 class Settings(BaseSettings):
@@ -171,6 +172,69 @@ class Settings(BaseSettings):
             "consolidated volume for the companies a ranking actually shows. "
             "Set it to what the plan's daily allowance can serve — a free FMP "
             "tier is a few hundred requests a day."
+        ),
+    )
+
+    # -- ai research -------------------------------------------------------
+
+    research_provider: ResearchProviderName = Field(
+        default="mock",
+        description=(
+            "Which model writes research reports. `mock` returns a canned draft "
+            "and calls nothing, which is what lets the whole pipeline — brief, "
+            "validation, persistence — be exercised without credentials or cost."
+        ),
+    )
+    research_api_key: SecretStr | None = Field(
+        default=None,
+        description="Credential for the research provider. Required when it is not `mock`.",
+    )
+    research_model: str = Field(
+        default="claude-sonnet-5",
+        description=(
+            "Model identifier passed to the research provider. Stored on every "
+            "report, because a report written by one model is not evidence about "
+            "what another would have said."
+        ),
+    )
+    research_max_output_tokens: int = Field(
+        default=8000,
+        ge=1,
+        description=(
+            "Ceiling on one report's generated tokens. Bounds cost per company "
+            "and, on a thinking model, must leave room for the reasoning as well "
+            "as the thirteen sections — the cap covers both."
+        ),
+    )
+    research_effort: Literal["low", "medium", "high"] = Field(
+        default="medium",
+        description=(
+            "How hard the model works per report. This is the determinism and "
+            "cost lever: current Claude models reject `temperature`, so a low "
+            "sampling temperature is not expressible and effort plus a "
+            "deterministic prompt is what replaces it."
+        ),
+    )
+    research_timeout_seconds: float = Field(
+        default=120.0,
+        gt=0,
+        description=(
+            "Per-request timeout. Generous because a thinking model writing "
+            "thirteen sections is slow, and a timeout mid-report costs the "
+            "tokens already spent."
+        ),
+    )
+    research_max_run_cost_usd: float = Field(
+        default=5.0,
+        gt=0,
+        description=(
+            "Estimated spend allowed in one research run, in US dollars. The run "
+            "stops before the request that could cross it; everything already "
+            "written stays written. Five dollars is roughly three full passes "
+            "over the current candidate set at current prices — high enough that "
+            "an intended run finishes, low enough that a mistaken loop over the "
+            "whole market does not. The estimate errs high and ignores "
+            "introductory discounts, so the real bill lands under it."
         ),
     )
 

@@ -13,10 +13,16 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from domain import CompanyProfile, FinancialPeriod, PriceBar
+from domain import CompanyProfile, Filing, FinancialPeriod, PriceBar
 
 if TYPE_CHECKING:
-    from data_access.models import BenchmarkPrice, Company, FinancialSnapshot, PriceHistory
+    from data_access.models import (
+        BenchmarkPrice,
+        Company,
+        FilingRecord,
+        FinancialSnapshot,
+        PriceHistory,
+    )
 
 
 def to_company_profile(company: Company) -> CompanyProfile:
@@ -88,4 +94,25 @@ def to_price_bar(row: PriceHistory | BenchmarkPrice) -> PriceBar:
         low=row.low,
         close=row.close,
         volume=row.volume,
+    )
+
+
+def to_filing(record: FilingRecord) -> Filing:
+    """Return a stored filing index entry as a domain model.
+
+    Args:
+        record: The stored row.
+
+    Returns:
+        The filing, metadata only. No document is fetched here or anywhere else
+        in this contract version.
+    """
+    return Filing(
+        accession=record.accession,
+        form=record.form,
+        filed=record.filed,
+        period_end=record.period_end,
+        primary_document=record.primary_document,
+        url=record.url,
+        source=record.source,
     )

@@ -10,6 +10,7 @@ authors = [{ name = "Aziz", email = "azizzbek.io@gmail.com" }]
 dependencies = [
     "domain",
     "psycopg[binary]>=3.2",
+    "research",
     "sqlalchemy>=2.0",
 ]
 
@@ -23,3 +24,4 @@ module-root = "src"
 
 [tool.uv.sources]
 domain = { workspace = true }
+research = { workspace = true }

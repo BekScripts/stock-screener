@@ -3,7 +3,8 @@
 Organised by feature rather than by technical layer, so the whole Phase 1
 workflow is one directory:
 
-- `ingestion` pulls universe, prices and fundamentals into the database
+- `ingestion` pulls universe, prices, fundamentals and the filing index into
+  the database
 - `scanner` turns stored rows into metrics and an eligibility verdict
 - `report` renders the result as a console table or a CSV export
 
@@ -13,7 +14,10 @@ Nothing here constructs a provider or a database session. Both are passed in, by
 
 from stock_screener.scanning.ingestion import (
     IngestionReport,
+    select_text_filings,
     update_benchmark,
+    update_filing_text,
+    update_filings,
     update_fundamentals,
     update_market_data,
     update_universe,
@@ -27,7 +31,10 @@ __all__ = [
     "ScanRow",
     "format_table",
     "scan_market",
+    "select_text_filings",
     "update_benchmark",
+    "update_filing_text",
+    "update_filings",
     "update_fundamentals",
     "update_market_data",
     "update_universe",
