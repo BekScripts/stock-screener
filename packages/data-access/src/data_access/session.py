@@ -68,12 +68,27 @@ def create_engine_from_url(url: str, *, echo: bool = False) -> Engine:
     else:
         engine = create_engine(url, echo=echo, future=True)
 
+    on_disk_sqlite = engine.dialect.name == "sqlite" and not _is_in_memory_sqlite(url)
+
     if engine.dialect.name == "sqlite":
 
         @event.listens_for(engine, "connect")
-        def _enable_foreign_keys(connection: Any, _record: Any) -> None:
+        def _apply_sqlite_pragmas(connection: Any, _record: Any) -> None:
             cursor = connection.cursor()
             cursor.execute("PRAGMA foreign_keys=ON")
+            if on_disk_sqlite:
+                # An ingest holds a write transaction for as long as it runs. In
+                # the default journal mode that locks the whole database, so
+                # anything reading during a market-wide run — the API serving the
+                # dashboard — fails rather than waits. WAL lets readers carry on
+                # against the last committed state while the writer works.
+                #
+                # On disk only: WAL needs real files, and an in-memory database
+                # has no second writer to be isolated from.
+                cursor.execute("PRAGMA journal_mode=WAL")
+                # And when a reader does have to wait — the brief moment a
+                # checkpoint takes the lock — wait rather than raise.
+                cursor.execute("PRAGMA busy_timeout=5000")
             cursor.close()
 
     return engine

@@ -29,6 +29,11 @@ the difference between re-reading the same evidence for free and re-buying it.
 refuses to start a company whose request could carry the run past the configured
 budget. The remaining companies are skipped, not failed — nothing was asked and
 nothing went wrong; the run simply ran out of allowance.
+
+**Evidence can be fetched first, but never during.** `prepare_filing_evidence`
+runs the two existing SEC passes for one company before a brief is assembled;
+assembly itself stays zero-network. Preparation is a separate step rather than
+part of `research_company` because a batch must not turn into a crawl.
 """
 
 from __future__ import annotations
@@ -53,15 +58,17 @@ from research import (
 )
 from stock_screener.research.brief import assemble_brief
 from stock_screener.research.store import find_cached_report, save_report
+from stock_screener.scanning.ingestion import update_filing_text, update_filings
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
     from sqlalchemy.orm import Session
 
-    from api_clients import ResearchProvider
+    from api_clients import FundamentalsProvider, ResearchProvider
     from research import ResearchBrief, ResearchReport
     from stock_screener.config import Settings
+    from stock_screener.scanning.ingestion import IngestionReport
 
 log = structlog.get_logger(__name__)
 
@@ -74,6 +81,68 @@ room for a company with far more filings and history than any seen so far. Too
 low and the guard lets a run cross its ceiling; too high only means the last
 company of an almost-exhausted run waits for the next one.
 """
+
+
+@dataclass(frozen=True, slots=True)
+class FilingPreparation:
+    """What the two SEC passes did for one company.
+
+    Attributes:
+        ticker: The symbol prepared, normalised as the ingestion passes saw it.
+        index: Counts from the filing-index pass.
+        text: Counts from the filing-text pass.
+    """
+
+    ticker: str
+    index: IngestionReport
+    text: IngestionReport
+
+    @property
+    def failed(self) -> bool:
+        """Whether either pass could not complete.
+
+        A caller that asked for preparation and did not get it must not fall
+        through to a paid call: the report it would buy is the evidence-poor one
+        preparation existed to prevent.
+        """
+        return bool(self.index.failed or self.text.failed)
+
+    def summary(self) -> str:
+        """Return a one-line human-readable summary of both passes."""
+        return f"filings: {self.index.summary()}\nfiling text: {self.text.summary()}"
+
+
+def prepare_filing_evidence(
+    session: Session, provider: FundamentalsProvider, ticker: str
+) -> FilingPreparation:
+    """Fetch one company's SEC filing index and the text a brief may quote.
+
+    The two existing passes, run for a single symbol and nothing else. Both are
+    incremental: the index is upserted because a company files between reporting
+    periods, and the text pass skips filings it has already read, so preparing a
+    company twice costs one cheap request and no document reads.
+
+    This is the only place a network call happens on the research path. Brief
+    assembly stays zero-network by construction — it reads what this stored.
+
+    Args:
+        session: Open database session. The caller commits.
+        provider: Source of the filing index and documents.
+        ticker: The single symbol to prepare.
+
+    Returns:
+        Both passes' counts, and whether either failed.
+    """
+    symbol = ticker.strip().upper()
+    index = update_filings(session, provider, tickers=[symbol])
+    text = update_filing_text(session, provider, tickers=[symbol])
+    log.info(
+        "filing evidence prepared",
+        ticker=symbol,
+        index=index.summary(),
+        text=text.summary(),
+    )
+    return FilingPreparation(ticker=symbol, index=index, text=text)
 
 
 class ResearchSkip(StrEnum):

@@ -127,19 +127,51 @@ def test_a_section_shorter_than_the_floor_is_skipped() -> None:
 
 
 @pytest.mark.unit
-def test_a_long_section_is_cut_to_the_stored_bound() -> None:
-    text = f"Item 1. Business\n{'The Company makes widgets. ' * 900}"
+def test_a_cross_reference_inside_a_sentence_does_not_end_a_section() -> None:
+    # ACTG's MD&A refers to "Item 1A. Risk Factors" four hundred characters in.
+    # Treating that as the start of the next item ended the section on its own
+    # first paragraph and threw away everything it was extracted for.
+    body = (
+        "The following discussion should be read with our statements. Our results "
+        'could differ because of the risks in "Item 1A. Risk Factors" to our Annual '
+        "Report. "
+    )
+    text = f"Item 2. Management's Discussion\n{body}{'We license patents. ' * 60}"
 
-    found = _sections("10-K", text)
+    assert "We license patents." in _sections("10-Q", text)["mda"]
+
+
+@pytest.mark.unit
+def test_the_real_section_wins_over_a_cross_reference_that_precedes_it() -> None:
+    # A filing names its MD&A in the forward-looking preamble before the section
+    # itself. Both bodies exceed what is kept, so comparing them after the cut
+    # made every candidate the same length and handed it to the earlier one.
+    preamble = f"Item 2. Management's Discussion of results\n{'Boilerplate follows. ' * 300}"
+    real = f"Item 2. Management's Discussion\n{'Revenue rose on licensing. ' * 3000}"
+
+    mda = _sections("10-Q", f"{preamble}\n{real}")["mda"]
+
+    assert "Revenue rose on licensing." in mda
+    assert not mda.startswith("Boilerplate")
+
+
+_SENTENCE = "The Company makes widgets. "
+#: A 10-K whose business section is longer than what is kept, so the two tests
+#: below exercise the cut rather than a section that fitted all along. Sized
+#: from the bound so raising it cannot quietly turn them into no-ops.
+OVERLONG_10K = f"Item 1. Business\n{_SENTENCE * (MAX_SECTION_CHARS // len(_SENTENCE) + 200)}"
+
+
+@pytest.mark.unit
+def test_a_long_section_is_cut_to_the_stored_bound() -> None:
+    found = _sections("10-K", OVERLONG_10K)
 
     assert len(found["business"]) <= MAX_SECTION_CHARS
 
 
 @pytest.mark.unit
 def test_a_cut_section_ends_on_a_sentence() -> None:
-    text = f"Item 1. Business\n{'The Company makes widgets. ' * 900}"
-
-    assert _sections("10-K", text)["business"].endswith(".")
+    assert _sections("10-K", OVERLONG_10K)["business"].endswith(".")
 
 
 # --- heading punctuation ---------------------------------------------------

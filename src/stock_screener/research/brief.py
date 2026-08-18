@@ -124,11 +124,27 @@ excerpts run longer, and are cut here rather than at extraction time so the boun
 can change without re-reading a single filing.
 """
 
+
+def _heading(pattern: str) -> re.Pattern[str]:
+    """Compile an anchor that only matches the phrase used as a heading.
+
+    A heading ends its own block, which survives extraction as a line break, a
+    run of spaces, or the first figure of the table beneath it. The same words
+    inside a sentence — "may harm our business, results of operations, and
+    financial condition" — run straight on into a comma, and starting an excerpt
+    there drops the reader mid-clause into a paragraph about something else.
+
+    What follows the phrase is the discriminator, so what precedes it is only
+    required not to be the middle of a word.
+    """
+    return re.compile(r"(?:^|\s)(" + pattern + r")(?=\s{2,}|\n|\$)", re.IGNORECASE | re.M)
+
+
 _MDA_ANCHORS = (
-    re.compile(r"(?:company|business)\s+overview", re.IGNORECASE),
-    re.compile(r"overview", re.IGNORECASE),
-    re.compile(r"results\s+of\s+operations", re.IGNORECASE),
-    re.compile(r"executive\s+overview", re.IGNORECASE),
+    _heading(r"(?:company|business)\s+overview"),
+    _heading(r"overview"),
+    _heading(r"results\s+of\s+operations"),
+    _heading(r"executive\s+overview"),
 )
 """Headings that mark where an MD&A stops being preamble, best first.
 
@@ -142,6 +158,11 @@ past the cut.
 So the window starts at the first of these headings that the section contains.
 Nothing is summarised or reordered: the excerpt is still one verbatim run of the
 filer's own text, taken from a better place to start.
+
+Each is matched as a heading rather than as a phrase. `results of operations`
+appears in the risk language of most MD&As long before the section of that name,
+and anchoring on the prose copy put ACTG's window in the middle of a sentence
+about acquisition risk instead of on the table that explains its quarter.
 """
 
 
@@ -688,7 +709,9 @@ def _excerpt_start(row: FilingExcerptRecord) -> int:
     for anchor in _MDA_ANCHORS:
         found = anchor.search(row.text)
         if found is not None:
-            return found.start()
+            # Group one is the heading itself; the match opens on the whitespace
+            # in front of it, which would start the excerpt on a blank line.
+            return found.start(1)
     return 0
 
 

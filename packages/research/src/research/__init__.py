@@ -44,6 +44,7 @@ from research.brief import (
 from research.prompt import (
     CURRENT_PROMPT_VERSION,
     RESEARCH_PROMPT_V1,
+    RESEARCH_PROMPT_V2,
     build_system_prompt,
     render_brief,
 )
@@ -86,6 +87,7 @@ __all__ = [
     "MIN_COVERAGE_FOR_MEDIUM",
     "NO_EVIDENCE_TEXT",
     "RESEARCH_PROMPT_V1",
+    "RESEARCH_PROMPT_V2",
     "RESEARCH_V1",
     "Basis",
     "Claim",

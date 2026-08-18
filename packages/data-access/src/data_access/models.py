@@ -98,6 +98,9 @@ class Company(Base):
     scores: Mapped[list[ScoreSnapshot]] = relationship(
         back_populates="company", cascade="all, delete-orphan"
     )
+    watchlist_entry: Mapped[WatchlistEntry | None] = relationship(
+        back_populates="company", cascade="all, delete-orphan", passive_deletes=True
+    )
     filing_excerpts: Mapped[list[FilingExcerptRecord]] = relationship(
         back_populates="company", cascade="all, delete-orphan", passive_deletes=True
     )
@@ -332,6 +335,71 @@ class FilingRecord(Base):
     )
 
     company: Mapped[Company] = relationship(back_populates="filings")
+
+
+class WatchlistEntry(Base):
+    """One company a person chose to keep an eye on.
+
+    The whole feature. A ticker, when it was added, and an optional note — no
+    target price, no position size, no folders. Those belong to a portfolio
+    tool, and adding them here would turn a shortlist into an accounting system
+    nobody asked for.
+
+    One row per company, enforced by the database rather than by the caller, so
+    adding a company twice is idempotent instead of a duplicate.
+    """
+
+    __tablename__ = "watchlist"
+    __table_args__ = (UniqueConstraint("company_id", name="uq_watchlist_company"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    company_id: Mapped[int] = mapped_column(
+        ForeignKey("companies.id", ondelete="CASCADE"), nullable=False
+    )
+    note: Mapped[str | None] = mapped_column(String(500))
+    added_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow, server_default=func.now()
+    )
+
+    company: Mapped[Company] = relationship(back_populates="watchlist_entry")
+
+
+class JobRecord(Base):
+    """One pipeline command started from outside the CLI.
+
+    The dashboard runs commands by spawning them, and this is the record of
+    that: what was asked for, whether it is still going, and where its output
+    went. It stores no results — every command already persists what it
+    produces, so a finished job is read through the endpoint that serves the
+    thing it produced, never from here.
+
+    `pid` is what makes a stale row recoverable. A run interrupted by an API
+    restart leaves `RUNNING` behind with no process attached, and the pid is
+    the only way to tell that from a run still in progress.
+
+    Rows accumulate deliberately: "when did this last run, and did it work" is
+    the question the history answers, and it cannot be answered by a table that
+    keeps only what is in flight.
+    """
+
+    __tablename__ = "jobs"
+    __table_args__ = (
+        Index("ix_jobs_status", "status"),
+        Index("ix_jobs_recent", "started_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    kind: Mapped[str] = mapped_column(String(30), nullable=False)
+    #: The ticker for a per-company job, None for one that runs over everything.
+    target: Mapped[str | None] = mapped_column(String(20))
+    status: Mapped[str] = mapped_column(String(20), nullable=False)
+    pid: Mapped[int | None] = mapped_column(Integer)
+    exit_code: Mapped[int | None] = mapped_column(Integer)
+    log_path: Mapped[str | None] = mapped_column(String(500))
+    started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow, server_default=func.now()
+    )
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class FilingExcerptRecord(Base):

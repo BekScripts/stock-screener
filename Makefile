@@ -1,5 +1,5 @@
 .DEFAULT_GOAL := help
-.PHONY: help setup sync check lint format format-check types test test-ci \
+.PHONY: help setup sync check check-web dev lint format format-check types test test-ci \
         test-unit cov migrate migrate-down scan docs docs-build sync-skills clean
 
 UV := uv
@@ -22,6 +22,91 @@ sync:  ## Reinstall the workspace after dependency changes
 	$(UV) sync --all-packages --all-groups
 
 check: lint format-check types test  ## Everything CI runs — the gate before you push
+
+# Deliberately not a prerequisite of `check`. The Python gate runs in CI without
+# a node toolchain, and making it depend on one would mean every backend change
+# waits for an npm install. Run this one when you touch frontend/.
+#
+# The build writes to its own `distDir`. Sharing one with `next dev` means
+# running this gate during a dev session corrupts that session's module graph,
+# and the error it throws names webpack rather than the cause.
+check-web:  ## The frontend gate: typecheck, lint, production build (needs Node)
+	cd frontend && npm run typecheck && npm run lint && NEXT_DIST_DIR=.next-check npm run build
+
+API_PORT ?= 8000
+WEB_PORT ?= 3000
+FORCE ?=
+
+# `trap 'kill 0'` signals the whole process group, not just the two children.
+# Both `uvicorn --reload` and `next dev` spawn workers of their own, and killing
+# only the direct children would leave those grandchildren holding the ports —
+# which is what makes the *next* `make dev` fail with EADDRINUSE.
+#
+# The ports are checked first because that failure is otherwise a Node stack
+# trace that says nothing about which process is in the way.
+#
+# The holder is named by walking up from whatever `lsof` reports. A reloading
+# uvicorn answers on its port from a multiprocessing fork child, so the pid
+# holding the socket prints as a bare interpreter path and tells you nothing;
+# its ancestor is the invocation you recognise.
+#
+# `make dev FORCE=1` frees the ports first — but only of *this* application.
+# Ours is decided by finding our own uvicorn invocation in the holder's
+# ancestry, never by the port number: 8000 is a port half the tools on a laptop
+# want, and killing whatever answers there would eventually kill something that
+# was not this. Anything unrecognised still just reports and stops.
+#
+# Worth knowing before forcing: jobs are spawned detached, so stopping the API
+# does not stop a running ingest. It orphans it — the work continues, its exit
+# code goes with the API process, and the row reconciles to UNKNOWN.
+dev:  ## Run the API and the dashboard together; Ctrl-C stops both. FORCE=1 reclaims our own ports
+	@command -v npm >/dev/null || { echo "npm is required for the dashboard"; exit 1; }
+	@test -d frontend/node_modules || (cd frontend && npm install)
+	@for port in $(API_PORT) $(WEB_PORT); do \
+	  holder=$$(lsof -nP -iTCP:$$port -sTCP:LISTEN -t 2>/dev/null | head -1); \
+	  [ -n "$$holder" ] || continue; \
+	  ours=""; owner=$$holder; walk=$$holder; \
+	  for _ in 1 2 3 4 5 6; do \
+	    command=$$(ps -p $$walk -o command= 2>/dev/null); \
+	    [ -n "$$command" ] || break; \
+	    case "$$command" in *stock_screener.api*|*"--prefix frontend"*) ours=$$walk; owner=$$walk;; esac; \
+	    parent=$$(ps -p $$walk -o ppid= 2>/dev/null | tr -d ' '); \
+	    case "$$parent" in ''|0|1) break;; esac; \
+	    walk=$$parent; \
+	  done; \
+	  label=$$(ps -p $$owner -o command= 2>/dev/null | cut -c1-100); \
+	  if [ -z "$$ours" ]; then \
+	    echo "port $$port is held by pid $$holder, which is not this project:"; \
+	    echo "  $$label"; \
+	    echo "stop it yourself, or choose other ports:  make dev API_PORT=8002 WEB_PORT=3002"; \
+	    exit 1; \
+	  fi; \
+	  if [ -z "$(FORCE)" ]; then \
+	    echo "port $$port is already served by this project (pid $$ours):"; \
+	    echo "  $$label"; \
+	    echo "reclaim it:  make dev FORCE=1"; \
+	    echo "or run beside it:  make dev API_PORT=8002 WEB_PORT=3002"; \
+	    exit 1; \
+	  fi; \
+	  echo "stopping our own pid $$ours on port $$port"; \
+	  kill $$ours 2>/dev/null || true; \
+	  for _ in 1 2 3 4 5 6 7 8 9 10; do \
+	    lsof -nP -iTCP:$$port -sTCP:LISTEN -t >/dev/null 2>&1 || break; \
+	    sleep 0.5; \
+	  done; \
+	  if lsof -nP -iTCP:$$port -sTCP:LISTEN -t >/dev/null 2>&1; then \
+	    echo "port $$port is still held after asking pid $$ours to stop; not escalating"; \
+	    exit 1; \
+	  fi; \
+	done
+	@echo "API  http://localhost:$(API_PORT)"
+	@echo "Web  http://localhost:$(WEB_PORT)"
+	@echo
+	@trap 'kill 0' EXIT INT TERM; \
+	  $(UV) run uvicorn stock_screener.api:app --reload --port $(API_PORT) & \
+	  NEXT_PUBLIC_API_URL=http://localhost:$(API_PORT) \
+	    npm --prefix frontend run dev -- --port $(WEB_PORT) & \
+	  wait
 
 lint:  ## Ruff lint
 	$(UV) run ruff check .

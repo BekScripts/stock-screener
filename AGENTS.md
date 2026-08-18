@@ -61,10 +61,51 @@ read-only API.
 implementation in `api-clients`; deterministic SEC filing-text extraction beside
 it; the application layer in `src/stock_screener/research/` — candidate
 selection, brief assembly, the generate-validate-persist pipeline, persistence,
-caching and a run-cost guard; and the `research` CLI group. Not built, and not to
-be started without being asked: a second LLM provider, filing exhibits, and any
-Phase 4 work. Its workflow and known limitations are documented in
-`docs/reference/project-phases/phase3.md`.
+caching and a run-cost guard; and the `research` CLI group. Its workflow and
+known limitations are documented in `docs/reference/project-phases/phase3.md`.
+
+**Phase 4 (dashboard and watchlist) is complete.** The MVP is done. The
+dashboard lives in `frontend/`, the endpoints that feed it in
+`src/stock_screener/api.py`, their read models in
+`src/stock_screener/dashboard.py`, and the watchlist write in the `watchlist`
+table. Its scope and known limitations are documented in
+`docs/reference/project-phases/phase4.md`.
+
+**Phase 5 (run control) is complete and frozen.** The dashboard can now run the
+pipeline, not just read it. `src/stock_screener/jobs.py` spawns existing CLI
+commands as subprocesses and tracks them in the `jobs` table; the `/api/jobs`
+endpoints start and report them; `frontend/app/jobs/` is the control panel. Also
+added: ticker search, because the rankings cap at 500 rows over a universe of
+thousands, and CSV export of a ranking view. `make dev` starts both processes
+and stops both. Its scope and known limitations are documented in
+`docs/reference/project-phases/phase5.md`.
+
+The MVP is finished. Phases 1 through 5 are all complete, and none of them is a
+place to add to without being asked.
+
+Three rules govern that layer:
+
+- **A job is an existing command, never new pipeline code.** `JOB_KINDS` maps a
+  key to a CLI argument list and is the entire allowlist — a caller picks a
+  key, never an argument. Adding a stage means adding a CLI command first.
+- **A job carries no result.** Every command persists what it produces, so a
+  finished job is read through the endpoint serving that thing. A job record
+  answers "is it running, did it work", and nothing else.
+- **One pipeline run at a time, and research beside it.** Every kind except
+  `research` writes the shared tables, so only one of them runs at once — `scan`
+  and `score` are different commands over the same rows, and a second request
+  returns the one in flight rather than starting a competitor. `research` writes
+  only its own company's report and reads a stored snapshot, so it neither
+  blocks a pipeline run nor waits for one; it is guarded per ticker instead.
+
+Not built, and not to be started without being asked: a second LLM provider,
+filing exhibits, alerts, notifications, authentication, deployment config,
+charts, portfolios, positions and price targets. Those exclusions are
+deliberate, not a backlog.
+
+**The job endpoints spend money and have no authentication.** They are only
+reasonable because the API binds localhost. `JOBS_ENABLED=false` is the off
+switch, and binding the API anywhere else without one is a mistake.
 
 Three rules govern that layer:
 
@@ -108,23 +149,47 @@ protecting:
 ## Layout
 
 ```
-src/stock_screener/   the application — the deployable
+src/stock_screener/   the application — the Python backend and API
 tests/                tests for src/, split unit/ and integration/
 packages/<name>/      shared libraries, each a workspace member
+frontend/             the Compounder Radar dashboard — Next.js, reads the API
 migrations/           alembic revisions — one per schema change
 fixtures/             sample data the mock providers read
 docs/                 mkdocs site, organised by Diátaxis type
 scripts/              standalone PEP 723 scripts — created when first needed
 ```
 
-Where new code goes:
+Where new Python code goes:
 
 - **One caller** → a module in `src/stock_screener/`.
 - **Two or more callers** → a package in `packages/`. Never create one
   speculatively; extracting later is cheap.
 
-This repo builds one deployable. A second service belongs in its own repository,
-not a second directory here.
+### Two deployables, one repository
+
+This repo builds **exactly two** deployables, and that is a deliberate exception
+to the one-deployable rule it used to state:
+
+| Deployable | Is | Owns |
+| --- | --- | --- |
+| `src/stock_screener/` | the Python backend, CLI and read-only API | all data, every calculation, every score |
+| `frontend/` | the Compounder Radar dashboard, Next.js | rendering what the API returns |
+
+They live together on purpose. The dashboard is a reading surface over this
+API and nothing else — its types mirror these endpoints, and a change to a
+response shape has to land on both sides in the same commit. Splitting them
+across repositories would buy nothing and cost that atomicity. **Do not move
+the frontend to another repository.**
+
+The boundary between them is the rule that matters: **the frontend calculates
+nothing.** Every score, subscore, metric and claim on a screen came out of the
+database through `stock_screener.api`. Ranking and scoring arithmetic is
+backend-only, so the dashboard and the CLI cannot disagree.
+
+A third deployable is not covered by this exception. Adding one — a worker, a
+second service, a separate admin app — needs a deliberate architecture
+decision recorded as an ADR first, and is more likely to belong in its own
+repository.
 
 Documentation is classified by Diátaxis — `docs/tutorials/`, `docs/how-to/`,
 `docs/reference/`, `docs/explanation/`, plus `docs/adr/` for decisions. Every
@@ -160,10 +225,16 @@ used. Never invoke `pip`, `python -m venv`, or a bare `python`.
 | Command | Purpose |
 | --- | --- |
 | `make check` | Everything CI runs. Run this before saying you are done. |
+| `make check-web` | The frontend gate: tsc, ESLint, `next build`. Needs Node. |
+| `make dev` | Run the API and the dashboard together. Ctrl-C stops both. |
 | `make test` | pytest with coverage (fails under 80%) |
 | `make lint` / `make format` | Ruff check / Ruff write |
 | `make types` | mypy strict |
 | `make sync` | Reinstall the workspace after dependency changes |
+
+`make check` is the Python gate and does not require a node toolchain — that is
+why `check-web` is separate rather than a prerequisite. Touching `frontend/`
+means running both.
 
 ## Non-negotiables
 

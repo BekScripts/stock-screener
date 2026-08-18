@@ -21,6 +21,26 @@ working directory. Field names map to upper-case variables: `log_level` reads
 | `LOG_LEVEL` | `DEBUG` \| `INFO` \| `WARNING` \| `ERROR` | `INFO` | Minimum level emitted. |
 | `LOG_JSON` | bool | `false` | Emit JSON logs instead of console-formatted. |
 
+Credentials carried in a URL query string are redacted before any handler
+writes them. `httpx` logs every request at `INFO`, URL included, so a provider
+that authenticates with a query parameter — FMP's `apikey` — would otherwise
+put its key in the log. The value is replaced with `REDACTED`; the rest of the
+URL is left readable. `SecretStr` does not cover this: by that point the value
+is part of a URL a third-party library formatted.
+
+## Jobs
+
+| Variable | Type | Default | Description |
+| --- | --- | --- | --- |
+| `JOBS_ENABLED` | bool | `true` | Whether the API may start pipeline commands. |
+| `JOB_LOG_DIR` | str | `.jobs` | Directory a spawned command's output is written to, one file per job. |
+
+The job endpoints let a caller start an hour-long ingest and spend money on
+research, and there is no authentication in front of them. That is only
+reasonable because uvicorn binds `127.0.0.1`. Set `JOBS_ENABLED=false` before
+binding the API anywhere else; every job endpoint then answers `404`, so the
+feature looks absent rather than guarded.
+
 ## Database
 
 | Variable | Type | Default | Description |

@@ -250,6 +250,26 @@ class Settings(BaseSettings):
         ),
     )
 
+    # -- jobs ---------------------------------------------------------------
+
+    jobs_enabled: bool = Field(
+        default=True,
+        description=(
+            "Whether the API may start pipeline commands. The job endpoints let "
+            "an unauthenticated caller run an hour-long ingest and spend money "
+            "on research, which is only reasonable because the API binds "
+            "localhost. Set this false before binding it anywhere else."
+        ),
+    )
+    job_log_dir: str = Field(
+        default=".jobs",
+        min_length=1,
+        description=(
+            "Directory a spawned command's output is written to, one file per "
+            "job. Relative paths resolve against the working directory."
+        ),
+    )
+
     # -- eligibility ------------------------------------------------------
 
     min_price: float = Field(default=2.0, gt=0)

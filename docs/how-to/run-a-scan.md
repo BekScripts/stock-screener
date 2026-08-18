@@ -171,14 +171,27 @@ make scan
 
 ## Schedule it
 
-Phase 1 needs no worker infrastructure. A cron entry is enough:
+Nothing in this project schedules itself — there is no worker, no scheduler
+dependency and no timer. `run-daily` is named for the cadence it is designed
+for, not for something that fires on its own. A cron entry is enough:
 
 ```cron
-0 22 * * 1-5 cd /path/to/stock-screener && make scan >> scan.log 2>&1
+0 22 * * 1-5 cd /path/to/stock-screener && uv run stock-screener run-daily >> daily.log 2>&1
 ```
 
-`run-scan` is idempotent, so a run that overlaps a previous one updates rows
-rather than duplicating them.
+Weekdays after the close. Use `run-daily` rather than `scan`: **`scan` writes no
+score snapshots**, so a schedule built on it leaves the rankings, the score
+history and the dashboard permanently empty. `run-daily` ingests, scores, enriches
+when a profile provider is configured, and prints the ranking.
+
+Both are idempotent, so a run that overlaps a previous one updates rows rather
+than duplicating them. Score snapshots are unique on
+`(company_id, score_date, score_version)` — one row per company per day per
+formula version — which is what makes a second run in the same day an update.
+
+That uniqueness is also why the cadence matters: the `improving` view ranks on
+the score change over 30 days, so skipped days leave gaps in the history it
+reads.
 
 ## Related
 

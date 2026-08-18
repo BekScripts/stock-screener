@@ -37,7 +37,19 @@ versions: the change would be in the instructions, not in the company. Editing
 the wording below means a new identifier here — never an edit to an existing one.
 """
 
-CURRENT_PROMPT_VERSION = RESEARCH_PROMPT_V1
+RESEARCH_PROMPT_V2 = "RESEARCH_PROMPT_V2"
+"""Names the risk penalty for what it measures.
+
+V1 headed the figure `risk level`, and the model read it as the risk of owning
+the company — "placing the company at LOW risk level". The penalty prices three
+things and only three: dilution, cash runway and leverage. It has no view on the
+business model, on integration risk, or on how lumpy the revenue is, so an
+unqualified `LOW` claims ground the score never covered. The line now says what
+it measures, matching the dashboard, which labels the same figure
+`Financial risk`.
+"""
+
+CURRENT_PROMPT_VERSION = RESEARCH_PROMPT_V2
 """The version every new report is stamped with."""
 
 UNKNOWN = "unknown"
@@ -222,7 +234,10 @@ def _score(brief: ResearchBrief) -> str:
         f"final         {_number(score.final_score)}",
         f"raw           {_number(score.raw_score)}",
         f"risk penalty  {_number(score.risk_penalty)}",
-        f"risk level    {score.risk_level.value if score.risk_level else UNKNOWN}",
+        # Named for what the penalty measures. `LOW` here is a statement about
+        # dilution, cash runway and leverage — not about the business.
+        f"financial risk {score.risk_level.value if score.risk_level else UNKNOWN}"
+        " (dilution, cash runway and leverage only; not business or model risk)",
         f"category      {score.category.value if score.category else UNKNOWN}",
         f"data coverage {_number(score.data_coverage)}",
         f"ranking state {score.ranking_state.value}",

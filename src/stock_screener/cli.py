@@ -39,6 +39,7 @@ from stock_screener.research import (
     format_brief,
     format_candidates,
     format_research_run,
+    prepare_filing_evidence,
     research_candidates,
     research_company,
     select_candidates,
@@ -613,13 +614,47 @@ def research_run_command(
             "No model is called and nothing is stored.",
         ),
     ] = False,
+    prepare: Annotated[
+        bool,
+        typer.Option(
+            "--prepare",
+            help="Fetch this company's SEC filing index and text from EDGAR first, "
+            "so filing-dependent sections have evidence to cite. One ticker only. "
+            "Nothing is generated if the fetch fails.",
+        ),
+    ] = False,
 ) -> None:
     """Generate AI research, validate it, and store what validation accepted.
 
     Reuses a stored report whenever the evidence, the scoring rules and the
     prompt are all unchanged, so a re-run costs nothing.
+
+    `--prepare` runs the two SEC passes for the named company before the brief is
+    assembled. Without it a company whose filings were never ingested is still
+    researched, and pays full price for a report whose filing-dependent sections
+    can only answer `UNKNOWN`.
     """
     settings = _bootstrap()
+
+    if prepare:
+        if ticker is None:
+            typer.echo(
+                "--prepare needs a ticker: preparing every candidate would crawl "
+                "the SEC for filings no brief has asked for yet."
+            )
+            raise typer.Exit(code=1)
+        fundamentals = build_fundamentals_provider(settings)
+        with _database(settings) as factory, session_scope(factory) as session:
+            preparation = prepare_filing_evidence(session, fundamentals, ticker)
+        typer.echo(preparation.summary())
+        if preparation.failed:
+            # Asked for and not delivered. Generating anyway would buy the
+            # evidence-poor report this flag exists to prevent.
+            typer.echo(
+                f"filing preparation failed for {preparation.ticker} — "
+                "no research was generated and nothing was spent."
+            )
+            raise typer.Exit(code=2)
 
     if dry_run:
         if ticker is None:

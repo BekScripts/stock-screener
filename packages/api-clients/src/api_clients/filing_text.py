@@ -24,13 +24,22 @@ import re
 from dataclasses import dataclass
 from html.parser import HTMLParser
 
-MAX_SECTION_CHARS = 4000
+MAX_SECTION_CHARS = 40000
 """Characters kept per extracted section.
 
-Enough for the opening of a business description or the substance of an 8-K item,
-and far short of a full risk-factor chapter. What reaches a model is bounded
-again, and lower, when a brief is assembled — this bound is about what is worth
-storing, not what is worth sending.
+This bound is about what is worth *storing*, not what is worth sending: a brief
+bounds again, and far lower, when it assembles. Storing generously is what makes
+the brief's MD&A anchors work at all. Those anchors skip an MD&A's opening page
+of throat-clearing to reach `Results of Operations`, and they can only find a
+heading that was kept — at four thousand characters ACTG's stopped short of it,
+so the section that explains a 124% revenue quarter was cut off two paragraphs
+before saying anything, and the brief could only report that revenue moved. Its
+`Results of Operations` heading is thirty-one thousand characters in, which is
+what this bound has to clear.
+
+The cost is disk rather than tokens: what a model is sent is still five excerpts
+of twelve hundred characters. Filing text is only fetched for research
+candidates, so this is bounded by that pass rather than by the universe.
 """
 
 MIN_SECTION_CHARS = 400
@@ -96,7 +105,13 @@ _ITEM_PATTERNS: dict[str, re.Pattern[str]] = {
 
 _EIGHT_K_ITEM = re.compile(rf"item\s*(\d\.\d\d){_SEPARATOR}", re.IGNORECASE)
 
-_ANY_ITEM = re.compile(r"item\s*\d+\.?\d*[a-z]?\s*[.:\-]", re.IGNORECASE)
+#: Where one item ends because the next begins. Anchored to the start of a line:
+#: a heading opens its own block, while filers cross-reference other items from
+#: the middle of a sentence — "the risks we discuss in 'Item 1A. Risk Factors'"
+#: sits four hundred characters into ACTG's MD&A. Matching that mid-sentence
+#: reference ends the section on its own first paragraph, and everything the
+#: section exists to carry is discarded.
+_ANY_ITEM = re.compile(r"^\s*item\s*\d+\.?\d*[a-z]?\s*[.:\-]", re.IGNORECASE | re.MULTILINE)
 
 _SIGNATURE = re.compile(r"^\s*signatures?\s*$", re.IGNORECASE | re.MULTILINE)
 
@@ -242,7 +257,10 @@ def _eight_k_items(text: str, headings: str) -> tuple[ExtractedSection, ...]:
         ),
     )
     return tuple(
-        ExtractedSection(section=f"item_{number}", text=bodies[number]) for number in ordered
+        ExtractedSection(
+            section=f"item_{number}", text=_truncate(bodies[number], MAX_SECTION_CHARS)
+        )
+        for number in ordered
     )
 
 
@@ -252,13 +270,19 @@ def _best_body(text: str, headings: str, heading: re.Pattern[str]) -> str | None
     The index at the front of a filing repeats every heading, so the first match
     is usually a page-number line. Taking the longest body reaches the section
     itself without needing to know how the filer laid out its contents page.
+
+    Candidates are compared at full length and only the winner is truncated.
+    Truncating first makes every section longer than the cap exactly one length,
+    so the comparison becomes a tie that the earliest match wins — and the
+    earliest match is a cross-reference in the forward-looking-statements
+    preamble, not the section.
     """
     best: str | None = None
     for match in heading.finditer(headings):
         body = _body_after(text, headings, match.end())
         if body is not None and (best is None or len(body) > len(best)):
             best = body
-    return best
+    return None if best is None else _truncate(best, MAX_SECTION_CHARS)
 
 
 _HEADING_TAIL_CHARS = 120
@@ -273,6 +297,9 @@ def _body_after(text: str, headings: str, start: int) -> str | None:
     like a sentence fragment the model then has to guess the start of. Only a
     short remainder is skipped, so an item written inline with its text does not
     lose a paragraph.
+
+    Returns the body at full length; the caller truncates, so that callers
+    choosing between candidates by length compare the real ones.
 
     Returns None when what follows is too short to be a real section — a
     contents-page entry, or a cross-reference to an item discussed elsewhere.
@@ -299,7 +326,7 @@ def _body_after(text: str, headings: str, start: int) -> str | None:
     body = following[:end].strip(" \n.:—–-")  # noqa: RUF001 — filers use both dashes
     if len(body) < MIN_SECTION_CHARS:
         return None
-    return _truncate(body, MAX_SECTION_CHARS)
+    return body
 
 
 def _truncate(text: str, limit: int) -> str:

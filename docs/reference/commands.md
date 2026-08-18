@@ -13,6 +13,8 @@ used.
 | `make setup` | `uv sync --all-packages --all-groups`, links agent skills, creates `.env` |
 | `make sync` | `uv sync --all-packages --all-groups` |
 | `make check` | `lint`, `format-check`, `types`, `test` |
+| `make check-web` | In `frontend/`: `npm run typecheck`, `npm run lint`, `npm run build` |
+| `make dev` | The API and the dashboard together; Ctrl-C stops both |
 | `make lint` | `ruff check .` |
 | `make format` | `ruff format .` then `ruff check --fix .` |
 | `make format-check` | `ruff format --check .` |
@@ -28,7 +30,11 @@ used.
 | `make sync-skills` | Symlinks `.agents/skills/` into `.claude/skills/` |
 | `make clean` | Removes caches and build artifacts |
 
-`make check` is what CI runs. Every check in CI is reachable through it.
+`make check` is what CI runs. Every Python check in CI is reachable through it.
+
+`make check-web` is the frontend equivalent and is not a prerequisite of
+`make check`: the Python gate runs without a node toolchain installed. It
+requires Node and an `npm install` in `frontend/`.
 
 ## CLI commands
 
@@ -95,6 +101,7 @@ ranking never depend on a model being reachable.
 | `--candidates` | `research update-filings` | Restrict the pass to the current research candidates. A full-universe refresh costs thousands of requests for filings no brief will cite. |
 | `--dry-run` | `research run` | Print the exact prompt and brief that would be sent, then stop. No model is called and nothing is stored. |
 | `--force` | `research run` | Ignore a stored report and generate a new one. |
+| `--prepare` | `research run` | Fetch this company's SEC filing index and text first, so filing-dependent sections have evidence to cite. One ticker only, and nothing is generated if the fetch fails. |
 
 Every command is idempotent: a second run updates rows rather than duplicating
 them, including `score`, whose rows are unique per company, day and formula
