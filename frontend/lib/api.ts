@@ -67,6 +67,15 @@ export type Breakdown = {
   category: string | null;
   data_coverage: number | null;
   warnings: string[];
+  /**
+   * Null when the company could not be scored.
+   *
+   * The risk engine reads a balance sheet, so a company with two quarters of
+   * history has nothing for it to price. `INSUFFICIENT_DATA`, `UNSUPPORTED` and
+   * ineligible rows all arrive with this absent, and the type says so — an
+   * earlier version claimed it was always present, which is exactly why strict
+   * TypeScript did not catch two pages dereferencing it.
+   */
   risk: {
     total_penalty: number | null;
     level: string | null;
@@ -75,7 +84,7 @@ export type Breakdown = {
     balance_sheet_penalty: number | null;
     liquidity_penalty: number | null;
     warnings: string[];
-  };
+  } | null;
 };
 
 export type StockDetail = {

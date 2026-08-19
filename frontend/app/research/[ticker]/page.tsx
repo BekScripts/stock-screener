@@ -47,7 +47,7 @@ export default async function DeepResearchPage({
               <div className="badge-row">
                 <ScoreBadge value={stock.score.final_score} />
                 <CategoryBadge value={stock.score.breakdown.category} />
-                <RiskBadge level={stock.score.breakdown.risk.level} labelled />
+                <RiskBadge level={stock.score.breakdown.risk?.level ?? null} labelled />
                 <StateBadge state={stock.ranking_state} />
               </div>
             ) : (

@@ -40,7 +40,7 @@ export default async function StockPage({ params }: { params: Promise<{ ticker: 
           <div className="chips">
             <ScoreBadge value={detail.score?.final_score ?? null} />
             <CategoryBadge value={breakdown?.category ?? null} />
-            <RiskBadge level={breakdown?.risk.level ?? null} labelled />
+            <RiskBadge level={breakdown?.risk?.level ?? null} labelled />
             <StateBadge state={detail.ranking_state} />
           </div>
         </div>
@@ -63,7 +63,7 @@ export default async function StockPage({ params }: { params: Promise<{ ticker: 
         <div className="card">
           <h2>
             CompounderScore {score(breakdown.final_score)} · raw {score(breakdown.raw_score)} · risk{" "}
-            {score(breakdown.risk.total_penalty)} · coverage {percent(breakdown.data_coverage, 0)}
+            {score(breakdown.risk?.total_penalty)} · coverage {percent(breakdown.data_coverage, 0)}
           </h2>
           <div className="components">
             <ComponentCard component={breakdown.growth} label="Growth" />
