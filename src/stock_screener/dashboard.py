@@ -18,15 +18,18 @@ from typing import TYPE_CHECKING, Any
 
 from data_access import (
     CompanyRepository,
+    DeepResearchReportRepository,
     FinancialSnapshotRepository,
     PriceHistoryRepository,
     ResearchReportRepository,
     ScoreSnapshotRepository,
+    StoredDeepResearchReport,
     WatchlistRepository,
     to_company_profile,
     to_financial_period,
     to_price_bar,
 )
+from deep_research import DeepResearchReport
 from domain import CURRENT_SCORE_VERSION, build_company_metrics
 from research import ResearchReport
 from stock_screener.scoring import ScoreDetail, latest_score
@@ -272,4 +275,189 @@ def _metrics(session: Session, settings: Settings, company: Company) -> list[Met
     return [
         MetricView(key=key, label=label, value=getattr(metrics, key), unit=unit)
         for key, label, unit in METRIC_FIELDS
+    ]
+
+
+_SECTION_LABELS: dict[str, str] = {
+    "company_overview": "Company Overview",
+    "current_snapshot": "Current Snapshot",
+    "why_the_algorithm_likes_it": "Why the Algorithm Likes It",
+    "growth_quality": "Growth Quality",
+    "financial_quality": "Financial Quality",
+    "valuation": "Valuation",
+    "latest_earnings": "Latest Earnings",
+    "recent_developments": "Recent Developments",
+    "competitive_position": "Competitive Position",
+    "catalysts": "Catalysts",
+    "major_risks": "Major Risks",
+    "bull_case": "Bull Case",
+    "bear_case": "Bear Case",
+    "thesis_breakers": "Thesis Breakers",
+    "what_the_market_may_be_missing": "What the Market May Be Missing",
+    "what_to_watch_next": "What to Watch Next",
+    "research_conclusion": "Research Conclusion",
+}
+"""Display names for the seventeen sections, in reading order.
+
+Written out rather than derived from the enum by title-casing, because
+`Why The Algorithm Likes It` and `What The Market May Be Missing` read as
+machine output. A section added to the contract without a label here shows its
+raw key, which is ugly enough to notice.
+"""
+
+
+def _deep_report_payload(row: StoredDeepResearchReport) -> dict[str, Any]:
+    """Flatten one stored deep report into what a reading surface needs.
+
+    **Only validated content leaves this function.** The stored document is a
+    `DeepResearchReport`, which is the type validation produces and nothing else
+    does, so there is no path here to a draft, a rejected claim's text, a prompt
+    or a provider's raw output. Issues are served as codes and section names
+    only — enough to see that something was dropped, never enough to read what.
+
+    Args:
+        row: The stored report.
+
+    Returns:
+        JSON-ready data, including the section order a page should render and
+        the reason behind every `UNKNOWN` section.
+    """
+    report = DeepResearchReport.model_validate(row.validated_report_json)
+    reasons = report.unknown_reasons
+
+    return {
+        "id": row.id,
+        "ticker": report.ticker,
+        "status": report.status.value,
+        "as_of": report.as_of.isoformat(),
+        "generated_at": report.generated_at.isoformat(),
+        "score_version": report.score_version,
+        "contract_version": report.contract_version,
+        "prompt_version": report.prompt_version,
+        "model_id": report.model_id,
+        "confidence": report.confidence.model_dump(mode="json"),
+        "unknowns": list(report.unknowns),
+        "unknown_reasons": {section: reason.value for section, reason in reasons.items()},
+        "external_state": row.external_state,
+        "external_collected_at": (
+            row.external_collected_at.isoformat() if row.external_collected_at else None
+        ),
+        "sections": [
+            {
+                "key": section.value,
+                "label": _SECTION_LABELS.get(section.value, section.value),
+                "unknown_reason": reasons.get(section.value),
+                "claims": [
+                    {
+                        "text": claim.text,
+                        "basis": claim.basis.value,
+                        "evidence": list(claim.evidence),
+                        "unknown_reason": (
+                            claim.unknown_reason.value if claim.unknown_reason else None
+                        ),
+                    }
+                    for claim in claims
+                ],
+            }
+            for section, claims in report.sections.iter_sections()
+        ],
+        "sources": [
+            {
+                "evidence_id": item.evidence_id,
+                "source_type": item.source_type.value,
+                "tier": item.tier.value,
+                "publisher": item.publisher,
+                "title": item.title,
+                "url": item.url,
+                "published_at": item.published_at.isoformat() if item.published_at else None,
+                "retrieved_at": item.retrieved_at.isoformat(),
+            }
+            for item in report.external_evidence
+        ],
+        # Codes and locations only. The text a claim was rejected for saying is
+        # exactly what validation refused to publish, and serving it here would
+        # undo the refusal.
+        "issues": [
+            {
+                "code": issue.code.value,
+                "section": issue.section.value if issue.section else None,
+            }
+            for issue in report.issues
+        ],
+    }
+
+
+def deep_research_view(session: Session, ticker: str) -> dict[str, Any] | None:
+    """Return a company's most recent validated deep research report.
+
+    Args:
+        session: Open database session.
+        ticker: The symbol to look up.
+
+    Returns:
+        The report as JSON-ready data, or None when the company is unknown or
+        has never been researched.
+    """
+    company = CompanyRepository(session).get_by_ticker(ticker)
+    if company is None:
+        return None
+
+    row = DeepResearchReportRepository(session).latest_for_company(company.id)
+    return None if row is None else _deep_report_payload(row)
+
+
+def deep_research_report(session: Session, report_id: int) -> dict[str, Any] | None:
+    """Return one historical deep research report by id.
+
+    Args:
+        session: Open database session.
+        report_id: The stored report to read.
+
+    Returns:
+        The report, or None when no such report exists.
+    """
+    row = session.get(StoredDeepResearchReport, report_id)
+    return None if row is None else _deep_report_payload(row)
+
+
+def deep_research_history(
+    session: Session, ticker: str, *, limit: int = 20
+) -> list[dict[str, Any]] | None:
+    """Return a company's deep research reports, newest first.
+
+    Summaries rather than whole documents: a history control needs enough to
+    label a row and nothing more, and returning twenty full reports to render a
+    dropdown would be wasteful.
+
+    Args:
+        session: Open database session.
+        ticker: The symbol to look up.
+        limit: Most reports to return.
+
+    Returns:
+        One summary per report, newest first, or None when the company is
+        unknown. An empty list means the company exists and has never been
+        researched.
+    """
+    company = CompanyRepository(session).get_by_ticker(ticker)
+    if company is None:
+        return None
+
+    return [
+        {
+            "id": row.id,
+            "generated_at": row.generated_at.isoformat(),
+            "as_of": row.as_of.isoformat(),
+            "status": row.status,
+            "confidence": row.confidence,
+            "model_id": row.model_id,
+            "prompt_version": row.prompt_version,
+            "external_state": row.external_state,
+            "external_collected_at": (
+                row.external_collected_at.isoformat() if row.external_collected_at else None
+            ),
+        }
+        for row in DeepResearchReportRepository(session).history_for_company(
+            company.id, limit=limit
+        )
     ]

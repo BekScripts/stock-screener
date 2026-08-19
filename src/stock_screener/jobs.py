@@ -161,6 +161,25 @@ JOB_KINDS: dict[str, JobKind] = {
         spends_money=True,
         minutes=2,
     ),
+    # Deep research. Two kinds rather than one flag, because the caller picks a
+    # key and never an argument — that is the whole reason this mapping exists.
+    # The plain kind honours the six-hour external reuse window, so a repeated
+    # request usually costs nothing; the refresh kind deliberately searches
+    # again and may buy a new report.
+    "deep-research": JobKind(
+        ("deep-research", "run"),
+        "Deep research",
+        needs_target=True,
+        spends_money=True,
+        minutes=4,
+    ),
+    "deep-research-refresh": JobKind(
+        ("deep-research", "run", "--refresh-external"),
+        "Deep research (refresh current sources)",
+        needs_target=True,
+        spends_money=True,
+        minutes=4,
+    ),
     "update-universe": JobKind(("update-universe",), "Refresh the universe", minutes=1),
     "update-market": JobKind(("update-market",), "Refresh prices", minutes=10),
     "update-benchmark": JobKind(("update-benchmark",), "Refresh the benchmark", minutes=1),
@@ -168,7 +187,22 @@ JOB_KINDS: dict[str, JobKind] = {
 }
 
 
-MUTATING_KINDS = frozenset(JOB_KINDS) - {"research"}
+DEEP_KINDS = frozenset({"deep-research", "deep-research-refresh"})
+"""The two deep research kinds, which guard each other as well as themselves."""
+
+PER_TICKER_KINDS = frozenset({"research"}) | DEEP_KINDS
+"""Kinds guarded per company rather than against the whole pipeline.
+
+Each writes only its own company's report and reads a stored snapshot, so it
+neither blocks a pipeline run nor waits for one. Researching two companies at
+once is fine; researching one twice is not.
+
+The two deep kinds guard each other as well as themselves: a plain run and a
+refresh for the same ticker are the same expensive work, and letting them race
+would spend twice to write two reports about one company.
+"""
+
+MUTATING_KINDS = frozenset(JOB_KINDS) - PER_TICKER_KINDS
 """Kinds that write the shared pipeline tables, of which one may run at a time.
 
 Not one per kind. `scan` and `score` are different commands over the same rows,
@@ -299,9 +333,13 @@ class JobRunner:
     def _blocking_job(repository: JobRepository, kind: str, target: str | None) -> JobRecord | None:
         """Return the running job that stops this one starting, if there is one.
 
-        The two kinds of collision are different questions. A pipeline job
-        collides with *any* other pipeline job, because they share the tables a
-        run writes. Research collides only with research on the same company.
+        Three kinds of collision, and they are different questions. A pipeline
+        job collides with *any* other pipeline job, because they share the tables
+        a run writes. Phase 3 research collides only with research on the same
+        company. Deep research collides with *either* deep kind on the same
+        company: a plain run and a refresh are the same expensive work, and
+        letting them race would spend twice to write two reports about one
+        company.
 
         Args:
             repository: Where running jobs are read from.
@@ -314,6 +352,15 @@ class JobRunner:
         if kind in MUTATING_KINDS:
             return next(
                 (job for job in repository.all_running() if job.kind in MUTATING_KINDS), None
+            )
+        if kind in DEEP_KINDS:
+            return next(
+                (
+                    job
+                    for job in repository.all_running()
+                    if job.kind in DEEP_KINDS and job.target == target
+                ),
+                None,
             )
         return repository.running(kind, target=target)
 
