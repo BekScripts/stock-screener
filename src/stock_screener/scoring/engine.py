@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING
 import structlog
 
 from data_access import (
+    MARKET_COVERAGE,
     BenchmarkPriceRepository,
     CompanyRepository,
     ScoreRecord,
@@ -186,6 +187,7 @@ def score_market(
     limit: int | None = None,
     score_date: date | None = None,
     persist: bool = True,
+    coverage: str = MARKET_COVERAGE,
 ) -> ScoringRun:
     """Score every stored company and, by default, save the day's snapshots.
 
@@ -198,6 +200,9 @@ def score_market(
         persist: Write the snapshots. False computes and returns without
             touching the table, which is what makes it safe to inspect a
             formula change before it enters the history.
+        coverage: Whether this run covers the market or one company. A
+            single-stock run must pass `SINGLE_COVERAGE`, or its snapshot
+            becomes the newest ranking and every ranking view shows one row.
 
     Returns:
         The run, holding one entry per company examined.
@@ -222,7 +227,9 @@ def score_market(
     persisted = 0
     if persist and rows:
         persisted = ScoreSnapshotRepository(session).upsert_scores(
-            [ScoreRecord(row.company_id, row.score, row.metrics) for row in rows], as_of
+            [ScoreRecord(row.company_id, row.score, row.metrics) for row in rows],
+            as_of,
+            coverage=coverage,
         )
 
     run = ScoringRun(score_date=as_of, benchmark=benchmark, rows=tuple(rows), persisted=persisted)

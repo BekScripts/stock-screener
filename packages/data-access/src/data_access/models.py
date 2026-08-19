@@ -242,6 +242,10 @@ class ScoreSnapshot(Base):
         ),
         Index("ix_score_snapshots_company_date", "company_id", "score_date"),
         Index("ix_score_snapshots_ranking", "score_version", "score_date", "final_score"),
+        # Serves `latest_score_date`, which asks for the newest *market-wide*
+        # day. Without the coverage column in the index that lookup scans every
+        # snapshot ever written.
+        Index("ix_score_snapshots_coverage_date", "score_version", "coverage", "score_date"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -250,6 +254,11 @@ class ScoreSnapshot(Base):
     )
     score_date: Mapped[date] = mapped_column(Date, nullable=False)
     score_version: Mapped[str] = mapped_column(String(40), nullable=False)
+    # Whether the run that wrote this row covered the market or one company.
+    # Ranking views read the newest MARKET day, so a per-ticker run — which
+    # scores one company on whatever date its data reaches — cannot become
+    # "the latest ranking" and reduce the dashboard to a single row.
+    coverage: Mapped[str] = mapped_column(String(10), nullable=False, default="MARKET")
     calculated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_utcnow, server_default=func.now()
     )

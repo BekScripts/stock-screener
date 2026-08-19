@@ -82,6 +82,21 @@ but labelled, because it has not been checked against a second source.
 FINAL = "FINAL"
 """A score whose company has been through candidate enrichment."""
 
+MARKET_COVERAGE = "MARKET"
+"""A scoring run that covered the whole stored universe.
+
+The only kind a ranking may be built from. A ranking is a comparison, and a day
+holding two companies is not one.
+"""
+
+SINGLE_COVERAGE = "SINGLE"
+"""A scoring run for one company, from single-stock preparation.
+
+A real snapshot, stored and readable like any other — a deep research report has
+to explain a score that exists. It is simply not a day the market was ranked, so
+`latest_score_date` does not see it.
+"""
+
 JOB_RUNNING = "RUNNING"
 """A spawned command with a live process behind it."""
 
@@ -601,7 +616,13 @@ class ScoreSnapshotRepository:
     def __init__(self, session: Session) -> None:
         self._session = session
 
-    def upsert_scores(self, records: Sequence[ScoreRecord], score_date: date) -> int:
+    def upsert_scores(
+        self,
+        records: Sequence[ScoreRecord],
+        score_date: date,
+        *,
+        coverage: str = MARKET_COVERAGE,
+    ) -> int:
         """Insert or replace one day's scores.
 
         Re-running the scoring command on the same day replaces that day's rows
@@ -611,11 +632,14 @@ class ScoreSnapshotRepository:
         Args:
             records: The scores to store.
             score_date: The day the scores describe.
+            coverage: Whether this run covered the market or a single company.
+                Only market-wide runs are eligible to become "the latest
+                ranking"; see `latest_score_date`.
 
         Returns:
             How many rows were written.
         """
-        rows = [_score_values(record, score_date) for record in records]
+        rows = [_score_values(record, score_date, coverage) for record in records]
         if not rows:
             return 0
 
@@ -638,11 +662,29 @@ class ScoreSnapshotRepository:
             )
         )
 
-    def latest_score_date(self, *, score_version: str) -> date | None:
-        """Return the most recent day scores were stored for, or None."""
+    def latest_score_date(
+        self, *, score_version: str, coverage: str = MARKET_COVERAGE
+    ) -> date | None:
+        """Return the most recent day the market was scored, or None.
+
+        Filtered to market-wide runs by default, which is what makes the ranking
+        views safe from single-stock preparation. A per-ticker run writes a real
+        snapshot on whatever date its data reaches; without this filter the
+        newest date would be that one company, and every ranking would show a
+        list of one.
+
+        Args:
+            score_version: The formula version to read.
+            coverage: Which kind of run to consider. Pass `SINGLE_COVERAGE` only
+                to ask when a per-ticker run last happened.
+
+        Returns:
+            The date, or None when nothing of that kind has been scored.
+        """
         return self._session.scalar(
             select(func.max(ScoreSnapshot.score_date)).where(
-                ScoreSnapshot.score_version == score_version
+                ScoreSnapshot.score_version == score_version,
+                ScoreSnapshot.coverage == coverage,
             )
         )
 
@@ -1630,7 +1672,7 @@ def _research_values(company_id: int, report: ResearchReport) -> dict[str, Any]:
     }
 
 
-def _score_values(record: ScoreRecord, score_date: date) -> dict[str, Any]:
+def _score_values(record: ScoreRecord, score_date: date, coverage: str) -> dict[str, Any]:
     """Flatten one score into the `score_snapshots` column layout.
 
     Component scores are None whenever the status is not `SCORED`. They are
@@ -1645,6 +1687,7 @@ def _score_values(record: ScoreRecord, score_date: date) -> dict[str, Any]:
     return {
         "company_id": record.company_id,
         "score_date": score_date,
+        "coverage": coverage,
         "score_version": score.score_version,
         "calculated_at": _utcnow(),
         "scoring_status": score.status.value,

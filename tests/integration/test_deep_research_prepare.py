@@ -18,9 +18,11 @@ import pytest
 
 from api_clients import MockFundamentals, MockMarketData, ProviderAuthError
 from data_access import (
+    SINGLE_COVERAGE,
     BenchmarkPriceRepository,
     CompanyRepository,
     FinancialSnapshotRepository,
+    PriceHistoryRepository,
     ScoreSnapshotRepository,
 )
 from domain import (
@@ -763,3 +765,88 @@ def test_filing_text_failing_leaves_the_brief_without_excerpts_rather_than_faili
     assert brief is not None
     assert brief.excerpts == ()
     assert brief.filings
+
+
+@pytest.mark.integration
+def test_a_single_stock_run_never_becomes_the_latest_ranking(
+    session: Session,
+    settings: Settings,
+    make: type[Make],
+    seed: type[Seed],
+    fakes: tuple[RecordingMarketData, RecordingFundamentals],
+) -> None:
+    """The regression that emptied the dashboard.
+
+    Preparing one company wrote a snapshot on today's date, and the ranking views
+    take the newest date there is — so a single `deep-research run` turned a
+    ranking of thousands into a list of one.
+    """
+    seed.company(session, make, "AAA")
+    seed.company(session, make, "BBB")
+    market_day = date(2026, 6, 1)
+    for ticker in ("AAA", "BBB"):
+        stored = CompanyRepository(session).get_by_ticker(ticker)
+        assert stored is not None
+        seed.score(session, stored.id, ticker, score_date=market_day)
+    CompanyRepository(session).upsert_profile(_profile())
+    session.flush()
+
+    _prepare(session, settings, fakes)
+
+    repository = ScoreSnapshotRepository(session)
+    assert repository.latest_score_date(score_version=CURRENT_SCORE_VERSION) == market_day
+    ranked = repository.list_scored(score_version=CURRENT_SCORE_VERSION)
+    assert {company.ticker for _, company in ranked} == {"AAA", "BBB"}
+
+
+@pytest.mark.integration
+def test_a_single_stock_snapshot_is_marked_as_such(
+    session: Session,
+    settings: Settings,
+    fakes: tuple[RecordingMarketData, RecordingFundamentals],
+) -> None:
+    CompanyRepository(session).upsert_profile(_profile())
+    session.flush()
+
+    result = _prepare(session, settings, fakes)
+
+    snapshot = ScoreSnapshotRepository(session).latest_for_company(
+        result.company_id, score_version=CURRENT_SCORE_VERSION
+    )
+    assert snapshot is not None
+    assert snapshot.coverage == SINGLE_COVERAGE
+
+
+@pytest.mark.integration
+def test_the_snapshot_is_dated_by_the_data_not_the_clock(
+    session: Session,
+    settings: Settings,
+    fakes: tuple[RecordingMarketData, RecordingFundamentals],
+) -> None:
+    """A score resting on Friday's prices must not claim to be Monday's."""
+    CompanyRepository(session).upsert_profile(_profile())
+    session.flush()
+
+    result = prepare_company(session, settings, *fakes, TICKER, today=None)
+
+    stored = ScoreSnapshotRepository(session).latest_for_company(
+        result.company_id, score_version=CURRENT_SCORE_VERSION
+    )
+    latest_price = PriceHistoryRepository(session).latest_date(result.company_id)
+    assert stored is not None
+    assert stored.score_date == latest_price
+
+
+@pytest.mark.integration
+def test_a_market_run_is_still_marked_market(
+    session: Session, settings: Settings, make: type[Make], seed: type[Seed]
+) -> None:
+    """The default must not change: an ordinary score run still builds rankings."""
+    seed.company(session, make, "AAA")
+    session.flush()
+
+    score_market(session, settings, score_date=date(2026, 6, 1), persist=True)
+
+    assert ScoreSnapshotRepository(session).latest_score_date(
+        score_version=CURRENT_SCORE_VERSION
+    ) == date(2026, 6, 1)

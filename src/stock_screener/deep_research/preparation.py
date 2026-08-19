@@ -41,6 +41,7 @@ import structlog
 
 from api_clients import ProviderError
 from data_access import (
+    SINGLE_COVERAGE,
     BenchmarkPriceRepository,
     CompanyRepository,
     FilingExcerptRepository,
@@ -409,6 +410,10 @@ def _run_score(
 ) -> StageOutcome:
     """Score the company with the existing engine and persist the snapshot.
 
+    Dated by the most recent price the company has, because that is the day the
+    score actually describes, and recorded as a single-company run so the
+    market-wide ranking views never mistake it for the newest ranking.
+
     `score_market` narrowed to one ticker, with `persist=True`, so the row it
     writes is indistinguishable from one a nightly run would write. Deep research
     has no scoring code of its own and no second score version.
@@ -417,7 +422,22 @@ def _run_score(
     bank, or one with two quarters of history gets a snapshot carrying the status
     that says why, and the brief explains that instead of a number.
     """
-    run = score_market(session, settings, tickers=[symbol], score_date=today, persist=True)
+    # Dated by the data, not the clock, and marked as a single-company run.
+    #
+    # Both matter, and for different reasons. A score dated today while resting
+    # on Friday's prices claims a currency it does not have. And a per-ticker
+    # snapshot that looked like a market run would become "the latest ranking" —
+    # one company, over a universe of thousands — which is exactly what one
+    # `deep-research run` did to the dashboard before this.
+    as_of = today or PriceHistoryRepository(session).latest_date(company_id) or _today()
+    run = score_market(
+        session,
+        settings,
+        tickers=[symbol],
+        score_date=as_of,
+        persist=True,
+        coverage=SINGLE_COVERAGE,
+    )
     session.flush()
 
     snapshot = ScoreSnapshotRepository(session).latest_for_company(
@@ -489,3 +509,8 @@ def stored_freshness_dates(
     excerpts_through = max((row.filed for row in excerpts), default=None)
 
     return price_as_of, fundamentals_through, filings_through, excerpts_through
+
+
+def _today() -> date:
+    """Return today in UTC, for a company with no stored price at all."""
+    return datetime.now(UTC).date()
