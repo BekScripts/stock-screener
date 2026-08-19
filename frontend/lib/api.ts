@@ -285,3 +285,139 @@ export async function searchCompanies(query: string): Promise<SearchHit[]> {
   );
   return hits;
 }
+
+/* -- deep research ---------------------------------------------------------
+ *
+ * Phase 6. A separate layer over the screener: one company refreshed against
+ * its current fundamentals, its filings and what has since been published,
+ * then a source-grounded report.
+ *
+ * Read-only, deliberately. Running deep research is a job — it takes minutes
+ * and can spend money, and the job system already has the concurrency guard.
+ * `DEEP_RESEARCH_KIND` and `DEEP_RESEARCH_REFRESH_KIND` are the two keys the
+ * backend allows; a caller picks a key, never an argument.
+ */
+
+export const DEEP_RESEARCH_KIND = "deep-research";
+export const DEEP_RESEARCH_REFRESH_KIND = "deep-research-refresh";
+
+/** Where a deep claim's authority comes from. */
+export type DeepBasis =
+  | "DETERMINISTIC"
+  | "EXTRACTED"
+  | "EXTERNAL"
+  | "INTERPRETATION"
+  | "UNKNOWN";
+
+/** Why a section ended up empty. The two mean very different things. */
+export type UnknownReason = "NO_EVIDENCE" | "NO_VALID_CLAIMS";
+
+/** Whether the external evidence was searched for, reused, or came back thin. */
+export type ExternalState = "FRESH" | "REUSED" | "DEGRADED";
+
+export type DeepClaim = {
+  text: string;
+  basis: DeepBasis;
+  evidence: string[];
+  unknown_reason: UnknownReason | null;
+};
+
+export type DeepSection = {
+  key: string;
+  label: string;
+  unknown_reason: UnknownReason | null;
+  claims: DeepClaim[];
+};
+
+export type DeepSource = {
+  evidence_id: string;
+  source_type: string;
+  tier: string;
+  publisher: string;
+  title: string;
+  url: string;
+  published_at: string | null;
+  retrieved_at: string;
+};
+
+/** A validation issue, as a code and a place. Never the rejected text. */
+export type DeepIssue = {
+  code: string;
+  section: string | null;
+};
+
+export type DeepResearchReport = {
+  id: number;
+  ticker: string;
+  status: string;
+  as_of: string;
+  generated_at: string;
+  score_version: string;
+  contract_version: string;
+  prompt_version: string;
+  model_id: string;
+  confidence: {
+    level: string;
+    ceiling: string;
+    claimed: string;
+    rationale: string;
+    metric_coverage: number | null;
+    filing_coverage: number;
+    external_coverage: number;
+  };
+  unknowns: string[];
+  unknown_reasons: Record<string, UnknownReason>;
+  external_state: ExternalState | null;
+  external_collected_at: string | null;
+  sections: DeepSection[];
+  sources: DeepSource[];
+  issues: DeepIssue[];
+};
+
+export type DeepResearchSummary = {
+  id: number;
+  generated_at: string;
+  as_of: string;
+  status: string;
+  confidence: string;
+  model_id: string;
+  prompt_version: string;
+  external_state: ExternalState | null;
+  external_collected_at: string | null;
+};
+
+/** The latest validated report, or null when the company has never been researched. */
+export async function fetchDeepResearch(ticker: string): Promise<DeepResearchReport | null> {
+  const response = await fetch(`${API_URL}/api/deep-research/${ticker}`, { cache: "no-store" });
+  if (response.status === 404) {
+    return null;
+  }
+  if (!response.ok) {
+    throw new Error(`API ${response.status} for deep-research/${ticker}`);
+  }
+  return (await response.json()) as DeepResearchReport;
+}
+
+/**
+ * Every report for a company, newest first.
+ *
+ * Empty means the company exists and has never been researched; a 404 means the
+ * company is unknown, which is a different thing and left to the caller.
+ */
+export async function fetchDeepResearchHistory(ticker: string): Promise<DeepResearchSummary[]> {
+  const response = await fetch(`${API_URL}/api/deep-research/${ticker}/history`, {
+    cache: "no-store",
+  });
+  if (response.status === 404) {
+    return [];
+  }
+  if (!response.ok) {
+    throw new Error(`API ${response.status} for deep-research/${ticker}/history`);
+  }
+  return (await response.json()) as DeepResearchSummary[];
+}
+
+/** One historical report, opened from the history control. */
+export async function fetchDeepResearchReport(id: number): Promise<DeepResearchReport> {
+  return get<DeepResearchReport>(`/api/deep-research/reports/${id}`);
+}

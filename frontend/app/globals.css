@@ -16,6 +16,7 @@
   --deterministic: #0f7a4a;
   --extracted: #1f4ed8;
   --interpretation: #6d4aa8;
+  --external: #a8620a;
   --unknown: #8a929e;
 }
 
@@ -376,6 +377,7 @@ table.rankings tbody tr:hover {
 
 .basis.DETERMINISTIC { background: var(--deterministic); }
 .basis.EXTRACTED { background: var(--extracted); }
+.basis.EXTERNAL { background: var(--external); }
 .basis.INTERPRETATION { background: var(--interpretation); }
 .basis.UNKNOWN { background: var(--unknown); }
 
@@ -725,4 +727,312 @@ pre.log {
 .muted {
   color: var(--muted);
   font-size: 13px;
+}
+
+/* -- deep research ---------------------------------------------------------
+ *
+ * Reuses the Phase 4 research vocabulary — the same basis chips, cards and
+ * fields — and adds only what the deeper report needs: a way to tell the two
+ * kinds of empty section apart, citations that resolve to a publisher, and a
+ * source list grouped by how close the publisher sits to the facts.
+ */
+
+.deep-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 20px;
+  flex-wrap: wrap;
+}
+
+.company-name {
+  color: var(--muted);
+  font-weight: 400;
+}
+
+.badge-row {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+}
+
+.deep-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 6px;
+  max-width: 380px;
+}
+
+.deep-actions .run + .run {
+  margin-top: 2px;
+}
+
+/* Secondary because it costs more. The two runs are one flag apart in the
+ * backend and a world apart in price, so the expensive one must not read as an
+ * equal alternative. */
+.run.secondary {
+  background: var(--surface);
+  color: var(--muted);
+  border: 1px solid var(--border);
+}
+
+.run.secondary:hover:not(:disabled) {
+  color: var(--ink);
+  border-color: var(--muted);
+}
+
+.deep-actions-note,
+.deep-actions-message {
+  padding: 0;
+  font-size: 12px;
+  text-align: right;
+}
+
+.deep-actions-message {
+  color: var(--ink);
+}
+
+.deep-section {
+  border-top: 1px solid var(--border);
+  padding-top: 14px;
+}
+
+/* The distinction 6D.2 exists to draw. `calm` is a fact about the evidence;
+ * `warned` is a fact about this tool, and must not read as missing data. */
+.empty-section {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 14px;
+  padding: 8px 0;
+}
+
+.empty-section.calm {
+  color: var(--muted);
+}
+
+.empty-section.warned {
+  color: var(--warn);
+}
+
+.empty-mark {
+  font-weight: 700;
+  width: 14px;
+  flex: none;
+  text-align: center;
+}
+
+.empty-section.warned .empty-mark {
+  border-radius: 50%;
+  background: var(--warn);
+  color: #fff;
+  font-size: 11px;
+  line-height: 14px;
+}
+
+.cites {
+  display: inline-flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.cite {
+  font-size: 11px;
+  border-radius: 4px;
+  padding: 1px 6px;
+  border: 1px solid var(--border);
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.cite-external {
+  border-color: var(--external);
+  color: var(--external);
+  text-decoration: none;
+}
+
+.cite-external:hover {
+  background: var(--external);
+  color: #fff;
+}
+
+.cite-filing {
+  border-color: var(--extracted);
+  color: var(--extracted);
+}
+
+.validation-note {
+  padding: 8px 0 0;
+  font-size: 12px;
+}
+
+.viewing-older {
+  padding: 8px 0;
+  color: var(--warn);
+}
+
+.linklike {
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--accent);
+  cursor: pointer;
+  font: inherit;
+  text-decoration: underline;
+}
+
+.tier-help {
+  font-weight: 400;
+  font-size: 12px;
+  color: var(--faint);
+  margin-left: 8px;
+}
+
+.source {
+  padding: 8px 0;
+  border-top: 1px solid var(--border);
+}
+
+.source-head {
+  display: flex;
+  gap: 10px;
+  align-items: baseline;
+  flex-wrap: wrap;
+}
+
+.source-publisher {
+  font-weight: 600;
+  font-size: 13px;
+}
+
+.source-meta {
+  font-size: 12px;
+  color: var(--faint);
+}
+
+.source-title {
+  display: block;
+  font-size: 14px;
+  color: var(--accent);
+  text-decoration: none;
+  margin-top: 2px;
+}
+
+.source-title:hover {
+  text-decoration: underline;
+}
+
+.history {
+  display: flex;
+  flex-direction: column;
+}
+
+.history-row {
+  display: flex;
+  gap: 14px;
+  align-items: baseline;
+  flex-wrap: wrap;
+  padding: 8px 0;
+  border-top: 1px solid var(--border);
+  background: none;
+  border-left: none;
+  border-right: none;
+  border-bottom: none;
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+}
+
+.history-row:hover:not(.current) {
+  background: var(--bg);
+}
+
+.history-row.current {
+  cursor: default;
+}
+
+.history-when {
+  font-weight: 600;
+  font-size: 13px;
+  min-width: 150px;
+}
+
+.history-meta {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.deep-search {
+  position: relative;
+  margin: 14px 0;
+}
+
+.deep-search input {
+  width: 100%;
+  padding: 10px 12px;
+  font-size: 15px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--ink);
+}
+
+.deep-hits {
+  list-style: none;
+  margin: 6px 0 0;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.deep-hits button {
+  display: flex;
+  gap: 12px;
+  align-items: baseline;
+  width: 100%;
+  padding: 8px 12px;
+  background: var(--surface);
+  border: none;
+  border-bottom: 1px solid var(--border);
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+}
+
+.deep-hits li:last-child button {
+  border-bottom: none;
+}
+
+.deep-hits button:hover {
+  background: var(--bg);
+}
+
+.hit-ticker {
+  font-weight: 700;
+  min-width: 64px;
+}
+
+.hit-name {
+  color: var(--muted);
+  flex: 1;
+}
+
+.hit-score {
+  color: var(--faint);
+  font-variant-numeric: tabular-nums;
+}
+
+@media (max-width: 720px) {
+  .deep-actions {
+    align-items: stretch;
+    max-width: none;
+  }
+
+  .deep-actions-note,
+  .deep-actions-message {
+    text-align: left;
+  }
 }

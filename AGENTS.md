@@ -83,9 +83,7 @@ and stops both. Its scope and known limitations are documented in
 The MVP is finished. Phases 1 through 5 are all complete, and none of them is a
 place to add to without being asked.
 
-**Phase 6 (on-demand deep research) is in progress. Phase 6A — the contract and
-the persistence foundation — Phase 6B — single-stock preparation — and Phase 6C
-— external evidence collection — are complete.** Deep research is a separate layer
+**Phase 6 (on-demand deep research) is complete and frozen.** Deep research is a separate layer
 over the screener, not a change to it: a person types a ticker and one company
 is investigated against its current fundamentals, its filings and what has since
 been published about it. `packages/deep-research` holds the contract — the `W.`
@@ -142,8 +140,28 @@ runs it. Three rules:
 - **Collection is optional and never fatal.** A vendor being unconfigured,
   unreachable or out of quota costs a brief nothing — `external=()` is complete.
 
-Not built in Phase 6, and not to be started without being asked: the deep prompt,
-any synthesis model call, the deep validator, and any UI, endpoint or job kind.
+Phase 6D generates and validates: `api-clients` holds the provider,
+`deep_research.validation` decides what survives, and
+`src/stock_screener/deep_research/runner.py` runs the sequence — prepare,
+collect, assemble, measure, cache, guard, generate, validate, persist. The cache
+is consulted before the provider and the prompt is measured before it is sent,
+because both exist to avoid spending badly. Phase 6E is the dashboard:
+`/research` and `/research/[ticker]`, with execution going through the existing
+job system rather than a second path.
+
+Two more rules govern those layers:
+
+- **Nothing unvalidated is stored or served.** The provider returns a draft; only
+  validation constructs a report. Rejected text never reaches the database, the
+  API or a screen — publishing what validation refused to publish would defeat
+  the refusal.
+- **An empty section says which kind of empty it is.** `NO_EVIDENCE` means the
+  brief had nothing; `NO_VALID_CLAIMS` means it had plenty and nothing survived.
+  Collapsing them blames the data for a failure of the generation.
+
+Not built, and not to be started without being asked: scheduled or automatic
+deep research, report diffing or comparison, alerts, charts, and any second
+execution path for a job.
 
 Three rules govern that layer:
 

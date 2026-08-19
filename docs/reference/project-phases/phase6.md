@@ -13,9 +13,9 @@ Phase 6 is the other shape. Somebody types a ticker and asks for one company to
 be investigated properly — against its current fundamentals, its filings, and
 what has since been published about it.
 
-**Phase 6A** is the contract and the table. **Phase 6B** is single-stock
-preparation. **Phase 6C** is external evidence collection — the `W.` namespace,
-filled. None of them calls a synthesis model or builds a UI.
+Phase 6 is complete. **6A** settled the contract and the table, **6B** built
+single-stock preparation, **6C** added current external evidence, **6D**
+generates and validates the report, and **6E** puts it on a screen.
 
 ## A separate layer, not a replacement
 
@@ -171,6 +171,76 @@ evidence_fingerprint, prompt_version)`.
 
 No draft is ever stored. `save` accepts a `DeepResearchReport`, the type only
 deep validation constructs.
+
+## The whole pipeline
+
+```
+Ticker / company
+      ↓
+Single-stock deterministic refresh    prices, fundamentals, benchmark
+      ↓
+CompounderScore V1.1                  the ordinary persisted snapshot
+      ↓
+SEC evidence (D. / X.)   +   Current external evidence (W.)   ← optional
+      ↓
+DeepResearchBrief                     bounded, fingerprinted
+      ↓
+Structured draft from Claude          medium effort, 8k output, no retries
+      ↓
+Deterministic validation              drops, never rewrites
+      ↓
+DeepResearchReport                    append-only, cached by fingerprint
+      ↓
+Dashboard + history                   /research/<ticker>
+```
+
+Seven properties define what this is, and each one is enforced somewhere rather
+than promised:
+
+**On-demand, per ticker.** Nothing researches the market. A run happens because
+somebody named a company.
+
+**It never alters the CompounderScore.** The score is computed from deterministic
+data before any news is read, and deep research explains it. `W.` is absent from
+`research.EvidenceKind`, the score-explaining sections accept `DETERMINISTIC`
+only, and the report has no field to put a score in.
+
+**Current external evidence is optional.** A run works from deterministic and SEC
+evidence alone, and **zero accepted `W.` sources is a valid outcome** — a company
+nobody has written about recently, researched honestly, beats one padded with
+whatever a search returned. The dashboard says so in as many words.
+
+**Reused research may cost nothing.** External evidence collected in the last six
+hours is reused, and an unchanged evidence set under an unchanged prompt and
+model returns the stored report without calling anything. **Refresh Current
+Sources** deliberately bypasses that and may buy a new report; the two are
+visibly different actions for that reason.
+
+**A report is a research aid, not a recommendation.** No buy, sell or hold; no
+price target; no position size; no expected return. Absent structurally, and
+checked again on every claim.
+
+**Grounding proves provenance, not truth.** Every claim resolves to evidence that
+was actually supplied, and every figure to evidence that claim cites. Whether a
+filing says something true, or a provider extracted it correctly, is outside what
+this can check — the guarantee is that nothing was invented here.
+
+**Nothing unvalidated is ever stored or shown.** The provider returns a draft; only
+validation constructs a report; only reports are persisted. Rejected text is not
+served, displayed or logged to the interface — publishing what validation refused
+to publish would defeat the refusal.
+
+## Using it
+
+| Action | Kind | Typically costs |
+| --- | --- | --- |
+| Run Deep Research | `deep-research` | $0 when cached; about $0.10 for a fresh generation |
+| Refresh Current Sources | `deep-research-refresh` | a search, plus a generation if the evidence changed |
+
+Both go through the existing job system — `POST /api/jobs` with a key and a
+target, never an argument. The read surface is three endpoints serving validated
+content only.
+
 
 ## Phase 6B — single-stock preparation
 
@@ -401,6 +471,22 @@ ids are derived from the canonical URL, and items are sorted by id before hashin
 
 Synthesis, drafts, reports, any model call, UI, alerts, scheduled monitoring,
 sentiment scoring, social ingestion, peer comparison, vector stores, embeddings.
+
+## Known limitations
+
+- **Search recall varies between runs.** A live search engine answers the same
+  query with a slightly different valid set minutes apart. The six-hour reuse
+  window is what keeps that from buying a new report every time.
+- **Some small caps yield no external evidence at all.** ACTG is the standing
+  example, and its report is none the worse for it.
+- **External search cost is not reported.** Tavily exposes no cost field, so
+  request counts are reported and no dollar figure is invented.
+- **Historical reports keep the semantics they were written under.** Reports
+  generated before the `UnknownReason` split display `NO_EVIDENCE` where a new
+  one would say `NO_VALID_CLAIMS`. They are not rewritten; an append-only table
+  that edited its own history would be worth less than one that did not.
+- **Nothing is scheduled.** No automatic or periodic deep research exists, by
+  design — every run is asked for.
 
 ## Not built in Phase 6
 

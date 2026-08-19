@@ -28,6 +28,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
               <nav className="top">
                 <Link href="/">Rankings</Link>
                 <Link href="/watchlist">Watchlist</Link>
+                <Link href="/research">Research</Link>
                 <Link href="/jobs">Jobs</Link>
               </nav>
             </div>
