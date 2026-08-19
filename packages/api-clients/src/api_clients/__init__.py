@@ -23,6 +23,12 @@ from api_clients.base import (
     MarketDataProvider,
 )
 from api_clients.composite import CompositeFundamentals
+from api_clients.deep_research import (
+    AnthropicDeepResearch,
+    DeepResearchCompletion,
+    DeepResearchProvider,
+    MockDeepResearch,
+)
 from api_clients.edgar import SecEdgarFundamentals
 from api_clients.errors import (
     ProviderAuthError,
@@ -63,13 +69,17 @@ __all__ = [
     "MAX_SECTION_CHARS",
     "MIN_SECTION_CHARS",
     "AlpacaMarketData",
+    "AnthropicDeepResearch",
     "AnthropicResearch",
     "CompositeFundamentals",
+    "DeepResearchCompletion",
+    "DeepResearchProvider",
     "ExternalResearchProvider",
     "ExtractedSection",
     "FmpFundamentals",
     "FundamentalsProvider",
     "MarketDataProvider",
+    "MockDeepResearch",
     "MockExternalResearch",
     "MockFundamentals",
     "MockMarketData",

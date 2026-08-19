@@ -570,6 +570,12 @@ class StoredDeepResearchReport(Base):
             "prompt_version",
         ),
         Index("ix_deep_research_reports_company_generated", "company_id", "generated_at"),
+        Index(
+            "ix_deep_research_reports_collection",
+            "company_id",
+            "deterministic_fingerprint",
+            "external_collected_at",
+        ),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -612,5 +618,17 @@ class StoredDeepResearchReport(Base):
     # only a validated report has this shape.
     validated_report_json: Mapped[dict[str, object]] = mapped_column(JSON, nullable=False)
     validation_issues_json: Mapped[list[object] | None] = mapped_column(JSON)
+
+    # The external evidence this report was collected from, whole — not just the
+    # sources its claims ended up citing. A rerun rebuilds its brief from this,
+    # and a subset would produce a different fingerprint and miss the cache it
+    # was trying to hit.
+    #
+    # `external_state` guards the reuse decision: FRESH is safe to reuse,
+    # DEGRADED is a collection whose searches partly failed and whose thinness
+    # must not be frozen in place for the length of the window.
+    external_state: Mapped[str | None] = mapped_column(String(20))
+    external_collected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    collected_external_json: Mapped[list[object] | None] = mapped_column(JSON)
 
     company: Mapped[Company] = relationship(back_populates="deep_research_reports")

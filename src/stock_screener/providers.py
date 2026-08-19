@@ -19,12 +19,15 @@ import structlog
 
 from api_clients import (
     AlpacaMarketData,
+    AnthropicDeepResearch,
     AnthropicResearch,
     CompositeFundamentals,
+    DeepResearchProvider,
     ExternalResearchProvider,
     FmpFundamentals,
     FundamentalsProvider,
     MarketDataProvider,
+    MockDeepResearch,
     MockExternalResearch,
     MockResearch,
     ProviderConfigurationError,
@@ -308,4 +311,39 @@ def build_external_research_provider(settings: Settings) -> ExternalResearchProv
         limiter=_rate_limiter(settings),
         retry=_retry_policy(settings),
         exclude_domains=sorted(DENIED_DOMAINS),
+    )
+
+
+def build_deep_research_provider(settings: Settings) -> DeepResearchProvider:
+    """Return the deep research synthesis adapter the configuration selects.
+
+    Unlike external collection there is no `none`: a deep research run without a
+    model is not a degraded run, it is a different operation. The runner decides
+    whether to call this; the factory only decides which model answers.
+
+    Args:
+        settings: Application settings.
+
+    Returns:
+        An adapter satisfying `DeepResearchProvider`.
+
+    Raises:
+        ConfigurationError: If `anthropic` is selected without a credential.
+    """
+    if settings.deep_research_provider == "mock":
+        log.debug("building deep research provider", provider="mock")
+        return MockDeepResearch()
+
+    # The same Anthropic credential Phase 3 uses. One vendor, so a second key
+    # would be a second thing to rotate and a second way to be misconfigured.
+    if settings.research_api_key is None:
+        raise ConfigurationError("DEEP_RESEARCH_PROVIDER=anthropic requires RESEARCH_API_KEY")
+
+    log.debug("building deep research provider", provider="anthropic")
+    return AnthropicDeepResearch(
+        api_key=settings.research_api_key.get_secret_value(),
+        model=settings.deep_research_model,
+        max_output_tokens=settings.deep_research_max_output_tokens,
+        effort=settings.deep_research_effort,
+        timeout_seconds=settings.deep_research_timeout_seconds,
     )

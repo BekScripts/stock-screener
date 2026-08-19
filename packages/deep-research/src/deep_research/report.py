@@ -118,6 +118,37 @@ class DeepSection(StrEnum):
     RESEARCH_CONCLUSION = "research_conclusion"
 
 
+class UnknownReason(StrEnum):
+    """Why a section ended up answered `UNKNOWN`.
+
+    Two very different situations wearing the same word, and conflating them
+    misleads a reader in the one direction that matters. "We have nothing on
+    this" invites them to go and look elsewhere. "We had plenty and could not
+    turn it into something we would stand behind" is a statement about this
+    tool, not about the company — and a reader told the first when the second is
+    true will draw the wrong conclusion about the company.
+
+    Determined in code from what the model produced and what validation did with
+    it. The model is never asked which case it is in; it is the least reliable
+    witness to its own failure.
+    """
+
+    NO_EVIDENCE = "NO_EVIDENCE"
+    """The brief offered nothing for this section, and the model wrote nothing.
+
+    The honest, common case: a company with no recent filings has no recent
+    developments, and a company nobody has written about has no external
+    context."""
+
+    NO_VALID_CLAIMS = "NO_VALID_CLAIMS"
+    """The model wrote claims for this section and validation rejected all of them.
+
+    The evidence was there. What came back was an investment instruction, an
+    invented figure, a return forecast or an overlong sentence, and none of it
+    could be shown to a reader. Saying "no evidence" here would blame the data
+    for a failure of the generation."""
+
+
 class DeepIssueCode(StrEnum):
     """Why deep validation changed something the model returned.
 
@@ -201,11 +232,16 @@ class DeepClaim(_Frozen):
             evidence.
         basis: Where the claim's authority comes from.
         evidence: Ids from the brief. Empty only for an `UNKNOWN` claim.
+        unknown_reason: On a fallback `UNKNOWN` claim, why the section is empty.
+            None on every claim the model actually wrote, including its own
+            `UNKNOWN` answers — those carry the model's words, and overwriting
+            their reason would misreport who said what.
     """
 
     text: str = Field(min_length=1, max_length=MAX_CLAIM_CHARS)
     basis: DeepBasis
     evidence: tuple[str, ...] = ()
+    unknown_reason: UnknownReason | None = None
 
 
 class DeepDraftClaim(_Frozen):
@@ -460,6 +496,26 @@ class DeepResearchReport(_Frozen):
         if self.generated_at.tzinfo is None:
             raise ValueError("generated_at must be timezone-aware")
         return self
+
+    @property
+    def unknown_reasons(self) -> dict[str, UnknownReason]:
+        """Why each `UNKNOWN` section is empty, keyed by section name.
+
+        What a reading surface should render from, rather than parsing issue
+        strings or the fallback sentence. A section answered `UNKNOWN` in the
+        model's own words reports `NO_EVIDENCE`: an `UNKNOWN` claim asserts
+        absence by definition, whoever phrased it.
+
+        Returns:
+            One entry per section in `unknowns`.
+        """
+        found: dict[str, UnknownReason] = {}
+        for section, claims in self.sections.iter_sections():
+            if not claims or any(claim.basis is not DeepBasis.UNKNOWN for claim in claims):
+                continue
+            reasons = {claim.unknown_reason for claim in claims if claim.unknown_reason}
+            found[section.value] = reasons.pop() if len(reasons) == 1 else UnknownReason.NO_EVIDENCE
+        return found
 
     @property
     def cited_external_ids(self) -> frozenset[str]:

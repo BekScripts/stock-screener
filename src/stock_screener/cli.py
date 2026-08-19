@@ -31,11 +31,14 @@ from stock_screener.deep_research import (
     collect_external_evidence,
     format_collection,
     format_preparation,
+    format_run,
     prepare_company,
+    run_deep_research,
 )
 from stock_screener.logging import configure_logging
 from stock_screener.providers import (
     ConfigurationError,
+    build_deep_research_provider,
     build_external_research_provider,
     build_fundamentals_provider,
     build_market_data_provider,
@@ -790,6 +793,67 @@ def deep_research_prepare_command(
                 rendered = f"{rendered}\n\n{format_collection(collection, brief)}"
 
     typer.echo(rendered)
+
+
+@deep_research_app.command("run")
+def deep_research_run_command(
+    ticker: Annotated[str, typer.Argument(help="The single symbol to research.")],
+    no_external: Annotated[
+        bool,
+        typer.Option(
+            "--no-external",
+            help="Skip external collection and research from deterministic and SEC evidence only.",
+        ),
+    ] = False,
+    refresh_external: Annotated[
+        bool,
+        typer.Option(
+            "--refresh-external",
+            help="Search for current evidence again instead of reusing a recent collection.",
+        ),
+    ] = False,
+    as_json: Annotated[
+        bool,
+        typer.Option("--json", help="Print the validated report as JSON."),
+    ] = False,
+) -> None:
+    """Research one company and persist a validated deep research report.
+
+    Refreshes the company, collects current external evidence unless
+    `--no-external`, assembles the brief, and — only if no identical report
+    already exists — asks a model for a draft and validates it. **This spends
+    money**, unless the cache answers first.
+
+    External evidence collected recently is reused rather than searched for
+    again, so a repeated request inside the window costs nothing at all.
+    `--refresh-external` is the deliberate "get me current news" override.
+
+    Nothing unvalidated is ever stored. A provider failure persists nothing at
+    all, and a prompt above the input ceiling is refused before the call rather
+    than trimmed to fit.
+    """
+    settings = _bootstrap()
+    with _database(settings) as factory, session_scope(factory) as session:
+        external = None if no_external else build_external_research_provider(settings)
+        run = run_deep_research(
+            session,
+            settings,
+            synthesis=build_deep_research_provider(settings),
+            market_data=build_market_data_provider(settings),
+            fundamentals=build_fundamentals_provider(settings),
+            external=external,
+            ticker=ticker,
+            refresh_external=refresh_external,
+        )
+        rendered = (
+            run.report.model_dump_json(indent=2)
+            if as_json and run.report is not None
+            else format_run(run)
+        )
+
+    typer.echo(rendered)
+    if run.report is None:
+        raise typer.Exit(code=1)
 
 
 @app.command("run-daily")

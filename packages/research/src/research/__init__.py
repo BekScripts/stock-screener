@@ -48,6 +48,15 @@ from research.prompt import (
     build_system_prompt,
     render_brief,
 )
+from research.quantities import (
+    Figure,
+    Marker,
+    find_advice,
+    parse_figures,
+    quoted_quantities,
+    renderings,
+    rounds_to,
+)
 from research.report import (
     MAX_CLAIM_CHARS,
     MAX_DRAFT_CLAIM_CHARS,
@@ -72,7 +81,6 @@ from research.validation import (
     allowed_bases,
     confidence_ceiling,
     failed_report,
-    find_advice,
     unsupported_figures,
     validate_report,
 )
@@ -96,9 +104,11 @@ __all__ = [
     "DraftReport",
     "EnrichmentFacts",
     "EvidenceKind",
+    "Figure",
     "FilingReference",
     "FilingText",
     "IssueCode",
+    "Marker",
     "MetricFact",
     "Quantity",
     "RankingState",
@@ -121,7 +131,11 @@ __all__ = [
     "evidence_kind",
     "failed_report",
     "find_advice",
+    "parse_figures",
+    "quoted_quantities",
     "render_brief",
+    "renderings",
+    "rounds_to",
     "unsupported_figures",
     "validate_report",
 ]

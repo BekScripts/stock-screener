@@ -41,6 +41,9 @@ from data_access.models import (
     WatchlistEntry,
 )
 from data_access.repositories import (
+    EXTERNAL_DEGRADED,
+    EXTERNAL_FRESH,
+    EXTERNAL_REUSED,
     FINAL,
     JOB_FAILED,
     JOB_RUNNING,
@@ -69,6 +72,9 @@ from data_access.session import (
 )
 
 __all__ = [
+    "EXTERNAL_DEGRADED",
+    "EXTERNAL_FRESH",
+    "EXTERNAL_REUSED",
     "FINAL",
     "JOB_FAILED",
     "JOB_RUNNING",

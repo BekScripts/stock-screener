@@ -48,7 +48,16 @@ from stock_screener.deep_research.preparation import (
     prepare_company,
     stored_freshness_dates,
 )
-from stock_screener.deep_research.report import format_collection, format_preparation
+from stock_screener.deep_research.report import (
+    format_collection,
+    format_preparation,
+    format_run,
+)
+from stock_screener.deep_research.runner import (
+    DeepResearchRun,
+    RunStatus,
+    run_deep_research,
+)
 from stock_screener.deep_research.sources import (
     DENIED_DOMAINS,
     TIER_1_DOMAINS,
@@ -70,11 +79,13 @@ __all__ = [
     "TIER_2_DOMAINS",
     "TIER_3_DOMAINS",
     "CollectionReport",
+    "DeepResearchRun",
     "EventClass",
     "PreparationError",
     "PreparationResult",
     "RejectedResult",
     "Rejection",
+    "RunStatus",
     "Stage",
     "StageOutcome",
     "StageState",
@@ -86,9 +97,11 @@ __all__ = [
     "evidence_from",
     "format_collection",
     "format_preparation",
+    "format_run",
     "is_denied",
     "prepare_company",
     "registrable_domain",
+    "run_deep_research",
     "search_anchor",
     "source_type_for",
     "stored_freshness_dates",

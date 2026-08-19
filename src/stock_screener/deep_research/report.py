@@ -7,6 +7,7 @@ brief actually contains, so a number invented during rendering would defeat it.
 
 from __future__ import annotations
 
+from collections import Counter
 from typing import TYPE_CHECKING
 
 from deep_research import SourceTier
@@ -16,6 +17,7 @@ if TYPE_CHECKING:
     from deep_research import DeepResearchBrief
     from stock_screener.deep_research.collection import CollectionReport
     from stock_screener.deep_research.preparation import PreparationResult
+    from stock_screener.deep_research.runner import DeepResearchRun
 
 _UNSET = "—"
 
@@ -180,4 +182,68 @@ def format_collection(report: CollectionReport, brief: DeepResearchBrief) -> str
         f"  external       {brief.external_fingerprint()}",
         f"  evidence       {brief.evidence_fingerprint()}",
     ]
+    return "\n".join(lines)
+
+
+def format_run(run: DeepResearchRun) -> str:
+    """Return a concise account of one deep research run.
+
+    Shows what it cost and what came back, never the report body: seventeen
+    sections of prose belong in the JSON output or on a screen, not scrolling
+    past in a terminal.
+
+    Args:
+        run: What the run did.
+
+    Returns:
+        A multi-line summary.
+    """
+    lines = [
+        f"{run.ticker} — deep research",
+        "",
+        f"  status         {run.status.value}",
+        f"  detail         {run.detail}",
+        f"  external       {run.external_state}",
+        "",
+        "Spend",
+        f"  provider calls {run.provider_calls}",
+        f"  prompt chars   {run.prompt_chars}",
+        f"  input tokens   {run.input_tokens}",
+        f"  output tokens  {run.output_tokens}",
+        f"  est. cost      ${run.estimated_cost_usd:.4f}",
+    ]
+
+    report = run.report
+    if report is not None:
+        claims = [claim for _, kept in report.sections.iter_sections() for claim in kept]
+        counts = Counter(claim.basis.value for claim in claims)
+        lines += [
+            "",
+            "Report",
+            f"  confidence     {report.confidence.level.value}",
+            f"  rationale      {report.confidence.rationale}",
+            f"  claims         {len(claims)}",
+            f"  deterministic  {counts.get('DETERMINISTIC', 0)}",
+            f"  extracted      {counts.get('EXTRACTED', 0)}",
+            f"  external       {counts.get('EXTERNAL', 0)}",
+            f"  interpretation {counts.get('INTERPRETATION', 0)}",
+            f"  unknown        {counts.get('UNKNOWN', 0)}",
+            f"  unknown sects  {len(report.unknowns)}",
+            f"  issues         {len(report.issues)}",
+            f"  W. carried     {len(report.external_evidence)}",
+            "",
+            "Fingerprints",
+            f"  deterministic  {report.deterministic_fingerprint}",
+            f"  evidence       {report.evidence_fingerprint}",
+        ]
+        if report.issues:
+            lines.append("")
+            lines.append("Issues")
+            counted = Counter(issue.code.value for issue in report.issues)
+            lines.extend(f"  {code:<28} {count}" for code, count in sorted(counted.items()))
+
+    if run.degraded:
+        lines += ["", "Degraded"]
+        lines.extend(f"  {note[:110]}" for note in run.degraded)
+
     return "\n".join(lines)

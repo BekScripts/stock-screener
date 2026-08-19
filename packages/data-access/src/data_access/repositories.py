@@ -43,7 +43,7 @@ from data_access.models import (
 from domain import ScoringStatus
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable, Sequence
+    from collections.abc import Iterable, Mapping, Sequence
     from datetime import date
 
     from sqlalchemy.orm import Session
@@ -90,6 +90,19 @@ JOB_SUCCEEDED = "SUCCEEDED"
 
 JOB_FAILED = "FAILED"
 """A command whose process exited non-zero. Its log says why."""
+
+EXTERNAL_FRESH = "FRESH"
+"""External evidence gathered by this run's own searches."""
+
+EXTERNAL_REUSED = "REUSED"
+"""External evidence carried over from a recent collection, unsearched."""
+
+EXTERNAL_DEGRADED = "DEGRADED"
+"""External evidence gathered by searches that partly failed.
+
+Never reused. The set is thin because the collection went wrong, and treating
+that as a healthy cache would hold the gap open for the whole window.
+"""
 
 JOB_UNKNOWN = "UNKNOWN"
 """A run whose process is gone without ever being closed.
@@ -1395,20 +1408,90 @@ class DeepResearchReportRepository:
     def __init__(self, session: Session) -> None:
         self._session = session
 
-    def save(self, company_id: int, report: DeepResearchReport) -> StoredDeepResearchReport:
+    def latest_collection(
+        self,
+        company_id: int,
+        *,
+        deterministic_fingerprint: str,
+        since: datetime,
+    ) -> StoredDeepResearchReport | None:
+        """Return the newest healthy external collection still inside its window.
+
+        The read behind external-evidence reuse. Three conditions, and each one
+        is there for a reason:
+
+        The deterministic fingerprint must match, because reusing yesterday's
+        news beside today's rescored fundamentals would produce a brief that
+        never existed.
+
+        The collection must be recent, because a reuse window is a bound on
+        staleness rather than a licence to stop looking.
+
+        And it must have been `FRESH` — a collection whose searches partly
+        failed produced a thin set on purpose, and caching that would freeze the
+        gap in place for the length of the window.
+
+        Args:
+            company_id: The company.
+            deterministic_fingerprint: The deterministic half of the current
+                brief, which the stored collection must have been gathered
+                against.
+            since: Earliest collection time still considered fresh.
+
+        Returns:
+            The newest qualifying row, or None when the evidence must be
+            collected again.
+        """
+        return self._session.scalars(
+            select(StoredDeepResearchReport)
+            .where(
+                StoredDeepResearchReport.company_id == company_id,
+                StoredDeepResearchReport.deterministic_fingerprint == deterministic_fingerprint,
+                StoredDeepResearchReport.external_state == EXTERNAL_FRESH,
+                StoredDeepResearchReport.external_collected_at.is_not(None),
+                StoredDeepResearchReport.external_collected_at >= since,
+            )
+            .order_by(
+                StoredDeepResearchReport.external_collected_at.desc(),
+                StoredDeepResearchReport.id.desc(),
+            )
+            .limit(1)
+        ).first()
+
+    def save(
+        self,
+        company_id: int,
+        report: DeepResearchReport,
+        *,
+        external_state: str = EXTERNAL_FRESH,
+        external_collected_at: datetime | None = None,
+        collected_external: Sequence[Mapping[str, Any]] = (),
+    ) -> StoredDeepResearchReport:
         """Insert one report, keeping every earlier one.
 
         Args:
             company_id: The company the report is about.
             report: A validated report. There is no way to pass an unvalidated
                 one: only deep validation constructs this type.
+            external_state: Whether the external evidence behind this report was
+                freshly collected, reused from a recent collection, or degraded.
+            external_collected_at: When that evidence was actually gathered —
+                which is not when this report was generated, if it was reused.
+            collected_external: The **whole** accepted external set, not just
+                the sources the claims cite. A rerun rebuilds its brief from
+                this, and a subset would fingerprint differently.
 
         Returns:
             The newly inserted row. Never an updated one — a caller wanting to
             know whether an equivalent report already existed asks `find_cached`
             first.
         """
-        row = StoredDeepResearchReport(**_deep_research_values(company_id, report))
+        row = StoredDeepResearchReport(
+            **_deep_research_values(company_id, report),
+            external_state=external_state,
+            external_collected_at=external_collected_at,
+            collected_external_json=list(collected_external),
+        )
         self._session.add(row)
         self._session.flush()
         return row

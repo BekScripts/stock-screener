@@ -37,12 +37,13 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from deep_research.evidence import (
     ExternalEvidence,  # noqa: TC001 — pydantic needs the runtime symbol
 )
-from domain import normalise_ticker
+from domain import MetricUnit, normalise_ticker
 from research import (
     EnrichmentFacts,
     FilingReference,
     FilingText,
     MetricFact,
+    Quantity,
     RankingState,
     ReportedPeriod,
     ScoreEvidence,
@@ -303,6 +304,103 @@ class DeepResearchBrief(_Frozen):
             *(fact.id for fact in self.all_facts if not fact.known),
             *(item.id for item in self.score.items if item.points is None),
         )
+
+    @property
+    def quantities(self) -> tuple[Quantity, ...]:
+        """Every number the deterministic evidence states, with its unit.
+
+        The whitelist a claim's figures are checked against. A number absent from
+        here was not supplied, and a report stating it would be doing arithmetic
+        the deterministic layers did not do.
+
+        Filing text and external excerpts are deliberately **not** included. Those
+        are scoped per claim — a figure quoted in one article is evidence only for
+        a claim citing that article — and pooling them here would defeat the
+        scoping entirely.
+
+        How much evidence there is counts as evidence: the number of quarters,
+        filings, excerpts, external items and earlier scores is included, so a
+        report may say it read four quarters when four were given.
+
+        Returns:
+            Every structured numeric value, deduplicated on value and unit.
+        """
+        found: list[Quantity] = [
+            Quantity(value=float(len(supplied)), unit=MetricUnit.COUNT)
+            for supplied in (
+                self.quarters,
+                self.filings,
+                self.excerpts,
+                self.external,
+                self.score_history,
+                self.facts,
+            )
+        ]
+
+        for fact in self.all_facts:
+            if fact.value is not None:
+                found.append(Quantity(value=fact.value, unit=fact.unit))
+
+        score = self.score
+        for plain in (score.final_score, score.raw_score, score.risk_penalty):
+            if plain is not None:
+                found.append(Quantity(value=plain))
+        if score.data_coverage is not None:
+            found.append(Quantity(value=score.data_coverage, unit=MetricUnit.PERCENT))
+
+        for item in score.items:
+            for points in (item.points, item.max_points):
+                if points is not None:
+                    found.append(Quantity(value=points))
+            if item.observed is not None:
+                found.append(Quantity(value=item.observed, unit=item.unit))
+
+        for point in self.score_history:
+            if point.final_score is not None:
+                found.append(Quantity(value=point.final_score))
+
+        for period in self.quarters:
+            money = (
+                period.revenue,
+                period.gross_profit,
+                period.operating_income,
+                period.free_cash_flow,
+                period.cash,
+                period.total_debt,
+            )
+            found.extend(Quantity(value=v, unit=MetricUnit.MONEY) for v in money if v is not None)
+            if period.shares_outstanding is not None:
+                found.append(Quantity(value=period.shares_outstanding, unit=MetricUnit.COUNT))
+
+        if self.ranking is not None:
+            for count in (self.ranking.rank, self.ranking.universe_size):
+                if count is not None:
+                    found.append(Quantity(value=float(count), unit=MetricUnit.COUNT))
+            if self.ranking.percentile is not None:
+                found.append(Quantity(value=self.ranking.percentile, unit=MetricUnit.PERCENT))
+
+        return tuple(dict.fromkeys(found))
+
+    @property
+    def scale_values(self) -> tuple[float, ...]:
+        """Scores a bare `100` may legitimately stand under, as in "84.5 of 100"."""
+        return tuple(
+            value for value in (self.score.final_score, self.score.raw_score) if value is not None
+        )
+
+    def excerpt_text(self, evidence_id: str) -> str | None:
+        """Return the text behind one `X.` or `W.` id, or None when it is unknown.
+
+        The lookup the numeric check uses to scope a claim's figures to the
+        sources it actually cites.
+        """
+        for excerpt in self.excerpts:
+            if excerpt.id == evidence_id:
+                return excerpt.text
+        for item in self.external:
+            if item.evidence_id == evidence_id:
+                return item.excerpt
+        return None
 
     def deterministic_fingerprint(self) -> str:
         """Return a hash of everything in this brief that the system produced.

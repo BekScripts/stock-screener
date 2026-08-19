@@ -60,6 +60,13 @@ from deep_research.evidence import (
     external_evidence_id,
     is_external,
 )
+from deep_research.prompt import (
+    CURRENT_DEEP_PROMPT_VERSION,
+    DEEP_RESEARCH_PROMPT_V1,
+    DEEP_RESEARCH_PROMPT_V2,
+    build_deep_system_prompt,
+    render_deep_brief,
+)
 from deep_research.provenance import (
     allowed_bases,
     allowed_kinds,
@@ -83,15 +90,36 @@ from deep_research.report import (
     DeepSection,
     DeepSections,
     DeepValidationIssue,
+    UnknownReason,
+)
+from deep_research.validation import (
+    MIN_COVERAGE_FOR_HIGH,
+    MIN_COVERAGE_FOR_MEDIUM,
+    MIN_GROUNDED_FOR_HIGH,
+    NO_EVIDENCE_TEXT,
+    NO_VALID_CLAIMS_TEXT,
+    deep_confidence,
+    find_forecast,
+    find_rating,
+    unsupported_figures,
+    validate_deep_report,
 )
 
 __all__ = [
     "CURRENT_DEEP_CONTRACT_VERSION",
+    "CURRENT_DEEP_PROMPT_VERSION",
+    "DEEP_RESEARCH_PROMPT_V1",
+    "DEEP_RESEARCH_PROMPT_V2",
     "DEEP_RESEARCH_V1",
     "EXTERNAL_PREFIX",
     "MAX_CLAIM_CHARS",
     "MAX_DRAFT_CLAIM_CHARS",
     "MAX_EXCERPT_CHARS",
+    "MIN_COVERAGE_FOR_HIGH",
+    "MIN_COVERAGE_FOR_MEDIUM",
+    "MIN_GROUNDED_FOR_HIGH",
+    "NO_EVIDENCE_TEXT",
+    "NO_VALID_CLAIMS_TEXT",
     "DataFreshness",
     "DeepBasis",
     "DeepClaim",
@@ -108,16 +136,24 @@ __all__ = [
     "ExternalSourceType",
     "MarketRanking",
     "SourceTier",
+    "UnknownReason",
     "allowed_bases",
     "allowed_kinds",
     "allows_external",
+    "build_deep_system_prompt",
     "cites_filing_text",
     "claim_problems",
+    "deep_confidence",
     "external_evidence_id",
+    "find_forecast",
+    "find_rating",
     "is_external",
+    "render_deep_brief",
     "requires_evidence",
     "supports",
     "unsupported_citations",
+    "unsupported_figures",
+    "validate_deep_report",
 ]
 
 __version__ = "0.1.0"

@@ -31,6 +31,7 @@ MarketDataProviderName = Literal["alpaca", "mock"]
 FundamentalsProviderName = Literal["edgar", "edgar+fmp", "fmp", "mock"]
 ResearchProviderName = Literal["anthropic", "mock"]
 ExternalResearchProviderName = Literal["tavily", "mock", "none"]
+DeepResearchProviderName = Literal["anthropic", "mock"]
 
 
 class Settings(BaseSettings):
@@ -225,6 +226,84 @@ class Settings(BaseSettings):
             "tokens already spent."
         ),
     )
+    # -- deep research synthesis (Phase 6D) ---------------------------------
+
+    deep_research_provider: DeepResearchProviderName = Field(
+        default="mock",
+        description=(
+            "Which model writes deep research reports. `mock` returns a canned "
+            "draft and calls nothing, which is what lets the whole pipeline — "
+            "brief, validation, persistence, cache — be exercised without cost."
+        ),
+    )
+    deep_research_model: str = Field(
+        default="claude-sonnet-5",
+        description=(
+            "Model identifier for deep research. Stored on every report, because "
+            "a report written by one model is not evidence about what another "
+            "would have said."
+        ),
+    )
+    deep_research_max_input_tokens: int = Field(
+        default=30_000,
+        ge=1,
+        description=(
+            "Hard ceiling on the prompt a deep research run may send. A safety "
+            "guard, never a truncation target: a brief that exceeds it aborts "
+            "before the provider is called and reports its measured size. "
+            "Silently dropping evidence to fit would produce a report whose "
+            "gaps nobody could see."
+        ),
+    )
+    deep_research_max_output_tokens: int = Field(
+        default=8_000,
+        ge=1,
+        description=(
+            "Ceiling on one deep report's generated tokens. On a thinking model "
+            "this covers the reasoning as well as the seventeen sections."
+        ),
+    )
+    deep_research_effort: Literal["low", "medium", "high"] = Field(
+        default="medium",
+        description=(
+            "How hard the model works per deep report. The determinism and cost "
+            "lever, as in Phase 3: current Claude models reject `temperature`, so "
+            "effort plus a deterministic prompt is what replaces it."
+        ),
+    )
+    deep_research_timeout_seconds: float = Field(
+        default=180.0,
+        gt=0,
+        description=(
+            "Per-request timeout. Longer than Phase 3's because seventeen "
+            "sections over a wider evidence set is slower, and a timeout "
+            "mid-report costs the tokens already spent."
+        ),
+    )
+    deep_research_external_cache_hours: float = Field(
+        default=6.0,
+        gt=0,
+        description=(
+            "How long a company's collected external evidence may be reused "
+            "before it is searched for again. Exists because a search engine "
+            "returns a slightly different valid article set every few minutes: "
+            "the fingerprint change is real, but paying a model to re-read "
+            "substantially the same news is not worth it. Six hours keeps a "
+            "morning and an afternoon run distinct while making a repeated "
+            "request free."
+        ),
+    )
+    deep_research_max_cost_usd: float = Field(
+        default=1.0,
+        gt=0,
+        description=(
+            "Estimated spend allowed for one company's deep research run. "
+            "Checked against the measured input size before the request, so a "
+            "run that would cross it never starts. Per company rather than per "
+            "run, because deep research is asked for one ticker at a time."
+        ),
+    )
+
     # -- external research (Phase 6C) ---------------------------------------
 
     external_research_provider: ExternalResearchProviderName = Field(
