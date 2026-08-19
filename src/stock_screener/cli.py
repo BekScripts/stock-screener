@@ -25,9 +25,18 @@ from api_clients import ProviderInvalidRequestError
 from data_access import build_session_factory, create_engine_from_url, session_scope
 from research import build_system_prompt, render_brief
 from stock_screener.config import Settings, get_settings
+from stock_screener.deep_research import (
+    PreparationError,
+    assemble_deep_brief,
+    collect_external_evidence,
+    format_collection,
+    format_preparation,
+    prepare_company,
+)
 from stock_screener.logging import configure_logging
 from stock_screener.providers import (
     ConfigurationError,
+    build_external_research_provider,
     build_fundamentals_provider,
     build_market_data_provider,
     build_profile_provider,
@@ -695,6 +704,92 @@ def research_run_command(
         raise typer.Exit(code=2) from exc
 
     typer.echo(format_research_run(outcomes))
+
+
+deep_research_app = typer.Typer(
+    name="deep-research",
+    help="On-demand deep research. Phase 6B prepares one company; no model is called.",
+    no_args_is_help=True,
+)
+app.add_typer(deep_research_app)
+
+
+@deep_research_app.command("prepare")
+def deep_research_prepare_command(
+    ticker: Annotated[str, typer.Argument(help="The single symbol to prepare.")],
+    external: Annotated[
+        bool,
+        typer.Option(
+            "--external",
+            help="Also collect current external evidence (W.*). Calls a search provider.",
+        ),
+    ] = False,
+    as_json: Annotated[
+        bool,
+        typer.Option("--json", help="Print the whole brief as JSON instead of a summary."),
+    ] = False,
+) -> None:
+    """Refresh one company end to end and assemble its deep research brief.
+
+    Runs the existing ingestion and scoring passes for this ticker only — prices,
+    fundamentals, the benchmark if it has fallen behind, the CompounderScore, the
+    SEC filing index and the text behind it — then reads the result back out of
+    the database as a `DeepResearchBrief`.
+
+    With `--external`, current public material is searched for and the sources
+    worth citing are attached as `W.` evidence. Without it the brief carries none,
+    which is a complete brief: deterministic preparation never depends on a search
+    vendor being configured or reachable.
+
+    No model is called either way.
+    """
+    settings = _bootstrap()
+    with _database(settings) as factory, session_scope(factory) as session:
+        try:
+            result = prepare_company(
+                session,
+                settings,
+                build_market_data_provider(settings),
+                build_fundamentals_provider(settings),
+                ticker,
+            )
+        except PreparationError as error:
+            typer.echo(f"Cannot prepare {ticker.upper()}: {error}")
+            raise typer.Exit(code=1) from error
+
+        brief = assemble_deep_brief(session, settings, result.ticker, preparation=result)
+        if brief is None:  # pragma: no cover — preparation raises before this can happen
+            typer.echo(f"Prepared {result.ticker} but could not assemble a brief.")
+            raise typer.Exit(code=1)
+
+        collection = None
+        if external:
+            provider = build_external_research_provider(settings)
+            if provider is None:
+                typer.echo(
+                    "External collection is disabled. Set EXTERNAL_RESEARCH_PROVIDER to enable it."
+                )
+                raise typer.Exit(code=1)
+            collection = collect_external_evidence(provider, settings, brief)
+            brief = assemble_deep_brief(
+                session,
+                settings,
+                result.ticker,
+                preparation=result,
+                external=collection.evidence,
+            )
+            if brief is None:  # pragma: no cover — it assembled a moment ago
+                typer.echo(f"Prepared {result.ticker} but could not assemble a brief.")
+                raise typer.Exit(code=1)
+
+        if as_json:
+            rendered = brief.model_dump_json(indent=2)
+        else:
+            rendered = format_preparation(result, brief)
+            if collection is not None:
+                rendered = f"{rendered}\n\n{format_collection(collection, brief)}"
+
+    typer.echo(rendered)
 
 
 @app.command("run-daily")

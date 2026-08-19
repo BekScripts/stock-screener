@@ -1,18 +1,16 @@
 [project]
-name = "data-access"
+name = "deep-research"
 version = "0.1.0"
-description = "Persistence and caching for securities data."
+description = "The on-demand deep research contract: deterministic evidence, current external evidence, and the report they support."
 readme = "README.md"
 requires-python = ">=3.12"
 license = "MIT"
 authors = [{ name = "Aziz", email = "azizzbek.io@gmail.com" }]
 
 dependencies = [
-    "deep-research",
     "domain",
-    "psycopg[binary]>=3.2",
+    "pydantic>=2.9",
     "research",
-    "sqlalchemy>=2.0",
 ]
 
 [build-system]
@@ -20,10 +18,9 @@ requires = ["uv_build>=0.11,<0.12"]
 build-backend = "uv_build"
 
 [tool.uv.build-backend]
-module-name = "data_access"
+module-name = "deep_research"
 module-root = "src"
 
 [tool.uv.sources]
-deep-research = { workspace = true }
 domain = { workspace = true }
 research = { workspace = true }

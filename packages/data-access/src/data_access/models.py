@@ -1,11 +1,16 @@
 """SQLAlchemy tables for companies, fundamentals, prices, scores and research.
 
-Three tables carry Phase 1, two more carry Phase 2, and one carries Phase 3's
-research reports. Their unique constraints
+Three tables carry Phase 1, two more carry Phase 2, one carries Phase 3's
+research reports, and one carries Phase 6's deep research reports. Their unique
+constraints
 are load-bearing: they are what makes re-running the daily job idempotent, and
 they are what the upsert helpers in `repositories` target. Removing one would not
 fail a test immediately — it would slowly fill the database with duplicate
 quarters that quietly double a trailing-twelve-month figure.
+
+`deep_research_reports` is the one deliberate exception. It has no unique
+constraint and appends rather than upserting, because a deep report is a dated
+investigation and its history is the point. See the class for why.
 
 Scores live in their own table rather than as columns on `financial_snapshots`.
 That table holds reported facts; a score is an opinion derived from them under a
@@ -108,6 +113,9 @@ class Company(Base):
         back_populates="company", cascade="all, delete-orphan"
     )
     research_reports: Mapped[list[StoredResearchReport]] = relationship(
+        back_populates="company", cascade="all, delete-orphan"
+    )
+    deep_research_reports: Mapped[list[StoredDeepResearchReport]] = relationship(
         back_populates="company", cascade="all, delete-orphan"
     )
 
@@ -512,3 +520,97 @@ class StoredResearchReport(Base):
     issues: Mapped[list[object] | None] = mapped_column(JSON)
 
     company: Mapped[Company] = relationship(back_populates="research_reports")
+
+
+class StoredDeepResearchReport(Base):
+    """One validated deep research report about one company.
+
+    A separate table from `research_reports`, not a status column on it. The two
+    hold different contracts — different sections, different bases, a different
+    evidence namespace — and the moment they shared a table, every read would
+    have to filter on which kind it was holding and every schema change to one
+    would risk the other.
+
+    **This table appends; it never overwrites.** `research_reports` carries a
+    unique constraint on its cache key and upserts into it, which is right for a
+    report explaining a stored snapshot: re-running the same evidence should not
+    accumulate rows. A deep report is a dated investigation of a company at a
+    moment, and the history of what was concluded and on what evidence is the
+    interesting part. Two runs a month apart over identical evidence are two
+    facts about what this system said, and both are kept.
+
+    Caching is therefore "the newest row matching the key" rather than "the row",
+    and the key is `(company_id, deterministic_fingerprint, evidence_fingerprint,
+    prompt_version)` — the company, a hash of everything calculated or filed, a
+    hash of that plus the external sources, and the prompt that turned it into
+    prose. `ix_deep_research_reports_cache` serves that lookup.
+
+    Two fingerprints rather than one, because there are two reasons to regenerate
+    and they are worth telling apart: the fundamentals moved, or somebody
+    published something. A caller can ask "is the deterministic half of this
+    report still current?" without rehashing the news.
+
+    `ticker` is denormalised alongside `company_id` deliberately, in the same
+    spirit as `jobs.target`: a report is a record of what was said about a symbol
+    on a date, and it stays readable after the company row is renamed.
+
+    The report is kept as JSON rather than as a column per section — it is read
+    whole, by a person or an API response, and never queried section by section.
+    `status` and `confidence` are denormalised out of that document because
+    "which reports came back thin" is worth answering without parsing every row.
+    """
+
+    __tablename__ = "deep_research_reports"
+    __table_args__ = (
+        Index(
+            "ix_deep_research_reports_cache",
+            "company_id",
+            "deterministic_fingerprint",
+            "evidence_fingerprint",
+            "prompt_version",
+        ),
+        Index("ix_deep_research_reports_company_generated", "company_id", "generated_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    company_id: Mapped[int] = mapped_column(
+        ForeignKey("companies.id", ondelete="CASCADE"), nullable=False
+    )
+    ticker: Mapped[str] = mapped_column(String(20), nullable=False)
+
+    # The score date the report describes. Every deterministic figure in it
+    # belongs to this date, and external evidence was read against it.
+    as_of: Mapped[date] = mapped_column(Date, nullable=False)
+    score_version: Mapped[str] = mapped_column(String(40), nullable=False)
+
+    # The two halves of the cache key. The first covers everything this system
+    # calculated or the company filed; the second covers that plus the external
+    # sources. A change in one and not the other says which kind of staleness
+    # this is.
+    deterministic_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    evidence_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+
+    contract_version: Mapped[str] = mapped_column(String(40), nullable=False)
+    prompt_version: Mapped[str] = mapped_column(String(40), nullable=False)
+    model_id: Mapped[str] = mapped_column(String(120), nullable=False)
+
+    # COMPLETE, PARTIAL or FAILED. A failed row records that a run tried and
+    # could not, which is why it is stored rather than swallowed.
+    status: Mapped[str] = mapped_column(String(20), nullable=False)
+    # LOW, MEDIUM or HIGH, after validation lowered it. Denormalised so a thin
+    # report can be found without opening the document.
+    confidence: Mapped[str] = mapped_column(String(20), nullable=False)
+
+    generated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow, server_default=func.now()
+    )
+
+    # The validated report, including the external sources its claims cite —
+    # so a `W.` citation still resolves to a title, publisher, URL and date long
+    # after the brief that produced it is gone. No draft is ever stored here:
+    # only a validated report has this shape.
+    validated_report_json: Mapped[dict[str, object]] = mapped_column(JSON, nullable=False)
+    validation_issues_json: Mapped[list[object] | None] = mapped_column(JSON)
+
+    company: Mapped[Company] = relationship(back_populates="deep_research_reports")

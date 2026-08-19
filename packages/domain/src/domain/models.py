@@ -264,6 +264,45 @@ class FilingExcerpt(_Frozen):
     source: str = "unknown"
 
 
+class ExternalSearchResult(_Frozen):
+    """One hit from an external search provider, before any judgement is applied.
+
+    The raw shape at the provider boundary, normalised only enough to be the same
+    across vendors: Tavily, Exa and Brave all return a title, a URL, a snippet and
+    sometimes a date, under different field names. Translating them here is what
+    keeps the collector free of vendor shapes — ADR 0003's rule, applied to a
+    fourth kind of provider.
+
+    Deliberately **not** `deep_research.ExternalEvidence`. A search hit is a
+    candidate; evidence is what survived tiering, deduplication and validation.
+    Keeping the two types apart is what stops an unvetted result reaching a brief,
+    in the same way `DraftReport` and `ResearchReport` are kept apart.
+
+    No tier and no source type here. Both are collection policy — a judgement
+    about who published this and how close they sit to the facts — and a provider
+    has no basis for either.
+
+    Attributes:
+        title: The headline, as the provider reports it.
+        url: Where it can be read. The identity of the result.
+        snippet: The provider's extract. May be empty, which usually disqualifies
+            the result: evidence with nothing quotable supports no claim.
+        published_at: Publication date when the provider supplies one, and None
+            when it does not. Never inferred — a guessed date on a piece of
+            current evidence is worse than an absent one.
+        publisher: Site or outlet name when the provider names one. The domain is
+            derived from `url` rather than trusted from here.
+        author: Byline when supplied.
+    """
+
+    title: str
+    url: str
+    snippet: str = ""
+    published_at: date | None = None
+    publisher: str = ""
+    author: str = ""
+
+
 class CompanyProfile(_Frozen):
     """Identity and classification for one listed company.
 

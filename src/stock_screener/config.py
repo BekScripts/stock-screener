@@ -30,6 +30,7 @@ Environment = Literal["local", "test", "staging", "production"]
 MarketDataProviderName = Literal["alpaca", "mock"]
 FundamentalsProviderName = Literal["edgar", "edgar+fmp", "fmp", "mock"]
 ResearchProviderName = Literal["anthropic", "mock"]
+ExternalResearchProviderName = Literal["tavily", "mock", "none"]
 
 
 class Settings(BaseSettings):
@@ -224,6 +225,69 @@ class Settings(BaseSettings):
             "tokens already spent."
         ),
     )
+    # -- external research (Phase 6C) ---------------------------------------
+
+    external_research_provider: ExternalResearchProviderName = Field(
+        default="none",
+        description=(
+            "Where current external evidence comes from. `none` disables "
+            "collection entirely, which is the default because deterministic "
+            "preparation must never depend on it — a company with no external "
+            "evidence is a legal brief. `mock` serves fixture results."
+        ),
+    )
+    external_research_api_key: SecretStr | None = Field(
+        default=None,
+        description=(
+            "Credential for the external research provider. Required unless the "
+            "provider is `none` or `mock`."
+        ),
+    )
+    external_research_base_url: str = Field(
+        default="https://api.tavily.com",
+        description="API host for the external research provider.",
+    )
+    external_research_window_days: int = Field(
+        default=90,
+        ge=1,
+        description=(
+            "How far back a search reaches, in days. Deep research is about what "
+            "is true now, and an unbounded window fills the evidence set with "
+            "history the deterministic layers already cover better."
+        ),
+    )
+    external_research_max_items: int = Field(
+        default=15,
+        ge=1,
+        description=(
+            "Most external evidence items one brief may carry. The bound is a "
+            "quality lever, not a storage one: five articles about one earnings "
+            "release are worse evidence than five about five different events."
+        ),
+    )
+    external_research_max_per_domain: int = Field(
+        default=3,
+        ge=1,
+        description=(
+            "Most items one publisher may contribute. Stops a single outlet's "
+            "coverage crowding out the diversity of events the set exists for."
+        ),
+    )
+    external_research_max_results: int = Field(
+        default=20,
+        ge=1,
+        description=(
+            "Results requested per search query, before filtering. Raising it "
+            "costs nothing per search with most vendors but gives the tier and "
+            "duplicate filters more to reject."
+        ),
+    )
+    external_research_timeout_seconds: float = Field(
+        default=30.0,
+        gt=0,
+        description="Per-request timeout for the external research provider.",
+    )
+
     research_max_run_cost_usd: float = Field(
         default=5.0,
         gt=0,

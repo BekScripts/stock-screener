@@ -17,7 +17,11 @@ which one is in use.
 
 from api_clients._http import RateLimiter, RetryPolicy
 from api_clients.alpaca import AlpacaMarketData
-from api_clients.base import FundamentalsProvider, MarketDataProvider
+from api_clients.base import (
+    ExternalResearchProvider,
+    FundamentalsProvider,
+    MarketDataProvider,
+)
 from api_clients.composite import CompositeFundamentals
 from api_clients.edgar import SecEdgarFundamentals
 from api_clients.errors import (
@@ -50,6 +54,7 @@ from api_clients.research import (
     estimate_cost_usd,
     parse_draft,
 )
+from api_clients.websearch import MockExternalResearch, TavilySearch
 
 __all__ = [
     "DEFAULT_MAX_OUTPUT_TOKENS",
@@ -60,10 +65,12 @@ __all__ = [
     "AlpacaMarketData",
     "AnthropicResearch",
     "CompositeFundamentals",
+    "ExternalResearchProvider",
     "ExtractedSection",
     "FmpFundamentals",
     "FundamentalsProvider",
     "MarketDataProvider",
+    "MockExternalResearch",
     "MockFundamentals",
     "MockMarketData",
     "MockResearch",
@@ -80,6 +87,7 @@ __all__ = [
     "ResearchProvider",
     "RetryPolicy",
     "SecEdgarFundamentals",
+    "TavilySearch",
     "clean_filing_text",
     "estimate_cost_usd",
     "extract_sections",

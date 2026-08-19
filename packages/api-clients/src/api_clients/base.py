@@ -19,7 +19,14 @@ if TYPE_CHECKING:
     from collections.abc import Sequence
     from datetime import date
 
-    from domain import CompanyProfile, Filing, FilingExcerpt, FinancialPeriod, PriceBar
+    from domain import (
+        CompanyProfile,
+        ExternalSearchResult,
+        Filing,
+        FilingExcerpt,
+        FinancialPeriod,
+        PriceBar,
+    )
 
 
 @runtime_checkable
@@ -170,5 +177,47 @@ class FundamentalsProvider(Protocol):
 
         Raises:
             ProviderError: If the document could not be fetched.
+        """
+        ...
+
+
+@runtime_checkable
+class ExternalResearchProvider(Protocol):
+    """A source of current, externally published material about a company.
+
+    The narrowest interface that supports Phase 6C: one search, results back.
+    There is deliberately no crawl, no queue, no browser and no content store —
+    deep research needs evidence collection, not a search platform, and every
+    capability added here is one the collector would then have to have an opinion
+    about.
+
+    Implementations translate a vendor's response into `ExternalSearchResult` and
+    stop there. They assign no tier and reject nothing on quality grounds: which
+    publishers are trustworthy and which results are duplicates are collection
+    policy, and an adapter that decided either would make the policy untestable
+    without a transport.
+    """
+
+    def search(
+        self, query: str, *, since: date | None = None, limit: int = 20
+    ) -> list[ExternalSearchResult]:
+        """Return current published material matching a query.
+
+        Args:
+            query: What to search for, normally a ticker and company name plus a
+                topic. Composed by the caller; adapters do not rewrite it.
+            since: Earliest publication date to include. A vendor without a date
+                filter may return older material anyway, which the collector
+                filters — so this is a request, not a guarantee.
+            limit: Most results to return. A vendor may return fewer.
+
+        Returns:
+            The results, in whatever order the vendor ranked them. Order carries
+            no meaning downstream: the collector sorts and the fingerprint is
+            order-insensitive, precisely so a vendor reshuffling its ranking is
+            not mistaken for new evidence.
+
+        Raises:
+            ProviderError: If the search could not be performed.
         """
         ...

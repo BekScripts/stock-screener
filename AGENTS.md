@@ -83,6 +83,68 @@ and stops both. Its scope and known limitations are documented in
 The MVP is finished. Phases 1 through 5 are all complete, and none of them is a
 place to add to without being asked.
 
+**Phase 6 (on-demand deep research) is in progress. Phase 6A — the contract and
+the persistence foundation — Phase 6B — single-stock preparation — and Phase 6C
+— external evidence collection — are complete.** Deep research is a separate layer
+over the screener, not a change to it: a person types a ticker and one company
+is investigated against its current fundamentals, its filings and what has since
+been published about it. `packages/deep-research` holds the contract — the `W.`
+external evidence namespace, `DeepResearchBrief` and its three fingerprints, the
+seventeen report sections, and the provenance rules — and
+`deep_research_reports` (migration `0013`) stores a validated report. Its scope
+and what it deliberately excludes are documented in
+`docs/reference/project-phases/phase6.md`, and the placement decision in ADR
+0010.
+
+Four rules govern that layer:
+
+- **Web evidence never changes the CompounderScore.** `research.EvidenceKind`
+  has no `W.` member, so an external id is unresolvable to the Phase 3
+  validator; the sections that explain the score accept `DETERMINISTIC` claims
+  only; and `DeepResearchReport` has no score field. All three are load-bearing.
+- **Phase 3 is frozen and reused, never edited.** `deep-research` imports
+  `ScoreEvidence`, `MetricFact`, `ReportedPeriod`, `FilingText` and the rest
+  outright. Never add a member to a Phase 3 enum, never subclass a Phase 3
+  class. `ResearchReport` and `DeepResearchReport` are unrelated types in
+  different tables.
+- **Deep reports append; they never overwrite.** `research_reports` upserts on
+  its cache key. `deep_research_reports` has no unique constraint, because a
+  deep report is a dated investigation and the history of what was concluded is
+  the point.
+- **A deep report issues no instructions.** No BUY/SELL/HOLD, no price target,
+  no position sizing — absent from the contract structurally, not forbidden by a
+  prompt.
+
+Phase 6B adds `src/stock_screener/deep_research/`: `prepare_company` refreshes
+one ticker by running the **existing** ingestion and scoring passes narrowed by
+their `tickers` argument, and `assemble_deep_brief` reads the result back with no
+network access at all. `deep-research prepare <TICKER>` is the CLI. Two rules
+govern it:
+
+- **A stage is an existing pass, never new pipeline code.** No second
+  fundamentals engine, no deep-research metric, and no second score — the
+  snapshot written is an ordinary `COMPOUNDER_V1_1` row.
+- **Network first, assembly second.** Everything that fetches lives in
+  `preparation`; `brief` only reads. That is what makes fingerprints reproducible
+  and the cache usable.
+
+Phase 6C adds the `W.` namespace in practice: `ExternalResearchProvider` in
+`api-clients` (one `search` method, `TavilySearch` and `MockExternalResearch`),
+`deep_research/sources.py` for the tier policy, and
+`deep_research/collection.py` for the collector. `prepare <TICKER> --external`
+runs it. Three rules:
+
+- **An unrecognised domain is rejected, not demoted.** The allowlist in
+  `sources.py` is the whole policy, and its default is refusal. Social platforms,
+  forums and aggregator finance sites are additionally named in a denylist.
+- **`X.` stays authoritative for filings.** A web copy of a filing the brief
+  already quotes is rejected; commentary about one is not.
+- **Collection is optional and never fatal.** A vendor being unconfigured,
+  unreachable or out of quota costs a brief nothing — `external=()` is complete.
+
+Not built in Phase 6, and not to be started without being asked: the deep prompt,
+any synthesis model call, the deep validator, and any UI, endpoint or job kind.
+
 Three rules govern that layer:
 
 - **A job is an existing command, never new pipeline code.** `JOB_KINDS` maps a

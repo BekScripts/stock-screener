@@ -30,6 +30,7 @@ filing text answers `UNKNOWN`.
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 from enum import StrEnum
 from typing import TYPE_CHECKING
 
@@ -355,7 +356,7 @@ def assemble_briefs(
             log.warning("brief skipped: never scored", ticker=ticker, score_version=score_version)
             continue
 
-        score = _parse_breakdown(snapshot)
+        score = parse_score_breakdown(snapshot)
         if score is None:
             continue
 
@@ -364,16 +365,69 @@ def assemble_briefs(
     return briefs
 
 
-def _build(
+@dataclass(frozen=True, slots=True)
+class DeterministicEvidence:
+    """One company's stored evidence, bounded by the score date it explains.
+
+    Everything a brief may rest on that this system calculated or the company
+    filed — assembled once, from stored rows, with no network access. Extracted
+    from `_build` so that a second kind of brief can be built from exactly the
+    same evidence rather than from a second implementation of it: two assemblers
+    would be two things to keep in agreement, and the one that drifted would
+    quietly disagree with the score it claimed to explain.
+
+    Attributes:
+        as_of: The score date bounding every field here.
+        score: The stored breakdown, read-only.
+        facts: Derived metrics, preferring the figures the score recorded.
+        quarters: Reported periods, oldest first.
+        score_history: Earlier scores under the same version.
+        filings: Filing metadata, newest first.
+        excerpts: Extracted filing text.
+        enrichment: Vendor-supplied fields, when the metered pass reached it.
+        metrics: The recomputed metric set the facts were drawn from. Carried so
+            a caller needing a figure the brief does not expose — a freshness
+            date, a liquidity basis — does not have to rebuild it.
+    """
+
+    as_of: date
+    score: ScoreEvidence
+    facts: tuple[MetricFact, ...]
+    quarters: tuple[ReportedPeriod, ...]
+    score_history: tuple[ScorePoint, ...]
+    filings: tuple[FilingReference, ...]
+    excerpts: tuple[FilingText, ...]
+    enrichment: EnrichmentFacts | None
+    metrics: CompanyMetrics
+
+
+def assemble_deterministic_evidence(
     session: Session,
     settings: Settings,
     company: Company,
     snapshot: ScoreSnapshot,
     score: CompanyScore,
-    selection: SelectionReason,
-    quarters: int,
-) -> ResearchBrief:
-    """Assemble one brief, with every input bounded by the score's own date."""
+    *,
+    quarters: int = DEFAULT_QUARTERS,
+) -> DeterministicEvidence:
+    """Read one company's stored evidence, bounded by its score date.
+
+    The shared half of every brief this application builds. Performs no network
+    access whatsoever: everything it returns came out of the database, which is
+    the property that keeps brief assembly reproducible and testable.
+
+    Args:
+        session: Open database session.
+        settings: Supplies the volume basis the metric engine needs, and the
+            provider name recorded on enrichment.
+        company: The company row.
+        snapshot: The score snapshot the evidence is bounded by.
+        score: The parsed breakdown from that snapshot.
+        quarters: Reporting periods to supply.
+
+    Returns:
+        The evidence, every field bounded by `snapshot.score_date`.
+    """
     as_of = snapshot.score_date
     periods = FinancialSnapshotRepository(session)
     prices = PriceHistoryRepository(session)
@@ -392,14 +446,8 @@ def _build(
         bar_volume_basis=settings.bar_volume_basis,
     )
 
-    return ResearchBrief(
-        ticker=company.ticker,
-        name=company.name,
-        sector=company.sector,
-        industry=company.industry,
-        exchange=company.exchange,
+    return DeterministicEvidence(
         as_of=as_of,
-        selection=selection,
         score=_score_evidence(snapshot, score),
         facts=_metric_facts(metrics, _preserved(snapshot, score)),
         quarters=_quarters(stored_periods, quarters),
@@ -412,6 +460,39 @@ def _build(
         filings=_filings(filings.list_for_company(company.id, until=as_of, limit=DEFAULT_FILINGS)),
         excerpts=_excerpts(excerpts.list_for_company(company.id, until=as_of)),
         enrichment=_enrichment(snapshot, metrics, settings),
+        metrics=metrics,
+    )
+
+
+def _build(
+    session: Session,
+    settings: Settings,
+    company: Company,
+    snapshot: ScoreSnapshot,
+    score: CompanyScore,
+    selection: SelectionReason,
+    quarters: int,
+) -> ResearchBrief:
+    """Assemble one brief, with every input bounded by the score's own date."""
+    evidence = assemble_deterministic_evidence(
+        session, settings, company, snapshot, score, quarters=quarters
+    )
+
+    return ResearchBrief(
+        ticker=company.ticker,
+        name=company.name,
+        sector=company.sector,
+        industry=company.industry,
+        exchange=company.exchange,
+        as_of=evidence.as_of,
+        selection=selection,
+        score=evidence.score,
+        facts=evidence.facts,
+        quarters=evidence.quarters,
+        score_history=evidence.score_history,
+        filings=evidence.filings,
+        excerpts=evidence.excerpts,
+        enrichment=evidence.enrichment,
     )
 
 
@@ -440,7 +521,7 @@ def _score_evidence(snapshot: ScoreSnapshot, score: CompanyScore) -> ScoreEviden
     )
 
 
-def _parse_breakdown(snapshot: ScoreSnapshot) -> CompanyScore | None:
+def parse_score_breakdown(snapshot: ScoreSnapshot) -> CompanyScore | None:
     """Return the stored breakdown as a `CompanyScore`, or None when unreadable.
 
     An unreadable breakdown is a corrupt row rather than a missing one, and it

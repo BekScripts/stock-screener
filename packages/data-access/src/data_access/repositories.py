@@ -1,4 +1,4 @@
-"""Reading and writing the five tables.
+"""Reading and writing the tables.
 
 Every write is an upsert. The daily job re-fetches overlapping data by design —
 a restated quarter has to replace the old one, and the last few price bars are
@@ -35,6 +35,7 @@ from data_access.models import (
     JobRecord,
     PriceHistory,
     ScoreSnapshot,
+    StoredDeepResearchReport,
     StoredResearchReport,
     WatchlistEntry,
     _utcnow,
@@ -47,6 +48,7 @@ if TYPE_CHECKING:
 
     from sqlalchemy.orm import Session
 
+    from deep_research import DeepResearchReport
     from domain import (
         CompanyMetrics,
         CompanyProfile,
@@ -780,6 +782,63 @@ class ScoreSnapshotRepository:
 
         return [(row[0], row[1]) for row in self._session.execute(statement)]
 
+    def latest_scored_population(self, *, score_version: str) -> list[tuple[int, float]]:
+        """Return every company's most recent scored value, one row per company.
+
+        Ranking on a single `score_date` is right for the dashboard views, where
+        a nightly run scored the whole market on one day. It became wrong the
+        moment single-stock preparation existed: scoring one ticker writes a
+        snapshot on today's date, and that date then holds exactly one company —
+        so "rank 1 of 1" is technically true and completely useless.
+
+        This reads each company's newest scored snapshot instead, whatever day it
+        landed on, which is what a person means by "where does this company
+        stand". A company rescored this morning is compared against the rest of
+        the market as most recently known, rather than against whoever happened
+        to be rescored alongside it.
+
+        Args:
+            score_version: The formula version to read. Never crosses versions,
+                for the same reason nothing else here does.
+
+        Returns:
+            `(company_id, final_score)` for every company with a scored snapshot,
+            unordered. Empty when nothing has been scored under this version.
+        """
+        newest = (
+            select(
+                ScoreSnapshot.company_id.label("company_id"),
+                func.max(ScoreSnapshot.score_date).label("score_date"),
+            )
+            .where(
+                ScoreSnapshot.score_version == score_version,
+                ScoreSnapshot.scoring_status == _SCORED,
+            )
+            .group_by(ScoreSnapshot.company_id)
+            .subquery()
+        )
+
+        statement = (
+            select(ScoreSnapshot.company_id, ScoreSnapshot.final_score)
+            .join(
+                newest,
+                and_(
+                    ScoreSnapshot.company_id == newest.c.company_id,
+                    ScoreSnapshot.score_date == newest.c.score_date,
+                ),
+            )
+            .where(
+                ScoreSnapshot.score_version == score_version,
+                ScoreSnapshot.scoring_status == _SCORED,
+                ScoreSnapshot.final_score.is_not(None),
+            )
+        )
+
+        return [
+            (int(company_id), float(final_score))
+            for company_id, final_score in self._session.execute(statement)
+        ]
+
     def history_for_company(
         self, company_id: int, *, score_version: str, limit: int | None = None
     ) -> list[ScoreSnapshot]:
@@ -1301,6 +1360,174 @@ class ResearchReportRepository:
     def count(self) -> int:
         """Return how many research reports are stored."""
         return self._session.scalar(select(func.count()).select_from(StoredResearchReport)) or 0
+
+
+class DeepResearchReportRepository:
+    """Reads and writes the `deep_research_reports` table.
+
+    Three things this repository does differently from `ResearchReportRepository`,
+    all deliberate.
+
+    It **appends, never overwrites.** `save` always inserts. Re-running deep
+    research over identical evidence produces a second row rather than replacing
+    the first, because a deep report is a dated investigation and the record of
+    what was concluded, when, and on what evidence is the thing worth keeping.
+    Nothing here updates or deletes a stored report.
+
+    It **caches on the newest match** rather than on a unique row. `find_cached`
+    returns the most recently generated report for a cache key, which is what
+    lets history accumulate without a stale row being served ahead of a fresh
+    one.
+
+    It **only accepts a validated report.** `save` takes a
+    `deep_research.DeepResearchReport`, the type only deep validation produces. A
+    `DeepResearchDraft` — unchecked model output — does not type-check here and
+    does not have the fields this table needs.
+
+    As with Phase 3, there is no write path from here to `score_snapshots`. A
+    deep report explains a score and cannot revise one, and neither can anything
+    in the `W.` namespace that fed it.
+
+    Args:
+        session: The session to operate in. Not owned; the caller commits.
+    """
+
+    def __init__(self, session: Session) -> None:
+        self._session = session
+
+    def save(self, company_id: int, report: DeepResearchReport) -> StoredDeepResearchReport:
+        """Insert one report, keeping every earlier one.
+
+        Args:
+            company_id: The company the report is about.
+            report: A validated report. There is no way to pass an unvalidated
+                one: only deep validation constructs this type.
+
+        Returns:
+            The newly inserted row. Never an updated one — a caller wanting to
+            know whether an equivalent report already existed asks `find_cached`
+            first.
+        """
+        row = StoredDeepResearchReport(**_deep_research_values(company_id, report))
+        self._session.add(row)
+        self._session.flush()
+        return row
+
+    def find_cached(
+        self,
+        company_id: int,
+        *,
+        deterministic_fingerprint: str,
+        evidence_fingerprint: str,
+        prompt_version: str,
+    ) -> StoredDeepResearchReport | None:
+        """Return the newest report for one cache key, or None.
+
+        Args:
+            company_id: The company.
+            deterministic_fingerprint: Hash of the calculated and filed evidence.
+            evidence_fingerprint: Hash of that plus the external evidence.
+            prompt_version: The prompt that produced it.
+
+        Returns:
+            The most recently generated matching row, whatever its status.
+            Deciding whether a `FAILED` row counts as a hit is the caller's
+            judgement, not the storage layer's.
+        """
+        return self._session.scalars(
+            select(StoredDeepResearchReport)
+            .where(
+                StoredDeepResearchReport.company_id == company_id,
+                StoredDeepResearchReport.deterministic_fingerprint == deterministic_fingerprint,
+                StoredDeepResearchReport.evidence_fingerprint == evidence_fingerprint,
+                StoredDeepResearchReport.prompt_version == prompt_version,
+            )
+            .order_by(
+                StoredDeepResearchReport.generated_at.desc(),
+                StoredDeepResearchReport.id.desc(),
+            )
+            .limit(1)
+        ).first()
+
+    def latest_for_company(self, company_id: int) -> StoredDeepResearchReport | None:
+        """Return a company's most recently generated deep report.
+
+        Not filtered by score version, unlike the Phase 3 equivalent. A deep
+        report is asked for by ticker rather than read off a ranking, so "the
+        last thing we concluded about this company" is a question worth
+        answering across versions — the row carries its own `score_version` for a
+        caller that cares.
+
+        Args:
+            company_id: The company.
+
+        Returns:
+            The newest row, or None when the company has never been researched.
+        """
+        return self._session.scalars(
+            select(StoredDeepResearchReport)
+            .where(StoredDeepResearchReport.company_id == company_id)
+            .order_by(
+                StoredDeepResearchReport.generated_at.desc(),
+                StoredDeepResearchReport.id.desc(),
+            )
+            .limit(1)
+        ).first()
+
+    def history_for_company(
+        self, company_id: int, *, limit: int = 20
+    ) -> tuple[StoredDeepResearchReport, ...]:
+        """Return a company's deep reports, newest first.
+
+        The reason the table appends. Reading how a thesis changed across runs is
+        only possible because nothing overwrote the earlier ones.
+
+        Args:
+            company_id: The company.
+            limit: How many to return, newest first.
+
+        Returns:
+            The reports, newest first, empty when there are none.
+        """
+        return tuple(
+            self._session.scalars(
+                select(StoredDeepResearchReport)
+                .where(StoredDeepResearchReport.company_id == company_id)
+                .order_by(
+                    StoredDeepResearchReport.generated_at.desc(),
+                    StoredDeepResearchReport.id.desc(),
+                )
+                .limit(limit)
+            ).all()
+        )
+
+    def count(self) -> int:
+        """Return how many deep research reports are stored."""
+        return self._session.scalar(select(func.count()).select_from(StoredDeepResearchReport)) or 0
+
+
+def _deep_research_values(company_id: int, report: DeepResearchReport) -> dict[str, Any]:
+    """Flatten one validated deep report into the table's column layout.
+
+    The whole report document goes into `validated_report_json`, external sources
+    included, so a stored row resolves its own `W.` citations without a join.
+    """
+    return {
+        "company_id": company_id,
+        "ticker": report.ticker,
+        "as_of": report.as_of,
+        "score_version": report.score_version,
+        "deterministic_fingerprint": report.deterministic_fingerprint,
+        "evidence_fingerprint": report.evidence_fingerprint,
+        "contract_version": report.contract_version,
+        "prompt_version": report.prompt_version,
+        "model_id": report.model_id,
+        "status": report.status.value,
+        "confidence": report.confidence.level.value,
+        "generated_at": report.generated_at,
+        "validated_report_json": report.model_dump(mode="json"),
+        "validation_issues_json": [issue.model_dump(mode="json") for issue in report.issues],
+    }
 
 
 def _research_values(company_id: int, report: ResearchReport) -> dict[str, Any]:

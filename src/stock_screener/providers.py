@@ -21,17 +21,21 @@ from api_clients import (
     AlpacaMarketData,
     AnthropicResearch,
     CompositeFundamentals,
+    ExternalResearchProvider,
     FmpFundamentals,
     FundamentalsProvider,
     MarketDataProvider,
+    MockExternalResearch,
     MockResearch,
     ProviderConfigurationError,
     RateLimiter,
     ResearchProvider,
     RetryPolicy,
     SecEdgarFundamentals,
+    TavilySearch,
     load_fixture_providers,
 )
+from stock_screener.deep_research.sources import DENIED_DOMAINS
 
 if TYPE_CHECKING:
     from stock_screener.config import Settings
@@ -264,3 +268,44 @@ def _load_fixtures(settings: Settings) -> tuple[MarketDataProvider, Fundamentals
     log.debug("loading fixture providers", path=str(path))
     market_data, fundamentals = load_fixture_providers(path)
     return market_data, fundamentals
+
+
+def build_external_research_provider(settings: Settings) -> ExternalResearchProvider | None:
+    """Return the external research adapter the configuration selects, or None.
+
+    None is a first-class answer and the default. Deep research must work with no
+    external evidence at all — deterministic preparation cannot depend on a search
+    vendor being configured, reachable or paid for — so `none` disables collection
+    rather than failing, and the brief simply carries `external=()`.
+
+    Args:
+        settings: Application settings.
+
+    Returns:
+        An adapter satisfying `ExternalResearchProvider`, or None when collection
+        is disabled.
+
+    Raises:
+        ConfigurationError: If a real provider is selected without a credential.
+    """
+    if settings.external_research_provider == "none":
+        return None
+
+    if settings.external_research_provider == "mock":
+        log.debug("building external research provider", provider="mock")
+        return MockExternalResearch()
+
+    if settings.external_research_api_key is None:
+        raise ConfigurationError(
+            "EXTERNAL_RESEARCH_PROVIDER=tavily requires EXTERNAL_RESEARCH_API_KEY"
+        )
+
+    log.debug("building external research provider", provider="tavily")
+    return TavilySearch(
+        api_key=settings.external_research_api_key.get_secret_value(),
+        base_url=settings.external_research_base_url,
+        timeout_seconds=settings.external_research_timeout_seconds,
+        limiter=_rate_limiter(settings),
+        retry=_retry_policy(settings),
+        exclude_domains=sorted(DENIED_DOMAINS),
+    )

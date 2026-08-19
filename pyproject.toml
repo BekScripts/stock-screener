@@ -21,6 +21,7 @@ dependencies = [
     # list alphabetically, so third-party names interleave with them.
     "api-clients",
     "data-access",
+    "deep-research",
     "domain",
     "research",
     # Third-party runtime dependencies.
@@ -50,6 +51,7 @@ members = ["packages/*"]
 # otherwise uv resolves it from PyPI instead of from packages/.
 api-clients = { workspace = true }
 data-access = { workspace = true }
+deep-research = { workspace = true }
 domain = { workspace = true }
 research = { workspace = true }
 
@@ -138,7 +140,14 @@ convention = "google"
 
 [tool.ruff.lint.isort]
 # Add each package's import name here.
-known-first-party = ["api_clients", "data_access", "domain", "research", "stock_screener"]
+known-first-party = [
+    "api_clients",
+    "data_access",
+    "deep_research",
+    "domain",
+    "research",
+    "stock_screener",
+]
 
 [tool.ruff.format]
 docstring-code-format = true
