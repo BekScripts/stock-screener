@@ -124,7 +124,29 @@ export default async function StockPage({ params }: { params: Promise<{ ticker: 
   );
 }
 
-function ComponentCard({ component, label }: { component: Component; label: string }) {
+/**
+ * One component of the score.
+ *
+ * Null when the company could not be scored at all — a bank, an ineligible
+ * listing, a company with two quarters of history. It renders as explicitly
+ * unscored rather than as a zero-filled bar, because a bar at zero reads as
+ * "scored badly" and the truth is "not scored", which are different answers to
+ * different questions.
+ */
+function ComponentCard({ component, label }: { component: Component | null; label: string }) {
+  if (component === null) {
+    return (
+      <div className="component">
+        <div className="head">
+          <span className="name">{label}</span>
+          <span className="points">—</span>
+        </div>
+        <div className="bar" />
+        <p className="note component-empty">Not scored.</p>
+      </div>
+    );
+  }
+
   const filled = component.score !== null ? (component.score / component.max_points) * 100 : 0;
   return (
     <div className="component">

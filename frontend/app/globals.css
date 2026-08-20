@@ -1036,3 +1036,10 @@ pre.log {
     text-align: left;
   }
 }
+
+/* A component the score could not reach. Deliberately quiet: the row is there
+ * so the reader can see which part is missing, not to draw attention. */
+.component-empty {
+  padding: 4px 0 0;
+  font-size: 12px;
+}

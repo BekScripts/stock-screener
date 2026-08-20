@@ -58,10 +58,18 @@ export type Component = {
 };
 
 export type Breakdown = {
-  growth: Component;
-  quality: Component;
-  valuation: Component;
-  momentum: Component;
+  /**
+   * The four components, each null when the company could not be scored.
+   *
+   * Not every company gets a number — a bank, an ineligible security and a
+   * company with two quarters of history all have a stored row carrying the
+   * status that says why, and no components at all. `NOT_ELIGIBLE` and
+   * `INSUFFICIENT_DATA` rows arrive with all four absent.
+   */
+  growth: Component | null;
+  quality: Component | null;
+  valuation: Component | null;
+  momentum: Component | null;
   raw_score: number | null;
   final_score: number | null;
   category: string | null;
