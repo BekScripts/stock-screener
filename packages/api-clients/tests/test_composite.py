@@ -103,3 +103,54 @@ def test_the_fallback_can_be_disabled() -> None:
     )
 
     assert composite.get_company_profile("XYZ") is None
+
+
+@pytest.mark.unit
+def test_the_filings_reporting_currency_survives_the_market_data_profile() -> None:
+    # The whole point of merging rather than choosing. A vendor's profile knows
+    # TSM's market capitalisation and calls its currency USD, because that is
+    # what the *share* trades in. Only EDGAR knows the statements are in TWD, and
+    # every currency guard downstream rests on that.
+    market = CompanyProfile(
+        ticker="TSM",
+        name="Taiwan Semiconductor",
+        exchange="NYSE",
+        sector="Technology",
+        market_cap=2_212_000_000_000.0,
+        average_volume=15_000_000.0,
+        quote_currency="USD",
+    )
+    filings = CompanyProfile(
+        ticker="TSM",
+        name="TAIWAN SEMICONDUCTOR MANUFACTURING CO LTD",
+        industry="Semiconductors & Related Devices",
+        reporting_currency="TWD",
+    )
+
+    profile = CompositeFundamentals(
+        profile_source=MockFundamentals({"TSM": market}),
+        statement_source=MockFundamentals({"TSM": filings}),
+    ).get_company_profile("TSM")
+
+    assert profile is not None
+    assert profile.reporting_currency == "TWD"
+    assert profile.quote_currency == "USD"
+    assert profile.market_cap == 2_212_000_000_000.0
+    assert profile.average_volume == 15_000_000.0
+    assert profile.needs_conversion is True
+
+
+@pytest.mark.unit
+def test_the_filings_industry_fills_a_gap_the_vendor_leaves() -> None:
+    # EDGAR's SIC description is what keeps the unsupported-sector rule working
+    # for a bank the vendor classified only as "Financials".
+    market = CompanyProfile(ticker="BCS", name="Barclays", sector="Financials")
+    filings = CompanyProfile(ticker="BCS", name="BARCLAYS PLC", industry="State Commercial Banks")
+
+    profile = CompositeFundamentals(
+        profile_source=MockFundamentals({"BCS": market}),
+        statement_source=MockFundamentals({"BCS": filings}),
+    ).get_company_profile("BCS")
+
+    assert profile is not None
+    assert profile.industry == "State Commercial Banks"

@@ -110,8 +110,16 @@ def _bars(*, annual_return: float, end_price: float = 40.0) -> list[PriceBar]:
     ]
 
 
-def _quarters(*, growth: float, shares: float) -> list[FinancialPeriod]:
-    """Sixteen quarters with a cover-page share count on every one."""
+def _quarters(
+    *, growth: float, shares: float, reported_currency: str | None = None
+) -> list[FinancialPeriod]:
+    """Sixteen quarters with a cover-page share count on every one.
+
+    `reported_currency` is the filing's own unit. It lives here rather than on
+    the profile because that is where the metric engine reads it from — the
+    money a company reports in is a property of its statements, not of the
+    vendor record describing its listing.
+    """
     return [
         FinancialPeriod(
             period_end=TODAY - timedelta(days=91 * (QUARTERS - 1 - index)),
@@ -123,6 +131,7 @@ def _quarters(*, growth: float, shares: float) -> list[FinancialPeriod]:
             total_debt=40_000_000.0,
             shares_outstanding=shares * 0.98,
             common_shares_outstanding=shares,
+            reported_currency=reported_currency,
             source="test",
         )
         for index in range(QUARTERS)
@@ -138,6 +147,7 @@ def _store(
     annual_return: float = 0.40,
     end_price: float = 40.0,
     profile_fields: dict[str, Any] | None = None,
+    reported_currency: str | None = None,
 ) -> int:
     """Store one company with no provider market cap, as the broad scan sees it."""
     companies = CompanyRepository(session)
@@ -154,7 +164,8 @@ def _store(
     assert stored is not None
 
     FinancialSnapshotRepository(session).upsert_periods(
-        stored.id, _quarters(growth=growth, shares=shares)
+        stored.id,
+        _quarters(growth=growth, shares=shares, reported_currency=reported_currency),
     )
     PriceHistoryRepository(session).upsert_bars(
         stored.id, _bars(annual_return=annual_return, end_price=end_price)
@@ -471,3 +482,58 @@ def test_a_profile_with_nothing_to_verify_does_not_mark_a_row_final(
     assert report.succeeded == 0
     assert report.uncovered == 1
     assert top_opportunities(session)[0].ranking_state == PRELIMINARY
+
+
+@pytest.mark.integration
+def test_enrichment_keeps_a_foreign_issuers_valuation_intact(session: Session) -> None:
+    # The regression this exists for: enrichment re-scores through the same
+    # `build_scores` the market-wide pass uses, but built its own call without an
+    # FX resolver. A company filing in euros would come out of the broad pass with
+    # a complete valuation and go into the database as FINAL with none of it —
+    # because `market_cap_for_ratios` is None with no rate, and FINAL overwrites
+    # PRELIMINARY. Verification made the score worse for exactly the companies it
+    # was verifying.
+    fx_settings = Settings(environment="test", fx_provider="mock")
+    _store(
+        session,
+        "EURO",
+        profile_fields={"reporting_currency": "EUR", "quote_currency": "USD"},
+        reported_currency="EUR",
+    )
+    _store_benchmark(session)
+    score_market(session, fx_settings, score_date=TODAY)
+    session.flush()
+
+    before = top_opportunities(session)[0]
+    assert before.ranking_state == PRELIMINARY
+    assert before.enterprise_value is not None
+    assert before.valuation_score is not None
+
+    provider = FakeProfiles(
+        {
+            "EURO": CompanyProfile(
+                ticker="EURO",
+                name="EURO Corp",
+                industry="Services-Prepackaged Software",
+                market_cap=2_100_000_000.0,
+                average_volume=1_000_000.0,
+                quote_currency="USD",
+            )
+        }
+    )
+    enrich_candidates(session, provider, fx_settings, score_date=TODAY)
+    session.flush()
+
+    # Without a resolver this list is empty: valuation loses its required
+    # multiple, the company scores INSUFFICIENT_DATA, and verifying it has
+    # dropped it out of the ranking altogether.
+    ranked = top_opportunities(session)
+    assert [row.ticker for row in ranked] == ["EURO"]
+
+    after = ranked[0]
+    assert after.ranking_state == FINAL
+    assert after.market_cap_source == MarketCapSource.PROVIDER.value
+    # The point of the test: still valued, and valued on the balance sheet.
+    assert after.enterprise_value is not None
+    assert after.valuation_basis == "EV_TO_REVENUE"
+    assert after.data_coverage == before.data_coverage
