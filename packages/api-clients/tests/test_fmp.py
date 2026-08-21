@@ -246,7 +246,7 @@ def test_debt_is_none_when_only_one_maturity_is_reported() -> None:
 
 
 @pytest.mark.unit
-def test_the_reporting_currency_is_captured_from_the_profile() -> None:
+def test_the_quote_currency_is_captured_from_the_profile() -> None:
     adapter = _adapter(
         {"profile": [{"symbol": "XYZ", "companyName": "Example", "currency": "EUR"}]}
     )
@@ -254,8 +254,16 @@ def test_the_reporting_currency_is_captured_from_the_profile() -> None:
     profile = adapter.get_company_profile("XYZ")
 
     assert profile is not None
-    assert profile.currency == "EUR"
-    assert profile.reports_in_usd is False
+    # FMP's profile currency is what the *share* trades in, never what the
+    # company files in. Putting it in `reporting_currency` was how an ADR's USD
+    # quote came to stand in for a TWD balance sheet.
+    assert profile.quote_currency == "EUR"
+    # And it decides nothing about the statements. `reports_in_usd` reads the
+    # reporting currency alone, so a vendor's quote currency can no longer stand
+    # in for one — which is how an ADR's dollar quote came to be read as a
+    # dollar balance sheet.
+    assert profile.reporting_currency is None
+    assert profile.reports_in_usd is True
 
 
 @pytest.mark.unit

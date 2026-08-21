@@ -345,3 +345,86 @@ def test_extraction_is_idempotent() -> None:
     text = f"Item 1. Business\n{BODY}"
 
     assert extract_sections("10-K", text) == extract_sections("10-K", text)
+
+
+# --- 20-F: the same sections under different item numbers ------------------
+
+
+TWENTY_F = (
+    "Item 3. Key Information\n"
+    "Risk Factors\n"
+    f"{BODY}\n"
+    "Item 4. Information on the Company\n"
+    f"{BODY}\n"
+    "Item 4A. Unresolved Staff Comments\n"
+    "None.\n"
+    "Item 5. Operating and Financial Review and Prospects\n"
+    f"{BODY}\n"
+    "Item 6. Directors, Senior Management and Employees\n"
+)
+
+
+@pytest.mark.unit
+def test_extracts_the_three_twenty_f_sections() -> None:
+    # A foreign private issuer's annual report is not a 10-K with a different
+    # cover: business is Item 4 and the discussion is Item 5.
+    found = _sections("20-F", TWENTY_F)
+
+    assert set(found) == {"business", "risk_factors", "mda"}
+
+
+@pytest.mark.unit
+def test_ten_k_patterns_find_nothing_in_a_twenty_f() -> None:
+    # Why this went unnoticed rather than producing wrong text: the 10-K item
+    # numbers simply never matched.
+    assert extract_sections("10-K", TWENTY_F) == ()
+
+
+@pytest.mark.unit
+def test_twenty_f_risk_factors_are_found_without_an_item_number() -> None:
+    # A 20-F files them as a titled subsection of Item 3 rather than an item of
+    # their own, so the heading is matched on its own line.
+    found = _sections("20-F", TWENTY_F)
+
+    assert found["risk_factors"].startswith("The Company sells industrial widgets")
+
+
+@pytest.mark.unit
+def test_a_cross_reference_is_not_mistaken_for_the_risk_factors_section() -> None:
+    # "Risk Factors" appears throughout a 20-F's prose as a pointer. Quoting one
+    # of those would return a sentence about the section instead of the section.
+    text = (
+        "Item 3. Key Information\n"
+        "Risk Factors\n"
+        f"{BODY}\n"
+        "Item 4. Information on the Company\n"
+        "Please see Item 3. Key Information - Risk Factors for a discussion of "
+        f"the factors that may cause actual results to differ. {BODY}\n"
+        "Item 5. Operating and Financial Review and Prospects\n"
+    )
+
+    found = _sections("20-F", text)
+
+    assert found["risk_factors"].startswith("The Company sells industrial widgets")
+    assert "Please see" not in found["risk_factors"]
+
+
+@pytest.mark.unit
+def test_an_amended_twenty_f_is_read_like_the_original() -> None:
+    assert set(_sections("20-F/A", TWENTY_F)) == {"business", "risk_factors", "mda"}
+
+
+@pytest.mark.unit
+def test_a_six_k_yields_nothing() -> None:
+    # A 6-K has no item structure at all. It carries monthly revenue releases,
+    # board changes, AGM notices and half-year statements indistinguishably, so
+    # there is nothing to locate deterministically and guessing is worse than
+    # silence.
+    assert extract_sections("6-K", TWENTY_F) == ()
+
+
+@pytest.mark.unit
+def test_a_forty_f_yields_nothing() -> None:
+    # A 40-F incorporates a Canadian annual information form by reference, so
+    # its item numbers name exhibits rather than the prose inside them.
+    assert extract_sections("40-F", TWENTY_F) == ()

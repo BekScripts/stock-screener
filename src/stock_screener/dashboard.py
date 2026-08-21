@@ -30,7 +30,7 @@ from data_access import (
     to_price_bar,
 )
 from deep_research import DeepResearchReport
-from domain import CURRENT_SCORE_VERSION, build_company_metrics
+from domain import CURRENT_SCORE_VERSION, build_company_metrics, normalise_currency
 from research import ResearchReport
 from stock_screener.scoring import ScoreDetail, latest_score
 
@@ -38,6 +38,7 @@ if TYPE_CHECKING:
     from sqlalchemy.orm import Session
 
     from data_access import Company
+    from domain import CompanyMetrics, FxConversion
     from stock_screener.config import Settings
 
 #: Metrics the detail page shows, in reading order, with how to render each.
@@ -70,12 +71,19 @@ class MetricView:
         value: The figure, or None when the data cannot support it. None is
             rendered as unknown and never as zero.
         unit: How to format it — `percent`, `points` or `money`.
+        currency: For a `money` metric, the currency the figure is actually in.
+            Not decoration: a foreign issuer's net cash is in the currency it
+            files in, and prefixing every money figure with a dollar sign would
+            state that TSM holds a trillion dollars when the number is Taiwan
+            dollars. None for anything that is not money, where it has no
+            meaning.
     """
 
     key: str
     label: str
     value: float | None
     unit: str
+    currency: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -88,7 +96,18 @@ class StockDetail:
         sector: Sector classification, when known.
         industry: Industry classification, when known.
         exchange: Listing exchange, when known.
-        market_cap: Market capitalisation at the time of scoring.
+        market_cap: Market capitalisation at the time of scoring, in
+            `market_cap_currency` — the currency the *listing* trades in, which
+            is what a reader expects to see for a U.S.-listed security. The
+            converted figure the valuation ratios were computed from is
+            deliberately not shown in its place; it is an internal quantity, not
+            the quoted size of the company.
+        market_cap_currency: What `market_cap` is denominated in. USD for every
+            listing this screen admits.
+        reporting_currency: What the company's statements — and therefore its
+            money metrics — are denominated in.
+        fx: The rate that brought the two together, with the date and source it
+            came from, or None when none was needed or none was found.
         market_cap_source: Whether a provider supplied it or it was multiplied
             out from filings and a price.
         ranking_state: `PRELIMINARY` until candidate enrichment has verified the
@@ -107,6 +126,9 @@ class StockDetail:
     industry: str | None
     exchange: str | None
     market_cap: float | None
+    market_cap_currency: str
+    reporting_currency: str
+    fx: dict[str, Any] | None
     market_cap_source: str | None
     ranking_state: str | None
     watched: bool
@@ -145,6 +167,7 @@ def stock_detail(
     report = ResearchReportRepository(session).latest_for_company(
         company.id, score_version=score_version
     )
+    metrics = _company_metrics(session, settings, company)
 
     return StockDetail(
         ticker=company.ticker,
@@ -153,13 +176,29 @@ def stock_detail(
         industry=company.industry,
         exchange=company.exchange,
         market_cap=snapshot.market_cap if snapshot else company.market_cap,
+        market_cap_currency=normalise_currency(company.quote_currency),
+        reporting_currency=normalise_currency(metrics.reported_currency),
+        fx=_fx_payload(metrics.fx),
         market_cap_source=snapshot.market_cap_source if snapshot else "UNKNOWN",
         ranking_state=snapshot.ranking_state if snapshot else None,
         watched=WatchlistRepository(session).get(company.id) is not None,
         score=_score_payload(detail),
-        metrics=_metrics(session, settings, company),
+        metrics=_metric_views(metrics),
         has_research=report is not None,
     )
+
+
+def _fx_payload(conversion: FxConversion | None) -> dict[str, Any] | None:
+    """Flatten a conversion for JSON, keeping the date and source visible."""
+    if conversion is None:
+        return None
+    return {
+        "base": conversion.base,
+        "quote": conversion.quote,
+        "rate": conversion.rate,
+        "rate_date": conversion.rate_date.isoformat(),
+        "provider": conversion.provider,
+    }
 
 
 def research_view(
@@ -250,6 +289,7 @@ def _score_payload(detail: ScoreDetail | None) -> dict[str, Any] | None:
         "score_date": detail.score_date.isoformat(),
         "score_version": detail.score_version,
         "scoring_status": detail.scoring_status,
+        "exclusion_reasons": list(detail.exclusion_reasons),
         "final_score": detail.final_score,
         "score_change_7d": detail.score_change_7d,
         "score_change_30d": detail.score_change_30d,
@@ -257,8 +297,14 @@ def _score_payload(detail: ScoreDetail | None) -> dict[str, Any] | None:
     }
 
 
-def _metrics(session: Session, settings: Settings, company: Company) -> list[MetricView]:
-    """Rebuild the displayed metrics from the same inputs the score used."""
+def _company_metrics(session: Session, settings: Settings, company: Company) -> CompanyMetrics:
+    """Rebuild one company's metrics from the same inputs the score used.
+
+    No exchange rate is supplied. This is a read path serving a page, so it must
+    not reach a vendor; the money metrics it displays are reported figures and
+    need no conversion to be shown correctly, as long as the screen says which
+    currency they are in.
+    """
     periods = [
         to_financial_period(row)
         for row in FinancialSnapshotRepository(session).list_for_company(company.id)
@@ -266,14 +312,25 @@ def _metrics(session: Session, settings: Settings, company: Company) -> list[Met
     bars = [
         to_price_bar(row) for row in PriceHistoryRepository(session).list_for_company(company.id)
     ]
-    metrics = build_company_metrics(
+    return build_company_metrics(
         to_company_profile(company),
         periods,
         bars,
         bar_volume_basis=settings.bar_volume_basis,
     )
+
+
+def _metric_views(metrics: CompanyMetrics) -> list[MetricView]:
+    """Turn the derived metrics into the subset a screen shows."""
+    reporting = normalise_currency(metrics.reported_currency)
     return [
-        MetricView(key=key, label=label, value=getattr(metrics, key), unit=unit)
+        MetricView(
+            key=key,
+            label=label,
+            value=getattr(metrics, key),
+            unit=unit,
+            currency=reporting if unit == "money" else None,
+        )
         for key, label, unit in METRIC_FIELDS
     ]
 

@@ -25,6 +25,7 @@ public function.
 from __future__ import annotations
 
 from datetime import timedelta
+from itertools import pairwise
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -35,9 +36,11 @@ from domain.models import (
     CompanyMetrics,
     CompanyProfile,
     FinancialPeriod,
+    FxConversion,
     MarketCapSource,
     PriceBar,
     VolumeBasis,
+    normalise_currency,
 )
 
 # A quarter is ~91 days, so a ±45-day window identifies exactly one of them: wide
@@ -64,6 +67,30 @@ DEFAULT_LIQUIDITY_WINDOW = 20
 # ---------------------------------------------------------------------------
 # Primitives
 # ---------------------------------------------------------------------------
+
+
+def _has_quarterly_cadence(periods: Sequence[FinancialPeriod]) -> bool:
+    """Whether a run of periods is quarterly reporting rather than annual.
+
+    Satisfied when **any** adjacent pair sits about a quarter apart. Deliberately
+    not "every pair": a domestic filer missing one quarter still reports
+    quarterly, and demanding an unbroken run would withdraw a sub-score from
+    companies this has always scored. What it rejects is a history with no
+    quarterly spacing anywhere in it — annual periods a year apart, or the
+    half-yearly reporting most foreign private issuers file.
+
+    Args:
+        periods: Periods, ordered oldest first.
+
+    Returns:
+        True when the run is quarterly. False for fewer than two periods, where
+        there is no spacing to judge and nothing to compare in any case.
+    """
+    limit = _QUARTER_DAYS + _MATCH_TOLERANCE_DAYS
+    return any(
+        (later.period_end - earlier.period_end).days <= limit
+        for earlier, later in pairwise(periods)
+    )
 
 
 def _ratio(numerator: float | None, denominator: float | None) -> float | None:
@@ -396,6 +423,41 @@ def resolve_market_cap(
     return None, MarketCapSource.UNKNOWN
 
 
+def convert_market_cap(
+    market_cap: float | None,
+    reporting_currency: str,
+    quote_currency: str,
+    fx: FxConversion | None,
+) -> tuple[float | None, FxConversion | None]:
+    """Express a market capitalisation in the currency the statements use.
+
+    **The market side is converted, never the statements.** Restating a
+    company's reported history would put exchange-rate movement into revenue
+    growth and margins, which are properties of the business and are already
+    currency-invariant when every period is compared in the money it was filed
+    in. Only one number needs to cross: the market capitalisation, which is a
+    figure of today rather than a history.
+
+    Args:
+        market_cap: The figure in `quote_currency`.
+        reporting_currency: What the statements are in.
+        quote_currency: What the listed security trades in.
+        fx: A rate from quote to reporting, when one was resolved.
+
+    Returns:
+        The converted figure and the conversion applied. When the currencies
+        already match, the figure passes through with no conversion. When they
+        differ and no usable rate was supplied, **None** — a missing ratio is a
+        gap, while a mixed-currency ratio is a wrong answer wearing the costume
+        of a right one.
+    """
+    if reporting_currency == quote_currency:
+        return market_cap, None
+    if fx is None or fx.base != quote_currency or fx.quote != reporting_currency:
+        return None, None
+    return fx.convert(market_cap), fx
+
+
 def enterprise_value(
     market_cap: float | None, cash: float | None, debt: float | None
 ) -> float | None:
@@ -490,14 +552,26 @@ def recent_revenue_growth(
     has a gap — which the caller must treat as missing data, not as a company
     that failed to grow.
 
+    **Only quarterly history counts.** Given annual periods the comparisons all
+    succeed — each year against the year before it — and the result is four
+    observations that the persistence sub-score would report as "4 of 4
+    comparable quarters observed". Four years of growth and four quarters of it
+    are different measurements, and a ranking that sorted one against the other
+    would be comparing filers on different evidence while saying they were the
+    same. Nothing is inferred from an annual history here; it returns empty and
+    the sub-score is unavailable, which is the honest answer.
+
     Args:
         periods: Quarterly periods in any order.
         count: How many recent quarters to examine.
 
     Returns:
-        Growth rates as decimals, newest first, at most `count` long.
+        Growth rates as decimals, newest first, at most `count` long. Empty when
+        the history is not quarterly.
     """
     ordered = _ordered_periods(periods)
+    if not _has_quarterly_cadence(ordered[max(len(ordered) - count, 0) :]):
+        return ()
     observations: list[float] = []
 
     for index in range(len(ordered) - 1, max(len(ordered) - count, 0) - 1, -1):
@@ -802,6 +876,7 @@ def build_company_metrics(
     *,
     liquidity_window: int = DEFAULT_LIQUIDITY_WINDOW,
     bar_volume_basis: VolumeBasis = VolumeBasis.UNKNOWN,
+    fx: FxConversion | None = None,
 ) -> CompanyMetrics:
     """Calculate every derived metric for one company.
 
@@ -816,6 +891,12 @@ def build_company_metrics(
         liquidity_window: Sessions to average dollar volume over.
         bar_volume_basis: What the bars' volume represents — see
             `resolve_liquidity`.
+        fx: Rate converting the quote currency to the reporting currency, for a
+            company where they differ. Resolved by the application layer, which
+            is the only part of the system allowed to fetch one — this package
+            performs no I/O. None for a domestic company, where no conversion is
+            needed, and also None when a foreign company's rate could not be
+            found, in which case every ratio needing both sides returns None.
 
     Returns:
         A fully populated `CompanyMetrics`, with None in every position the
@@ -832,11 +913,23 @@ def build_company_metrics(
         liquidity_window=liquidity_window,
     )
 
+    # The reporting currency comes from the statements themselves rather than
+    # the profile: a market-data vendor's currency field for an ADR is the
+    # currency the share trades in, and trusting it would defeat every guard
+    # built on this. The profile answers only when no period said.
+    reporting_currency = normalise_currency(
+        latest.reported_currency if latest else profile.reporting_currency
+    )
+    quote_currency = normalise_currency(profile.quote_currency)
+
     current_growth = yoy_revenue_growth(ordered)
     prior_growth = previous_yoy_revenue_growth(ordered)
 
     calculated = calculated_market_cap(price, latest_common_shares(ordered))
     market_cap, market_cap_source = resolve_market_cap(profile.market_cap, calculated)
+    converted_market_cap, applied_fx = convert_market_cap(
+        market_cap, reporting_currency, quote_currency, fx
+    )
 
     return CompanyMetrics(
         ticker=profile.ticker,
@@ -866,8 +959,15 @@ def build_company_metrics(
         cash=latest.cash if latest else None,
         debt=latest.total_debt if latest else None,
         net_cash=net_cash(latest) if latest else None,
+        # Built from the **converted** market capitalisation, so both sides of
+        # the subtraction are in one currency. A USD market cap less a balance
+        # sheet in TWD is not a small error: for TSM it produces an EV/Revenue
+        # of 0.40x against a true 24.68x, which ranks the most expensive large
+        # cap on the board as the cheapest. Where the conversion was needed and
+        # unavailable, `converted_market_cap` is None and so is this — never the
+        # unconverted figure.
         enterprise_value=enterprise_value(
-            market_cap,
+            converted_market_cap,
             latest.cash if latest else None,
             latest.total_debt if latest else None,
         ),
@@ -877,4 +977,8 @@ def build_company_metrics(
         high_52w=high_52w(bars),
         low_52w=low_52w(bars),
         distance_from_52w_high=distance_from_52w_high(bars),
+        reported_currency=reporting_currency,
+        quote_currency=quote_currency,
+        market_cap_reporting_currency=converted_market_cap,
+        fx=applied_fx,
     )

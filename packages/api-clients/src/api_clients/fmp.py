@@ -131,7 +131,11 @@ class FmpFundamentals:
             # Consolidated across every venue, which is what the liquidity
             # threshold is calibrated against — unlike a single-exchange feed.
             average_volume=_number(raw.get("averageVolume")),
-            currency=_text(raw.get("currency")),
+            # FMP's profile currency is the currency the *share* trades in,
+            # which for an ADR is USD whatever the company reports in. It is
+            # therefore the quote currency and never the reporting one; the
+            # reporting currency comes off the statements themselves.
+            quote_currency=_text(raw.get("currency")),
             # FMP sends 1/0, not true/false. An identity check against `False`
             # never matched either, so a delisted company came back active.
             is_active=_flag(raw.get("isActivelyTrading"), default=True),

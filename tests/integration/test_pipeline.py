@@ -28,6 +28,7 @@ from data_access import (
 from domain import (
     CompanyProfile,
     EligibilityThresholds,
+    EligibilityWarning,
     ExclusionReason,
     FinancialPeriod,
     PriceBar,
@@ -331,15 +332,18 @@ def test_a_padded_ticker_does_not_create_a_second_company(session: Session) -> N
 
 
 @pytest.mark.integration
-def test_a_foreign_currency_reporter_is_excluded_end_to_end(
+def test_a_foreign_currency_reporter_without_a_rate_keeps_its_ratios_empty(
     session: Session, make: type[Make]
 ) -> None:
+    # No FX resolver is passed, which is what an offline scan looks like. The
+    # company is screened rather than dropped, and only the figures needing both
+    # a balance sheet and a market capitalisation are withheld.
     profile = CompanyProfile(
         ticker="EURO",
         name="Continental Holdings",
         exchange="NYSE",
         market_cap=2_000_000_000.0,
-        currency="EUR",
+        reporting_currency="EUR",
     )
     market_data = MockMarketData([profile], {"EURO": make.bars(30)})
 
@@ -349,8 +353,13 @@ def test_a_foreign_currency_reporter_is_excluded_end_to_end(
     session.flush()
     result = scan_market(session, THRESHOLDS)
 
-    assert result.eligible == ()
-    assert ExclusionReason.UNSUPPORTED_CURRENCY in result.rows[0].eligibility.reasons
+    row = result.rows[0]
+    assert EligibilityWarning.FX_UNAVAILABLE in row.eligibility.warnings
+    assert row.metrics.market_cap_for_ratios is None
+    assert row.metrics.enterprise_value is None
+    # The dollar market capitalisation itself is untouched: it is a real figure
+    # about a real listing, and only its use against a euro balance sheet is not.
+    assert row.metrics.market_cap == 2_000_000_000.0
 
 
 @pytest.mark.integration

@@ -107,6 +107,7 @@ def test_falls_back_to_the_filing_index_page_without_a_primary_document() -> Non
 
 @pytest.mark.unit
 def test_keeps_only_the_forms_a_brief_may_cite() -> None:
+    # The recent index is mostly ownership reports and registration statements.
     provider = _provider(
         _submissions(
             accessionNumber=["a-1", "a-2", "a-3", "a-4", "a-5"],
@@ -119,7 +120,48 @@ def test_keeps_only_the_forms_a_brief_may_cite() -> None:
 
     forms = {filing.form for filing in provider.get_filings("AAPL")}
 
-    assert forms == FILING_FORMS
+    assert forms == {"10-K", "10-Q", "8-K"}
+    assert forms <= FILING_FORMS
+
+
+@pytest.mark.unit
+def test_keeps_the_foreign_private_issuer_annual_reports() -> None:
+    # A 20-F filer has no 10-K and no 10-Q, so indexing only the domestic forms
+    # left every foreign issuer with no filings at all.
+    provider = _provider(
+        _submissions(
+            accessionNumber=["b-1", "b-2", "b-3", "b-4"],
+            form=["20-F", "6-K", "SC 13G", "40-F"],
+            filingDate=["2026-04-16", "2026-08-14", "2026-08-15", "2026-03-01"],
+            reportDate=["2025-12-31", "2026-06-30", "", "2025-12-31"],
+            primaryDocument=["a.htm", "b.htm", "c.htm", "d.htm"],
+        )
+    )
+
+    forms = {filing.form for filing in provider.get_filings("AAPL")}
+
+    assert forms == {"20-F", "40-F"}
+
+
+@pytest.mark.unit
+def test_a_flood_of_six_ks_does_not_hide_the_annual_report() -> None:
+    # TSM files fifty to ninety 6-Ks a year against one 20-F. Indexing them left
+    # the eight most recent filings all 6-Ks, so the only filing with text worth
+    # quoting was unreachable.
+    count = 12
+    provider = _provider(
+        _submissions(
+            accessionNumber=[f"c-{index}" for index in range(count)] + ["annual"],
+            form=["6-K"] * count + ["20-F"],
+            filingDate=[f"2026-08-{index + 1:02d}" for index in range(count)] + ["2026-04-16"],
+            reportDate=[""] * count + ["2025-12-31"],
+            primaryDocument=[f"{index}.htm" for index in range(count)] + ["a.htm"],
+        )
+    )
+
+    filings = provider.get_filings("AAPL")
+
+    assert [filing.form for filing in filings] == ["20-F"]
 
 
 @pytest.mark.unit

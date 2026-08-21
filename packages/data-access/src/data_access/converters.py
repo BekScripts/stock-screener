@@ -42,7 +42,8 @@ def to_company_profile(company: Company) -> CompanyProfile:
         industry=company.industry,
         market_cap=company.market_cap,
         average_volume=company.average_volume,
-        currency=company.currency,
+        reporting_currency=company.reporting_currency,
+        quote_currency=company.quote_currency,
         is_active=company.is_active,
     )
 

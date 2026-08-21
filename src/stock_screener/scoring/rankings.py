@@ -170,6 +170,10 @@ class ScoreDetail:
         score_change_30d: Against the nearest snapshot a month or more old.
         breakdown: The complete `CompanyScore` as stored, component by
             component and metric by metric.
+        exclusion_reasons: Every eligibility check the security failed. Empty
+            both for a company that passed and for a row scored before the
+            reasons were recorded — the two are told apart by `scoring_status`,
+            since only a `NOT_ELIGIBLE` row can have failed anything.
     """
 
     ticker: str
@@ -181,6 +185,7 @@ class ScoreDetail:
     score_change_7d: float | None = None
     score_change_30d: float | None = None
     breakdown: dict[str, Any] = field(default_factory=dict)
+    exclusion_reasons: tuple[str, ...] = ()
 
 
 def top_opportunities(
@@ -384,7 +389,13 @@ def latest_score(
         score_change_7d=short,
         score_change_30d=long,
         breakdown=dict(breakdown),
+        exclusion_reasons=_split_reasons(snapshot.exclusion_reasons),
     )
+
+
+def _split_reasons(stored: str | None) -> tuple[str, ...]:
+    """Turn the stored pipe-separated reasons back into a tuple."""
+    return tuple(part for part in (stored or "").split("|") if part)
 
 
 def _with_changes(

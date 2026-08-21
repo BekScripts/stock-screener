@@ -66,9 +66,11 @@ from domain.models import (
     Filing,
     FilingExcerpt,
     FinancialPeriod,
+    FxConversion,
     MarketCapSource,
     PriceBar,
     VolumeBasis,
+    normalise_currency,
     normalise_ticker,
 )
 from domain.scores import (
@@ -161,6 +163,7 @@ __all__ = [
     "Filing",
     "FilingExcerpt",
     "FinancialPeriod",
+    "FxConversion",
     "MarketCapSource",
     "MetricUnit",
     "PriceBar",
@@ -203,6 +206,7 @@ __all__ = [
     "low_52w",
     "market_cap_discrepancy",
     "net_cash",
+    "normalise_currency",
     "normalise_ticker",
     "operating_margin",
     "operating_margin_change",

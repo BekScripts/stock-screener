@@ -14,6 +14,7 @@ different step with its own rules.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import UTC, date, datetime
 from typing import TYPE_CHECKING
 
 import structlog
@@ -26,7 +27,7 @@ from data_access import (
     to_financial_period,
     to_price_bar,
 )
-from domain import VolumeBasis, build_company_metrics, evaluate_eligibility
+from domain import USD, VolumeBasis, build_company_metrics, evaluate_eligibility
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -34,6 +35,7 @@ if TYPE_CHECKING:
     from sqlalchemy.orm import Session
 
     from domain import CompanyMetrics, CompanyProfile, EligibilityResult, EligibilityThresholds
+    from stock_screener.fx import FxRateResolver
 
 log = structlog.get_logger(__name__)
 
@@ -94,12 +96,20 @@ def scan_market(
     *,
     tickers: Sequence[str] | None = None,
     bar_volume_basis: VolumeBasis = VolumeBasis.UNKNOWN,
+    fx: FxRateResolver | None = None,
+    as_of: date | None = None,
 ) -> ScanResult:
     """Calculate metrics and eligibility for every stored company.
 
     Args:
         session: Open database session.
         thresholds: The eligibility minimums to apply.
+        fx: Supplies the rate that converts a foreign company's market
+            capitalisation into the currency it files in. None leaves every
+            currency-sensitive ratio unavailable for those companies, which is
+            what an offline scan should produce; a domestic company needs no
+            rate and is unaffected either way.
+        as_of: The date rates are wanted for. Defaults to today.
         tickers: Restrict the scan to these symbols. Defaults to everything
             stored.
         bar_volume_basis: What the stored bars' volume represents. Decides
@@ -116,6 +126,7 @@ def scan_market(
     prices = PriceHistoryRepository(session)
 
     wanted = {ticker.upper() for ticker in tickers} if tickers else None
+    rate_date = as_of or datetime.now(UTC).date()
     rows: list[ScanRow] = []
 
     for company in companies.list_all():
@@ -126,7 +137,21 @@ def scan_market(
         periods = [to_financial_period(row) for row in snapshots.list_for_company(company.id)]
         bars = [to_price_bar(row) for row in prices.list_for_company(company.id)]
 
-        metrics = build_company_metrics(profile, periods, bars, bar_volume_basis=bar_volume_basis)
+        # The reporting currency comes from the newest period rather than the
+        # profile, for the same reason the metric engine prefers it: a vendor's
+        # profile currency for an ADR is the currency the share trades in.
+        reporting_currency = next(
+            (period.reported_currency for period in reversed(periods) if period.reported_currency),
+            profile.reporting_currency,
+        )
+        conversion = (
+            fx.rate_for(profile.quote_currency or USD, reporting_currency or USD, rate_date)
+            if fx is not None
+            else None
+        )
+        metrics = build_company_metrics(
+            profile, periods, bars, bar_volume_basis=bar_volume_basis, fx=conversion
+        )
         rows.append(
             ScanRow(
                 profile=profile,

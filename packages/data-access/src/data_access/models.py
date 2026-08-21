@@ -79,9 +79,15 @@ class Company(Base):
     # The liquidity threshold is calibrated against this, not against volume
     # derived from a single-exchange price feed.
     average_volume: Mapped[float | None] = mapped_column(Float)
-    # ISO code the company reports in. NULL means the provider did not say,
-    # which the eligibility screen treats as USD.
-    currency: Mapped[str | None] = mapped_column(String(3))
+    # ISO code the company states its *financial statements* in, read from the
+    # filing. NULL means nobody said, which is treated as USD.
+    reporting_currency: Mapped[str | None] = mapped_column(String(3))
+    # ISO code the *listed security* trades in, and therefore what `market_cap`
+    # and every price are quoted in. Kept apart from the column above because
+    # the two were one field and their two sources disagreed about its meaning:
+    # EDGAR wrote the filing's currency, a market-data vendor wrote the trading
+    # currency, and whichever arrived last won.
+    quote_currency: Mapped[str | None] = mapped_column(String(3))
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_utcnow, server_default=func.now()
@@ -219,6 +225,47 @@ class BenchmarkPrice(Base):
     volume: Mapped[float] = mapped_column(Float, nullable=False)
 
 
+class FxRate(Base):
+    """One exchange rate observation, kept so a score stays reproducible.
+
+    Rates are stored rather than fetched-and-forgotten for the same reason
+    scores are: a valuation computed from a rate nobody wrote down cannot be
+    checked afterwards, and re-deriving it later would use a different rate and
+    quietly produce a different answer to the same question.
+
+    The unique constraint spans the provider as well as the pair and the date,
+    because two sources publishing the same pair on the same day are two
+    observations rather than a conflict — the ECB's official fixing and a
+    broader dataset's figure differ by a few tenths of a percent, and the row
+    should say which one a score used rather than averaging them into a number
+    neither published.
+    """
+
+    __tablename__ = "fx_rates"
+    __table_args__ = (
+        UniqueConstraint(
+            "base_currency",
+            "quote_currency",
+            "rate_date",
+            "provider",
+            name="uq_fx_rate_observation",
+        ),
+        Index("ix_fx_rates_pair_date", "base_currency", "quote_currency", "rate_date"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    base_currency: Mapped[str] = mapped_column(String(3), nullable=False)
+    quote_currency: Mapped[str] = mapped_column(String(3), nullable=False)
+    # The date the rate is *for*, which on a weekend is the preceding business
+    # day rather than the date it was asked for.
+    rate_date: Mapped[date] = mapped_column(Date, nullable=False)
+    rate: Mapped[float] = mapped_column(Float, nullable=False)
+    provider: Mapped[str] = mapped_column(String(40), nullable=False)
+    retrieved_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=_utcnow, server_default=func.current_timestamp()
+    )
+
+
 class ScoreSnapshot(Base):
     """One company's CompounderScore on one day under one set of rules.
 
@@ -291,6 +338,14 @@ class ScoreSnapshot(Base):
     # What the liquidity figure behind this score represented. A ranking row
     # showing single-exchange volume must not be read as a verified one.
     volume_basis: Mapped[str | None] = mapped_column(String(20))
+
+    # Every eligibility check the security failed, pipe-separated, or None where
+    # it passed. `scoring_status` says a company was not scored; this says why,
+    # and the difference is the whole distance between a screen full of dashes
+    # and a screen that explains itself. A company reporting in TWD, a fund, a
+    # delisted shell and a stock that trades too thinly all arrive as
+    # `NOT_ELIGIBLE` and are four very different things.
+    exclusion_reasons: Mapped[str | None] = mapped_column(String(200))
 
     # The inputs a ranking displays beside the score. Copied here so a ranking
     # is one query rather than a re-scan, and so the row records the figures the

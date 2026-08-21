@@ -37,6 +37,12 @@ export type Metric = {
   label: string;
   value: number | null;
   unit: string;
+  /**
+   * For a money metric, the currency the figure is in. A foreign issuer's net
+   * cash is in the currency it files in, so this is what stops NT$1.9tn being
+   * rendered as "$1.9T".
+   */
+  currency: string | null;
 };
 
 export type Subscore = {
@@ -102,6 +108,18 @@ export type StockDetail = {
   industry: string | null;
   exchange: string | null;
   market_cap: number | null;
+  /** What `market_cap` is quoted in — the listing's currency, not the filer's. */
+  market_cap_currency: string;
+  /** What the company's statements, and every money metric, are in. */
+  reporting_currency: string;
+  /** The rate that brought the two together, or null when none was needed. */
+  fx: {
+    base: string;
+    quote: string;
+    rate: number;
+    rate_date: string;
+    provider: string;
+  } | null;
   market_cap_source: string | null;
   ranking_state: string | null;
   watched: boolean;
@@ -111,6 +129,12 @@ export type StockDetail = {
     score_date: string;
     score_version: string;
     scoring_status: string;
+    /**
+     * Every eligibility check the security failed. Empty when it passed, and
+     * empty for a row scored before the reasons were recorded — only a
+     * NOT_ELIGIBLE row can have failed anything.
+     */
+    exclusion_reasons: string[];
     final_score: number | null;
     score_change_7d: number | null;
     score_change_30d: number | null;

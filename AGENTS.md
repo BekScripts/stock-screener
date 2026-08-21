@@ -163,6 +163,55 @@ Not built, and not to be started without being asked: scheduled or automatic
 deep research, report diffing or comparison, alerts, charts, and any second
 execution path for a job.
 
+**Phase 7 (international coverage) is complete.** Foreign private issuers run
+through the same pipeline as everything else — same ingestion, same metric
+engine, same CompounderScore V1.1, same rankings. There is no international
+score and no second fundamentals engine. Every fix landed in the input layer:
+`ifrs-full` is a second concept table in `api-clients/edgar.py` selected per
+company, the money unit is read from the filing rather than assumed, and
+`score_snapshots.exclusion_reasons` (migration `0016`) records why an ineligible
+company was not scored. Its scope and limits are in
+`docs/reference/project-phases/phase7.md`.
+
+Three rules govern that layer:
+
+- **The filing's unit is authoritative, never the vendor's.** `reporting_currency`
+  comes from the XBRL unit key; `quote_currency` is what the listed share trades
+  in, and the two are separate fields because one field held both and whichever
+  provider wrote last won. Mixing TSM's TWD statements with its USD market cap
+  yields an EV/Revenue of 0.38x against a true 24.07x — a factor of 63, and the
+  error this layer exists to prevent.
+- **Convert the market side, never the statements.** Reported history stays in
+  the money it was filed in; restating it would put FX movement into revenue
+  growth and margins, which are properties of the business. Only the market
+  capitalisation crosses. Every ratio against it reads
+  `CompanyMetrics.market_cap_for_ratios` — converted where a rate exists, **None**
+  where one does not, never the unconverted figure. `CompanyMetrics` refuses to
+  hold an enterprise value without the conversion that would justify it.
+- **A rate belongs to a date and a source.** `fx_rates` (migration `0017`) stores
+  one row per `(base, quote, rate_date, provider)` so a score reproduces rather
+  than re-deriving at today's rate. The ECB answers first and names the business
+  day it used; a broad dataset answers only for pairs the ECB does not publish,
+  TWD among them. Rates are bounded to five days before the score date, never
+  after it, and resolved once per pair per run. An FX outage costs foreign
+  companies their currency-sensitive sub-scores and nothing else —
+  `FX_UNAVAILABLE` is a warning, not an exclusion.
+- **Coverage is never bought with a fabricated period.** Four annual periods are
+  not a trailing year and six-month figures are never halved into quarters. TSM,
+  ASML, SAP and NVO are annual-only and remain unrankable; they gain a correct
+  currency, a stated exclusion reason and an indexed 20-F, not a score.
+- **A share count that cannot be multiplied by the price is not read.** Cover-page
+  counts on a 20-F or 40-F are ordinary shares while the listed security is an
+  ADS, and no XBRL field gives the ratio — TSM's is five, the other three are
+  one. `MarketCapSource.CALCULATED` is never produced for those filers; it falls
+  to `PROVIDER` or `UNKNOWN`.
+
+Not built, and not to be started without being asked: converting the *statements*
+into another currency, annual or semiannual period semantics, ADR ratio lookup,
+and reading filing documents to recover figures the companyfacts API omits.
+Period semantics is Phase 7D and is what still keeps TSM, ASML, SAP and NVO
+unrankable — currency is no longer their blocker.
+
 Three rules govern that layer:
 
 - **A job is an existing command, never new pipeline code.** `JOB_KINDS` maps a

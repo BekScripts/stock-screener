@@ -29,6 +29,7 @@ from domain import EligibilityThresholds, VolumeBasis
 Environment = Literal["local", "test", "staging", "production"]
 MarketDataProviderName = Literal["alpaca", "mock"]
 FundamentalsProviderName = Literal["edgar", "edgar+fmp", "fmp", "mock"]
+FxProviderName = Literal["ecb", "ecb+fallback", "none", "mock"]
 ResearchProviderName = Literal["anthropic", "mock"]
 ExternalResearchProviderName = Literal["tavily", "mock", "none"]
 DeepResearchProviderName = Literal["anthropic", "mock"]
@@ -378,6 +379,33 @@ class Settings(BaseSettings):
             "an intended run finishes, low enough that a mistaken loop over the "
             "whole market does not. The estimate errs high and ignores "
             "introductory discounts, so the real bill lands under it."
+        ),
+    )
+
+    fx_provider: FxProviderName = Field(
+        default="ecb+fallback",
+        description=(
+            "Where exchange rates come from. Only used for companies that file "
+            "in a currency other than the one their shares trade in; a domestic "
+            "company needs no rate and triggers no request. `ecb` is the "
+            "European Central Bank's official daily reference rates, free and "
+            "keyless, covering thirty currencies. `ecb+fallback` adds a broad "
+            "community dataset for the currencies the ECB does not publish — "
+            "Taiwan's dollar among them, which is the currency TSM files in. "
+            "`none` disables fetching and serves only rates already stored, "
+            "which is the right setting for an offline run."
+        ),
+    )
+
+    fx_max_rate_age_days: int = Field(
+        default=5,
+        ge=0,
+        description=(
+            "How many days before a score date an exchange rate may be dated "
+            "and still be used. Three days covers a weekend and five covers a "
+            "weekend with a holiday either side, which is the longest ordinary "
+            "gap in a published fixing series. A longer window silently values "
+            "a company on a rate from the far side of a real hole in the data."
         ),
     )
 

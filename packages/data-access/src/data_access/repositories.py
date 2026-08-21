@@ -19,7 +19,7 @@ ingestion tests run against in-memory SQLite with no patching.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import and_, case, func, or_, select
@@ -32,6 +32,7 @@ from data_access.models import (
     FilingExcerptRecord,
     FilingRecord,
     FinancialSnapshot,
+    FxRate,
     JobRecord,
     PriceHistory,
     ScoreSnapshot,
@@ -41,6 +42,9 @@ from data_access.models import (
     _utcnow,
 )
 from domain import ScoringStatus
+
+if TYPE_CHECKING:
+    from domain import FxConversion
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping, Sequence
@@ -192,7 +196,8 @@ class CompanyRepository:
             "industry": profile.industry,
             "market_cap": profile.market_cap,
             "average_volume": profile.average_volume,
-            "currency": profile.currency,
+            "reporting_currency": profile.reporting_currency,
+            "quote_currency": profile.quote_currency,
             "is_active": profile.is_active,
         }
         updatable = [key for key, value in values.items() if value is not None and key != "ticker"]
@@ -554,6 +559,101 @@ class BenchmarkPriceRepository:
         return self._session.scalar(select(func.count()).select_from(BenchmarkPrice)) or 0
 
 
+class FxRateRepository:
+    """Reads and writes the `fx_rates` table.
+
+    Small on purpose. Scoring needs to ask one question — what was this pair
+    worth on or shortly before this date — and to record the answer so the same
+    question gets the same answer tomorrow.
+
+    Args:
+        session: The session to operate in. Not owned; the caller commits.
+    """
+
+    def __init__(self, session: Session) -> None:
+        self._session = session
+
+    def latest_on_or_before(
+        self,
+        base: str,
+        quote: str,
+        as_of: date,
+        *,
+        max_age_days: int,
+    ) -> FxRate | None:
+        """Return the newest stored rate for a pair at or before a date.
+
+        **Never looks forward.** A rate published after the score date did not
+        exist when the score was computed, and using one would restate a
+        historical valuation in money from the future — the specific error that
+        makes a stored score irreproducible.
+
+        Args:
+            base: Currency converted from.
+            quote: Currency converted to.
+            as_of: The date wanted.
+            max_age_days: How far back to accept. A rate older than this is
+                refused rather than returned, because a fixing series has no
+                ordinary gaps longer than a holiday weekend and a stale rate is
+                a worse answer than no rate.
+
+        Returns:
+            The newest acceptable observation, or None. Where two providers
+            published the same date, the one whose name sorts first is taken so
+            the choice is deterministic rather than dependent on insert order.
+        """
+        oldest = as_of - timedelta(days=max_age_days)
+        return self._session.scalars(
+            select(FxRate)
+            .where(
+                FxRate.base_currency == base,
+                FxRate.quote_currency == quote,
+                FxRate.rate_date <= as_of,
+                FxRate.rate_date >= oldest,
+            )
+            .order_by(FxRate.rate_date.desc(), FxRate.provider.asc())
+            .limit(1)
+        ).first()
+
+    def save(self, conversion: FxConversion) -> None:
+        """Store one observation, replacing any earlier fetch of the same one.
+
+        Idempotent on `(base, quote, rate_date, provider)`, so re-running a
+        scoring run does not append a second copy of a rate that cannot have
+        changed — a past day's fixing is final.
+
+        Args:
+            conversion: The rate to store.
+        """
+        insert = _insert_for(self._session)
+        statement = insert(FxRate).values(
+            base_currency=conversion.base,
+            quote_currency=conversion.quote,
+            rate_date=conversion.rate_date,
+            rate=conversion.rate,
+            provider=conversion.provider,
+            retrieved_at=conversion.retrieved_at or _utcnow(),
+        )
+        self._session.execute(
+            statement.on_conflict_do_update(
+                index_elements=[
+                    FxRate.base_currency,
+                    FxRate.quote_currency,
+                    FxRate.rate_date,
+                    FxRate.provider,
+                ],
+                set_={
+                    "rate": statement.excluded.rate,
+                    "retrieved_at": statement.excluded.retrieved_at,
+                },
+            )
+        )
+
+    def count(self) -> int:
+        """Return how many rate observations are stored."""
+        return self._session.scalar(select(func.count()).select_from(FxRate)) or 0
+
+
 @dataclass(frozen=True, slots=True)
 class ScoreRecord:
     """One company's score, ready to persist.
@@ -567,12 +667,19 @@ class ScoreRecord:
             anything.
         ranking_state: Whether this row's inputs have been through candidate
             enrichment. `PRELIMINARY` until they have.
+        exclusion_reasons: Every eligibility check the security failed, in the
+            order the screen reports them. Empty for a company that passed.
+            Stored because `NOT_ELIGIBLE` on its own cannot tell a company that
+            reports in a currency this system will not mix from one that is
+            delisted, and a reader looking at a blank row deserves the
+            difference.
     """
 
     company_id: int
     score: CompanyScore
     metrics: CompanyMetrics | None = None
     ranking_state: str = PRELIMINARY
+    exclusion_reasons: tuple[str, ...] = ()
 
 
 class ScoreSnapshotRepository:
@@ -611,6 +718,7 @@ class ScoreSnapshotRepository:
         "market_cap_source",
         "volume_basis",
         "breakdown",
+        "exclusion_reasons",
     )
 
     def __init__(self, session: Session) -> None:
@@ -1711,4 +1819,7 @@ def _score_values(record: ScoreRecord, score_date: date, coverage: str) -> dict[
         "market_cap_source": metrics.market_cap_source.value if metrics else None,
         "volume_basis": metrics.liquidity_basis.value if metrics else None,
         "breakdown": score.model_dump(mode="json"),
+        # Pipe-separated rather than JSON: the set is small, closed and ordered,
+        # and the scan report already writes it this way.
+        "exclusion_reasons": "|".join(record.exclusion_reasons) or None,
     }

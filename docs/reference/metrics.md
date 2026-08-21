@@ -131,6 +131,17 @@ number outstanding on any single day, so multiplying it by a price values the
 company on a share base that did not exist; and a point-in-time count differenced
 against itself measures issuance plus timing rather than dilution.
 
+Cover-page counts stated on a **20-F or 40-F are not read at all**. They are in
+ordinary shares while the U.S.-listed security is an American Depositary Share
+representing some number of them — five for TSM, one for ASML, SAP and NVO — and
+nothing in the XBRL says which. TSM's cover page calls the security "Common
+Shares" and the ratio appears only in a prose footnote, so multiplying that count
+by a U.S. price is right three times in four and 5x wrong the fourth, valuing the
+company at $11tn against a real $2.2tn. Without the count there is no calculated
+market cap, so `market_cap_source` falls to `PROVIDER` or `UNKNOWN` — which is
+the honest outcome, because a company whose size is unknown is unscreenable and
+`MISSING_REQUIRED_DATA` says so.
+
 From EDGAR the second comes from `dei:EntityCommonStockSharesOutstanding`, the
 count every 10-Q and 10-K states on its cover page. It is dated near the filing
 rather than at the quarter end, so it is matched to the quarter it was filed with
@@ -277,7 +288,7 @@ A security is eligible when every check passes. Thresholds come from
 | `LOW_LIQUIDITY` | `trading_days_used < MIN_TRADING_DAYS`, or a **consolidated** ADV below `MIN_AVG_DOLLAR_VOLUME` |
 | `INACTIVE` | The provider reports the security as not trading |
 | `UNSUPPORTED_SECURITY_TYPE` | Not common stock on NASDAQ, NYSE or NYSE American |
-| `UNSUPPORTED_CURRENCY` | The company files its statements in a currency other than USD |
+| `UNSUPPORTED_CURRENCY` | The company files its statements in a currency other than USD, read from the XBRL unit key where the filings state one and from the provider's profile otherwise |
 | `MISSING_REQUIRED_DATA` | Price or market cap unavailable |
 
 A verdict may also carry warnings, which qualify it without excluding:
@@ -305,6 +316,100 @@ statements in another currency is therefore **excluded** with
 two would be wrong by an exchange rate. A provider that does not report a
 currency is treated as USD, which is true for the overwhelming majority of
 U.S.-listed common stock.
+
+The size of that error is worth stating. Mixing TSM's TWD statements with its
+USD market capitalisation produces an EV/Revenue of **0.38x** where the truth is
+**24.07x** — a factor of sixty-three, and the difference between the most
+expensive large cap on the board and the cheapest.
+
+### Which side is converted
+
+**The market side, never the statements.** A company's reported history stays in
+the money it was filed in. Restating it would put exchange-rate movement into
+revenue growth and margins, which are properties of the business and are already
+currency-invariant when every period is compared in one currency — TSM's FY2024
+revenue grew 33.9% in TWD and 25.0% in USD, and only the first is a fact about
+the business. Just one number crosses:
+
+```
+market_cap_reporting_currency = market_cap_quote_currency x FX(quote -> reporting)
+enterprise_value              = market_cap_reporting_currency + debt - cash
+```
+
+Every ratio of a financial figure to a market capitalisation reads
+`CompanyMetrics.market_cap_for_ratios`, which is the converted figure for a
+foreign issuer and the plain one for a domestic company. There are exactly four:
+the quality component's `cash_vs_debt`, the valuation component's multiple and
+`fcf_yield`, and the risk assessment's leverage. When a conversion was needed and
+no rate was available it returns **None**, and those sub-scores are unavailable —
+a missing sub-score is a gap, a mixed-currency one is a wrong answer wearing the
+costume of a right one. `CompanyMetrics` refuses outright to hold an enterprise
+value in that situation, so no path can build one quietly.
+
+### Where a rate comes from
+
+Rates are dated, stored and attributed. `fx_rates` keeps one row per
+`(base, quote, rate_date, provider)`, so a stored score can be reproduced rather
+than re-derived at whatever today's rate happens to be.
+
+| Source | Covers | Used for |
+| --- | --- | --- |
+| European Central Bank daily reference rates | 30 currencies | Everything it publishes |
+| A broad daily dataset | ~340 currencies | Only pairs the ECB does not publish — `TWD`, `ARS` |
+
+The order is a statement about authority rather than a consensus: one source
+answers and the row records which. The ECB is asked first and reports the
+business day it actually used, so a Sunday score date resolves to Friday's fixing
+rather than to a fixing that never happened.
+
+Freshness is bounded by `FX_MAX_RATE_AGE_DAYS`, five days by default: enough for
+a weekend with a holiday either side, and short enough that a rate from the far
+side of a real gap in the series is refused. A rate dated *after* the score date
+is refused outright — money from the future is not evidence about the past. A
+company whose pair cannot be resolved carries the `FX_UNAVAILABLE` eligibility
+warning and keeps every metric that does not need both sides.
+
+**The currency comes from the filing, not the vendor.** A market-data provider's
+`currency` field for an ADR is the currency the *share* trades in, which is USD
+for every foreign issuer on a U.S. exchange. Trusting it would hold this gate
+open on exactly the companies it exists to catch, so `CompanyMetrics`
+carries the reporting currency read from the XBRL unit key and the screen
+consults that first.
+
+### Two taxonomies, one normalised period
+
+EDGAR serves foreign private issuers' statements under `ifrs-full` rather than
+`us-gaap`, and the taxonomy is detected per company from the facts document
+rather than inferred. Nothing about a company predicts it: ASML and TSM both
+file a 20-F, and ASML's statements arrive under `us-gaap` while TSM's arrive
+under `ifrs-full`. A filer that changed taxonomy keeps the old block forever, so
+the taxonomies are ranked by how many revenue facts each carries rather than by
+which exists.
+
+Both resolve through the same concept chains into the same `FinancialPeriod`.
+Two fields need more than a renamed chain:
+
+- **Borrowings.** Where a filer states an entity-wide `ifrs-full:Borrowings`,
+  that is the whole answer and nothing is added to it — SAP's EUR 6,150.0m is
+  exactly its non-current plus current, and its EUR 5,294.0m of `BondsIssued` is
+  part of that total rather than a further debt. Where no total is stated,
+  non-current bonds are summed with non-current borrowings, because TSM carries
+  NT$926.6bn of bonds beside NT$31.8bn of bank loans and reading the loans alone
+  reports 3% of its debt. Current bonds are **not** added to current maturities:
+  TSM's NT$57.1bn of them sit inside the NT$59.9bn line its balance sheet shows.
+- **Capital expenditure.** SAP states one concept covering property, intangibles,
+  investment property and other non-current assets; TSM and NVO state property
+  and intangibles separately. A stated combined figure wins, and the components
+  are summed only where none exists. The two bases are close but not identical,
+  which is a real comparability limit between filers rather than a mapping
+  choice.
+
+Short-term investments are not added to cash for an IFRS filer. No IFRS concept
+is reliably the same measure — TSM's `ShorttermInvestmentsClassifiedAsCashEquivalents`
+is already inside cash equivalents and would double-count — so cash is cash and
+equivalents alone. That understates the liquid position of a company holding
+marketable securities, which is the safe direction: it lowers net cash and the
+quality sub-score built on it.
 
 ## Plausibility
 

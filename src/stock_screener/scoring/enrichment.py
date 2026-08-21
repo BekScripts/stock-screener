@@ -235,7 +235,13 @@ def _rescore(
 
     written = ScoreSnapshotRepository(session).upsert_scores(
         [
-            ScoreRecord(row.company_id, row.score, row.metrics, ranking_state=FINAL)
+            ScoreRecord(
+                row.company_id,
+                row.score,
+                row.metrics,
+                ranking_state=FINAL,
+                exclusion_reasons=row.exclusion_reasons,
+            )
             for row in scored
         ],
         score_date,

@@ -20,6 +20,7 @@ from api_clients.alpaca import AlpacaMarketData
 from api_clients.base import (
     ExternalResearchProvider,
     FundamentalsProvider,
+    FxProvider,
     MarketDataProvider,
 )
 from api_clients.composite import CompositeFundamentals
@@ -48,7 +49,17 @@ from api_clients.filing_text import (
     extract_sections,
 )
 from api_clients.fmp import FmpFundamentals
-from api_clients.mock import MockFundamentals, MockMarketData, load_fixture_providers
+from api_clients.fx import (
+    BroadFxRates,
+    CompositeFxRates,
+    EcbFxRates,
+)
+from api_clients.mock import (
+    MockFundamentals,
+    MockFxRates,
+    MockMarketData,
+    load_fixture_providers,
+)
 from api_clients.research import (
     DEFAULT_MAX_OUTPUT_TOKENS,
     DEFAULT_RESEARCH_MODEL,
@@ -71,17 +82,22 @@ __all__ = [
     "AlpacaMarketData",
     "AnthropicDeepResearch",
     "AnthropicResearch",
+    "BroadFxRates",
     "CompositeFundamentals",
+    "CompositeFxRates",
     "DeepResearchCompletion",
     "DeepResearchProvider",
+    "EcbFxRates",
     "ExternalResearchProvider",
     "ExtractedSection",
     "FmpFundamentals",
     "FundamentalsProvider",
+    "FxProvider",
     "MarketDataProvider",
     "MockDeepResearch",
     "MockExternalResearch",
     "MockFundamentals",
+    "MockFxRates",
     "MockMarketData",
     "MockResearch",
     "ProviderAuthError",

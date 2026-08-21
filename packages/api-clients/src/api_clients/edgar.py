@@ -41,7 +41,7 @@ from __future__ import annotations
 
 import json
 from datetime import date, timedelta
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 import httpx
 import structlog
@@ -233,20 +233,243 @@ _SHORT_TERM_DEBT_COMPONENT_TAGS = (
     "FinanceLeaseLiabilityCurrent",
 )
 
+#: IFRS concept chains, for filers whose facts arrive under `ifrs-full`.
+#:
+#: Foreign private issuers filing a 20-F under IFRS tag the same statements with
+#: entirely different names — `ProfitLossFromOperatingActivities` rather than
+#: `OperatingIncomeLoss`, `CostOfSales` rather than `CostOfGoodsAndServicesSold`.
+#: Every concept below was taken from facts TSM, SAP and NVO have actually filed,
+#: not from what the IFRS taxonomy theoretically contains. None of the three
+#: needed a company-extension tag for any field the metric engine reads, which is
+#: why this is a static table and not a heuristic tag matcher.
+_IFRS_REVENUE_TAGS = (
+    "Revenue",
+    "RevenueFromContractsWithCustomers",
+    "RevenueFromSaleOfGoods",
+    "RevenueFromRenderingOfServices",
+)
+_IFRS_GROSS_PROFIT_TAGS = ("GrossProfit",)
+_IFRS_COST_OF_REVENUE_TAGS = ("CostOfSales",)
+_IFRS_OPERATING_INCOME_TAGS = ("ProfitLossFromOperatingActivities",)
+_IFRS_OPERATING_CASH_FLOW_TAGS = ("CashFlowsFromUsedInOperatingActivities",)
+
+#: Capital spending, where the filer states one concept covering everything.
+#: SAP tags only this, and it already includes intangibles, investment property
+#: and other non-current assets — so the component concepts below must not be
+#: added to it.
+_IFRS_CAPEX_TOTAL_TAGS = (
+    "PurchaseOfPropertyPlantAndEquipmentIntangibleAssetsOtherThanGoodwillInvestmentPropertyAndOtherNoncurrentAssets",
+)
+#: Capital spending lines that **co-exist**, summed only where the filer tagged
+#: no combined total. TSM and NVO tag property and intangibles separately, and a
+#: semiconductor or pharmaceutical capital programme that omitted intangibles
+#: would understate reinvestment.
+#:
+#: These two tiers are not interchangeable measures: SAP's combined concept also
+#: sweeps in investment property and other non-current assets, so its capital
+#: expenditure is on a slightly broader basis than TSM's or NVO's. That is a real
+#: comparability limit between filers rather than a mapping choice, and it is
+#: recorded in `docs/reference/metrics.md`.
+_IFRS_CAPEX_COMPONENT_TAGS = (
+    "PurchaseOfPropertyPlantAndEquipmentClassifiedAsInvestingActivities",
+    "PurchaseOfIntangibleAssetsClassifiedAsInvestingActivities",
+)
+
+#: Diluted weighted-average shares. `AdjustedWeightedAverageShares` is the IFRS
+#: diluted figure; `WeightedAverageShares` is the basic one and is deliberately
+#: not a fallback, for the same reason basic shares are not one under us-gaap.
+_IFRS_SHARES_TAGS = ("AdjustedWeightedAverageShares",)
+
+_IFRS_CASH_TAGS = ("CashAndCashEquivalents",)
+
+#: Deliberately empty. The us-gaap chain adds short-term investments to cash,
+#: and IFRS has no concept that is reliably the same measure: TSM's
+#: `ShorttermInvestmentsClassifiedAsCashEquivalents` is already *inside* its cash
+#: equivalents and would double-count, `OtherCurrentFinancialAssets` is a wider
+#: bucket including derivatives and receivables, and `CurrentInvestments` was
+#: last tagged by SAP in 2017 and NVO in 2018. Cash is therefore cash and
+#: equivalents alone for an IFRS filer, which understates the liquid position of
+#: a company holding marketable securities. That is the safe direction — it
+#: lowers net cash and the quality sub-score built on it, so no company looks
+#: financially stronger than it is.
+_IFRS_SHORT_TERM_INVESTMENTS_TAGS: tuple[str, ...] = ()
+
+#: Point-in-time share counts. NVO tags no `dei` cover-page count at all, so the
+#: IFRS balance-sheet concepts are the only route to one for that filer.
+_IFRS_COMMON_SHARES_TAGS = (
+    "NumberOfSharesOutstanding",
+    "NumberOfSharesIssued",
+)
+
+#: Borrowings for the whole entity, current and non-current together. Where a
+#: filer states this, it is the answer and nothing is added to it: SAP's 6,150.0
+#: is exactly its 4,550.0 non-current plus 1,600.0 current, and NVO's 130,958.0
+#: is exactly its 118,941.0 plus 12,017.0. Both also tag `BondsIssued`, which is
+#: a *breakdown* of those totals — adding it would nearly double the debt.
+_IFRS_TOTAL_BORROWINGS_TAGS = ("Borrowings",)
+
+_IFRS_LONG_TERM_DEBT_TOTAL_TAGS = ("NoncurrentPortionOfNoncurrentBorrowings",)
+#: Non-current instruments that appear as separate balance-sheet lines and are
+#: therefore summed. TSM carries NT$926.6bn of bonds beside NT$31.8bn of bank
+#: loans and states no total; reading `LongtermBorrowings` alone would report
+#: 3% of its borrowings and make the company look very nearly debt-free.
+_IFRS_LONG_TERM_DEBT_COMPONENT_TAGS = (
+    "LongtermBorrowings",
+    "NoncurrentPortionOfNoncurrentBondsIssued",
+)
+_IFRS_SHORT_TERM_DEBT_TOTAL_TAGS = ("CurrentBorrowingsAndCurrentPortionOfNoncurrentBorrowings",)
+_IFRS_SHORT_TERM_DEBT_COMPONENT_TAGS = (
+    "CurrentPortionOfLongtermBorrowings",
+    "ShorttermBorrowings",
+)
+#: Last resort for the current classification only, and never summed with the
+#: components above. TSM's current bonds of NT$57.1bn sit *inside* its
+#: NT$59.9bn "long-term liabilities — current portion" balance-sheet line, so
+#: adding the two would overstate total debt by the whole bond figure.
+_IFRS_SHORT_TERM_DEBT_FALLBACK_TAGS = (
+    "CurrentBondsIssuedAndCurrentPortionOfNoncurrentBondsIssued",
+)
+
 _USD = "USD"
 _SHARES = "shares"
+
+US_GAAP_NAMESPACE = "us-gaap"
+"""Taxonomy a domestic filer, and many foreign ones, tag their statements with."""
+
+IFRS_NAMESPACE = "ifrs-full"
+"""Taxonomy a foreign private issuer reporting under IFRS tags instead.
+
+Which of the two a company uses cannot be inferred from where it is listed or
+what it files: ASML files a 20-F and tags `us-gaap`, while TSM files a 20-F and
+tags `ifrs-full`. It is read per company from the facts document.
+"""
+
+
+class _ConceptSet(NamedTuple):
+    """Every concept chain needed to read one taxonomy's statements.
+
+    A record of constants, not a strategy object. The reading machinery —
+    `_merge_chain`, `_quarterly_series`, `_instant_series` and the rest — was
+    already written to take a facts block and a unit as arguments, so supporting
+    a second taxonomy needs a second table rather than a second code path. The
+    only genuine behavioural difference is how borrowings are put together, and
+    that is a flag rather than a subclass.
+
+    Attributes:
+        namespace: The key this taxonomy's facts sit under in a company-facts
+            document.
+        capex_total: Concepts stating capital spending in one figure.
+        capex_components: Concepts summed when no total was tagged.
+        total_borrowings: Entity-wide borrowings, current and non-current
+            together. Empty for us-gaap, which has no such concept.
+        short_term_debt_fallback: Read only when neither the current total nor
+            the current components were tagged.
+    """
+
+    namespace: str
+    revenue: tuple[str, ...]
+    gross_profit: tuple[str, ...]
+    cost_of_revenue: tuple[str, ...]
+    operating_income: tuple[str, ...]
+    operating_cash_flow: tuple[str, ...]
+    capex_total: tuple[str, ...]
+    capex_components: tuple[str, ...]
+    shares: tuple[str, ...]
+    cash: tuple[str, ...]
+    short_term_investments: tuple[str, ...]
+    common_shares: tuple[str, ...]
+    total_borrowings: tuple[str, ...]
+    long_term_debt_total: tuple[str, ...]
+    long_term_debt_components: tuple[str, ...]
+    short_term_debt_total: tuple[str, ...]
+    short_term_debt_components: tuple[str, ...]
+    short_term_debt_fallback: tuple[str, ...]
+
+
+_US_GAAP_CONCEPTS = _ConceptSet(
+    namespace=US_GAAP_NAMESPACE,
+    revenue=_REVENUE_TAGS,
+    gross_profit=_GROSS_PROFIT_TAGS,
+    cost_of_revenue=_COST_OF_REVENUE_TAGS,
+    operating_income=_OPERATING_INCOME_TAGS,
+    operating_cash_flow=_OPERATING_CASH_FLOW_TAGS,
+    capex_total=_CAPEX_TAGS,
+    # Intangible purchases are deliberately not summed in here. Domestic filers
+    # have been scored without them since Phase 1, and adding them now would
+    # move existing scores for a reason unrelated to international coverage.
+    capex_components=(),
+    shares=_SHARES_TAGS,
+    cash=_CASH_TAGS,
+    short_term_investments=_SHORT_TERM_INVESTMENTS_TAGS,
+    common_shares=_COMMON_SHARES_GAAP_TAGS,
+    total_borrowings=(),
+    long_term_debt_total=_LONG_TERM_DEBT_TOTAL_TAGS,
+    long_term_debt_components=_LONG_TERM_DEBT_COMPONENT_TAGS,
+    short_term_debt_total=_SHORT_TERM_DEBT_TOTAL_TAGS,
+    short_term_debt_components=_SHORT_TERM_DEBT_COMPONENT_TAGS,
+    short_term_debt_fallback=(),
+)
+
+_IFRS_CONCEPTS = _ConceptSet(
+    namespace=IFRS_NAMESPACE,
+    revenue=_IFRS_REVENUE_TAGS,
+    gross_profit=_IFRS_GROSS_PROFIT_TAGS,
+    cost_of_revenue=_IFRS_COST_OF_REVENUE_TAGS,
+    operating_income=_IFRS_OPERATING_INCOME_TAGS,
+    operating_cash_flow=_IFRS_OPERATING_CASH_FLOW_TAGS,
+    capex_total=_IFRS_CAPEX_TOTAL_TAGS,
+    capex_components=_IFRS_CAPEX_COMPONENT_TAGS,
+    shares=_IFRS_SHARES_TAGS,
+    cash=_IFRS_CASH_TAGS,
+    short_term_investments=_IFRS_SHORT_TERM_INVESTMENTS_TAGS,
+    common_shares=_IFRS_COMMON_SHARES_TAGS,
+    total_borrowings=_IFRS_TOTAL_BORROWINGS_TAGS,
+    long_term_debt_total=_IFRS_LONG_TERM_DEBT_TOTAL_TAGS,
+    long_term_debt_components=_IFRS_LONG_TERM_DEBT_COMPONENT_TAGS,
+    short_term_debt_total=_IFRS_SHORT_TERM_DEBT_TOTAL_TAGS,
+    short_term_debt_components=_IFRS_SHORT_TERM_DEBT_COMPONENT_TAGS,
+    short_term_debt_fallback=_IFRS_SHORT_TERM_DEBT_FALLBACK_TAGS,
+)
+
+#: Taxonomies in the order they are looked for. us-gaap first because it covers
+#: every domestic filer and a large share of foreign ones.
+_CONCEPT_SETS = (_US_GAAP_CONCEPTS, _IFRS_CONCEPTS)
+
+#: Annual reports of a foreign private issuer.
+#:
+#: The share count on their cover page is stated in **ordinary shares**, while
+#: the U.S.-listed security is usually an American Depositary Share representing
+#: some number of them. TSM's is five; ASML's, SAP's and NVO's are one. Nothing
+#: in the XBRL says which — TSM's cover page calls the security "Common Shares"
+#: and the ratio appears only in a prose footnote — so multiplying that count by
+#: a U.S. price is right three times in four and 5x wrong the fourth. Cover-page
+#: counts from these forms are therefore not read at all.
+FPI_ANNUAL_FORMS = frozenset({"20-F", "20-F/A", "40-F", "40-F/A"})
 
 #: How far after a quarter end a cover-page share count may be dated, and how
 #: far before. A 10-Q lands within about six weeks of the quarter it reports and
 #: states its share count as of a date near filing; ninety days stops one
 #: quarter's count being read as the next one's.
-FILING_FORMS = frozenset({"10-K", "10-Q", "8-K"})
+FILING_FORMS = frozenset({"10-K", "10-Q", "8-K", "20-F", "20-F/A", "40-F", "40-F/A"})
 """Forms a research brief may cite.
 
 The recent-filings index is dominated by ownership reports and prospectus
-supplements. These three are the ones that carry the business: the annual and
-quarterly reports, and the current report a company files when something happens
-between them.
+supplements. These are the ones that carry the business: the annual and
+quarterly reports, the current report a domestic company files when something
+happens between them, and the annual reports their foreign counterparts file
+instead.
+
+**`6-K` is deliberately excluded**, despite being the only current report a
+foreign private issuer has. It is not a foreign `8-K`. An 8-K reports a material
+event under a numbered item; a 6-K is an untyped envelope for anything a company
+publishes at home — TSM has filed 713 of them, carrying monthly revenue notices,
+month-end reports, board changes, AGM notices and dividend adjustments, none of
+it XBRL-tagged and none of it structured enough to quote from.
+
+Including them made a foreign issuer's citable record entirely noise *and* hid
+the one filing worth reading: at fifty to ninety 6-Ks a year, the eight most
+recent filings for TSM and NVO were all 6-Ks and neither company's 20-F was
+reachable at all. Leaving them out is what makes the annual report citable.
 """
 
 DEFAULT_FILING_LIMIT = 8
@@ -342,18 +565,23 @@ class SecEdgarFundamentals:
         if cik is None:
             return None
 
-        facts = self._company_facts(cik)
+        payload = self._company_facts(cik)
+        all_facts = payload.get("facts", {})
+        concepts = _detect_concept_set(all_facts)
         return CompanyProfile(
             ticker=symbol,
-            name=str(facts.get("entityName") or symbol),
+            name=str(payload.get("entityName") or symbol),
             # The registrant's own SIC description, e.g. "State Commercial
             # Banks". Not a market-data sector taxonomy, but it is what makes the
             # unsupported-sector rule work without a commercial provider — and it
             # comes free with a request the adapter already needs.
             industry=self._industry_for(cik),
-            # Filings are in USD unless a filer says otherwise; the units key on
-            # each fact is checked when the figures themselves are read.
-            currency=_USD,
+            # Read from the unit the filer actually tagged its revenue in, never
+            # assumed. This field decides `UNSUPPORTED_CURRENCY`, and a company
+            # reporting in TWD while its market capitalisation is quoted in
+            # dollars would otherwise pass a screen it should fail — silently,
+            # and by a factor that looks like a plausible valuation.
+            reporting_currency=_detect_currency(all_facts, concepts),
         )
 
     def get_financial_statements(self, ticker: str, limit: int = 20) -> list[FinancialPeriod]:
@@ -378,46 +606,67 @@ class SecEdgarFundamentals:
 
         payload = self._company_facts(cik)
         all_facts = payload.get("facts", {})
-        gaap = all_facts.get("us-gaap", {})
-        if not gaap:
+        concepts = _detect_concept_set(all_facts)
+        if concepts is None:
             return []
+        book = all_facts.get(concepts.namespace, {})
         dei = all_facts.get("dei", {})
+        # The currency the filer tagged, not an assumption. Everything money-
+        # denominated below is read from this unit key; reading `USD` from a
+        # company that files in EUR finds nothing at all, which is exactly how
+        # ASML — whose concepts all match the us-gaap chains — produced no
+        # periods whatsoever.
+        unit = _detect_currency(all_facts, concepts) or _USD
 
-        cost_of_revenue, cost_sources = _sourced_quarterly_series(gaap, _COST_OF_REVENUE_TAGS)
+        cost_of_revenue, cost_sources = _sourced_quarterly_series(
+            book, concepts.cost_of_revenue, unit
+        )
         flows = {
-            "revenue": _quarterly_series(gaap, _REVENUE_TAGS),
-            "gross_profit": _quarterly_series(gaap, _GROSS_PROFIT_TAGS),
+            "revenue": _quarterly_series(book, concepts.revenue, unit),
+            "gross_profit": _quarterly_series(book, concepts.gross_profit, unit),
             "cost_of_revenue": cost_of_revenue,
-            "operating_income": _quarterly_series(gaap, _OPERATING_INCOME_TAGS),
-            "operating_cash_flow": _quarterly_series(gaap, _OPERATING_CASH_FLOW_TAGS),
-            "capital_expenditure": _quarterly_series(gaap, _CAPEX_TAGS),
+            "operating_income": _quarterly_series(book, concepts.operating_income, unit),
+            "operating_cash_flow": _quarterly_series(book, concepts.operating_cash_flow, unit),
+            "capital_expenditure": _capex_series(book, concepts, unit),
             # Weighted averages are not additive, so no ladder differencing:
             # a fiscal Q4 share count simply stays missing rather than being
             # invented by subtraction.
             "shares_outstanding": _quarterly_series(
-                gaap, _SHARES_TAGS, unit=_SHARES, additive=False
+                book, concepts.shares, unit=_SHARES, additive=False
             ),
         }
         instants = {
-            "cash": _instant_series(gaap, _CASH_TAGS),
-            "short_term_investments": _instant_series(gaap, _SHORT_TERM_INVESTMENTS_TAGS),
-            "long_term_debt_total": _instant_series(gaap, _LONG_TERM_DEBT_TOTAL_TAGS),
+            "cash": _instant_series(book, concepts.cash, unit),
+            "short_term_investments": _instant_series(book, concepts.short_term_investments, unit),
+            "total_borrowings": _instant_series(book, concepts.total_borrowings, unit),
+            "long_term_debt_total": _instant_series(book, concepts.long_term_debt_total, unit),
             "long_term_debt_components": _summed_instant_series(
-                gaap, _LONG_TERM_DEBT_COMPONENT_TAGS
+                book, concepts.long_term_debt_components, unit
             ),
-            "short_term_debt_total": _instant_series(gaap, _SHORT_TERM_DEBT_TOTAL_TAGS),
+            "short_term_debt_total": _instant_series(book, concepts.short_term_debt_total, unit),
             "short_term_debt_components": _summed_instant_series(
-                gaap, _SHORT_TERM_DEBT_COMPONENT_TAGS
+                book, concepts.short_term_debt_components, unit
             ),
-            # Cover-page count first, balance-sheet count as the fallback.
+            "short_term_debt_fallback": _instant_series(
+                book, concepts.short_term_debt_fallback, unit
+            ),
+            # Cover-page count first, balance-sheet count as the fallback. Counts
+            # stated on a foreign private issuer's annual report are dropped —
+            # see `FPI_ANNUAL_FORMS` for why they cannot be multiplied by a
+            # U.S. price.
             "common_shares_outstanding": {
-                **_instant_series(gaap, _COMMON_SHARES_GAAP_TAGS, unit=_SHARES),
-                **_instant_series(dei, _COMMON_SHARES_DEI_TAGS, unit=_SHARES),
+                **_instant_series(
+                    book, concepts.common_shares, unit=_SHARES, exclude_forms=FPI_ANNUAL_FORMS
+                ),
+                **_instant_series(
+                    dei, _COMMON_SHARES_DEI_TAGS, unit=_SHARES, exclude_forms=FPI_ANNUAL_FORMS
+                ),
             },
         }
         period_ends = sorted({end for series in flows.values() for end in series})
         periods = [
-            _build_period(period_end, flows, instants, cost_sources) for period_end in period_ends
+            _build_period(period_end, flows, instants, cost_sources, currency=unit)
+            for period_end in period_ends
         ]
         return periods[-limit:] if limit > 0 else periods
 
@@ -695,12 +944,112 @@ def _latest_filed(facts: Iterable[Mapping[str, Any]]) -> Mapping[str, Any] | Non
     return max(dated, key=lambda fact: str(fact["filed"]))
 
 
-def _facts_for_tag(gaap: Mapping[str, Any], tag: str, unit: str) -> list[Mapping[str, Any]]:
-    """Return the raw facts filed under one concept tag."""
+def _detect_concept_set(all_facts: Mapping[str, Any]) -> _ConceptSet | None:
+    """Return the concept table matching the taxonomy this filer tagged.
+
+    Read from the facts document rather than inferred from the company, because
+    nothing about a company predicts it. ASML and TSM both file a 20-F as
+    foreign private issuers; ASML's statements arrive under `us-gaap` and TSM's
+    under `ifrs-full`. Guessing from the exchange, the form or the country would
+    be wrong for one of them.
+
+    **Presence alone is not the test.** A filer that changed taxonomy keeps the
+    old block forever: Telus carries one us-gaap concept with four facts, the
+    newest from 2018, beside 269 ifrs-full concepts with eight thousand. Taking
+    the first namespace that exists would read the vestigial one and return no
+    periods at all, so the taxonomies are ranked by how much of the income
+    statement each actually carries.
+
+    Args:
+        all_facts: The `facts` block of a company-facts document.
+
+    Returns:
+        The concept set whose revenue concepts the filer tagged most, or the
+        larger block when neither has revenue — a genuinely pre-revenue company
+        still has a balance sheet. None when no recognised taxonomy is present,
+        which is not an error, only a company there is nothing to read.
+    """
+    ranked: list[tuple[int, int, int, _ConceptSet]] = []
+    for index, concepts in enumerate(_CONCEPT_SETS):
+        book = all_facts.get(concepts.namespace)
+        if not isinstance(book, dict) or not book:
+            continue
+        revenue_facts = sum(
+            len(entries)
+            for tag in concepts.revenue
+            for entries in book.get(tag, {}).get("units", {}).values()
+            if isinstance(entries, list)
+        )
+        # Negative index keeps the declared order as the final tie-break, so a
+        # filer tagging both taxonomies identically still resolves to us-gaap.
+        ranked.append((revenue_facts, len(book), -index, concepts))
+    if not ranked:
+        return None
+    return max(ranked, key=lambda entry: entry[:3])[3]
+
+
+def _detect_currency(all_facts: Mapping[str, Any], concepts: _ConceptSet | None) -> str | None:
+    """Return the currency a filer states its statements in.
+
+    Taken from the unit key carrying the most revenue facts. The unit is the
+    filing's own declaration, which makes it the authoritative answer — unlike a
+    market-data vendor's `currency` field, which for an ADR is the currency the
+    *share* trades in and is USD for every foreign issuer on a U.S. exchange.
+
+    Picking the most-tagged unit rather than the first also handles a
+    convenience translation correctly. TSM tags 26 revenue facts in TWD and 9 in
+    USD, the USD column being a courtesy restatement at a single year-end spot
+    rate; TWD is what the company reports in, and it wins on count.
+
+    Args:
+        all_facts: The `facts` block of a company-facts document.
+        concepts: The taxonomy table to read revenue concepts from.
+
+    Returns:
+        An ISO currency code, or None when nothing could be determined.
+    """
+    if concepts is None:
+        return None
+    book = all_facts.get(concepts.namespace, {})
+    counts: dict[str, int] = {}
+    for tag in concepts.revenue:
+        units = book.get(tag, {}).get("units", {})
+        if not isinstance(units, dict):
+            continue
+        for unit, entries in units.items():
+            if unit == _SHARES or not isinstance(entries, list):
+                continue
+            counts[unit] = counts.get(unit, 0) + len(entries)
+    if not counts:
+        return None
+    # Ties broken alphabetically so the answer never depends on dict ordering.
+    return max(sorted(counts), key=lambda unit: counts[unit])
+
+
+def _facts_for_tag(
+    gaap: Mapping[str, Any],
+    tag: str,
+    unit: str,
+    *,
+    exclude_forms: frozenset[str] | None = None,
+) -> list[Mapping[str, Any]]:
+    """Return the raw facts filed under one concept tag.
+
+    Args:
+        gaap: A taxonomy's facts.
+        tag: The concept to read.
+        unit: The unit key to read.
+        exclude_forms: Forms whose facts are dropped. Used to keep a foreign
+            private issuer's ordinary-share cover-page count out of the series
+            that market capitalisation is calculated from.
+    """
     entries = gaap.get(tag, {}).get("units", {}).get(unit)
     if not isinstance(entries, list):
         return []
-    return [entry for entry in entries if isinstance(entry, dict)]
+    facts: list[Mapping[str, Any]] = [entry for entry in entries if isinstance(entry, dict)]
+    if exclude_forms is None:
+        return facts
+    return [fact for fact in facts if fact.get("form") not in exclude_forms]
 
 
 def _merge_chain(
@@ -708,6 +1057,8 @@ def _merge_chain(
     gaap: Mapping[str, Any],
     tags: Sequence[str],
     unit: str,
+    *,
+    exclude_forms: frozenset[str] | None = None,
 ) -> dict[date, float]:
     """Combine every tag in a fallback chain, most specific winning per period.
 
@@ -727,13 +1078,14 @@ def _merge_chain(
         gaap: The `us-gaap` block of a company-facts document.
         tags: Concept fallback chain, most specific first.
         unit: Unit key to read.
+        exclude_forms: Forms whose facts are dropped before merging.
 
     Returns:
         The merged series.
     """
     merged: dict[date, float] = {}
     for tag in reversed(tags):
-        merged.update(build(_facts_for_tag(gaap, tag, unit)))
+        merged.update(build(_facts_for_tag(gaap, tag, unit, exclude_forms=exclude_forms)))
     return merged
 
 
@@ -779,8 +1131,42 @@ def _quarterly_series(
     return _merge_chain(build, gaap, tags, unit)
 
 
+def _capex_series(book: Mapping[str, Any], concepts: _ConceptSet, unit: str) -> dict[date, float]:
+    """Return capital spending per period, preferring a filer's combined figure.
+
+    Two shapes, and summing them together would double-count. SAP states one
+    concept covering property, intangibles, investment property and other
+    non-current assets. TSM and NVO state property and intangibles as separate
+    lines, and reading only the property line would omit a real part of the
+    capital programme.
+
+    A stated total therefore wins outright, exactly as it does for borrowings,
+    and the components are summed only for the periods no total covers.
+
+    Args:
+        book: The taxonomy's facts.
+        concepts: The taxonomy table.
+        unit: The currency unit to read.
+
+    Returns:
+        Capital spending by period end. Empty where the filer tagged neither.
+    """
+    totals = _quarterly_series(book, concepts.capex_total, unit)
+    if not concepts.capex_components:
+        return totals
+
+    summed: dict[date, float] = {}
+    for tag in concepts.capex_components:
+        for period_end, value in _quarters_from_facts(
+            _facts_for_tag(book, tag, unit), additive=True
+        ).items():
+            summed[period_end] = summed.get(period_end, 0.0) + value
+    summed.update(totals)
+    return summed
+
+
 def _sourced_quarterly_series(
-    gaap: Mapping[str, Any], tags: Sequence[str]
+    gaap: Mapping[str, Any], tags: Sequence[str], unit: str = _USD
 ) -> tuple[dict[date, float], dict[date, str]]:
     """Return a quarterly series plus the concept each period came from.
 
@@ -793,6 +1179,7 @@ def _sourced_quarterly_series(
     Args:
         gaap: The `us-gaap` block of a company-facts document.
         tags: Concept fallback chain, most specific first.
+        unit: The currency unit to read.
 
     Returns:
         The merged series and a matching map of period end to concept name.
@@ -800,7 +1187,7 @@ def _sourced_quarterly_series(
     values: dict[date, float] = {}
     sources: dict[date, str] = {}
     for tag in reversed(tags):
-        series = _quarters_from_facts(_facts_for_tag(gaap, tag, _USD), additive=True)
+        series = _quarters_from_facts(_facts_for_tag(gaap, tag, unit), additive=True)
         values.update(series)
         for period_end in series:
             sources[period_end] = tag
@@ -911,7 +1298,11 @@ def _difference_ladder(series: dict[date, float], start: date, rungs: Mapping[da
 
 
 def _instant_series(
-    facts: Mapping[str, Any], tags: Sequence[str], unit: str = _USD
+    facts: Mapping[str, Any],
+    tags: Sequence[str],
+    unit: str = _USD,
+    *,
+    exclude_forms: frozenset[str] | None = None,
 ) -> dict[date, float]:
     """Return one point-in-time value per reporting date for a concept.
 
@@ -922,8 +1313,9 @@ def _instant_series(
         facts: A taxonomy's facts — `us-gaap` or `dei`.
         tags: Concept fallback chain, most specific first.
         unit: The unit to read. Share counts are `shares`, not `USD`.
+        exclude_forms: Forms whose facts are dropped.
     """
-    return _merge_chain(_instants_from_facts, facts, tags, unit)
+    return _merge_chain(_instants_from_facts, facts, tags, unit, exclude_forms=exclude_forms)
 
 
 def _summed_instant_series(
@@ -1022,6 +1414,8 @@ def _build_period(
     flows: Mapping[str, Mapping[date, float]],
     instants: Mapping[str, Mapping[date, float]],
     cost_sources: Mapping[date, str] | None = None,
+    *,
+    currency: str = _USD,
 ) -> FinancialPeriod:
     """Assemble one quarter from the collected series.
 
@@ -1031,6 +1425,9 @@ def _build_period(
         instants: Balance-sheet series by field name.
         cost_sources: Which cost concept produced each period's figure, used to
             record how a derived gross profit was arrived at.
+        currency: The unit every money figure here was read in. Recorded on the
+            period so a consumer can refuse to mix it with a market
+            capitalisation quoted in another currency.
     """
     revenue = flows["revenue"].get(period_end)
     gross_profit = flows["gross_profit"].get(period_end)
@@ -1067,7 +1464,7 @@ def _build_period(
         common_shares_outstanding=_cover_page_instant(
             instants["common_shares_outstanding"], period_end
         ),
-        reported_currency=_USD,
+        reported_currency=currency,
         source=PROVIDER_NAME,
     )
 
@@ -1103,8 +1500,24 @@ def _total_debt(instants: Mapping[str, Mapping[date, float]], period_end: date) 
         Total debt, `0.0` where the filing states zero, or None where no
         borrowing was tagged at all.
     """
+    # An entity-wide total, where the taxonomy has one and the filer stated it,
+    # is the whole answer. SAP's `Borrowings` of 6,150.0 is exactly its 4,550.0
+    # non-current plus 1,600.0 current, and NVO's 130,958.0 is exactly its
+    # 118,941.0 plus 12,017.0. Both filers *also* tag `BondsIssued`, which is a
+    # breakdown of that same total rather than a further borrowing — adding it
+    # would report NVO as owing 252,032.0 against an actual 130,958.0.
+    entity_total = _nearest_instant(instants.get("total_borrowings", {}), period_end)
+    if entity_total is not None:
+        return entity_total
+
     long_term = _classified_debt(instants, "long_term_debt", period_end)
     short_term = _classified_debt(instants, "short_term_debt", period_end)
+    if short_term is None:
+        # Read only when the classification produced nothing at all. TSM's
+        # current bonds of NT$57.1bn sit *inside* the NT$59.9bn "long-term
+        # liabilities — current portion" line its balance sheet actually shows,
+        # so this is a last resort rather than an addition.
+        short_term = _nearest_instant(instants.get("short_term_debt_fallback", {}), period_end)
     if long_term is None and short_term is None:
         return None
     return (long_term or 0.0) + (short_term or 0.0)

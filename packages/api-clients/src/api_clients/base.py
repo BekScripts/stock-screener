@@ -25,6 +25,7 @@ if TYPE_CHECKING:
         Filing,
         FilingExcerpt,
         FinancialPeriod,
+        FxConversion,
         PriceBar,
     )
 
@@ -219,5 +220,37 @@ class ExternalResearchProvider(Protocol):
 
         Raises:
             ProviderError: If the search could not be performed.
+        """
+        ...
+
+
+@runtime_checkable
+class FxProvider(Protocol):
+    """A source of dated exchange rates.
+
+    Deliberately one method. The screener converts one number — a market
+    capitalisation — into the currency a company files in, and everything else
+    an FX vendor sells is a different product.
+    """
+
+    def get_rate(self, base: str, quote: str, as_of: date) -> FxConversion | None:
+        """Return the rate converting `base` into `quote` around a date.
+
+        Args:
+            base: Currency to convert from, e.g. the currency a security trades
+                in.
+            quote: Currency to convert to, e.g. the currency a company files in.
+            as_of: The date wanted. An implementation may answer with an earlier
+                date when no rate was fixed on this one, and must say which date
+                it used rather than presenting it as the date requested.
+
+        Returns:
+            The conversion, or None when this source does not publish the pair.
+            None is an ordinary answer, not a failure: no source covers every
+            currency, and a caller that cannot convert must produce a missing
+            ratio rather than a mixed-currency one.
+
+        Raises:
+            ProviderError: If the request itself failed.
         """
         ...

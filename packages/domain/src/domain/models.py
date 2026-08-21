@@ -11,7 +11,7 @@ package can have, so no model ever defaults a financial field to zero.
 
 from __future__ import annotations
 
-from datetime import date  # noqa: TC003 — pydantic needs the runtime symbol
+from datetime import date, datetime  # noqa: TC003 — pydantic needs the runtime symbols
 from enum import StrEnum
 from typing import Annotated, Self
 
@@ -23,7 +23,24 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 NonNegativeFloat = Annotated[float, Field(ge=0)]
 
 USD = "USD"
-"""The only reporting currency the metric engine can safely mix with market cap."""
+"""The currency U.S.-listed securities are quoted in, and the default for both
+a reporting currency and a quote currency that nobody stated."""
+
+
+def normalise_currency(value: str | None) -> str:
+    """Return an ISO currency code in canonical form, defaulting to USD.
+
+    An absent code is USD rather than an error. Most filings do not restate the
+    obvious, and treating silence as unknown-and-therefore-excluded would empty
+    a universe that is overwhelmingly dollar-denominated.
+
+    Args:
+        value: A raw currency code from a filing, provider or database row.
+
+    Returns:
+        The stripped, upper-cased code, or `USD` when there was none.
+    """
+    return value.strip().upper() if value and value.strip() else USD
 
 
 def normalise_ticker(value: str) -> str:
@@ -229,6 +246,19 @@ class EligibilityWarning(StrEnum):
     surfaced, because its usual causes (a stale share count, multiple share
     classes, a recent issuance) each mean something different."""
 
+    FX_UNAVAILABLE = "FX_UNAVAILABLE"
+    """The company reports in one currency and trades in another, and no
+    exchange rate was available to bring them together.
+
+    A caveat rather than an exclusion, because it costs the company only the
+    part of the picture that needs both sides. Revenue growth, margins and every
+    price-based figure are computed from one currency each and remain perfectly
+    valid; what cannot be computed is any ratio of a financial figure to a
+    market capitalisation, and those return None rather than a mixed-currency
+    number. The company is screened, and usually lands on `INSUFFICIENT_DATA`
+    because valuation could not reach its coverage floor — which is the honest
+    account of what is known about it."""
+
 
 class FilingExcerpt(_Frozen):
     """Verbatim text lifted from one section of one filing.
@@ -318,8 +348,21 @@ class CompanyProfile(_Frozen):
         average_volume: Average daily share volume across **all** venues, when a
             provider supplies it. This is the trustworthy liquidity input; a
             figure derived from single-exchange bars is not comparable with it.
-        currency: ISO code the company reports its financials in, when the
-            provider says. None means unknown, which is treated as USD.
+        reporting_currency: ISO code the company states its **financial
+            statements** in, read from the filing. None means unknown, which is
+            treated as USD.
+        quote_currency: ISO code the **listed security** trades in, and
+            therefore the currency `market_cap` and every price are quoted in.
+            None means unknown, which is treated as USD — the only listings this
+            screen admits are NASDAQ, NYSE and NYSE American, all of which quote
+            in dollars.
+
+            Kept apart from `reporting_currency` because the two were one field
+            and the two sources disagreed about what it meant: EDGAR wrote the
+            filing's currency into it and a market-data vendor wrote the trading
+            currency, which for an ADR is USD whatever the company reports in.
+            One field could only ever hold one of those answers, and whichever
+            arrived last won.
         is_fund: Whether the provider classifies this as an ETF or fund. A
             provider's own flag is far more reliable than inferring it from the
             name, so when it is set the name heuristics are not consulted.
@@ -333,7 +376,8 @@ class CompanyProfile(_Frozen):
     industry: str | None = None
     market_cap: float | None = Field(default=None, ge=0)
     average_volume: float | None = Field(default=None, ge=0)
-    currency: str | None = None
+    reporting_currency: str | None = None
+    quote_currency: str | None = None
     is_fund: bool = False
     is_active: bool = True
 
@@ -347,13 +391,57 @@ class CompanyProfile(_Frozen):
 
     @property
     def reports_in_usd(self) -> bool:
-        """Whether the company's statements are comparable with its market cap.
+        """Whether the company states its financial statements in dollars.
 
         An unknown currency counts as USD: the overwhelming majority of
         U.S.-listed common stock reports in dollars, and excluding every company
         whose provider omitted the field would empty the universe.
         """
-        return self.currency is None or self.currency.strip().upper() == USD
+        return normalise_currency(self.reporting_currency) == USD
+
+    @property
+    def needs_conversion(self) -> bool:
+        """Whether statements and market capitalisation are in different money.
+
+        True for TSM, ASML, SAP and NVO; false for every domestic filer, which
+        is what keeps the FX layer entirely off the domestic path.
+        """
+        return normalise_currency(self.reporting_currency) != normalise_currency(
+            self.quote_currency
+        )
+
+
+class FxConversion(_Frozen):
+    """One exchange rate, with enough provenance to reproduce it.
+
+    A rate without its date is not a fact about anything: applying today's rate
+    to a score computed three months ago silently restates that score in money
+    that did not exist yet. So the date actually used travels with the number,
+    and it is the date the *rate* is for — not the date it was asked for, which
+    on a weekend is a day no market fixed a price.
+
+    Attributes:
+        base: The currency being converted **from** — the quote currency of the
+            listed security, so a market capitalisation is in this money.
+        quote: The currency being converted **to** — the company's reporting
+            currency, so a balance sheet is in this money.
+        rate: How many units of `quote` one unit of `base` buys. Multiply.
+        rate_date: The date the rate is for, which may be earlier than the date
+            requested when that fell on a weekend or a holiday.
+        provider: Which source published it.
+        retrieved_at: When it was fetched, which is not when it applied.
+    """
+
+    base: str
+    quote: str
+    rate: float = Field(gt=0)
+    rate_date: date
+    provider: str
+    retrieved_at: datetime | None = None
+
+    def convert(self, amount: float | None) -> float | None:
+        """Return `amount`, expressed in `quote`. None stays None."""
+        return None if amount is None else amount * self.rate
 
 
 class CompanyMetrics(_Frozen):
@@ -415,6 +503,19 @@ class CompanyMetrics(_Frozen):
         low_52w: Lowest close in the past year.
         distance_from_52w_high: Latest close over the 52-week high, less one.
             Negative when the stock trades below its high.
+        reported_currency: The currency the fundamental figures here are
+            denominated in, taken from the latest period. None when no period
+            said. Fundamentals are kept in the money the company reported them
+            in and are never restated — converting a history would put exchange
+            rate movement into revenue growth, where it is not.
+        quote_currency: The currency `price` and `market_cap` are in. USD for
+            every listing this screen admits.
+        market_cap_reporting_currency: `market_cap` expressed in
+            `reported_currency`. Equal to `market_cap` when the two currencies
+            match, and None when they differ and no rate was available.
+        fx: The conversion used, or None when none was needed or none was
+            found. Carried so a stored score can say which rate, from which
+            date and which source, produced its valuation.
     """
 
     ticker: str
@@ -457,6 +558,70 @@ class CompanyMetrics(_Frozen):
     high_52w: float | None = None
     low_52w: float | None = None
     distance_from_52w_high: float | None = None
+
+    reported_currency: str | None = None
+    quote_currency: str | None = None
+    market_cap_reporting_currency: float | None = None
+    fx: FxConversion | None = None
+
+    @property
+    def market_cap_for_ratios(self) -> float | None:
+        """Market capitalisation in the same money as the fundamentals here.
+
+        **The only market capitalisation any ratio against a financial figure
+        may use.** `market_cap` is quoted in dollars while a foreign issuer's
+        cash, debt and revenue are not, so dividing one by the other is wrong by
+        an exchange rate — for TSM that is a factor of about thirty-two, which
+        turns the most expensive large cap on the board into the cheapest.
+
+        Returns None rather than falling back to the unconverted figure when a
+        conversion was needed and unavailable. A missing sub-score is a gap; a
+        mixed-currency sub-score is a wrong answer that looks like a right one.
+        """
+        if not self.needs_conversion:
+            return self.market_cap
+        return self.market_cap_reporting_currency
+
+    @property
+    def needs_conversion(self) -> bool:
+        """Whether the fundamentals and the market capitalisation differ in money."""
+        return normalise_currency(self.reported_currency) != normalise_currency(self.quote_currency)
+
+    @property
+    def reports_in_usd(self) -> bool:
+        """Whether these fundamentals may be compared with a USD market cap.
+
+        An unknown currency counts as USD, matching `CompanyProfile`: the
+        overwhelming majority of U.S.-listed common stock reports in dollars,
+        and excluding every company whose filings did not say would empty the
+        universe.
+        """
+        return normalise_currency(self.reported_currency) == USD
+
+    @model_validator(mode="after")
+    def _check_currency_coherence(self) -> Self:
+        """Reject an enterprise value that no market capitalisation supports.
+
+        An enterprise value is a market capitalisation plus debt less cash. If
+        the market capitalisation could not be expressed in the currency of the
+        debt and the cash, there is no arithmetic that produces a meaningful
+        answer — so holding one here would mean some path had quietly built the
+        mixed-currency figure this whole layer exists to prevent.
+
+        Raising rather than clearing it, because a value that got this far is
+        evidence of a bug upstream and silently blanking it would hide the bug
+        while fixing the symptom.
+        """
+        if (
+            self.enterprise_value is not None
+            and self.needs_conversion
+            and self.market_cap_reporting_currency is None
+        ):
+            raise ValueError(
+                f"{self.ticker}: enterprise value in {self.reported_currency} cannot come from a "
+                f"market capitalisation in {self.quote_currency} with no conversion"
+            )
+        return self
 
     @model_validator(mode="after")
     def _normalise_ticker(self) -> Self:
