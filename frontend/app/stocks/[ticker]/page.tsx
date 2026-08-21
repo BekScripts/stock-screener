@@ -6,7 +6,7 @@ import { Research } from "@/components/research";
 import { ResearchButton } from "@/components/research-button";
 import { WatchButton } from "@/components/watch-button";
 import { fetchResearch, fetchStock, type Component, type StockDetail } from "@/lib/api";
-import { change, metricValue, money, percent, score, title } from "@/lib/format";
+import { UNKNOWN, change, metricValue, money, percent, score, title } from "@/lib/format";
 
 export default async function StockPage({ params }: { params: Promise<{ ticker: string }> }) {
   const { ticker } = await params;
@@ -58,6 +58,7 @@ export default async function StockPage({ params }: { params: Promise<{ ticker: 
           <Field label="Exchange" value={detail.exchange ?? "—"} />
           <Field label="Score date" value={detail.score?.score_date ?? "—"} />
           <Field label="Score version" value={detail.score?.score_version ?? "—"} />
+          <Field label="Fundamentals basis" value={fundamentalsBasis(detail)} />
           {detail.reporting_currency !== detail.market_cap_currency && (
             <Field
               label="Reports in"
@@ -238,4 +239,32 @@ function whyUnscored(score: NonNullable<StockDetail["score"]>): string {
       .join(" ");
   }
   return "No reason was recorded for this row. It predates exclusion reasons being stored; the next scoring run will fill it in.";
+}
+
+/**
+ * How this company's fundamentals were measured, in one line.
+ *
+ * A quarterly filer and an annual one both have "revenue growth", and the
+ * phrase means a different span of time for each. Saying which prevents a
+ * reader taking TSM's figures — a fiscal year ending last December — for
+ * current-quarter ones.
+ */
+const CADENCE_LABEL: Record<string, string> = {
+  QUARTERLY: "Quarterly",
+  SEMIANNUAL: "Half-yearly",
+  ANNUAL: "Annual",
+};
+
+function fundamentalsBasis(detail: StockDetail): string {
+  const cadence = CADENCE_LABEL[detail.fundamental_cadence];
+  if (!cadence) return UNKNOWN;
+  if (!detail.fundamentals_through) return cadence;
+  const through = new Date(detail.fundamentals_through).toLocaleDateString("en-US", {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+    timeZone: "UTC",
+  });
+  const basis = `${cadence} · through ${through}`;
+  return detail.fundamentals_stale ? `${basis} · stale` : basis;
 }

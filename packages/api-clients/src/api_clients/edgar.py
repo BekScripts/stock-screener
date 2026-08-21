@@ -49,7 +49,16 @@ import structlog
 from api_clients._http import RateLimiter, RetryPolicy, request_json, request_text
 from api_clients.errors import ProviderDataError, ProviderError
 from api_clients.filing_text import clean_filing_text, extract_sections
-from domain import CompanyProfile, Filing, FilingExcerpt, FinancialPeriod, normalise_ticker
+from domain import (
+    CADENCE_BANDS,
+    CompanyProfile,
+    Filing,
+    FilingExcerpt,
+    FinancialPeriod,
+    PeriodCadence,
+    classify_cadence,
+    normalise_ticker,
+)
 
 log = structlog.get_logger(__name__)
 
@@ -618,23 +627,20 @@ class SecEdgarFundamentals:
         # periods whatsoever.
         unit = _detect_currency(all_facts, concepts) or _USD
 
-        cost_of_revenue, cost_sources = _sourced_quarterly_series(
-            book, concepts.cost_of_revenue, unit
-        )
-        flows = {
-            "revenue": _quarterly_series(book, concepts.revenue, unit),
-            "gross_profit": _quarterly_series(book, concepts.gross_profit, unit),
-            "cost_of_revenue": cost_of_revenue,
-            "operating_income": _quarterly_series(book, concepts.operating_income, unit),
-            "operating_cash_flow": _quarterly_series(book, concepts.operating_cash_flow, unit),
-            "capital_expenditure": _capex_series(book, concepts, unit),
-            # Weighted averages are not additive, so no ladder differencing:
-            # a fiscal Q4 share count simply stays missing rather than being
-            # invented by subtraction.
-            "shares_outstanding": _quarterly_series(
-                book, concepts.shares, unit=_SHARES, additive=False
-            ),
-        }
+        # Which cadence this filer actually reports on, read from its revenue
+        # facts. Everything below is then read at that one cadence, so a year
+        # and the quarters inside it never both become periods and nothing is
+        # counted twice.
+        cadence, period_starts = _detect_cadence(book, concepts, unit)
+        if cadence is PeriodCadence.UNKNOWN:
+            # Nothing said. The quarterly path is what this adapter has always
+            # done and what the domestic universe needs, so an undetectable
+            # filer keeps the old behaviour rather than losing its history.
+            cadence = PeriodCadence.QUARTERLY
+        if cadence is PeriodCadence.QUARTERLY:
+            flows, cost_sources = _quarterly_flows(book, concepts, unit)
+        else:
+            flows, cost_sources = _reported_flows(book, concepts, cadence, unit)
         instants = {
             "cash": _instant_series(book, concepts.cash, unit),
             "short_term_investments": _instant_series(book, concepts.short_term_investments, unit),
@@ -665,7 +671,15 @@ class SecEdgarFundamentals:
         }
         period_ends = sorted({end for series in flows.values() for end in series})
         periods = [
-            _build_period(period_end, flows, instants, cost_sources, currency=unit)
+            _build_period(
+                period_end,
+                flows,
+                instants,
+                cost_sources,
+                currency=unit,
+                cadence=cadence,
+                period_start=period_starts.get(period_end),
+            )
             for period_end in period_ends
         ]
         return periods[-limit:] if limit > 0 else periods
@@ -1194,6 +1208,247 @@ def _sourced_quarterly_series(
     return values, sources
 
 
+def _quarterly_flows(
+    book: Mapping[str, Any], concepts: _ConceptSet, unit: str
+) -> tuple[dict[str, dict[date, float]], dict[date, str]]:
+    """Build the duration series for a filer that reports quarterly.
+
+    The domestic path, unchanged: cumulative cash-flow ladders are differenced
+    into discrete quarters and a fourth quarter is recovered from the annual
+    figure, because no filer states one.
+    """
+    cost_of_revenue, cost_sources = _sourced_quarterly_series(book, concepts.cost_of_revenue, unit)
+    flows = {
+        "revenue": _quarterly_series(book, concepts.revenue, unit),
+        "gross_profit": _quarterly_series(book, concepts.gross_profit, unit),
+        "cost_of_revenue": cost_of_revenue,
+        "operating_income": _quarterly_series(book, concepts.operating_income, unit),
+        "operating_cash_flow": _quarterly_series(book, concepts.operating_cash_flow, unit),
+        "capital_expenditure": _capex_series(book, concepts, unit),
+        # Weighted averages are not additive, so no ladder differencing:
+        # a fiscal Q4 share count simply stays missing rather than being
+        # invented by subtraction.
+        "shares_outstanding": _quarterly_series(
+            book, concepts.shares, unit=_SHARES, additive=False
+        ),
+    }
+    return flows, cost_sources
+
+
+def _reported_flows(
+    book: Mapping[str, Any], concepts: _ConceptSet, cadence: PeriodCadence, unit: str
+) -> tuple[dict[str, dict[date, float]], dict[date, str]]:
+    """Build the duration series for a filer that reports annually or half-yearly.
+
+    **Nothing is differenced and nothing is derived.** Each figure is a period
+    the company actually stated, taken at face value. The ladder arithmetic the
+    quarterly path uses exists to recover quarters a filer never published; a
+    filer reporting a full year has published the full year, and subtracting
+    anything from it would manufacture a period nobody reported.
+
+    Args:
+        book: The taxonomy's facts.
+        concepts: The concept table.
+        cadence: The cadence to read.
+        unit: The reporting currency unit.
+
+    Returns:
+        The duration series by field name, and which cost concept produced each
+        period's gross profit.
+    """
+    cost_of_revenue: dict[date, float] = {}
+    cost_sources: dict[date, str] = {}
+    for tag in reversed(concepts.cost_of_revenue):
+        series = {
+            end: value
+            for end, (_, value) in _periods_from_facts(
+                _facts_for_tag(book, tag, unit), cadence
+            ).items()
+        }
+        cost_of_revenue.update(series)
+        for period_end in series:
+            cost_sources[period_end] = tag
+
+    capex_total = _cadence_series(book, concepts.capex_total, cadence, unit)
+    capex: dict[date, float] = {}
+    for tag in concepts.capex_components:
+        for period_end, (_, value) in _periods_from_facts(
+            _facts_for_tag(book, tag, unit), cadence
+        ).items():
+            capex[period_end] = capex.get(period_end, 0.0) + value
+    capex.update(capex_total)
+
+    flows = {
+        "revenue": _cadence_series(book, concepts.revenue, cadence, unit),
+        "gross_profit": _cadence_series(book, concepts.gross_profit, cadence, unit),
+        "cost_of_revenue": cost_of_revenue,
+        "operating_income": _cadence_series(book, concepts.operating_income, cadence, unit),
+        "operating_cash_flow": _cadence_series(book, concepts.operating_cash_flow, cadence, unit),
+        "capital_expenditure": capex,
+        "shares_outstanding": _cadence_series(book, concepts.shares, cadence, _SHARES),
+    }
+    return flows, cost_sources
+
+
+def _periods_from_facts(
+    facts: list[Mapping[str, Any]], cadence: PeriodCadence
+) -> dict[date, tuple[date, float]]:
+    """Return one value per period end for facts of a single cadence.
+
+    Duration facts only, filtered to the band the cadence covers, and resolved
+    to the most recently filed value where a period was reported more than once.
+    That last part is what stops a 20-F's comparative columns — the same fiscal
+    year restated in each of the next two annual reports — being counted as
+    extra history.
+
+    Args:
+        facts: One concept's raw facts.
+        cadence: The cadence to keep.
+
+    Returns:
+        Period end mapped to its start date and value.
+    """
+    grouped: dict[date, list[Mapping[str, Any]]] = {}
+    starts: dict[date, date] = {}
+    for fact in facts:
+        start, end = _as_date(fact.get("start")), _as_date(fact.get("end"))
+        if start is None or end is None or classify_cadence(start, end) is not cadence:
+            continue
+        grouped.setdefault(end, []).append(fact)
+        starts[end] = start
+
+    resolved: dict[date, tuple[date, float]] = {}
+    for period_end, group in grouped.items():
+        chosen = _latest_filed(group)
+        value = _as_float(chosen.get("val")) if chosen else None
+        if value is not None:
+            resolved[period_end] = (starts[period_end], value)
+    return resolved
+
+
+def _cadence_series(
+    book: Mapping[str, Any], tags: Sequence[str], cadence: PeriodCadence, unit: str
+) -> dict[date, float]:
+    """Return one value per period end for a concept at one cadence.
+
+    Chains merge exactly as they do for quarters — least specific first, so a
+    more specific tag wins for any period both cover.
+    """
+    merged: dict[date, float] = {}
+    for tag in reversed(tags):
+        for period_end, (_, value) in _periods_from_facts(
+            _facts_for_tag(book, tag, unit), cadence
+        ).items():
+            merged[period_end] = value
+    return merged
+
+
+def _cadence_starts(
+    book: Mapping[str, Any], tags: Sequence[str], cadence: PeriodCadence, unit: str
+) -> dict[date, date]:
+    """Return the start date of each period a concept covers at one cadence."""
+    starts: dict[date, date] = {}
+    for tag in reversed(tags):
+        for period_end, (start, _) in _periods_from_facts(
+            _facts_for_tag(book, tag, unit), cadence
+        ).items():
+            starts[period_end] = start
+    return starts
+
+
+def _detect_cadence(
+    book: Mapping[str, Any], concepts: _ConceptSet, unit: str
+) -> tuple[PeriodCadence, dict[date, date]]:
+    """Return the cadence a filer actually reports on, and its period starts.
+
+    Chosen from revenue, because it is the one concept every filer states and
+    the one every growth metric is built from. The winner is the cadence with
+    the longest **contiguous recent run** — not simply the most facts, and not
+    the shortest duration available.
+
+    That distinction is the whole point. Brookfield has filed nine three-month
+    facts, which looks like a rich quarterly history until you notice they are
+    all second quarters, one per year, three hundred and sixty-five days apart.
+    A run counted by contiguity sees a quarterly run of one and an annual run of
+    nine, and picks annual — where the periods really are consecutive and a
+    trailing year really can be formed. Counting facts alone would have picked
+    quarterly and then failed to build anything from it.
+
+    Args:
+        book: The taxonomy's facts.
+        concepts: The concept table for that taxonomy.
+        unit: The reporting currency unit.
+
+    Returns:
+        The chosen cadence and the start date of every period at it. `UNKNOWN`
+        with an empty mapping when no cadence has any usable history.
+    """
+    # Revenue decides, because it is the concept every filer states and the one
+    # every growth metric is built from. Where a filer tags none — a
+    # pre-revenue company, or a partial document — the cash-flow and operating
+    # lines answer instead, rather than the whole history being lost to a
+    # concept that happened to be absent.
+    for chain in (concepts.revenue, concepts.operating_cash_flow, concepts.operating_income):
+        cadence, starts = _cadence_from(book, chain, unit)
+        if cadence is not PeriodCadence.UNKNOWN:
+            return cadence, starts
+    return PeriodCadence.UNKNOWN, {}
+
+
+def _cadence_from(
+    book: Mapping[str, Any], chain: Sequence[str], unit: str
+) -> tuple[PeriodCadence, dict[date, date]]:
+    """Return the cadence one concept chain reports on, and its period starts."""
+    best = (0, 0, PeriodCadence.UNKNOWN)
+    starts: dict[date, date] = {}
+    for cadence, low, high in CADENCE_BANDS:
+        # The quarterly candidate is measured with the ladder differencing the
+        # domestic path already does. A filer reporting revenue cumulatively —
+        # three months, then six, then nine — states only one discrete quarter
+        # per year directly, so a raw band filter would see a quarterly run of
+        # one and read a perfectly ordinary domestic filer as annual.
+        series = (
+            _quarterly_series(book, chain, unit)
+            if cadence is PeriodCadence.QUARTERLY
+            else _cadence_series(book, chain, cadence, unit)
+        )
+        if not series:
+            continue
+        run = _contiguous_run(sorted(series), low, high)
+        # Finer cadences win ties, so a filer reporting both quarterly and
+        # annually is read at the resolution it actually publishes.
+        rank = (run, len(series), cadence)
+        if rank[:2] > best[:2]:
+            best = rank
+            starts = _cadence_starts(book, chain, cadence, unit)
+    return best[2], starts
+
+
+def _contiguous_run(period_ends: Sequence[date], low: int, high: int) -> int:
+    """Return how many recent periods sit one cadence-length apart.
+
+    Counted backwards from the newest period, stopping at the first gap. A
+    history with a hole in the middle is not evidence of the cadence it would
+    have had without the hole.
+
+    Args:
+        period_ends: Period ends, oldest first.
+        low: Shortest acceptable gap between consecutive periods.
+        high: Longest acceptable gap.
+
+    Returns:
+        The length of the run, at least 1 when any period exists.
+    """
+    if not period_ends:
+        return 0
+    run = 1
+    for earlier, later in zip(reversed(period_ends[:-1]), reversed(period_ends), strict=False):
+        if not low <= (later - earlier).days <= high:
+            break
+        run += 1
+    return run
+
+
 def _quarters_from_facts(facts: list[Mapping[str, Any]], *, additive: bool) -> dict[date, float]:
     """Turn one tag's duration facts into discrete quarters."""
     if not facts:
@@ -1416,6 +1671,8 @@ def _build_period(
     cost_sources: Mapping[date, str] | None = None,
     *,
     currency: str = _USD,
+    cadence: PeriodCadence = PeriodCadence.UNKNOWN,
+    period_start: date | None = None,
 ) -> FinancialPeriod:
     """Assemble one quarter from the collected series.
 
@@ -1428,6 +1685,8 @@ def _build_period(
         currency: The unit every money figure here was read in. Recorded on the
             period so a consumer can refuse to mix it with a market
             capitalisation quoted in another currency.
+        cadence: How long the period covers, detected for the filer as a whole.
+        period_start: First day of the period, when the facts stated one.
     """
     revenue = flows["revenue"].get(period_end)
     gross_profit = flows["gross_profit"].get(period_end)
@@ -1450,6 +1709,8 @@ def _build_period(
 
     return FinancialPeriod(
         period_end=period_end,
+        period_start=period_start,
+        cadence=cadence,
         revenue=revenue,
         gross_profit=gross_profit,
         gross_profit_basis=gross_profit_basis,

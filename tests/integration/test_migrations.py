@@ -157,15 +157,55 @@ def test_migrating_a_populated_database_preserves_its_rows(tmp_path: Path) -> No
                 )
             )
             connection.execute(text("INSERT INTO watchlist (company_id) VALUES (1)"))
+            connection.execute(
+                text(
+                    "INSERT INTO filings (company_id, accession, form, filed, url, source) "
+                    "VALUES (1, 'a-1', '10-K', '2026-01-02', 'http://x', 'test')"
+                )
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO filing_excerpts "
+                    "(company_id, accession, form, section, text, filed, url, source) "
+                    "VALUES (1, 'a-1', '10-K', 'business', 'body', '2026-01-02', "
+                    "'http://x', 'test')"
+                )
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO research_reports (company_id, score_version, score_date, "
+                    "brief_fingerprint, contract_version, prompt_version, model_id, status, "
+                    "generated_at, report) VALUES (1, 'COMPOUNDER_V1_1', '2026-01-02', 'f', "
+                    "'1', '1', 'm', 'COMPLETE', '2026-01-02 00:00:00', '{}')"
+                )
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO deep_research_reports (company_id, ticker, as_of, "
+                    "score_version, deterministic_fingerprint, evidence_fingerprint, "
+                    "contract_version, prompt_version, model_id, status, confidence, "
+                    "generated_at, validated_report_json) VALUES (1, 'AAA', '2026-01-02', "
+                    "'COMPOUNDER_V1_1', 'd', 'e', '1', '1', 'm', 'COMPLETE', 'MEDIUM', "
+                    "'2026-01-02 00:00:00', '{}')"
+                )
+            )
 
         command.upgrade(_alembic_config(url), "head")
 
         with engine.begin() as connection:
+            # Every table declaring ON DELETE CASCADE against `companies`. Those
+            # are exactly the tables a rebuild of that parent empties; the two
+            # that survived it, `benchmark_prices` and `jobs`, are the two with
+            # no foreign key to it.
             counts = {
                 "companies": text("SELECT COUNT(*) FROM companies"),
                 "price_history": text("SELECT COUNT(*) FROM price_history"),
                 "financial_snapshots": text("SELECT COUNT(*) FROM financial_snapshots"),
                 "score_snapshots": text("SELECT COUNT(*) FROM score_snapshots"),
+                "filings": text("SELECT COUNT(*) FROM filings"),
+                "filing_excerpts": text("SELECT COUNT(*) FROM filing_excerpts"),
+                "research_reports": text("SELECT COUNT(*) FROM research_reports"),
+                "deep_research_reports": text("SELECT COUNT(*) FROM deep_research_reports"),
                 "watchlist": text("SELECT COUNT(*) FROM watchlist"),
             }
             for table, statement in counts.items():

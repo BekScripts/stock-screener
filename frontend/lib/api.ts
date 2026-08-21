@@ -120,6 +120,14 @@ export type StockDetail = {
     rate_date: string;
     provider: string;
   } | null;
+  /** How often this company reports: QUARTERLY, SEMIANNUAL or ANNUAL. */
+  fundamental_cadence: string;
+  /** End of the newest reported period. Read together with the cadence. */
+  fundamentals_through: string | null;
+  /** Whether trailing-year figures are one fiscal year, four quarters or two halves. */
+  ttm_basis: string;
+  /** Whether the newest reported period is older than the cadence explains. */
+  fundamentals_stale: boolean;
   market_cap_source: string | null;
   ranking_state: string | null;
   watched: boolean;

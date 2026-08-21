@@ -24,20 +24,21 @@ public function.
 
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import date, timedelta
 from itertools import pairwise
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
-    from datetime import date
 
 from domain.models import (
+    CADENCE_BANDS,
     CompanyMetrics,
     CompanyProfile,
     FinancialPeriod,
     FxConversion,
     MarketCapSource,
+    PeriodCadence,
     PriceBar,
     VolumeBasis,
     normalise_currency,
@@ -54,6 +55,18 @@ _MATCH_TOLERANCE_DAYS = 45
 _QUARTERS_PER_YEAR = 4
 _CAGR_YEARS = 3
 
+TTM_EXPLICIT_ANNUAL = "EXPLICIT_ANNUAL"
+"""The trailing year is one fiscal year the company stated."""
+
+TTM_FOUR_QUARTERS = "FOUR_QUARTERS"
+"""The trailing year is four consecutive reported quarters."""
+
+TTM_TWO_HALF_YEARS = "TWO_HALF_YEARS"
+"""The trailing year is two consecutive reported half-years."""
+
+TTM_UNAVAILABLE = "UNAVAILABLE"
+"""No coherent trailing year could be formed from what was reported."""
+
 #: Four consecutive quarter-ends span three quarters, ~273 days. The tolerance
 #: below admits fiscal-calendar drift but rejects a window with a quarter missing
 #: from the middle, which would span ~364 days and otherwise look like a year.
@@ -69,26 +82,30 @@ DEFAULT_LIQUIDITY_WINDOW = 20
 # ---------------------------------------------------------------------------
 
 
-def _has_quarterly_cadence(periods: Sequence[FinancialPeriod]) -> bool:
-    """Whether a run of periods is quarterly reporting rather than annual.
+def _has_coherent_cadence(periods: Sequence[FinancialPeriod], cadence: PeriodCadence) -> bool:
+    """Whether a run of periods really is spaced at the cadence it claims.
 
-    Satisfied when **any** adjacent pair sits about a quarter apart. Deliberately
-    not "every pair": a domestic filer missing one quarter still reports
-    quarterly, and demanding an unbroken run would withdraw a sub-score from
-    companies this has always scored. What it rejects is a history with no
-    quarterly spacing anywhere in it — annual periods a year apart, or the
-    half-yearly reporting most foreign private issuers file.
+    Satisfied when **any** adjacent pair sits about one cadence-length apart.
+    Deliberately not "every pair": a filer that skipped a period still reports on
+    that cadence, and demanding an unbroken run would withdraw a sub-score from
+    companies this has always scored. What it rejects is a history with no such
+    spacing anywhere in it — the Brookfield case, where nine three-month facts
+    are one per year and are not a quarterly history at all.
 
     Args:
         periods: Periods, ordered oldest first.
+        cadence: The cadence they claim to be on.
 
     Returns:
-        True when the run is quarterly. False for fewer than two periods, where
+        True when the run is coherent. False for fewer than two periods, where
         there is no spacing to judge and nothing to compare in any case.
     """
-    limit = _QUARTER_DAYS + _MATCH_TOLERANCE_DAYS
+    band = {low: high for cadence_, low, high in CADENCE_BANDS if cadence_ is cadence}
+    if not band:
+        return False
+    low, high = next(iter(band.items()))
     return any(
-        (later.period_end - earlier.period_end).days <= limit
+        low <= (later.period_end - earlier.period_end).days <= high
         for earlier, later in pairwise(periods)
     )
 
@@ -157,35 +174,168 @@ def _period_near(
     return best
 
 
+def history_cadence(periods: Sequence[FinancialPeriod]) -> PeriodCadence:
+    """Return the cadence a company's reported history is on.
+
+    Taken from the most recent period that states one. A history is read at a
+    single cadence — the adapter picks it per company — so this is a lookup
+    rather than a vote, and it falls back to `UNKNOWN` for a history built
+    before cadence was recorded.
+
+    Args:
+        periods: Periods, ordered oldest first.
+
+    Returns:
+        The cadence, or `UNKNOWN` when no period states one.
+    """
+    for period in reversed(periods):
+        if period.cadence is not PeriodCadence.UNKNOWN:
+            return period.cadence
+    return _inferred_cadence(periods)
+
+
+def _inferred_cadence(periods: Sequence[FinancialPeriod]) -> PeriodCadence:
+    """Infer a cadence from the spacing between period ends.
+
+    The fallback for a history whose periods never stated one — a provider that
+    supplies no start dates, or rows stored before cadence was recorded. Spacing
+    is the same evidence as duration: periods ninety days apart are quarters
+    whether or not anything said so.
+
+    Quarterly when nothing can be told, because that is what every provider
+    predating this field supplied and what the domestic universe is.
+    """
+    gaps = sorted(
+        (later.period_end - earlier.period_end).days for earlier, later in pairwise(periods)
+    )
+    if not gaps:
+        return PeriodCadence.QUARTERLY
+    median = gaps[len(gaps) // 2]
+    for cadence, low, high in CADENCE_BANDS:
+        if low <= median <= high:
+            return cadence
+    return PeriodCadence.QUARTERLY
+
+
+#: The nominal length of one reported period at each cadence, in days.
+#:
+#: Used to step back exactly one period — the prior quarter for a quarterly
+#: filer, the prior fiscal year for an annual one. Stepping by a fixed quarter
+#: regardless of cadence is why an annual filer had no growth acceleration: it
+#: looked for a period ninety-one days before its latest and there has never
+#: been one.
+CADENCE_LENGTH_DAYS: dict[PeriodCadence, int] = {
+    PeriodCadence.QUARTERLY: 91,
+    PeriodCadence.SEMIANNUAL: 182,
+    PeriodCadence.ANNUAL: 365,
+}
+
+#: How many reported periods make up a year at each cadence.
+PERIODS_PER_YEAR: dict[PeriodCadence, int] = {
+    PeriodCadence.QUARTERLY: 4,
+    PeriodCadence.SEMIANNUAL: 2,
+    PeriodCadence.ANNUAL: 1,
+}
+
+
 def _ttm_window(
-    periods: Sequence[FinancialPeriod], quarters_back: int = 0
+    periods: Sequence[FinancialPeriod], periods_back: int = 0
 ) -> list[FinancialPeriod] | None:
-    """Return the four consecutive periods ending `quarters_back` from the latest.
+    """Return the reported periods making up one trailing year.
+
+    Cadence decides how many periods that is, and the answer is always periods
+    the company actually reported:
+
+    * **Annual** — one period. A filer that published a full year has published
+      the trailing year; requiring four quarters of a company that files none
+      would withhold a figure that is sitting right there.
+    * **Quarterly** — four consecutive quarters, the domestic behaviour.
+    * **Semiannual** — two consecutive half-years.
+
+    Every multi-period window is checked for span *and* for overlap. Two
+    half-year figures that cover the same six months are not a year, and a
+    cumulative figure quietly summed with the period it already contains would
+    double-count the business.
 
     Args:
         periods: Periods, already ordered oldest-first and de-duplicated.
-        quarters_back: How many quarters before the latest the window should end.
-            Zero is the most recent trailing year.
+        periods_back: How many reported periods before the latest the window
+            should end. Zero is the most recent trailing year.
 
     Returns:
-        Exactly four periods spanning roughly a year, or None when the history is
-        too short or has a gap that makes the window not a year.
+        The periods composing the window, or None when the history is too
+        short, has a gap, or overlaps.
     """
-    end = len(periods) - quarters_back
-    start = end - _QUARTERS_PER_YEAR
+    cadence = history_cadence(periods)
+    count = PERIODS_PER_YEAR.get(cadence)
+    if count is None:
+        return None
+
+    end = len(periods) - periods_back
+    start = end - count
     if start < 0 or end > len(periods):
         return None
 
     window = list(periods[start:end])
+    # A period that declares a *different* cadence breaks the window; one that
+    # declares none does not. The second case is a provider that supplies no
+    # start dates, and the span and overlap checks below are its whole defence.
+    if any(period.cadence not in (cadence, PeriodCadence.UNKNOWN) for period in window):
+        return None
+    if count == 1:
+        return window
+
     span = (window[-1].period_end - window[0].period_end).days
-    if not _TTM_MIN_SPAN_DAYS <= span <= _TTM_MAX_SPAN_DAYS:
+    expected = _YEAR_DAYS - _YEAR_DAYS // count
+    if abs(span - expected) > _MATCH_TOLERANCE_DAYS:
+        return None
+    if _overlaps(window):
         return None
     return window
 
 
-def _ttm_revenue(periods: Sequence[FinancialPeriod], quarters_back: int = 0) -> float | None:
+def _periods_per_year(periods: Sequence[FinancialPeriod]) -> int:
+    """How many reported periods make up a year for this history.
+
+    One for an annual filer, four for a quarterly one. Stepping a trailing-year
+    window "a year back" means moving this many periods, not four.
+    """
+    return PERIODS_PER_YEAR.get(history_cadence(periods), _QUARTERS_PER_YEAR)
+
+
+def _overlaps(window: Sequence[FinancialPeriod]) -> bool:
+    """Whether any two periods in a window cover the same time twice.
+
+    Only decidable where the periods state their start dates. Where they do not,
+    the span check above is the whole defence — which is why a window is never
+    built from periods of mixed cadence.
+    """
+    for earlier, later in pairwise(window):
+        if later.period_start is not None and later.period_start <= earlier.period_end:
+            return True
+    return False
+
+
+def ttm_basis(periods: Sequence[FinancialPeriod]) -> str:
+    """Return how a trailing-year figure was arrived at, for provenance.
+
+    Not decoration. A reader comparing two companies in one ranking is entitled
+    to know that one figure is a stated fiscal year and the other is four
+    quarters added together.
+    """
+    window = _ttm_window(_ordered_periods(periods))
+    if window is None:
+        return TTM_UNAVAILABLE
+    return {
+        PeriodCadence.ANNUAL: TTM_EXPLICIT_ANNUAL,
+        PeriodCadence.QUARTERLY: TTM_FOUR_QUARTERS,
+        PeriodCadence.SEMIANNUAL: TTM_TWO_HALF_YEARS,
+    }.get(window[-1].cadence, TTM_UNAVAILABLE)
+
+
+def _ttm_revenue(periods: Sequence[FinancialPeriod], periods_back: int = 0) -> float | None:
     """Sum revenue across a trailing-twelve-month window, or None if incomplete."""
-    window = _ttm_window(periods, quarters_back)
+    window = _ttm_window(periods, periods_back)
     if window is None:
         return None
 
@@ -506,17 +656,23 @@ def yoy_revenue_growth(periods: Sequence[FinancialPeriod]) -> float | None:
 
 
 def previous_yoy_revenue_growth(periods: Sequence[FinancialPeriod]) -> float | None:
-    """Return the prior quarter's year-over-year revenue growth.
+    """Return the prior reported period's year-over-year revenue growth.
 
-    This is the comparison one quarter behind `yoy_revenue_growth` — Q1 against
-    Q1 a year earlier, where the latest figure compares Q2 to Q2. Growth
-    acceleration is the difference between the two.
+    The comparison one period behind `yoy_revenue_growth`, at whatever cadence
+    the company reports on: Q1-against-Q1 where the latest figure compares Q2 to
+    Q2, and FY2024-against-FY2023 where the latest compares FY2025 to FY2024.
+    Growth acceleration is the difference between the two.
+
+    **Both observations come from one cadence.** An annual year-over-year change
+    and a quarterly one are different measurements, and subtracting one from the
+    other would report an acceleration that is an artefact of the mismatch
+    rather than anything the business did.
 
     Args:
-        periods: Quarterly periods in any order.
+        periods: Reported periods in any order.
 
     Returns:
-        Proportional growth as a decimal, or None when either quarter of that
+        Proportional growth as a decimal, or None when either period of that
         comparison is missing.
     """
     ordered = _ordered_periods(periods)
@@ -524,7 +680,8 @@ def previous_yoy_revenue_growth(periods: Sequence[FinancialPeriod]) -> float | N
         return None
 
     latest = ordered[-1]
-    previous = _period_near(ordered[:-1], latest.period_end - timedelta(days=_QUARTER_DAYS))
+    step = CADENCE_LENGTH_DAYS.get(history_cadence(ordered), _QUARTER_DAYS)
+    previous = _period_near(ordered[:-1], latest.period_end - timedelta(days=step))
     if previous is None:
         return None
 
@@ -540,37 +697,44 @@ def previous_yoy_revenue_growth(periods: Sequence[FinancialPeriod]) -> float | N
 def recent_revenue_growth(
     periods: Sequence[FinancialPeriod], count: int = _QUARTERS_PER_YEAR
 ) -> tuple[float, ...]:
-    """Return the year-over-year growth of each of the latest quarters.
+    """Return the year-over-year growth of each of the latest reported periods.
 
-    Each of the most recent `count` quarters is compared with its **own**
-    year-ago quarter, so the result is a run of comparable observations rather
-    than a sequence of quarter-on-quarter changes. Growth persistence is counted
-    from these.
+    Each of the most recent `count` periods is compared with its **own**
+    year-ago period — a quarter against the same quarter last year, a half
+    against the corresponding half, a fiscal year against the one before it — so
+    the result is a run of comparable observations rather than a sequence of
+    period-on-period changes. Growth persistence is counted from these.
 
-    A quarter whose year-ago comparison cannot be made is omitted rather than
+    A period whose year-ago comparison cannot be made is omitted rather than
     recorded as zero or negative, so fewer than `count` values means the history
     has a gap — which the caller must treat as missing data, not as a company
     that failed to grow.
 
-    **Only quarterly history counts.** Given annual periods the comparisons all
-    succeed — each year against the year before it — and the result is four
-    observations that the persistence sub-score would report as "4 of 4
-    comparable quarters observed". Four years of growth and four quarters of it
-    are different measurements, and a ranking that sorted one against the other
-    would be comparing filers on different evidence while saying they were the
-    same. Nothing is inferred from an annual history here; it returns empty and
-    the sub-score is unavailable, which is the honest answer.
+    **The comparison is within one cadence, never across two.** Four years of
+    growth and four quarters of growth are different measurements; what makes
+    them comparable enough to score on the same curve is that each is a
+    year-over-year change, measured against the company's own equivalent period.
+    What is rejected is an *incoherent* history — periods claiming a cadence
+    their dates do not support — because that is not a run of comparable
+    observations at all.
 
     Args:
-        periods: Quarterly periods in any order.
-        count: How many recent quarters to examine.
+        periods: Reported periods in any order.
+        count: How many recent periods to examine.
 
     Returns:
         Growth rates as decimals, newest first, at most `count` long. Empty when
-        the history is not quarterly.
+        the history is not coherent at its own cadence.
     """
     ordered = _ordered_periods(periods)
-    if not _has_quarterly_cadence(ordered[max(len(ordered) - count, 0) :]):
+    cadence = history_cadence(ordered)
+    # An annual filer has one period a year, so "the latest four comparable
+    # periods" is four years — the window is counted in periods, not quarters.
+    window = ordered[max(len(ordered) - count, 0) :]
+    if cadence is PeriodCadence.ANNUAL:
+        if not _has_coherent_cadence(window, cadence):
+            return ()
+    elif not _has_coherent_cadence(window, cadence):
         return ()
     observations: list[float] = []
 
@@ -630,7 +794,7 @@ def ttm_revenue_growth(periods: Sequence[FinancialPeriod]) -> float | None:
         Proportional growth as a decimal, or None when the history is too short.
     """
     ordered = _ordered_periods(periods)
-    return _growth(_ttm_revenue(ordered), _ttm_revenue(ordered, _QUARTERS_PER_YEAR))
+    return _growth(_ttm_revenue(ordered), _ttm_revenue(ordered, _periods_per_year(ordered)))
 
 
 def revenue_cagr_3y(periods: Sequence[FinancialPeriod]) -> float | None:
@@ -651,7 +815,7 @@ def revenue_cagr_3y(periods: Sequence[FinancialPeriod]) -> float | None:
     """
     ordered = _ordered_periods(periods)
     ending = _ttm_revenue(ordered)
-    beginning = _ttm_revenue(ordered, _CAGR_YEARS * _QUARTERS_PER_YEAR)
+    beginning = _ttm_revenue(ordered, _CAGR_YEARS * _periods_per_year(ordered))
     if ending is None or beginning is None or beginning <= 0 or ending <= 0:
         return None
     return float((ending / beginning) ** (1 / _CAGR_YEARS)) - 1
@@ -977,8 +1141,57 @@ def build_company_metrics(
         high_52w=high_52w(bars),
         low_52w=low_52w(bars),
         distance_from_52w_high=distance_from_52w_high(bars),
+        fundamental_cadence=history_cadence(ordered),
+        fundamentals_through=latest.period_end if latest else None,
+        ttm_basis=ttm_basis(ordered),
         reported_currency=reporting_currency,
         quote_currency=quote_currency,
         market_cap_reporting_currency=converted_market_cap,
         fx=applied_fx,
     )
+
+
+#: How long after a period ends the next statement is normally out, per cadence.
+#:
+#: One cadence length plus a filing allowance, so the bound scales with how
+#: often the company reports. Conflating cadence with freshness would reject
+#: every annual filer for the crime of reporting annually.
+#:
+#: The allowances are the filing deadlines, not guesses. A foreign private issuer
+#: has four months from its fiscal year end to file a 20-F, so an annual filer is
+#: current until roughly sixteen months after the period it last reported and
+#: stale once a whole reporting cycle has gone by unrecorded. A quarterly filer
+#: has about six weeks, so two missed quarters is the equivalent gap.
+#:
+#: This is deliberately tight enough to catch a real case: TSM's newest stored
+#: period ends 2024-12-31 while its FY2025 20-F has been filed and indexed since
+#: April 2026. Nearly six hundred days after that period end, its fundamentals
+#: are a full annual cycle behind and must not read as current.
+STALENESS_LIMIT_DAYS: dict[PeriodCadence, int] = {
+    PeriodCadence.QUARTERLY: 91 + 60,
+    PeriodCadence.SEMIANNUAL: 182 + 90,
+    PeriodCadence.ANNUAL: 365 + 120,
+}
+
+
+def fundamentals_are_stale(metrics: CompanyMetrics, today: date) -> bool:
+    """Whether a company's newest statement is older than its cadence explains.
+
+    Cadence and freshness are different questions, and conflating them would
+    reject every annual filer for the crime of reporting annually. So the bound
+    scales with how often the company reports: an annual filer is stale only
+    once it has effectively skipped a year, a quarterly one once it has skipped
+    a couple of quarters.
+
+    Args:
+        metrics: The company's metrics, carrying cadence and the period end.
+        today: The date to measure against.
+
+    Returns:
+        True when the newest period is beyond the limit for its cadence. False
+        when there is no period or no cadence — unknown is not stale.
+    """
+    limit = STALENESS_LIMIT_DAYS.get(metrics.fundamental_cadence)
+    if limit is None or metrics.fundamentals_through is None:
+        return False
+    return (today - metrics.fundamentals_through).days > limit

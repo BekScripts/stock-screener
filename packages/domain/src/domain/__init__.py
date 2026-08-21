@@ -55,6 +55,7 @@ from domain.metrics import (
     yoy_revenue_growth,
 )
 from domain.models import (
+    CADENCE_BANDS,
     USD,
     CompanyMetrics,
     CompanyProfile,
@@ -68,8 +69,10 @@ from domain.models import (
     FinancialPeriod,
     FxConversion,
     MarketCapSource,
+    PeriodCadence,
     PriceBar,
     VolumeBasis,
+    classify_cadence,
     normalise_currency,
     normalise_ticker,
 )
@@ -127,6 +130,7 @@ from domain.universe import (
 )
 
 __all__ = [
+    "CADENCE_BANDS",
     "COMPOUNDER_V1",
     "COMPOUNDER_V1_1",
     "CURRENT_SCORE_VERSION",
@@ -166,6 +170,7 @@ __all__ = [
     "FxConversion",
     "MarketCapSource",
     "MetricUnit",
+    "PeriodCadence",
     "PriceBar",
     "RiskAssessment",
     "RiskLevel",
@@ -183,6 +188,7 @@ __all__ = [
     "calculated_market_cap",
     "cash_runway_months",
     "categorise",
+    "classify_cadence",
     "distance_from_52w_high",
     "enterprise_value",
     "evaluate_eligibility",

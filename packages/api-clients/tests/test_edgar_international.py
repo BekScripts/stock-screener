@@ -12,12 +12,14 @@ Nothing here touches the SEC; requests go through `httpx.MockTransport`.
 
 from __future__ import annotations
 
+from datetime import date
 from typing import Any
 
 import httpx
 import pytest
 
 from api_clients import SecEdgarFundamentals
+from domain import PeriodCadence
 
 USER_AGENT = "Compounder Radar test suite@example.com"
 
@@ -354,10 +356,11 @@ def test_a_cover_page_share_count_from_a_10_k_is_still_read() -> None:
 
 
 @pytest.mark.unit
-def test_an_annual_only_filer_yields_no_quarters() -> None:
-    # A 20-F filer tags twelve-month durations and nothing else. Four of them
-    # are not a trailing year and must not become one; the honest answer is no
-    # quarterly periods rather than invented ones.
+def test_an_annual_only_filer_yields_annual_periods_not_quarters() -> None:
+    # A 20-F filer tags twelve-month durations and nothing else. Phase 7B
+    # produced nothing at all for one; Phase 7D reads the years as years. What
+    # must never happen is a year being divided into quarters that nobody
+    # reported, so the cadence travels with the period and says what it is.
     concepts = {
         "Revenue": {
             "TWD": [
@@ -367,7 +370,32 @@ def test_an_annual_only_filer_yields_no_quarters() -> None:
         }
     }
 
-    assert adapter(document("ifrs-full", concepts)).get_financial_statements("TSM") == []
+    periods = adapter(document("ifrs-full", concepts)).get_financial_statements("TSM")
+
+    assert [period.cadence for period in periods] == [PeriodCadence.ANNUAL] * 2
+    assert periods[-1].revenue == pytest.approx(2_894_307.7 * MILLION)
+    assert periods[-1].period_start == date(2024, 1, 1)
+    assert periods[-1].period_end == date(2024, 12, 31)
+
+
+@pytest.mark.unit
+def test_a_year_is_never_split_into_quarters() -> None:
+    # The rule this phase exists to keep. Two annual facts are two periods, not
+    # eight, and no period covers three months.
+    concepts = {
+        "Revenue": {
+            "TWD": [
+                duration("2023-01-01", "2023-12-31", 400.0 * MILLION),
+                duration("2024-01-01", "2024-12-31", 500.0 * MILLION),
+            ]
+        }
+    }
+
+    periods = adapter(document("ifrs-full", concepts)).get_financial_statements("TSM")
+
+    assert len(periods) == 2
+    assert {period.revenue for period in periods} == {400.0 * MILLION, 500.0 * MILLION}
+    assert all(period.cadence is not PeriodCadence.QUARTERLY for period in periods)
 
 
 @pytest.mark.unit
@@ -375,3 +403,194 @@ def test_a_filer_with_no_recognised_taxonomy_returns_nothing() -> None:
     payload = {"cik": 1, "entityName": "Nothing Ltd", "facts": {"dei": {}}}
 
     assert adapter(payload).get_financial_statements("TSM") == []
+
+
+# -- cadence selection ------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_an_isolated_quarter_does_not_outrank_a_decade_of_annual_reports() -> None:
+    # Brookfield's shape. Nine three-month facts look like a rich quarterly
+    # history until you notice they are all second quarters, one per year. A
+    # cadence chosen by fact count would pick quarterly and then be unable to
+    # form a trailing year from it; one chosen by contiguity picks annual.
+    concepts = {
+        "Revenue": {
+            "USD": [duration(f"{y}-04-01", f"{y}-06-30", 10.0 * MILLION) for y in range(2018, 2026)]
+            + [duration(f"{y}-01-01", f"{y}-12-31", 40.0 * MILLION) for y in range(2018, 2026)]
+        }
+    }
+
+    periods = adapter(document("ifrs-full", concepts)).get_financial_statements("TSM")
+
+    assert {period.cadence for period in periods} == {PeriodCadence.ANNUAL}
+    assert all(period.revenue == 40.0 * MILLION for period in periods)
+
+
+@pytest.mark.unit
+def test_a_genuine_quarterly_history_outranks_the_years_inside_it() -> None:
+    # A filer publishing both is read at the finer resolution it actually
+    # reports, which is what keeps every domestic company on the quarterly path.
+    quarters = [
+        duration(f"{y}-{m:02d}-01", f"{y}-{m + 2:02d}-28", 10.0 * MILLION, filed=f"{y}-12-31")
+        for y in (2024, 2025)
+        for m in (1, 4, 7, 10)
+    ]
+    concepts = {
+        "Revenue": {
+            "TWD": quarters
+            + [duration(f"{y}-01-01", f"{y}-12-31", 40.0 * MILLION) for y in (2024, 2025)]
+        }
+    }
+
+    periods = adapter(document("ifrs-full", concepts)).get_financial_statements("TSM")
+
+    assert {period.cadence for period in periods} == {PeriodCadence.QUARTERLY}
+
+
+@pytest.mark.unit
+def test_a_half_yearly_filer_is_read_as_half_years() -> None:
+    concepts = {
+        "Revenue": {
+            "EUR": [
+                duration("2024-01-01", "2024-06-30", 50.0 * MILLION),
+                duration("2024-07-01", "2024-12-31", 60.0 * MILLION),
+                duration("2025-01-01", "2025-06-30", 55.0 * MILLION),
+                duration("2025-07-01", "2025-12-31", 65.0 * MILLION),
+            ]
+        }
+    }
+
+    periods = adapter(document("ifrs-full", concepts)).get_financial_statements("TSM")
+
+    assert {period.cadence for period in periods} == {PeriodCadence.SEMIANNUAL}
+    assert len(periods) == 4
+
+
+@pytest.mark.unit
+def test_a_year_restated_in_later_filings_is_not_extra_history() -> None:
+    # A 20-F carries two prior years as comparatives, so one fiscal year appears
+    # in three consecutive annual reports. Counted as three periods it would
+    # triple the apparent history and flatten every growth rate.
+    concepts = {
+        "Revenue": {
+            "TWD": [
+                duration("2024-01-01", "2024-12-31", 500.0 * MILLION, filed="2025-04-17"),
+                duration("2024-01-01", "2024-12-31", 500.0 * MILLION, filed="2026-04-16"),
+                duration("2025-01-01", "2025-12-31", 600.0 * MILLION, filed="2026-04-16"),
+            ]
+        }
+    }
+
+    periods = adapter(document("ifrs-full", concepts)).get_financial_statements("TSM")
+
+    assert len(periods) == 2
+    assert [period.revenue for period in periods] == [500.0 * MILLION, 600.0 * MILLION]
+
+
+@pytest.mark.unit
+def test_a_restated_year_takes_the_most_recently_filed_figure() -> None:
+    concepts = {
+        "Revenue": {
+            "TWD": [
+                duration("2024-01-01", "2024-12-31", 500.0 * MILLION, filed="2025-04-17"),
+                duration("2024-01-01", "2024-12-31", 520.0 * MILLION, filed="2026-04-16"),
+                duration("2025-01-01", "2025-12-31", 600.0 * MILLION, filed="2026-04-16"),
+            ]
+        }
+    }
+
+    periods = adapter(document("ifrs-full", concepts)).get_financial_statements("TSM")
+
+    assert periods[0].revenue == pytest.approx(520.0 * MILLION)
+
+
+@pytest.mark.unit
+def test_an_annual_figure_is_never_differenced_into_smaller_periods() -> None:
+    # The quarterly path derives a fourth quarter by subtracting three known
+    # ones from the year, because no filer states it. An annual filer has stated
+    # the year, and subtracting anything from it would manufacture a period
+    # nobody reported.
+    concepts = {
+        "Revenue": {
+            "TWD": [
+                duration(f"{y}-01-01", f"{y}-12-31", 400.0 * MILLION) for y in (2023, 2024, 2025)
+            ]
+        },
+        "CashFlowsFromUsedInOperatingActivities": {
+            "TWD": [
+                duration(f"{y}-01-01", f"{y}-12-31", 100.0 * MILLION) for y in (2023, 2024, 2025)
+            ]
+        },
+    }
+
+    periods = adapter(document("ifrs-full", concepts)).get_financial_statements("TSM")
+
+    assert len(periods) == 3
+    assert all(period.operating_cash_flow == 100.0 * MILLION for period in periods)
+
+
+@pytest.mark.unit
+def test_the_newest_annual_year_is_the_one_selected() -> None:
+    # The TSM case, as a fixture. Three coherent consecutive years must produce
+    # a run ending at the newest, not one stopping a year short — a company
+    # scored on figures a full reporting cycle old is describing a business that
+    # has since published better ones.
+    concepts = {
+        "Revenue": {
+            "TWD": [
+                duration("2023-01-01", "2023-12-31", 2_161_735.8 * MILLION, filed="2024-04-18"),
+                duration("2024-01-01", "2024-12-31", 2_894_307.7 * MILLION, filed="2025-04-17"),
+                duration("2025-01-01", "2025-12-31", 3_809_054.3 * MILLION, filed="2026-04-16"),
+            ]
+        }
+    }
+
+    periods = adapter(document("ifrs-full", concepts)).get_financial_statements("TSM")
+
+    assert periods[-1].period_end == date(2025, 12, 31)
+    assert periods[-1].revenue == pytest.approx(3_809_054.3 * MILLION)
+    assert len(periods) == 3
+
+
+@pytest.mark.unit
+def test_a_comparative_restatement_does_not_hold_the_run_back_a_year() -> None:
+    # The newest 20-F carries the two prior years as comparatives, so the older
+    # years arrive again with a newer filing date than the newest year had when
+    # it was first published. Ordering by filing date rather than by period
+    # would put the run's end in the wrong place.
+    concepts = {
+        "Revenue": {
+            "TWD": [
+                duration("2023-01-01", "2023-12-31", 2_161_735.8 * MILLION, filed="2026-04-16"),
+                duration("2024-01-01", "2024-12-31", 2_894_307.7 * MILLION, filed="2026-04-16"),
+                duration("2025-01-01", "2025-12-31", 3_809_054.3 * MILLION, filed="2026-04-16"),
+            ]
+        }
+    }
+
+    periods = adapter(document("ifrs-full", concepts)).get_financial_statements("TSM")
+
+    assert periods[-1].period_end == date(2025, 12, 31)
+    assert periods[-1].revenue == pytest.approx(3_809_054.3 * MILLION)
+
+
+@pytest.mark.unit
+def test_a_year_the_source_never_supplied_cannot_be_selected() -> None:
+    # TSM as it actually stands: the FY2025 20-F is filed and indexed, its
+    # instance document carries the facts, and the SEC's aggregated
+    # company-facts API has not ingested them. The newest period is therefore
+    # FY2024, and that is a limit of the source rather than of this code — which
+    # is why freshness, not selection, is what flags it.
+    concepts = {
+        "Revenue": {
+            "TWD": [
+                duration("2023-01-01", "2023-12-31", 2_161_735.8 * MILLION, filed="2024-04-18"),
+                duration("2024-01-01", "2024-12-31", 2_894_307.7 * MILLION, filed="2025-04-17"),
+            ]
+        }
+    }
+
+    periods = adapter(document("ifrs-full", concepts)).get_financial_statements("TSM")
+
+    assert periods[-1].period_end == date(2024, 12, 31)

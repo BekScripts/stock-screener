@@ -13,8 +13,10 @@ recorded.
 
 from __future__ import annotations
 
+from datetime import UTC, date, datetime
 from typing import TYPE_CHECKING
 
+from domain.metrics import fundamentals_are_stale
 from domain.models import (
     EligibilityResult,
     EligibilityThresholds,
@@ -41,6 +43,8 @@ def evaluate_eligibility(
     profile: CompanyProfile,
     metrics: CompanyMetrics,
     thresholds: EligibilityThresholds | None = None,
+    *,
+    today: date | None = None,
 ) -> EligibilityResult:
     """Screen one security against the configured minimums.
 
@@ -84,6 +88,8 @@ def evaluate_eligibility(
         profile: Identity, exchange and activity status for the security.
         metrics: Its calculated metrics, as produced by `build_company_metrics`.
         thresholds: The minimums to apply. Defaults to the Phase 1 values.
+        today: The date staleness is measured against. Defaults to the current
+            UTC date; injected by tests so a fixture does not age.
 
     Returns:
         The verdict, with every failed check listed in `reasons`.
@@ -111,6 +117,8 @@ def evaluate_eligibility(
         reasons.append(ExclusionReason.MARKET_CAP_BELOW_MINIMUM)
 
     warnings: list[EligibilityWarning] = []
+    if fundamentals_are_stale(metrics, today or datetime.now(UTC).date()):
+        warnings.append(EligibilityWarning.STALE_FUNDAMENTALS)
     if fx_missing:
         warnings.append(EligibilityWarning.FX_UNAVAILABLE)
     if metrics.market_cap_source is MarketCapSource.CALCULATED:

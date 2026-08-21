@@ -76,13 +76,16 @@ def bars(count: int = 30) -> list[PriceBar]:
 
 
 @pytest.mark.unit
-def test_annual_history_yields_no_persistence_observations() -> None:
-    # Each year compares cleanly with the year before it, so the comparisons all
-    # succeed and the sub-score would report "4 of 4 comparable quarters
-    # observed" over four *years*. That is a different measurement, and a
-    # ranking sorting one against the other compares filers on different
-    # evidence while claiming they are the same.
-    assert recent_revenue_growth(years(6)) == ()
+def test_annual_history_yields_comparable_annual_observations() -> None:
+    # Phase 7B returned nothing here, because an annual run was being reported
+    # as "4 of 4 comparable quarters" and that was a lie about the evidence.
+    # Phase 7D compares each fiscal year with the one before it and calls them
+    # what they are: four comparable *periods*. The measurement is honest and
+    # the wording matches it.
+    observations = recent_revenue_growth(years(6))
+
+    assert len(observations) == 4
+    assert all(growth > 0 for growth in observations)
 
 
 @pytest.mark.unit
@@ -107,19 +110,43 @@ def test_one_missing_quarter_does_not_withdraw_persistence() -> None:
 
 
 @pytest.mark.unit
-def test_half_yearly_history_yields_no_persistence_observations() -> None:
+def test_half_yearly_history_compares_each_half_with_its_own_prior_year() -> None:
     # Most foreign private issuers report twice a year. Six-month periods are
-    # not quarters and are never halved into them.
+    # still never halved into quarters — they are compared with the
+    # corresponding half a year earlier, which is the same year-over-year
+    # measurement every other cadence makes.
     half_years = [
         FinancialPeriod(
             period_end=date(2023, 6, 30) + timedelta(days=182 * index),
+            period_start=date(2023, 1, 1) + timedelta(days=182 * index),
             revenue=100.0 * MILLION * (1.0 + 0.1 * index),
             reported_currency="EUR",
         )
         for index in range(6)
     ]
 
-    assert recent_revenue_growth(half_years) == ()
+    observations = recent_revenue_growth(half_years)
+
+    assert len(observations) == 4
+    assert all(growth > 0 for growth in observations)
+
+
+@pytest.mark.unit
+def test_an_incoherent_history_yields_no_persistence_observations() -> None:
+    # Brookfield's shape: three-month facts that are all second quarters, one
+    # per year. They claim a quarterly cadence their own dates do not support,
+    # so they are not a run of comparable observations and nothing is counted.
+    q2_only = [
+        FinancialPeriod(
+            period_end=date(2020 + index, 6, 30),
+            period_start=date(2020 + index, 4, 1),
+            revenue=100.0 * MILLION * (1.0 + 0.1 * index),
+            reported_currency="USD",
+        )
+        for index in range(6)
+    ]
+
+    assert recent_revenue_growth(q2_only) == ()
 
 
 # -- currency ---------------------------------------------------------------

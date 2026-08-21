@@ -404,6 +404,27 @@ Two fields need more than a renamed chain:
   which is a real comparability limit between filers rather than a mapping
   choice.
 
+#### KNOWN_CAPEX_BASIS_LIMITATION
+
+Capital expenditure is on a slightly different basis under the two taxonomies,
+and this is recorded rather than fixed.
+
+The IFRS chain sums property with intangibles, because that is how TSM and NVO
+present their cash-flow statements and SAP states a single concept covering
+both. The us-gaap chain reads property alone: `PaymentsToAcquireIntangibleAssets`
+is not in it and has never been, so every domestic company has been scored
+without intangible purchases since Phase 1. ASML files under us-gaap concept
+names, so its capital expenditure — and therefore its free cash flow and FCF
+margin — is on the narrower basis while NVO's is on the wider one.
+
+Adding the concept would change the free cash flow of **every domestic
+company**, and with it their scores. That is a cross-taxonomy normalisation
+decision needing a representative audit of domestic filers first, and the
+options are genuinely open: narrow IFRS to property alone to match current
+domestic semantics, or broaden us-gaap to include intangible investment. Neither
+is a change to make as a side effect of international coverage, so the
+limitation is documented and left alone.
+
 Short-term investments are not added to cash for an IFRS filer. No IFRS concept
 is reliably the same measure — TSM's `ShorttermInvestmentsClassifiedAsCashEquivalents`
 is already inside cash equivalents and would double-count — so cash is cash and

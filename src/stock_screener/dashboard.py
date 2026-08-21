@@ -14,6 +14,7 @@ gross margin on the screen is the gross margin the score was given.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from data_access import (
@@ -31,6 +32,7 @@ from data_access import (
 )
 from deep_research import DeepResearchReport
 from domain import CURRENT_SCORE_VERSION, build_company_metrics, normalise_currency
+from domain.metrics import fundamentals_are_stale
 from research import ResearchReport
 from stock_screener.scoring import ScoreDetail, latest_score
 
@@ -108,6 +110,19 @@ class StockDetail:
             money metrics — are denominated in.
         fx: The rate that brought the two together, with the date and source it
             came from, or None when none was needed or none was found.
+        fundamental_cadence: How often this company reports — `QUARTERLY`,
+            `SEMIANNUAL` or `ANNUAL`. Shown because "revenue growth" means a
+            different span of time for each, and a screen that omitted it would
+            invite a reader to take an annual filer's figures for current-quarter
+            ones.
+        fundamentals_through: The end of the newest reported period. Read with
+            the cadence beside it.
+        ttm_basis: Whether the trailing-year figures are one stated fiscal year,
+            four quarters or two half-years.
+        fundamentals_stale: Whether the newest reported period is older than
+            this company's own cadence explains. Judged against the cadence, so
+            an annual filer eight months past its year end is current while a
+            quarterly one is not.
         market_cap_source: Whether a provider supplied it or it was multiplied
             out from filings and a price.
         ranking_state: `PRELIMINARY` until candidate enrichment has verified the
@@ -129,6 +144,10 @@ class StockDetail:
     market_cap_currency: str
     reporting_currency: str
     fx: dict[str, Any] | None
+    fundamental_cadence: str
+    fundamentals_through: str | None
+    ttm_basis: str
+    fundamentals_stale: bool
     market_cap_source: str | None
     ranking_state: str | None
     watched: bool
@@ -179,6 +198,12 @@ def stock_detail(
         market_cap_currency=normalise_currency(company.quote_currency),
         reporting_currency=normalise_currency(metrics.reported_currency),
         fx=_fx_payload(metrics.fx),
+        fundamental_cadence=metrics.fundamental_cadence.value,
+        fundamentals_through=(
+            metrics.fundamentals_through.isoformat() if metrics.fundamentals_through else None
+        ),
+        ttm_basis=metrics.ttm_basis,
+        fundamentals_stale=fundamentals_are_stale(metrics, datetime.now(UTC).date()),
         market_cap_source=snapshot.market_cap_source if snapshot else "UNKNOWN",
         ranking_state=snapshot.ranking_state if snapshot else None,
         watched=WatchlistRepository(session).get(company.id) is not None,

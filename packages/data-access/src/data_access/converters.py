@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from domain import CompanyProfile, Filing, FinancialPeriod, PriceBar
+from domain import CompanyProfile, Filing, FinancialPeriod, PeriodCadence, PriceBar
 
 if TYPE_CHECKING:
     from data_access.models import (
@@ -59,6 +59,8 @@ def to_financial_period(snapshot: FinancialSnapshot) -> FinancialPeriod:
     """
     return FinancialPeriod(
         period_end=snapshot.period_end,
+        period_start=snapshot.period_start,
+        cadence=PeriodCadence(snapshot.cadence),
         revenue=snapshot.revenue,
         gross_profit=snapshot.gross_profit,
         gross_profit_basis=snapshot.gross_profit_basis,

@@ -147,6 +147,11 @@ class FinancialSnapshot(Base):
         ForeignKey("companies.id", ondelete="CASCADE"), nullable=False
     )
     period_end: Mapped[date] = mapped_column(Date, nullable=False)
+    # First day of the period, and how long it covers. A period is whatever the
+    # company reported — a quarter, a half-year or a full year — and the cadence
+    # is what stops a year of revenue being read as a quarter of it.
+    period_start: Mapped[date | None] = mapped_column(Date)
+    cadence: Mapped[str] = mapped_column(String(12), nullable=False, default="UNKNOWN")
 
     revenue: Mapped[float | None] = mapped_column(Float)
     gross_profit: Mapped[float | None] = mapped_column(Float)

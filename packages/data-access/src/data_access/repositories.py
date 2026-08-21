@@ -300,6 +300,8 @@ class FinancialSnapshotRepository:
             {
                 "company_id": company_id,
                 "period_end": period.period_end,
+                "period_start": period.period_start,
+                "cadence": period.cadence.value,
                 "revenue": period.revenue,
                 "gross_profit": period.gross_profit,
                 "gross_profit_basis": period.gross_profit_basis,

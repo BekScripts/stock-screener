@@ -99,12 +99,87 @@ class PriceBar(_Frozen):
         return self
 
 
+class PeriodCadence(StrEnum):
+    """How long a reporting period covers, classified from its actual dates.
+
+    Read from the XBRL context, never from the form that carried it or a label
+    the filer wrote. A `6-K` may hold a six-month statement, a three-month
+    result, an earnings release or nothing financial at all; a `20-F` normally
+    holds a year. The duration is the fact and the form is a hint.
+
+    Companies are compared *within* a cadence and never across one. A year of
+    revenue and a quarter of revenue are both real figures and neither is the
+    other divided or multiplied by anything.
+    """
+
+    QUARTERLY = "QUARTERLY"
+    """About three months."""
+
+    SEMIANNUAL = "SEMIANNUAL"
+    """About six months. The interim cadence most foreign private issuers file,
+    and never half a year pretending to be two quarters."""
+
+    ANNUAL = "ANNUAL"
+    """About twelve months, including a 52- or 53-week fiscal year."""
+
+    UNKNOWN = "UNKNOWN"
+    """A duration matching none of the above, or a period with no start date.
+    Carried rather than guessed: an unclassifiable period is excluded from
+    comparisons instead of being forced into the nearest bucket."""
+
+
+#: Duration bands, in days, that classify a period. Deliberately wide.
+#:
+#: Fiscal calendars are not calendar quarters: a 13-week quarter is 91 days but
+#: drifts a few days either side, and a 52/53-week fiscal year is 364 or 371
+#: days rather than 365. Requiring exact counts would classify a large share of
+#: real filers as UNKNOWN.
+#:
+#: The bands do not touch. A 120-day duration is not a long quarter or a short
+#: half-year, it is something else, and calling it either would put a figure
+#: covering four months into a series of three-month ones.
+CADENCE_BANDS: tuple[tuple[PeriodCadence, int, int], ...] = (
+    (PeriodCadence.QUARTERLY, 80, 100),
+    (PeriodCadence.SEMIANNUAL, 165, 200),
+    (PeriodCadence.ANNUAL, 340, 380),
+)
+
+
+def classify_cadence(start: date | None, end: date) -> PeriodCadence:
+    """Return the cadence a period's own dates put it in.
+
+    Args:
+        start: First day of the period. None yields `UNKNOWN` — a duration
+            cannot be measured from one end.
+        end: Last day of the period.
+
+    Returns:
+        The matching cadence, or `UNKNOWN` when the span matches no band.
+    """
+    if start is None:
+        return PeriodCadence.UNKNOWN
+    span = (end - start).days
+    for cadence, low, high in CADENCE_BANDS:
+        if low <= span <= high:
+            return cadence
+    return PeriodCadence.UNKNOWN
+
+
 class FinancialPeriod(_Frozen):
-    """One reporting period of normalised fundamentals, usually a quarter.
+    """One reporting period of normalised fundamentals.
+
+    A quarter for a domestic filer, and a half-year or a full year for the many
+    foreign issuers that report on those cadences. The period is whatever the
+    company actually reported: nothing here is a year divided by four.
 
     Attributes:
+        period_start: First day of the reporting period, when the source says.
+            None for a period whose duration is unknown — chiefly a balance
+            sheet joined to nothing else.
         period_end: Last day of the reporting period. Periods are compared and
             ordered by this field.
+        cadence: How long the period covers, classified from its dates. The
+            field that stops a year of revenue being read as a quarter of it.
         revenue: Total revenue for the period.
         gross_profit: Revenue less cost of revenue.
         gross_profit_basis: How `gross_profit` was arrived at — the provider's
@@ -141,6 +216,8 @@ class FinancialPeriod(_Frozen):
     """
 
     period_end: date
+    period_start: date | None = None
+    cadence: PeriodCadence = PeriodCadence.UNKNOWN
     revenue: float | None = None
     gross_profit: float | None = None
     gross_profit_basis: str | None = None
@@ -154,6 +231,20 @@ class FinancialPeriod(_Frozen):
     common_shares_outstanding: float | None = None
     reported_currency: str | None = None
     source: str = "unknown"
+
+    @model_validator(mode="after")
+    def _derive_cadence(self) -> Self:
+        """Classify the period from its own dates unless a cadence was given.
+
+        Deriving rather than requiring it means every existing construction
+        site keeps working, and a period built with real dates is classified
+        correctly without anyone remembering to pass the field.
+        """
+        if self.cadence is PeriodCadence.UNKNOWN and self.period_start is not None:
+            object.__setattr__(
+                self, "cadence", classify_cadence(self.period_start, self.period_end)
+            )
+        return self
 
 
 class Filing(_Frozen):
@@ -234,6 +325,17 @@ class EligibilityWarning(StrEnum):
     LIQUIDITY_UNVERIFIED = "LIQUIDITY_UNVERIFIED"
     """Only partial-market volume was available, so the liquidity threshold was
     not applied. The company may or may not clear it."""
+
+    STALE_FUNDAMENTALS = "STALE_FUNDAMENTALS"
+    """The newest reported period is older than this company's own reporting
+    cadence explains.
+
+    Judged against the cadence, not a fixed calendar. An annual filer whose last
+    statement covers a year ending eight months ago is reporting entirely
+    normally; a quarterly filer in the same position has missed two quarters.
+    A warning rather than an exclusion — the figures are real and were true of
+    the period they cover — but a score built on statements two reporting cycles
+    old is describing a company that may no longer exist in that shape."""
 
     MARKET_CAP_CALCULATED = "MARKET_CAP_CALCULATED"
     """Market capitalisation was multiplied out from filings and a price rather
@@ -516,6 +618,14 @@ class CompanyMetrics(_Frozen):
         fx: The conversion used, or None when none was needed or none was
             found. Carried so a stored score can say which rate, from which
             date and which source, produced its valuation.
+        fundamental_cadence: How often this company reports. The field that
+            stops a screen calling an annual filer's revenue growth a
+            "latest-quarter" figure.
+        fundamentals_through: The end of the most recent reported period. Read
+            with the cadence beside it: eight months after a fiscal year end is
+            ordinary for an annual filer and very stale for a quarterly one.
+        ttm_basis: How the trailing-year figures were formed — one stated
+            fiscal year, four quarters, or two half-years.
     """
 
     ticker: str
@@ -563,6 +673,10 @@ class CompanyMetrics(_Frozen):
     quote_currency: str | None = None
     market_cap_reporting_currency: float | None = None
     fx: FxConversion | None = None
+
+    fundamental_cadence: PeriodCadence = PeriodCadence.UNKNOWN
+    fundamentals_through: date | None = None
+    ttm_basis: str = "UNAVAILABLE"
 
     @property
     def market_cap_for_ratios(self) -> float | None:
