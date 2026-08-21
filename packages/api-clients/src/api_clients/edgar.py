@@ -49,6 +49,7 @@ import structlog
 from api_clients._http import RateLimiter, RetryPolicy, request_json, request_text
 from api_clients.errors import ProviderDataError, ProviderError
 from api_clients.filing_text import clean_filing_text, extract_sections
+from api_clients.filing_xbrl import merge_instance_facts, parse_filing_instance
 from domain import (
     CADENCE_BANDS,
     CompanyProfile,
@@ -66,6 +67,13 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Mapping, Sequence
 
 PROVIDER_NAME = "sec-edgar"
+
+FILING_INSTANCE_SOURCE = "sec-edgar-instance"
+"""Recorded on a period read from a filing's own XBRL rather than company-facts.
+
+The whole of the provenance, deliberately. A reader needs to know which of the
+two routes produced a figure; a lineage subsystem would be a larger thing than
+the question deserves, and the accession is already on every fact underneath."""
 
 DEFAULT_DATA_URL = "https://data.sec.gov"
 DEFAULT_WWW_URL = "https://www.sec.gov"
@@ -484,6 +492,22 @@ reachable at all. Leaving them out is what makes the annual report citable.
 DEFAULT_FILING_LIMIT = 8
 """Filings returned per company unless asked for more."""
 
+FINANCIAL_STATEMENT_FORMS = frozenset(
+    {"10-K", "10-K/A", "10-Q", "10-Q/A", "20-F", "20-F/A", "40-F", "40-F/A"}
+)
+"""Forms whose XBRL may be read for numbers when company-facts is behind.
+
+Periodic reports only, and `6-K` deliberately absent. A 6-K is an untyped
+envelope: most carry no financial statements at all, and the ones that do are
+indistinguishable from the ones that do not without opening them. Reading every
+6-K to find out would mean hundreds of megabytes per foreign filer to discover
+that almost none of them had anything.
+
+This is a different question from which forms a research brief may cite, and the
+two lists are deliberately separate — numeric facts and quotable text are
+different pipelines with different risks.
+"""
+
 _COVER_PAGE_WINDOW_DAYS = 90
 _COVER_PAGE_BACKSTOP_DAYS = 3
 
@@ -537,6 +561,10 @@ class SecEdgarFundamentals:
         self._cik_by_ticker: dict[str, int] | None = None
         self._facts_cache: tuple[str, dict[str, Any]] | None = None
         self._submissions_cache: tuple[str, dict[str, Any]] | None = None
+        # Instance documents run to ten megabytes. One entry is enough: a scan
+        # touches one company at a time and asks for its instance once, and a
+        # company whose company-facts is current never gets here at all.
+        self._instance_cache: tuple[str, dict[str, Any]] | None = None
 
     def close(self) -> None:
         """Release the underlying HTTP connection."""
@@ -641,34 +669,7 @@ class SecEdgarFundamentals:
             flows, cost_sources = _quarterly_flows(book, concepts, unit)
         else:
             flows, cost_sources = _reported_flows(book, concepts, cadence, unit)
-        instants = {
-            "cash": _instant_series(book, concepts.cash, unit),
-            "short_term_investments": _instant_series(book, concepts.short_term_investments, unit),
-            "total_borrowings": _instant_series(book, concepts.total_borrowings, unit),
-            "long_term_debt_total": _instant_series(book, concepts.long_term_debt_total, unit),
-            "long_term_debt_components": _summed_instant_series(
-                book, concepts.long_term_debt_components, unit
-            ),
-            "short_term_debt_total": _instant_series(book, concepts.short_term_debt_total, unit),
-            "short_term_debt_components": _summed_instant_series(
-                book, concepts.short_term_debt_components, unit
-            ),
-            "short_term_debt_fallback": _instant_series(
-                book, concepts.short_term_debt_fallback, unit
-            ),
-            # Cover-page count first, balance-sheet count as the fallback. Counts
-            # stated on a foreign private issuer's annual report are dropped —
-            # see `FPI_ANNUAL_FORMS` for why they cannot be multiplied by a
-            # U.S. price.
-            "common_shares_outstanding": {
-                **_instant_series(
-                    book, concepts.common_shares, unit=_SHARES, exclude_forms=FPI_ANNUAL_FORMS
-                ),
-                **_instant_series(
-                    dei, _COMMON_SHARES_DEI_TAGS, unit=_SHARES, exclude_forms=FPI_ANNUAL_FORMS
-                ),
-            },
-        }
+        instants = _instant_series_for(book, dei, concepts, unit)
         period_ends = sorted({end for series in flows.values() for end in series})
         periods = [
             _build_period(
@@ -682,7 +683,75 @@ class SecEdgarFundamentals:
             )
             for period_end in period_ends
         ]
+
+        periods.extend(self._periods_from_newer_filing(cik, all_facts, periods))
         return periods[-limit:] if limit > 0 else periods
+
+    def _periods_from_newer_filing(
+        self,
+        cik: int,
+        all_facts: Mapping[str, Any],
+        existing: Sequence[FinancialPeriod],
+    ) -> list[FinancialPeriod]:
+        """Return periods a filed statement has that company-facts does not.
+
+        **Only periods later than anything company-facts produced.** A filing
+        carries its comparatives — TSM's FY2025 20-F restates FY2024 and FY2023 —
+        and re-reading those would either duplicate history or silently rewrite
+        figures the primary source already settled. The aggregated source stays
+        authoritative for everything it covers; this adds the year it has not
+        caught up with, and nothing else.
+
+        The instance is normalised by the same code as everything else: its facts
+        are merged into the company-facts document and the whole pipeline runs
+        again, so taxonomy detection, unit selection, concept chains, cadence and
+        duplicate resolution are shared rather than reimplemented.
+
+        Args:
+            cik: The filer.
+            all_facts: The company-facts `facts` block.
+            existing: Periods company-facts produced.
+
+        Returns:
+            The additional periods, oldest first. Empty whenever the trigger does
+            not fire or the instance yields nothing new.
+        """
+        through = existing[-1].period_end if existing else None
+        instance = self._newer_filing_facts(cik, through)
+        if not instance:
+            return []
+
+        merged = merge_instance_facts(all_facts, instance)
+        concepts = _detect_concept_set(merged)
+        if concepts is None:
+            return []
+        book = merged.get(concepts.namespace, {})
+        unit = _detect_currency(merged, concepts) or _USD
+        cadence, period_starts = _detect_cadence(book, concepts, unit)
+        if cadence is PeriodCadence.UNKNOWN:
+            cadence = PeriodCadence.QUARTERLY
+        if cadence is PeriodCadence.QUARTERLY:
+            flows, cost_sources = _quarterly_flows(book, concepts, unit)
+        else:
+            flows, cost_sources = _reported_flows(book, concepts, cadence, unit)
+        instants = _instant_series_for(book, merged.get("dei", {}), concepts, unit)
+
+        added = sorted(
+            end for series in flows.values() for end in series if through is None or end > through
+        )
+        return [
+            _build_period(
+                period_end,
+                flows,
+                instants,
+                cost_sources,
+                currency=unit,
+                cadence=cadence,
+                period_start=period_starts.get(period_end),
+                source=FILING_INSTANCE_SOURCE,
+            )
+            for period_end in dict.fromkeys(added)
+        ]
 
     def get_filings(self, ticker: str, limit: int = DEFAULT_FILING_LIMIT) -> list[Filing]:
         """Return the company's most recent filings, newest first.
@@ -855,6 +924,94 @@ class SecEdgarFundamentals:
         self._submissions_cache = (key, payload)
         return payload
 
+    def _newer_filing_facts(self, cik: int, through: date | None) -> dict[str, Any] | None:
+        """Return facts from a structured filing newer than company-facts covers.
+
+        The fallback trigger, and it is deliberately narrow. It fires on one
+        piece of evidence only: the submissions index names a periodic report
+        whose reporting period ends **after** the newest period company-facts
+        could produce. Not on the calendar, not on a company's age, not on a
+        filer being foreign — on a newer statement being known to exist.
+
+        Args:
+            cik: The filer.
+            through: The newest period end company-facts yielded, or None when it
+                yielded nothing.
+
+        Returns:
+            Parsed instance facts, or None when nothing newer is filed, the
+            filing exposes no instance, or retrieval failed. A failure is not an
+            error here: the caller keeps the history it already has, which is
+            what makes this safe to attempt.
+        """
+        filing = self._latest_financial_filing(cik)
+        if filing is None or filing.period_end is None:
+            return None
+        if through is not None and filing.period_end <= through:
+            return None
+        if not filing.primary_document:
+            return None
+
+        key = filing.accession
+        if self._instance_cache is not None and self._instance_cache[0] == key:
+            return self._instance_cache[1]
+
+        # Inline XBRL filings carry their extracted instance beside the primary
+        # document, named for it. The primary document's name comes from the
+        # submissions index rather than being guessed.
+        stem = filing.primary_document.rsplit(".", 1)[0]
+        url = f"{filing.url.rsplit('/', 1)[0]}/{stem}_htm.xml"
+        try:
+            xml = request_text(
+                self._client,
+                "GET",
+                url,
+                provider=PROVIDER_NAME,
+                limiter=self._limiter,
+                retry=self._retry,
+            )
+            facts = parse_filing_instance(
+                xml,
+                accession=filing.accession,
+                form=filing.form,
+                filed=filing.filed.isoformat(),
+            )
+        except ProviderError as exc:
+            log.info(
+                "filing instance unavailable, keeping company-facts history",
+                cik=cik,
+                accession=filing.accession,
+                error=str(exc),
+            )
+            return None
+
+        log.info(
+            "company-facts is behind a filed statement, reading its instance",
+            cik=cik,
+            accession=filing.accession,
+            form=filing.form,
+            period_end=str(filing.period_end),
+            company_facts_through=str(through),
+        )
+        self._instance_cache = (key, facts)
+        return facts
+
+    def _latest_financial_filing(self, cik: int) -> Filing | None:
+        """Return the newest periodic report the filer has submitted, or None."""
+        recent = self._submissions(cik).get("filings", {})
+        index = recent.get("recent") if isinstance(recent, dict) else None
+        if not isinstance(index, dict):
+            return None
+
+        candidates = [
+            filing
+            for filing in _filings_from_index(index, cik, keep_forms=FINANCIAL_STATEMENT_FORMS)
+            if filing.period_end is not None
+        ]
+        if not candidates:
+            return None
+        return max(candidates, key=lambda filing: (filing.period_end or date.min, filing.filed))
+
     def _company_facts(self, cik: int) -> dict[str, Any]:
         """Fetch every XBRL fact for one filer.
 
@@ -881,7 +1038,9 @@ class SecEdgarFundamentals:
         return payload
 
 
-def _filings_from_index(index: Mapping[str, Any], cik: int) -> list[Filing]:
+def _filings_from_index(
+    index: Mapping[str, Any], cik: int, *, keep_forms: frozenset[str] = FILING_FORMS
+) -> list[Filing]:
     """Turn the submissions index's parallel arrays into filings.
 
     The SEC publishes the recent-filings index column-wise: one array per field,
@@ -901,7 +1060,7 @@ def _filings_from_index(index: Mapping[str, Any], cik: int) -> list[Filing]:
         form = forms[position].strip().upper()
         filed_on = _as_date(filed[position])
         accession = accessions[position].strip()
-        if form not in FILING_FORMS or filed_on is None or not accession:
+        if form not in keep_forms or filed_on is None or not accession:
             continue
 
         document = documents[position] if position < len(documents) else ""
@@ -1206,6 +1365,44 @@ def _sourced_quarterly_series(
         for period_end in series:
             sources[period_end] = tag
     return values, sources
+
+
+def _instant_series_for(
+    book: Mapping[str, Any],
+    dei: Mapping[str, Any],
+    concepts: _ConceptSet,
+    unit: str,
+) -> dict[str, dict[date, float]]:
+    """Return every balance-sheet series a period is assembled from.
+
+    Shared by the company-facts path and the filing-instance fallback, so the
+    two cannot drift apart on what a cash balance or a borrowing is.
+    """
+    return {
+        "cash": _instant_series(book, concepts.cash, unit),
+        "short_term_investments": _instant_series(book, concepts.short_term_investments, unit),
+        "total_borrowings": _instant_series(book, concepts.total_borrowings, unit),
+        "long_term_debt_total": _instant_series(book, concepts.long_term_debt_total, unit),
+        "long_term_debt_components": _summed_instant_series(
+            book, concepts.long_term_debt_components, unit
+        ),
+        "short_term_debt_total": _instant_series(book, concepts.short_term_debt_total, unit),
+        "short_term_debt_components": _summed_instant_series(
+            book, concepts.short_term_debt_components, unit
+        ),
+        "short_term_debt_fallback": _instant_series(book, concepts.short_term_debt_fallback, unit),
+        # Cover-page count first, balance-sheet count as the fallback. Counts
+        # stated on a foreign private issuer's annual report are dropped — see
+        # `FPI_ANNUAL_FORMS` for why they cannot be multiplied by a U.S. price.
+        "common_shares_outstanding": {
+            **_instant_series(
+                book, concepts.common_shares, unit=_SHARES, exclude_forms=FPI_ANNUAL_FORMS
+            ),
+            **_instant_series(
+                dei, _COMMON_SHARES_DEI_TAGS, unit=_SHARES, exclude_forms=FPI_ANNUAL_FORMS
+            ),
+        },
+    }
 
 
 def _quarterly_flows(
@@ -1673,6 +1870,7 @@ def _build_period(
     currency: str = _USD,
     cadence: PeriodCadence = PeriodCadence.UNKNOWN,
     period_start: date | None = None,
+    source: str = PROVIDER_NAME,
 ) -> FinancialPeriod:
     """Assemble one quarter from the collected series.
 
@@ -1687,6 +1885,8 @@ def _build_period(
             capitalisation quoted in another currency.
         cadence: How long the period covers, detected for the filer as a whole.
         period_start: First day of the period, when the facts stated one.
+        source: Which route produced this period — the aggregated company-facts
+            API, or a filing's own instance when that API was behind.
     """
     revenue = flows["revenue"].get(period_end)
     gross_profit = flows["gross_profit"].get(period_end)
@@ -1726,7 +1926,7 @@ def _build_period(
             instants["common_shares_outstanding"], period_end
         ),
         reported_currency=currency,
-        source=PROVIDER_NAME,
+        source=source,
     )
 
 
