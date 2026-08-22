@@ -243,6 +243,24 @@ def test_a_history_that_states_no_cadence_is_inferred_from_its_spacing() -> None
     assert history_cadence(undated) is PeriodCadence.QUARTERLY
 
 
+@pytest.mark.unit
+def test_a_company_with_no_history_has_no_cadence() -> None:
+    # Found in the Stage C cohort: 560 companies with no fundamentals at all
+    # were each reported as quarterly filers. Inferring from spacing has nothing
+    # to infer from, and "quarterly" is a claim about a company nothing is known
+    # about — one a reader of the API or the dashboard would see stated plainly.
+    assert history_cadence([]) is PeriodCadence.UNKNOWN
+
+
+@pytest.mark.unit
+def test_a_single_undated_period_keeps_the_legacy_quarterly_default() -> None:
+    # Distinct from the empty case: a history exists, it just cannot be measured
+    # for spacing. Every provider predating the cadence field supplied quarters.
+    one = [FinancialPeriod(period_end=date(2025, 3, 31), revenue=100.0)]
+
+    assert history_cadence(one) is PeriodCadence.QUARTERLY
+
+
 # -- freshness --------------------------------------------------------------
 
 

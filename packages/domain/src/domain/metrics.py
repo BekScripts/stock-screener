@@ -202,9 +202,16 @@ def _inferred_cadence(periods: Sequence[FinancialPeriod]) -> PeriodCadence:
     is the same evidence as duration: periods ninety days apart are quarters
     whether or not anything said so.
 
-    Quarterly when nothing can be told, because that is what every provider
-    predating this field supplied and what the domestic universe is.
+    Quarterly when nothing can be told *about a history that exists*, because
+    that is what every provider predating this field supplied and what the
+    domestic universe is. A company with **no** periods is a different case and
+    returns `UNKNOWN`: there is no history to have a cadence, and answering
+    "quarterly" states a fact about a company nothing is known about — which is
+    what a reader of the API or the dashboard would see.
     """
+    if not periods:
+        return PeriodCadence.UNKNOWN
+
     gaps = sorted(
         (later.period_end - earlier.period_end).days for earlier, later in pairwise(periods)
     )
