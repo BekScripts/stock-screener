@@ -104,6 +104,10 @@ class CompositeFundamentals:
                 # rule work when a vendor classifies a bank as "Financials" and
                 # nothing more specific.
                 "industry": market.industry or filings.industry,
+                # Read from the filing's own concepts, which is the only place it
+                # can be read from. A market-data vendor sells labels, and labels
+                # are exactly what this classification exists to overrule.
+                "statement_profile": filings.statement_profile or market.statement_profile,
                 "name": market.name or filings.name,
             }
         )

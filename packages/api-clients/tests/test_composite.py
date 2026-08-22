@@ -7,7 +7,7 @@ from datetime import date
 import pytest
 
 from api_clients import CompositeFundamentals, MockFundamentals, ProviderError
-from domain import CompanyProfile, FinancialPeriod
+from domain import CompanyProfile, FinancialPeriod, StatementProfile
 
 RICH = CompanyProfile(
     ticker="XYZ",
@@ -154,3 +154,35 @@ def test_the_filings_industry_fills_a_gap_the_vendor_leaves() -> None:
 
     assert profile is not None
     assert profile.industry == "State Commercial Banks"
+
+
+@pytest.mark.unit
+def test_the_filings_statement_shape_survives_the_market_data_profile() -> None:
+    # A vendor sells labels, and labels are exactly what this classification
+    # exists to overrule — so the vendor must not be able to erase it by having
+    # no opinion. Kaspi.kz is the case: FMP calls it Software - Infrastructure.
+    market = CompanyProfile(
+        ticker="KSPI",
+        name="Kaspi.kz",
+        sector="Technology",
+        industry="Software - Infrastructure",
+        market_cap=19_705_827_484.0,
+        quote_currency="USD",
+    )
+    filings = CompanyProfile(
+        ticker="KSPI",
+        name="Joint Stock Company Kaspi.kz",
+        reporting_currency="KZT",
+        statement_profile=StatementProfile.FINANCIAL_INSTITUTION,
+    )
+
+    profile = CompositeFundamentals(
+        profile_source=MockFundamentals({"KSPI": market}),
+        statement_source=MockFundamentals({"KSPI": filings}),
+    ).get_company_profile("KSPI")
+
+    assert profile is not None
+    assert profile.statement_profile is StatementProfile.FINANCIAL_INSTITUTION
+    # The vendor still owns what it actually knows.
+    assert profile.market_cap == 19_705_827_484.0
+    assert profile.sector == "Technology"

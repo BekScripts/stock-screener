@@ -58,6 +58,7 @@ from domain import (
     FinancialPeriod,
     PeriodCadence,
     classify_cadence,
+    classify_statement_profile,
     normalise_ticker,
 )
 
@@ -619,6 +620,11 @@ class SecEdgarFundamentals:
             # dollars would otherwise pass a screen it should fail — silently,
             # and by a factor that looks like a plausible valuation.
             reporting_currency=_detect_currency(all_facts, concepts),
+            # Read from the concept names already in hand, so it costs no extra
+            # request. This is the only place statement shape can be seen: by
+            # scoring time the facts are gone and all that remains is the
+            # normalised figures, which look the same for a bank and a shop.
+            statement_profile=classify_statement_profile(all_facts),
         )
 
     def get_financial_statements(self, ticker: str, limit: int = 20) -> list[FinancialPeriod]:

@@ -13,7 +13,14 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from domain import CompanyProfile, Filing, FinancialPeriod, PeriodCadence, PriceBar
+from domain import (
+    CompanyProfile,
+    Filing,
+    FinancialPeriod,
+    PeriodCadence,
+    PriceBar,
+    StatementProfile,
+)
 
 if TYPE_CHECKING:
     from data_access.models import (
@@ -42,8 +49,15 @@ def to_company_profile(company: Company) -> CompanyProfile:
         industry=company.industry,
         market_cap=company.market_cap,
         average_volume=company.average_volume,
+        consolidated_avg_volume=company.consolidated_avg_volume,
+        volume_source=company.volume_source,
         reporting_currency=company.reporting_currency,
         quote_currency=company.quote_currency,
+        # NULL means unclassified, which is not the same as classified GENERAL —
+        # so it stays None here and the scoring gate simply does not fire.
+        statement_profile=(
+            StatementProfile(company.statement_profile) if company.statement_profile else None
+        ),
         is_active=company.is_active,
     )
 

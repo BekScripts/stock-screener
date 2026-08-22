@@ -60,6 +60,7 @@ from stock_screener.scanning import (
     format_table,
     scan_market,
     update_benchmark,
+    update_eligibility_volume,
     update_filing_text,
     update_filings,
     update_fundamentals,
@@ -172,6 +173,29 @@ def update_market_command(tickers: TickerOption = None, limit: CompanyLimitOptio
         report = update_market_data(session, provider, settings, tickers=tickers, limit=limit)
 
     typer.echo(f"market data: {report.summary()}")
+
+
+@app.command("update-eligibility-volume")
+def update_eligibility_volume_command(
+    tickers: TickerOption = None, limit: CompanyLimitOption = None
+) -> None:
+    """Refresh consolidated average volume for the liquidity screen.
+
+    Reads the consolidated tape rather than the feed price history comes from,
+    because the dollar-volume threshold is calibrated for the whole market and a
+    single exchange carries a few percent of it. Writes no price history.
+
+    Cheap and unmetered, so run it before `enrich`: a company that fails the
+    liquidity gate on this figure never costs a paid profile request.
+    """
+    settings = _bootstrap()
+    provider = build_market_data_provider(settings)
+    with _database(settings) as factory, session_scope(factory) as session:
+        report = update_eligibility_volume(
+            session, provider, settings, tickers=tickers, limit=limit
+        )
+
+    typer.echo(f"eligibility volume: {report.summary()}")
 
 
 @app.command("update-benchmark")

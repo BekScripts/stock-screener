@@ -1007,13 +1007,20 @@ def resolve_liquidity(
 ) -> tuple[float | None, VolumeBasis]:
     """Return the best available dollar volume, and what it represents.
 
-    A provider's consolidated average is preferred over anything derived from
-    price bars, because a free market-data feed often carries only one exchange
-    — a few percent of the real volume — and a threshold calibrated for the
-    whole market cannot be applied to that.
+    A consolidated average is preferred over anything derived from price bars,
+    because a free market-data feed often carries only one exchange — a few
+    percent of the real volume — and a threshold calibrated for the whole market
+    cannot be applied to that.
+
+    Two consolidated figures can exist. `consolidated_avg_volume` is computed
+    here from consolidated-tape bars over a known window, so it is preferred; a
+    vendor's `average_volume` averages over a window it does not publish, which
+    is fine for a threshold and less good for explaining one. Either way the
+    basis returned is `CONSOLIDATED` — they measure the same thing.
 
     Args:
-        profile: May carry a consolidated average share volume.
+        profile: May carry a consolidated average share volume, from the tape or
+            from a vendor.
         price: Latest close, needed to turn share volume into dollar volume.
         bars: Daily history, used only when the profile has no average.
         bar_volume_basis: What the bars' volume represents. The caller knows
@@ -1024,8 +1031,13 @@ def resolve_liquidity(
         The dollar volume and its basis. `UNKNOWN` when neither source yields
         one.
     """
-    if profile.average_volume is not None and price is not None:
-        return price * profile.average_volume, VolumeBasis.CONSOLIDATED
+    consolidated = (
+        profile.consolidated_avg_volume
+        if profile.consolidated_avg_volume is not None
+        else profile.average_volume
+    )
+    if consolidated is not None and price is not None:
+        return price * consolidated, VolumeBasis.CONSOLIDATED
 
     from_bars = average_dollar_volume(bars, liquidity_window)
     if from_bars is None:

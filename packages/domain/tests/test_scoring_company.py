@@ -10,6 +10,7 @@ from domain import (
     ScoreCategory,
     ScoreWarning,
     ScoringStatus,
+    StatementProfile,
     categorise,
     score_company,
 )
@@ -127,6 +128,39 @@ def test_a_bank_is_marked_unsupported_rather_than_scored(make) -> None:
 
     assert score.status is ScoringStatus.UNSUPPORTED_SECTOR
     assert score.final_score is None
+
+
+@pytest.mark.unit
+def test_a_bank_shaped_filer_is_unsupported_despite_a_clean_sector_label(make) -> None:
+    # Kaspi.kz scored 74.78 and ranked twenty-first on exactly this pair of
+    # labels. The statements are what overrule them.
+    profile = make.profile(
+        sector="Technology",
+        industry="Software - Infrastructure",
+        statement_profile=StatementProfile.FINANCIAL_INSTITUTION,
+    )
+
+    score = score_company(profile, make.metrics(), make.benchmark())
+
+    assert score.status is ScoringStatus.UNSUPPORTED_SECTOR
+    assert score.final_score is None
+
+
+@pytest.mark.unit
+def test_the_statement_gate_leaves_an_operating_company_untouched(make) -> None:
+    # The gate decides whether a company is scored, never what it scores. A
+    # classified-GENERAL profile must produce the identical number to one nobody
+    # has classified, or this became a scoring change.
+    unclassified = score_company(make.profile(), make.metrics(), make.benchmark())
+    classified = score_company(
+        make.profile(statement_profile=StatementProfile.GENERAL),
+        make.metrics(),
+        make.benchmark(),
+    )
+
+    assert classified.status is ScoringStatus.SCORED
+    assert classified.final_score == unclassified.final_score
+    assert classified.raw_score == unclassified.raw_score
 
 
 @pytest.mark.unit

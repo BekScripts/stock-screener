@@ -22,7 +22,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import and_, case, func, or_, select
+from sqlalchemy import and_, case, func, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as postgres_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
@@ -196,6 +196,9 @@ class CompanyRepository:
             "industry": profile.industry,
             "market_cap": profile.market_cap,
             "average_volume": profile.average_volume,
+            "consolidated_avg_volume": profile.consolidated_avg_volume,
+            "volume_source": profile.volume_source,
+            "statement_profile": profile.statement_profile,
             "reporting_currency": profile.reporting_currency,
             "quote_currency": profile.quote_currency,
             "is_active": profile.is_active,
@@ -212,6 +215,26 @@ class CompanyRepository:
 
         self._session.execute(
             statement.on_conflict_do_update(index_elements=[Company.ticker], set_=set_)
+        )
+
+    def set_consolidated_volume(self, company_id: int, volume: float, *, source: str) -> None:
+        """Record the consolidated average volume the liquidity screen reads.
+
+        Deliberately not `upsert_profile`: the pass that calls this observes two
+        fields and nothing else, and building a whole profile to carry them would
+        mean supplying a `name` it does not know, which would then be written
+        over the real one.
+
+        Args:
+            company_id: The company to update.
+            volume: Average daily share volume across every venue.
+            source: Which feed produced it, so a liquidity decision stays
+                traceable to the tape behind it.
+        """
+        self._session.execute(
+            update(Company)
+            .where(Company.id == company_id)
+            .values(consolidated_avg_volume=volume, volume_source=source, updated_at=_utcnow())
         )
 
     def get_by_ticker(self, ticker: str) -> Company | None:

@@ -79,6 +79,16 @@ class Company(Base):
     # The liquidity threshold is calibrated against this, not against volume
     # derived from a single-exchange price feed.
     average_volume: Mapped[float | None] = mapped_column(Float)
+    # The same measure taken from the consolidated tape over a window this
+    # project chose, rather than one a vendor declines to publish. Preferred
+    # where both exist; `volume_source` records which feed produced it.
+    consolidated_avg_volume: Mapped[float | None] = mapped_column(Float)
+    volume_source: Mapped[str | None] = mapped_column(String(20))
+    # Which accounting model the filing follows, classified from the concepts it
+    # tags. NULL reads as GENERAL. This is the only durable record of statement
+    # shape: the concept names are discarded after ingestion, and by scoring time
+    # a bank's normalised figures look exactly like a shop's.
+    statement_profile: Mapped[str | None] = mapped_column(String(30))
     # ISO code the company states its *financial statements* in, read from the
     # filing. NULL means nobody said, which is treated as USD.
     reporting_currency: Mapped[str | None] = mapped_column(String(3))

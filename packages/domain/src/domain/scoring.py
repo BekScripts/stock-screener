@@ -64,6 +64,7 @@ from domain.scores import (
     ValuationBasis,
 )
 from domain.sectors import is_unsupported_sector
+from domain.statements import StatementProfile
 
 if TYPE_CHECKING:
     from collections.abc import Collection, Sequence
@@ -1010,6 +1011,14 @@ def score_company(
         return CompanyScore(ticker=profile.ticker, status=ScoringStatus.NOT_ELIGIBLE)
 
     if is_unsupported_sector(profile.sector, profile.industry):
+        return CompanyScore(ticker=profile.ticker, status=ScoringStatus.UNSUPPORTED_SECTOR)
+
+    # The same exclusion, decided from the statements rather than from a label.
+    # Both vendors called Kaspi.kz a technology company; its filings report
+    # customer deposits, a loan book and central-bank balances. A label can be
+    # wrong, and here it was wrong in the direction that puts a bank at the top
+    # of a ranking with an unassessed balance sheet.
+    if profile.statement_profile is StatementProfile.FINANCIAL_INSTITUTION:
         return CompanyScore(ticker=profile.ticker, status=ScoringStatus.UNSUPPORTED_SECTOR)
 
     growth = score_growth(metrics)

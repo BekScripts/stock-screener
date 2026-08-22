@@ -17,6 +17,8 @@ from typing import Annotated, Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from domain.statements import StatementProfile  # noqa: TC001 — pydantic needs it at runtime
+
 #: A price or size that cannot meaningfully be negative. Rejecting these at the
 #: boundary means a garbled provider response fails as a `ProviderDataError` for
 #: one ticker rather than becoming a negative 52-week low in a ranking.
@@ -465,6 +467,19 @@ class CompanyProfile(_Frozen):
             currency, which for an ADR is USD whatever the company reports in.
             One field could only ever hold one of those answers, and whichever
             arrived last won.
+        consolidated_avg_volume: Average daily share volume computed here from
+            consolidated-tape bars, rather than taken from a vendor. Preferred
+            over `average_volume` when both exist, because its window is known
+            to be the one the threshold was calibrated for.
+        volume_source: Where the consolidated figure came from, when there is
+            one. Provenance travels with the number so a liquidity decision can
+            be traced to the feed that made it.
+        statement_profile: Which accounting model the filing follows, read from
+            the concepts it tags. `FINANCIAL_INSTITUTION` means the general
+            metrics do not describe this business, whatever its labels say.
+            None means nobody has looked — distinct from `GENERAL`, which is a
+            classification, so that a market-data profile carrying no opinion
+            cannot erase one the filings produced.
         is_fund: Whether the provider classifies this as an ETF or fund. A
             provider's own flag is far more reliable than inferring it from the
             name, so when it is set the name heuristics are not consulted.
@@ -478,8 +493,11 @@ class CompanyProfile(_Frozen):
     industry: str | None = None
     market_cap: float | None = Field(default=None, ge=0)
     average_volume: float | None = Field(default=None, ge=0)
+    consolidated_avg_volume: float | None = Field(default=None, ge=0)
+    volume_source: str | None = None
     reporting_currency: str | None = None
     quote_currency: str | None = None
+    statement_profile: StatementProfile | None = None
     is_fund: bool = False
     is_active: bool = True
 

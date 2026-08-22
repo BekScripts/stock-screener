@@ -19,7 +19,7 @@ import httpx
 import pytest
 
 from api_clients import SecEdgarFundamentals
-from domain import PeriodCadence
+from domain import PeriodCadence, StatementProfile
 
 USER_AGENT = "Compounder Radar test suite@example.com"
 
@@ -594,3 +594,39 @@ def test_a_year_the_source_never_supplied_cannot_be_selected() -> None:
     periods = adapter(document("ifrs-full", concepts)).get_financial_statements("TSM")
 
     assert periods[-1].period_end == date(2024, 12, 31)
+
+
+# -- statement shape --------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_a_bank_shaped_filer_is_classified_from_its_own_concepts() -> None:
+    # The concepts are Kaspi.kz's. Nothing in this payload says "bank" — the SIC
+    # description and every vendor label call it a technology company — so the
+    # classification can only come from the shape of the statements themselves.
+    payload = document(
+        "ifrs-full",
+        quarterly_revenue("KZT")
+        | {
+            "DepositsFromCustomers": {"KZT": [instant("2024-12-31", 6_561_900.0 * MILLION)]},
+            "LoansAndAdvancesToCustomers": {"KZT": [instant("2024-12-31", 5_746_600.0 * MILLION)]},
+            "CashAndBankBalancesAtCentralBanks": {
+                "KZT": [instant("2024-12-31", 619_470.0 * MILLION)]
+            },
+        },
+    )
+
+    profile = adapter(payload).get_company_profile("TSM")
+
+    assert profile is not None
+    assert profile.statement_profile is StatementProfile.FINANCIAL_INSTITUTION
+
+
+@pytest.mark.unit
+def test_an_operating_filer_is_classified_general() -> None:
+    payload = document("ifrs-full", quarterly_revenue("TWD"))
+
+    profile = adapter(payload).get_company_profile("TSM")
+
+    assert profile is not None
+    assert profile.statement_profile is StatementProfile.GENERAL

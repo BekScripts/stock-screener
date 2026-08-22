@@ -110,10 +110,33 @@ class Settings(BaseSettings):
     alpaca_feed: Literal["iex", "sip"] = Field(
         default="iex",
         description=(
-            "Which tape to read. `sip` is the consolidated tape and needs a paid "
-            "data subscription; `iex` is what a free account can read, and it "
-            "reports only that exchange's share of volume — roughly 2-4% of the "
-            "real figure. See the liquidity note in docs/reference/metrics.md."
+            "Which tape to read for price history. `sip` is the consolidated "
+            "tape and needs a paid subscription for recent data; `iex` is what a "
+            "free account reads live, and it reports only that exchange's share "
+            "of volume. Prices from it are sound, which is why it remains the "
+            "default — volume from it is not, which is what "
+            "`eligibility_volume_enabled` exists to fix. See the liquidity note "
+            "in docs/reference/metrics.md."
+        ),
+    )
+    eligibility_volume_enabled: bool = Field(
+        default=True,
+        description=(
+            "Whether `update-eligibility-volume` may read the consolidated tape "
+            "for the liquidity screen. A free plan serves SIP historically — "
+            "only recent data is withheld — so this needs no subscription. Turn "
+            "it off to fall back to the vendor's average volume, which arrives "
+            "later in the pipeline and costs a metered request."
+        ),
+    )
+    eligibility_volume_delay_minutes: int = Field(
+        default=15,
+        ge=15,
+        description=(
+            "How far in the past a consolidated-tape query must end. Fifteen "
+            "minutes is the measured boundary: below it the request is refused "
+            "as too recent. The floor is enforced here because a smaller value "
+            "does not fetch fresher data, it fetches none."
         ),
     )
 

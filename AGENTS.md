@@ -264,6 +264,25 @@ protecting:
   policy means a new version and a new `CURRENT_SCORE_VERSION` — never an edit
   to an existing one — and `docs/reference/compounder-score.md` changes in the
   same commit. `COMPOUNDER_V1_1` is current; `COMPOUNDER_V1` history is kept.
+
+  **A data-quality fix is not a policy change.** The two are distinguished by one
+  question: *does any company's number change?*
+
+  | Change | Version |
+  | --- | --- |
+  | A curve, a weight, a redistribution cap, a coverage minimum, or which statuses may be ranked | **new version** |
+  | Identifying a company the existing policy already excluded, or correcting an input that was read wrongly | **no version change** |
+
+  Excluding banks is V1.1 policy already. Recognising a bank that both vendors
+  mislabelled enforces that policy; it does not alter it, and every company that
+  still scores scores exactly what it scored before. Bumping the version there
+  would invalidate the whole score history to record that nothing about the
+  arithmetic moved. Prove it rather than assert it: a test asserting an
+  unclassified and a classified operating company produce identical scores is
+  what makes this rule checkable.
+
+  Historical snapshots are never rewritten either way. A company excluded today
+  keeps the rows it earned under the rules of the day it was scored.
 - **Not every company gets a number.** A bank, an ineligible security and a
   company with two quarters of history get a stored row carrying the status that
   says why. Forcing a score onto them would put meaningless values into a

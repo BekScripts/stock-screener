@@ -243,11 +243,17 @@ never derived from one half.
 
 ### Average dollar volume, and what it represents
 
-The figure is taken from a provider's **consolidated** average daily share
-volume where one exists — FMP supplies this on the same profile request already
-made — multiplied by the latest close. Only when no such average exists does it
-fall back to the mean of `close × volume` over the most recent sessions, up to
-twenty.
+The figure is a **consolidated** average daily share volume multiplied by the
+latest close. Two sources can supply one, preferred in this order:
+
+1. `consolidated_avg_volume` — a twenty-session average this project computes
+   from the consolidated tape, written by `update-eligibility-volume`. Preferred
+   because its window is the one the threshold was calibrated for.
+2. `average_volume` — the vendor's figure, which arrives on the profile request
+   enrichment already makes, over a window it does not publish.
+
+Only when neither exists does it fall back to the mean of `close × volume` over
+the most recent sessions, up to twenty.
 
 The distinction matters and travels with the number as `liquidity_basis`:
 
@@ -257,10 +263,23 @@ The distinction matters and travels with the number as `liquidity_basis`:
 | `PARTIAL` | One exchange, e.g. a free IEX-only feed | **No** — warning instead |
 | `UNKNOWN` | No volume, or no statement of origin | **No** — warning instead |
 
-A single-exchange feed carries roughly 2–4% of consolidated volume, so applying
-a whole-market threshold to it would be about twenty-five times too strict. The
-screen therefore reports `LIQUIDITY_UNVERIFIED` rather than excluding. See
+A single-exchange feed carries a few percent of consolidated volume, so applying
+a whole-market threshold to it would be far too strict. The screen therefore
+reports `LIQUIDITY_UNVERIFIED` rather than excluding. See
 [ADR-0004](../adr/0004-apply-the-liquidity-threshold-only-to-consolidated-volume.md).
+
+**And the share is not a constant.** Measured across 259 companies holding both
+figures, the IEX share of consolidated dollar volume ranged from 0.006% to 12% —
+a spread of two thousand times, with a median near 4%. So a partial figure cannot
+be rescued by scaling either: there is no factor to scale by. This is why
+`update-eligibility-volume` exists. It reads consolidated daily bars directly,
+which a free Alpaca plan serves for any window ending at least fifteen minutes in
+the past, and stores the result in `consolidated_avg_volume` with
+`volume_source` recording the tape it came from.
+
+Running it before `enrich` means the liquidity gate applies before the metered
+profile request rather than after it. Across a 762-company foreign cohort that
+took provider requests from 496 to 351 for five Alpaca requests.
 
 The **insufficient-history** check is separate and still excludes: it requires
 `trading_days_used >= MIN_TRADING_DAYS` (default 20) whatever the basis, so four

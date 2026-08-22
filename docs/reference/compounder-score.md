@@ -310,8 +310,41 @@ A company in the financial sector whose industry is unknown is also excluded:
 within financials the industry is the only thing separating a payments company
 from a lender.
 
-They stay in the universe and keep their metrics. No bank-specific model exists
-yet.
+### When the label is wrong
+
+The rule above reads the provider's label. A label can be wrong, and it is wrong
+in the direction that matters: Kaspi.kz is a deposit-funded bank that one vendor
+classifies as `Software - Infrastructure` and the SEC's own SIC list as
+`Business Services`. On those two opinions it scored 74.78 and ranked
+twenty-first — gross margin computed without interest expense, and no leverage
+penalty at all, because a bank's funding carries no `Borrowings` tag and its debt
+therefore read as unknown.
+
+So a second gate reads the **statements** rather than the label. A filer is
+`UNSUPPORTED_SECTOR` when its XBRL concepts show deposit funding *and* at least
+two of: a loan book, banking interest revenue, central-bank balances, or a
+loan-loss allowance specific to lending. Both taxonomies are covered — IFRS
+`DepositsFromCustomers` and US-GAAP `Deposits` reach the same conclusion.
+
+Two signals rather than one, because deposit funding alone is not decisive: a
+lithium miner tags customer prepayments as `DepositsFromCustomers`, and a
+pharmaceutical company tags the cash it holds at banks as `DepositsFromBanks`.
+Neither is a bank, and neither clears two. The threshold was measured against
+eighteen banks and seventy-eight operating companies; see
+`domain.statements` for the tags this deliberately refuses to use and why.
+
+This is a **supplement**, not a replacement. A bank whose label is right is still
+caught by its label, and two banks in the reference set tag too sparsely to be
+classified from their statements at all. Missing one that the label gate catches
+costs nothing; classifying a miner as a bank costs a candidate.
+
+Neither gate changes any score. `COMPOUNDER_V1_1` is unchanged — every company
+that scores under it scores exactly what it scored before. What changed is which
+companies are admitted, and admitting a bank was never the policy.
+
+They stay in the universe and keep their metrics, their reporting currency and
+their market capitalisation, so deep research can still read them. No
+bank-specific model exists yet.
 
 ## What changed in V1.1
 

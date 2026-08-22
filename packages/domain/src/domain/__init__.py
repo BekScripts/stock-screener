@@ -122,6 +122,7 @@ from domain.scoring import (
     valuation_multiple,
 )
 from domain.sectors import is_unsupported_sector
+from domain.statements import StatementProfile, classify_statement_profile
 from domain.universe import (
     SUPPORTED_EXCHANGES,
     is_common_stock,
@@ -178,6 +179,7 @@ __all__ = [
     "ScoreWarning",
     "ScoringError",
     "ScoringStatus",
+    "StatementProfile",
     "SubScore",
     "ValuationBasis",
     "VolumeBasis",
@@ -189,6 +191,7 @@ __all__ = [
     "cash_runway_months",
     "categorise",
     "classify_cadence",
+    "classify_statement_profile",
     "distance_from_52w_high",
     "enterprise_value",
     "evaluate_eligibility",

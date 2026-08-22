@@ -274,6 +274,42 @@ def test_bars_are_used_when_no_consolidated_average_exists() -> None:
 
 
 @pytest.mark.unit
+def test_the_tape_figure_is_preferred_over_the_vendors() -> None:
+    # Both are consolidated, so both are comparable with the threshold. The one
+    # computed here wins because its window is the twenty sessions the threshold
+    # was calibrated for, while a vendor averages over a window it never states.
+    profile = CompanyProfile(
+        ticker="XYZ",
+        name="Example",
+        average_volume=1_000_000.0,
+        consolidated_avg_volume=400_000.0,
+        volume_source="ALPACA_SIP",
+    )
+
+    value, basis = resolve_liquidity(profile, 10.0, [], bar_volume_basis=VolumeBasis.PARTIAL)
+
+    assert value == pytest.approx(4_000_000.0)
+    assert basis is VolumeBasis.CONSOLIDATED
+
+
+@pytest.mark.unit
+def test_single_exchange_volume_never_passes_as_consolidated() -> None:
+    # The property the whole liquidity design rests on. IEX carried between
+    # 0.006% and 12% of the consolidated figure across 259 measured companies, so
+    # a partial number must never be handed to a threshold calibrated for the
+    # whole market wearing a label that says it may be.
+    profile = CompanyProfile(ticker="XYZ", name="Example")
+    bars = [
+        PriceBar(date=date(2026, 6, 1), open=10, high=10, low=10, close=10.0, volume=500_000),
+    ]
+
+    value, basis = resolve_liquidity(profile, 10.0, bars, bar_volume_basis=VolumeBasis.PARTIAL)
+
+    assert value == pytest.approx(5_000_000.0)
+    assert basis is VolumeBasis.PARTIAL
+
+
+@pytest.mark.unit
 def test_liquidity_is_unknown_with_neither_source() -> None:
     value, basis = resolve_liquidity(CompanyProfile(ticker="X", name="X"), None, [])
 
