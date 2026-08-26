@@ -362,6 +362,14 @@ class ScoreSnapshot(Base):
     # `NOT_ELIGIBLE` and are four very different things.
     exclusion_reasons: Mapped[str | None] = mapped_column(String(200))
 
+    # Whether the fundamentals behind this score were current when it was
+    # computed. Recorded rather than derived: the staleness bound depends on the
+    # company's reporting cadence, so a reader comparing dates against a fixed
+    # window would disagree with the screen that produced the row. V1.2 keeps
+    # stale scores out of current rankings and nowhere else. NULL reads as
+    # CURRENT, which is what every pre-V1.2 row meant.
+    freshness: Mapped[str | None] = mapped_column(String(10))
+
     # The inputs a ranking displays beside the score. Copied here so a ranking
     # is one query rather than a re-scan, and so the row records the figures the
     # score was actually computed from even after the company restates them.

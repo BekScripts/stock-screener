@@ -21,6 +21,7 @@ from domain import (
     CompanyScore,
     ComponentScore,
     ComponentStatus,
+    Freshness,
     RiskAssessment,
     RiskLevel,
     ScoreCategory,
@@ -91,6 +92,7 @@ def _store(
     score_date: date = TODAY,
     market_cap: float = 2_000_000_000.0,
     growth_metric: float = 0.35,
+    freshness: Freshness = Freshness.CURRENT,
     **score_fields: Any,
 ) -> None:
     """Store one company and one snapshot for it."""
@@ -106,7 +108,15 @@ def _store(
 
     metrics = CompanyMetrics(ticker=ticker, market_cap=market_cap, revenue_growth_yoy=growth_metric)
     ScoreSnapshotRepository(session).upsert_scores(
-        [ScoreRecord(stored.id, _score(ticker, final=final, **score_fields), metrics)], score_date
+        [
+            ScoreRecord(
+                stored.id,
+                _score(ticker, final=final, **score_fields),
+                metrics,
+                freshness=freshness,
+            )
+        ],
+        score_date,
     )
     session.flush()
 
@@ -201,3 +211,43 @@ def test_an_unscored_company_returns_not_found(client: TestClient) -> None:
 def test_the_ranking_limit_is_bounded(client: TestClient) -> None:
     assert client.get("/api/rankings", params={"limit": 0}).status_code == 422
     assert client.get("/api/rankings", params={"limit": 10_000}).status_code == 422
+
+
+@pytest.mark.integration
+def test_the_rankings_endpoint_excludes_a_stale_score(session: Session, client: TestClient) -> None:
+    # The API is where the policy has to hold: a ranking served to a screen is
+    # the thing a reader acts on.
+    _store(session, "FRESH", final=70.0)
+    _store(session, "STALE", final=90.0, freshness=Freshness.STALE)
+
+    body = client.get("/api/rankings").json()
+
+    # Highest score in the table, and absent — because it is not current.
+    assert [row["ticker"] for row in body["rows"]] == ["FRESH"]
+
+
+@pytest.mark.integration
+def test_every_ranking_view_endpoint_excludes_a_stale_score(
+    session: Session, client: TestClient
+) -> None:
+    _store(session, "STALE", final=90.0, market_cap=300_000_000.0, freshness=Freshness.STALE)
+
+    for view in ("/api/rankings", "/api/rankings/hidden-gems", "/api/rankings/wrong-price"):
+        assert client.get(view).json()["rows"] == [], view
+
+
+@pytest.mark.integration
+def test_the_stock_endpoint_serves_a_stale_score_and_says_so(
+    session: Session, client: TestClient
+) -> None:
+    # Excluded from rankings, not withheld. The number is a real description of
+    # the company as it last reported, and the page has to be able to say why no
+    # ranking contains it.
+    _store(session, "STALE", final=90.0, freshness=Freshness.STALE)
+
+    body = client.get("/api/stocks/STALE").json()
+
+    assert body["score"]["final_score"] == 90.0
+    assert body["score"]["scoring_status"] == "SCORED"
+    assert body["score"]["freshness"] == "STALE"
+    assert body["score"]["rank_eligible"] is False

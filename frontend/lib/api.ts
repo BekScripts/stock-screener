@@ -147,6 +147,14 @@ export type StockDetail = {
     score_change_7d: number | null;
     score_change_30d: number | null;
     breakdown: Breakdown;
+    /** Whether the fundamentals behind the score were current when it was computed. */
+    freshness: "CURRENT" | "STALE";
+    /**
+     * Whether this score may appear in a current ranking. Served rather than
+     * derived here: the staleness bound depends on reporting cadence, so a page
+     * comparing dates itself would disagree with the screen that scored it.
+     */
+    rank_eligible: boolean;
   } | null;
 };
 

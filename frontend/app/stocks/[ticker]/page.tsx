@@ -85,6 +85,11 @@ export default async function StockPage({ params }: { params: Promise<{ ticker: 
             <ComponentCard component={breakdown.valuation} label="Valuation" />
             <ComponentCard component={breakdown.momentum} label="Market confirmation" />
           </div>
+          {detail.score?.rank_eligible === false && (
+            <p className="note" data-stale="true">
+              This score is based on stale fundamentals and is excluded from current rankings.
+            </p>
+          )}
           {breakdown.warnings.length > 0 && (
             <p className="note">Warnings: {breakdown.warnings.join(", ")}</p>
           )}

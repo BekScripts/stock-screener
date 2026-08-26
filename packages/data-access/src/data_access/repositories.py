@@ -41,7 +41,7 @@ from data_access.models import (
     WatchlistEntry,
     _utcnow,
 )
-from domain import ScoringStatus
+from domain import Freshness, ScoringStatus
 
 if TYPE_CHECKING:
     from domain import FxConversion
@@ -692,6 +692,9 @@ class ScoreRecord:
             anything.
         ranking_state: Whether this row's inputs have been through candidate
             enrichment. `PRELIMINARY` until they have.
+        freshness: Whether the fundamentals behind the score were current. A
+            stale score keeps its number everywhere the number describes the
+            company, and is kept out of current rankings only.
         exclusion_reasons: Every eligibility check the security failed, in the
             order the screen reports them. Empty for a company that passed.
             Stored because `NOT_ELIGIBLE` on its own cannot tell a company that
@@ -705,6 +708,7 @@ class ScoreRecord:
     metrics: CompanyMetrics | None = None
     ranking_state: str = PRELIMINARY
     exclusion_reasons: tuple[str, ...] = ()
+    freshness: Freshness = Freshness.CURRENT
 
 
 class ScoreSnapshotRepository:
@@ -900,6 +904,7 @@ class ScoreSnapshotRepository:
         min_quality_score: float | None = None,
         max_valuation_score: float | None = None,
         exclude_risk_levels: Sequence[str] = (),
+        rank_eligible_only: bool = True,
         limit: int | None = None,
     ) -> list[tuple[ScoreSnapshot, Company]]:
         """Return ranked snapshots with their companies, best first.
@@ -922,6 +927,12 @@ class ScoreSnapshotRepository:
             max_valuation_score: Upper bound on the valuation component, for
                 finding good companies at a poor price.
             exclude_risk_levels: Risk labels to leave out.
+            rank_eligible_only: Drop snapshots that may not appear in a *current*
+                ranking — under V1.2, those built on stale fundamentals. On by
+                default because that is what every ranking view wants and
+                forgetting it would silently readmit them. Pass False to read the
+                complete set, which is what a score-change comparison needs: a
+                company that went stale did not have its history deleted.
             limit: Maximum rows to return.
 
         Returns:
@@ -957,6 +968,17 @@ class ScoreSnapshotRepository:
 
         if exclude_risk_levels:
             statement = statement.where(ScoreSnapshot.risk_level.not_in(exclude_risk_levels))
+
+        if rank_eligible_only:
+            # NULL is CURRENT. Every row written before V1.2 has one, and those
+            # rows were ranked under rules where freshness did not bear on
+            # ranking — reading them as stale now would rewrite history.
+            statement = statement.where(
+                or_(
+                    ScoreSnapshot.freshness.is_(None),
+                    ScoreSnapshot.freshness != Freshness.STALE.value,
+                )
+            )
 
         statement = statement.order_by(
             ScoreSnapshot.final_score.desc(),
@@ -1847,4 +1869,5 @@ def _score_values(record: ScoreRecord, score_date: date, coverage: str) -> dict[
         # Pipe-separated rather than JSON: the set is small, closed and ordered,
         # and the scan report already writes it this way.
         "exclusion_reasons": "|".join(record.exclusion_reasons) or None,
+        "freshness": record.freshness.value,
     }

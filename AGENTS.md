@@ -163,10 +163,24 @@ Not built, and not to be started without being asked: scheduled or automatic
 deep research, report diffing or comparison, alerts, charts, and any second
 execution path for a job.
 
-**Phase 7 (international coverage) is complete.** Foreign private issuers run
-through the same pipeline as everything else — same ingestion, same metric
-engine, same CompounderScore V1.1, same rankings. There is no international
-score and no second fundamentals engine. Every fix landed in the input layer:
+**Phase 7 (international coverage) is complete and frozen.** Foreign private
+issuers run through the same pipeline as everything else — same ingestion, same
+metric engine, same CompounderScore, same rankings. There is no international
+score and no second fundamentals engine.
+
+`COMPOUNDER_V1_2` is current. It is V1.1's formulas *exactly* — every scoring
+file is byte-unchanged since the last V1.1 commit — plus one policy: a score
+built on `STALE` fundamentals keeps its number everywhere the number describes
+the company, and is excluded from current rankings. 1,929 companies scored under
+both versions with zero numeric differences.
+
+Phase 7F ran the full 762-company recoverable cohort against a **copy**, and
+`compounder_radar.db` has not received it. Code completion and data promotion are
+separate operations; promoting is a deliberate, separate step. Two limitations
+are documented rather than fixed: interim statements published only via 6-K
+(which is why every current-rank-eligible foreign company is an annual filer),
+and the us-gaap capital-expenditure basis. See
+`docs/reference/project-phases/phase7.md`. Every fix landed in the input layer:
 `ifrs-full` is a second concept table in `api-clients/edgar.py` selected per
 company, the money unit is read from the filing rather than assumed, and
 `score_snapshots.exclusion_reasons` (migration `0016`) records why an ineligible

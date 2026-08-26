@@ -404,6 +404,12 @@ table.rankings tbody tr:hover {
   padding: 14px 0;
 }
 
+/* A stale score is real and shown in full; the notice says why no ranking
+   contains it. Warning colour rather than error: nothing here is broken. */
+.note[data-stale="true"] {
+  color: var(--warning, #b45309);
+}
+
 .error {
   color: var(--bad);
 }

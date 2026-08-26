@@ -253,6 +253,7 @@ def _rescore(
                 row.metrics,
                 ranking_state=FINAL,
                 exclusion_reasons=row.exclusion_reasons,
+                freshness=row.freshness,
             )
             for row in scored
         ],

@@ -32,6 +32,8 @@ from data_access import (
 from domain import (
     BenchmarkReturns,
     CompanyScore,
+    EligibilityWarning,
+    Freshness,
     ScoringError,
     ScoringStatus,
     return_6m,
@@ -65,6 +67,9 @@ class ScoredCompany:
         exclusion_reasons: Every eligibility check the security failed. Empty
             for one that passed. Carried so the stored snapshot can say *why* a
             company has no score rather than only that it has none.
+        freshness: Whether the fundamentals behind the score were current. V1.2
+            keeps a stale score out of current rankings and nowhere else — it
+            remains on the stock page, in research and in history.
     """
 
     company_id: int
@@ -72,6 +77,7 @@ class ScoredCompany:
     metrics: CompanyMetrics
     score: CompanyScore
     exclusion_reasons: tuple[str, ...] = ()
+    freshness: Freshness = Freshness.CURRENT
 
     @property
     def ticker(self) -> str:
@@ -187,6 +193,15 @@ def build_scores(
                 metrics=scan_row.metrics,
                 score=_score_one(scan_row.profile, scan_row.metrics, benchmark, scan_row.eligible),
                 exclusion_reasons=tuple(reason.value for reason in scan_row.eligibility.reasons),
+                # Taken from the screen that already decided it, rather than
+                # recomputed here. The staleness bound scales with reporting
+                # cadence, and two places deciding it separately is two places to
+                # drift apart.
+                freshness=(
+                    Freshness.STALE
+                    if EligibilityWarning.STALE_FUNDAMENTALS in scan_row.eligibility.warnings
+                    else Freshness.CURRENT
+                ),
             )
         )
     return rows
@@ -265,6 +280,7 @@ def score_market(
                     row.score,
                     row.metrics,
                     exclusion_reasons=row.exclusion_reasons,
+                    freshness=row.freshness,
                 )
                 for row in rows
             ],

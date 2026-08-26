@@ -319,6 +319,12 @@ def _score_payload(detail: ScoreDetail | None) -> dict[str, Any] | None:
         "score_change_7d": detail.score_change_7d,
         "score_change_30d": detail.score_change_30d,
         "breakdown": detail.breakdown,
+        # Served so the page can say why a real score is not in any ranking.
+        # Stated rather than implied: the staleness bound depends on reporting
+        # cadence, so a client comparing dates would reach its own answer and the
+        # two would disagree.
+        "freshness": detail.freshness,
+        "rank_eligible": detail.rank_eligible,
     }
 
 

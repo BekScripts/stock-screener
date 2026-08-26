@@ -444,6 +444,14 @@ domestic semantics, or broaden us-gaap to include intangible investment. Neither
 is a change to make as a side effect of international coverage, so the
 limitation is documented and left alone.
 
+**Measured in the Phase 7 rollout**, over 146 newly scored foreign companies (28
+us-gaap, 118 IFRS): **7 affected** — a quarter of the us-gaap filers, 5% of the
+cohort — and **none of them in the Top 100**, the best-ranked sitting at 155.
+Intangible purchases were 1-14% of true capital spending for those seven, and the
+resulting score sensitivity was at most **0.04 points** (CGNT −0.01, QGEN −0.03,
+NOA −0.03, HUYA −0.04; MNDY, ASML and EH unmoved). The limitation changes no
+ranking conclusion, which is why it stays a limitation.
+
 Short-term investments are not added to cash for an IFRS filer. No IFRS concept
 is reliably the same measure — TSM's `ShorttermInvestmentsClassifiedAsCashEquivalents`
 is already inside cash equivalents and would double-count — so cash is cash and

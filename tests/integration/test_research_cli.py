@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Any
 import pytest
 from typer.testing import CliRunner
 
+from domain import CURRENT_SCORE_VERSION
 from stock_screener.cli import app
 from stock_screener.config import get_settings
 
@@ -181,7 +182,7 @@ def test_brief_shows_what_the_evidence_contains(scored_cli: CliRunner) -> None:
     assert result.exit_code == 0
     assert "XYZ — Example Corp" in result.output
     assert "fingerprint" in result.output
-    assert "COMPOUNDER_V1_1" in result.output
+    assert CURRENT_SCORE_VERSION in result.output
 
 
 @pytest.mark.integration

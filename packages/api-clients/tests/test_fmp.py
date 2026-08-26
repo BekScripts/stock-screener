@@ -18,7 +18,8 @@ from typing import Any
 import httpx
 import pytest
 
-from api_clients import FmpFundamentals
+from api_clients import FmpFundamentals, ProviderRateLimitError
+from api_clients._http import RetryPolicy
 
 INCOME = [
     {
@@ -321,3 +322,36 @@ def test_the_consolidated_average_volume_is_captured() -> None:
 
     assert profile is not None
     assert profile.average_volume == pytest.approx(53_498_387)
+
+
+# -- quota exhaustion is not a coverage gap ---------------------------------
+
+
+def _responding(status: int, payload: Any) -> FmpFundamentals:
+    """Build an adapter whose every request gets one canned response."""
+    return FmpFundamentals(
+        api_key="test-key",
+        client=httpx.Client(
+            transport=httpx.MockTransport(lambda _: httpx.Response(status, json=payload)),
+            base_url="https://fmp.test",
+        ),
+        retry=RetryPolicy(attempts=1),
+    )
+
+
+@pytest.mark.unit
+def test_a_symbol_the_vendor_does_not_cover_returns_none() -> None:
+    # An empty array is the vendor's way of saying "no such symbol here".
+    assert _responding(200, []).get_company_profile("NOPE") is None
+
+
+@pytest.mark.unit
+def test_a_spent_quota_raises_rather_than_looking_uncovered() -> None:
+    # These two outcomes look identical to a caller that only checks for None,
+    # and they mean opposite things: one company is not on the plan, the other
+    # was never asked. A Stage C run mistook the second for the first for 103
+    # companies and reported them as missing market caps.
+    adapter = _responding(429, {"Error Message": "Limit Reach . Please upgrade your plan"})
+
+    with pytest.raises(ProviderRateLimitError):
+        adapter.get_company_profile("XYZ")

@@ -229,3 +229,115 @@ reports in USD so it needed no rate in the first place.
   2026-04-16 carries 339 fully tagged IFRS reports and contributed exactly one
   fact — the cover-page share count — to the aggregated API. Parsing filing
   documents directly to work around that is a separate capability.
+
+## Phase 7F — rollout, admission and current rankings
+
+The layers above made foreign issuers *scoreable*. 7F ran the whole recoverable
+cohort through the pipeline and fixed what that exposed. Every stage ran against
+a **copy** of the database.
+
+### What the rollout found
+
+Three defects, each caught by running real companies rather than by reasoning:
+
+- **The composite provider replaced the EDGAR profile wholesale**, so a vendor
+  that knew TSM's market capitalisation erased the reporting currency only EDGAR
+  knew. The profile is now merged field by field.
+- **The enrichment pass re-scored without an FX resolver**, turning a complete
+  `PRELIMINARY` score into a `FINAL` one missing every currency-sensitive metric
+  — and, because valuation's multiple is required, dropping the company out of
+  the ranking entirely. Verification made the score worse for exactly the
+  companies it verified.
+- **A deposit-funded bank scored 74.78 and ranked twenty-first.** Both available
+  classifications called Kaspi.kz a technology company. `domain.statements` now
+  reads the statements instead — see
+  [CompounderScore](../compounder-score.md#when-the-label-is-wrong).
+
+### Liquidity moved to the consolidated tape
+
+The $1M dollar-volume gate could not be applied to stored volume: across 259
+companies, the IEX share of consolidated volume ranged from **0.006% to 12%**, so
+there is no factor to scale by. A free Alpaca plan does serve SIP historically —
+the restriction is recency, not the tape — so `update-eligibility-volume` reads
+it into `consolidated_avg_volume`. Running it before the metered pass took
+provider requests for the 762-company cohort from 762 to **353**.
+
+### Validated Stage C results
+
+| | |
+| --- | --- |
+| Foreign cohort | **762** |
+| Fundamentals recovered | 289 |
+| Numerical scores | 206 |
+| **Current-rank eligible** | **191** |
+| Stale scored but excluded | 15 |
+| Insufficient | 82 |
+| Not eligible | 461 |
+| Unsupported sector | 13 |
+| Provider unavailable | **0** |
+
+Current-rank-eligible by cadence: 191 ANNUAL, 0 SEMIANNUAL, 0 QUARTERLY. By
+taxonomy: 147 IFRS, 44 us-gaap.
+
+Foreign entrants to the current ranking: **GFI (#11) and ERO (#19)** in the Top
+20; **DLO, ARIS, CYD, KGC, IAG** joining them in the Top 50; **TBBB, B, AU, MTA**
+in the Top 100. Every Top-20 and Top-50 entrant was reconciled against its filed
+statements.
+
+**CGAU keeps its 73.48 and leaves the ranking.** Its newest statement is from
+2023, so ranking it meant 2023 revenue against a 2026 market capitalisation — a
+mixed-vintage valuation. See
+[what changed in V1.2](../compounder-score.md#what-changed-in-v12).
+
+## Known limitations, documented rather than fixed
+
+### 6-K interim statements
+
+Some foreign quarterly reporters publish current interim financial statements
+**only** through 6-K. A 6-K is an untyped envelope: most carry no financial
+statements, and the ones that do are indistinguishable from the ones that do not
+without opening them — hundreds of megabytes per filer to find out. It is
+therefore excluded from the structured-period fallback, and that exclusion is
+deliberate.
+
+The consequence is honest degradation rather than a wrong number:
+
+- the company keeps its valid historical scores
+- freshness becomes `STALE`
+- V1.2 excludes it from current rankings
+- stock detail, Research and Deep Research remain available
+
+This is why all 191 current-rank-eligible foreign companies are annual filers.
+The quarterly ones are not missing — they are not *current*, and the system says
+so. 6-K exhibit discovery is not to be implemented without being asked.
+
+### us-gaap capital expenditure basis
+
+`KNOWN_CAPEX_BASIS_LIMITATION` stands. Measured across the rollout: **7 affected
+names, none in the Top 100**, maximum score sensitivity **0.04 points**. Full
+measurement in [Metrics](../metrics.md#known_capex_basis_limitation).
+Normalisation is unchanged.
+
+### Filing-instance bandwidth
+
+The fallback is valuable and it is not cheap. Across Stage C: **75 triggers, 74
+successes, 1 failure** — and 458.7 MB of the 613.2 MB total, 75% of all traffic,
+with a median instance of 5.45 MB and a maximum of 49.6 MB.
+
+It is what makes GFI and CYD current. Where it fails it fails safely: CGAU's
+40-F instance parsed to a single `dei` concept because Canadian filers put
+financial statements in a separate exhibit, and the company kept the 2023 history
+it already had rather than losing it.
+
+## Primary database status
+
+**The primary database has not received the foreign cohort.**
+
+The whole of the Phase 7 validation and rollout ran against copies.
+`compounder_radar.db` is byte-identical to its pre-rollout state, verified by row
+counts across every table and by checksum before and after each stage.
+
+Code completion and data promotion are separate operations. Promoting the cohort
+is a deliberate, separate step: it means running the ordinary passes —
+`update-eligibility-volume`, `enrich`, `update-fundamentals`, `score` — against
+the real database, with the migrations applied first.
