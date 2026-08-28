@@ -13,6 +13,30 @@ If a skill and this file disagree, the skill wins — it is more specific.
 
 If you are about to do something no skill covers, say so before proceeding.
 
+## The checkpoint
+
+`docs/reference/PROJECT_STATE.md` is the single record of what this project *is*
+right now: current phase, frozen decisions, architecture, score definitions, data
+contracts, migrations, known limitations, completed experiments, regression
+requirements and the things explicitly not to change.
+
+**Read it before starting work. Update it in the same commit as any of these:**
+
+| Trigger | What to update |
+| --- | --- |
+| A phase completes or is frozen | Current phase, Frozen decisions, Next phase |
+| A new `score_version` | Score definitions, Regression requirements |
+| A new migration | Database migrations, Data contracts |
+| A new frozen rule or ADR | Frozen decisions, Things explicitly not to change |
+| A limitation found and accepted | Known limitations |
+| A validated rollout or measurement | Completed experiments |
+| Data promoted to the primary database | Completed experiments, Latest checkpoint |
+| Any merge to `main` | Latest checkpoint |
+
+A change that lands one of those and leaves the checkpoint stale is an
+incomplete change. Everything on that page must be checkable against the
+repository — no number without the run or the test that produced it.
+
 ## Skills
 
 Skills live in `.agents/skills/<name>/SKILL.md` — one canonical copy, symlinked
@@ -277,7 +301,8 @@ protecting:
   and no comparison crosses versions. Changing a curve, a weight or a coverage
   policy means a new version and a new `CURRENT_SCORE_VERSION` — never an edit
   to an existing one — and `docs/reference/compounder-score.md` changes in the
-  same commit. `COMPOUNDER_V1_1` is current; `COMPOUNDER_V1` history is kept.
+  same commit. `COMPOUNDER_V1_2` is current; `COMPOUNDER_V1_1` and
+  `COMPOUNDER_V1` history is kept.
 
   **A data-quality fix is not a policy change.** The two are distinguished by one
   question: *does any company's number change?*

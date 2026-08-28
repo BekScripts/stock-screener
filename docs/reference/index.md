@@ -13,6 +13,7 @@ If you find yourself writing "you should" or "it's usually best to" on a
 reference page, that sentence belongs in
 [explanation](../explanation/index.md) or a [how-to](../how-to/index.md).
 
+- [Project state](PROJECT_STATE.md) — the current checkpoint: phase, frozen decisions, schema, limits
 - [Configuration](configuration.md) — every setting the app reads
 - [Commands](commands.md) — every `make` target and CLI command
 - [Metrics](metrics.md) — every calculation, its formula, and when it is unavailable
@@ -24,3 +25,5 @@ reference page, that sentence belongs in
 - [Phase 3 brief](project-phases/phase3.md) — the grounded AI research scope and its limits
 - [Phase 4 brief](project-phases/phase4.md) — the dashboard and watchlist scope and its limits
 - [Phase 5 brief](project-phases/phase5.md) — running the pipeline from the dashboard
+- [Phase 6 brief](project-phases/phase6.md) — on-demand deep research and its boundaries
+- [Phase 7 brief](project-phases/phase7.md) — international coverage, currency safety and its limits

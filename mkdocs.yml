@@ -51,6 +51,7 @@ nav:
       - Score and rank the market: how-to/score-and-rank.md
   - Reference:
       - reference/index.md
+      - Project state: reference/PROJECT_STATE.md
       - Configuration: reference/configuration.md
       - Commands: reference/commands.md
       - Metrics: reference/metrics.md
