@@ -64,6 +64,7 @@ from domain.scores import (
     ValuationBasis,
 )
 from domain.sectors import is_unsupported_sector
+from domain.statements import StatementProfile
 
 if TYPE_CHECKING:
     from collections.abc import Collection, Sequence
@@ -603,8 +604,13 @@ def score_quality(metrics: CompanyMetrics) -> ComponentScore:
     fcf_points, fcf_note = _fcf_margin_points(metrics)
 
     net_cash_ratio: float | None = None
-    if metrics.net_cash is not None and metrics.market_cap:
-        net_cash_ratio = metrics.net_cash / metrics.market_cap
+    # Net cash is in the reporting currency, so the market capitalisation must
+    # be too. `market_cap_for_ratios` is None when that conversion was needed
+    # and unavailable, which costs this sub-score rather than answering with a
+    # ratio of two different currencies.
+    market_cap = metrics.market_cap_for_ratios
+    if metrics.net_cash is not None and market_cap:
+        net_cash_ratio = metrics.net_cash / market_cap
 
     subscores = (
         SubScore(
@@ -669,8 +675,9 @@ def valuation_multiple(metrics: CompanyMetrics) -> tuple[float | None, Valuation
     if metrics.enterprise_value is not None:
         return metrics.enterprise_value / revenue, ValuationBasis.EV_TO_REVENUE
 
-    if metrics.market_cap is not None and metrics.market_cap > 0:
-        return metrics.market_cap / revenue, ValuationBasis.PRICE_TO_SALES
+    market_cap = metrics.market_cap_for_ratios
+    if market_cap is not None and market_cap > 0:
+        return market_cap / revenue, ValuationBasis.PRICE_TO_SALES
 
     return None, ValuationBasis.NOT_AVAILABLE
 
@@ -719,8 +726,9 @@ def score_valuation(metrics: CompanyMetrics) -> tuple[ComponentScore, ValuationB
     multiple, basis = valuation_multiple(metrics)
 
     fcf_yield: float | None = None
-    if metrics.ttm_free_cash_flow is not None and metrics.market_cap:
-        fcf_yield = metrics.ttm_free_cash_flow / metrics.market_cap
+    market_cap = metrics.market_cap_for_ratios
+    if metrics.ttm_free_cash_flow is not None and market_cap:
+        fcf_yield = metrics.ttm_free_cash_flow / market_cap
 
     subscores = (
         SubScore(
@@ -918,8 +926,9 @@ def assess_risk(metrics: CompanyMetrics) -> RiskAssessment:
 
     leverage: float | None = None
     net_debt_ratio: float | None = None
-    if metrics.net_cash is not None and metrics.market_cap:
-        net_debt_ratio = -metrics.net_cash / metrics.market_cap
+    market_cap = metrics.market_cap_for_ratios
+    if metrics.net_cash is not None and market_cap:
+        net_debt_ratio = -metrics.net_cash / market_cap
         leverage = interpolate(LEVERAGE_CURVE, net_debt_ratio)
     else:
         warnings.append(ScoreWarning.LEVERAGE_NOT_ASSESSED)
@@ -1002,6 +1011,14 @@ def score_company(
         return CompanyScore(ticker=profile.ticker, status=ScoringStatus.NOT_ELIGIBLE)
 
     if is_unsupported_sector(profile.sector, profile.industry):
+        return CompanyScore(ticker=profile.ticker, status=ScoringStatus.UNSUPPORTED_SECTOR)
+
+    # The same exclusion, decided from the statements rather than from a label.
+    # Both vendors called Kaspi.kz a technology company; its filings report
+    # customer deposits, a loan book and central-bank balances. A label can be
+    # wrong, and here it was wrong in the direction that puts a bank at the top
+    # of a ranking with an unassessed balance sheet.
+    if profile.statement_profile is StatementProfile.FINANCIAL_INSTITUTION:
         return CompanyScore(ticker=profile.ticker, status=ScoringStatus.UNSUPPORTED_SECTOR)
 
     growth = score_growth(metrics)

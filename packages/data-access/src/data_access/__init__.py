@@ -8,12 +8,16 @@ only::
 Everything re-exported here is a supported contract. Anything not listed in
 `__all__` is internal and may change without a version bump.
 
-The package owns the seven tables, how they are written idempotently, and the
+The package owns the tables, how they are written idempotently, and the
 translation between stored rows and `domain` models. It does not know where the
 data came from, nor how a score is calculated — only how to store one and how to
 read a day of them back in ranking order. The same applies to a research report:
 this package stores a validated one and will not accept anything else, but has
 no opinion about what makes it valid.
+
+`deep_research_reports` is the one table that appends rather than upserting. A
+deep report is a dated investigation, its history is the point, and
+`DeepResearchReportRepository` has no update or delete path at all.
 """
 
 from data_access.converters import (
@@ -29,24 +33,33 @@ from data_access.models import (
     FilingExcerptRecord,
     FilingRecord,
     FinancialSnapshot,
+    FxRate,
     JobRecord,
     PriceHistory,
     ScoreSnapshot,
+    StoredDeepResearchReport,
     StoredResearchReport,
     WatchlistEntry,
 )
 from data_access.repositories import (
+    EXTERNAL_DEGRADED,
+    EXTERNAL_FRESH,
+    EXTERNAL_REUSED,
     FINAL,
     JOB_FAILED,
     JOB_RUNNING,
     JOB_SUCCEEDED,
     JOB_UNKNOWN,
+    MARKET_COVERAGE,
     PRELIMINARY,
+    SINGLE_COVERAGE,
     BenchmarkPriceRepository,
     CompanyRepository,
+    DeepResearchReportRepository,
     FilingExcerptRepository,
     FilingRepository,
     FinancialSnapshotRepository,
+    FxRateRepository,
     JobRepository,
     PriceHistoryRepository,
     ResearchReportRepository,
@@ -63,23 +76,31 @@ from data_access.session import (
 )
 
 __all__ = [
+    "EXTERNAL_DEGRADED",
+    "EXTERNAL_FRESH",
+    "EXTERNAL_REUSED",
     "FINAL",
     "JOB_FAILED",
     "JOB_RUNNING",
     "JOB_SUCCEEDED",
     "JOB_UNKNOWN",
+    "MARKET_COVERAGE",
     "PRELIMINARY",
+    "SINGLE_COVERAGE",
     "Base",
     "BenchmarkPrice",
     "BenchmarkPriceRepository",
     "Company",
     "CompanyRepository",
+    "DeepResearchReportRepository",
     "FilingExcerptRecord",
     "FilingExcerptRepository",
     "FilingRecord",
     "FilingRepository",
     "FinancialSnapshot",
     "FinancialSnapshotRepository",
+    "FxRate",
+    "FxRateRepository",
     "JobRecord",
     "JobRepository",
     "PriceHistory",
@@ -88,6 +109,7 @@ __all__ = [
     "ScoreRecord",
     "ScoreSnapshot",
     "ScoreSnapshotRepository",
+    "StoredDeepResearchReport",
     "StoredResearchReport",
     "UnsupportedDialectError",
     "WatchlistEntry",

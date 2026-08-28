@@ -14,20 +14,25 @@ gross margin on the screen is the gross margin the score was given.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from data_access import (
     CompanyRepository,
+    DeepResearchReportRepository,
     FinancialSnapshotRepository,
     PriceHistoryRepository,
     ResearchReportRepository,
     ScoreSnapshotRepository,
+    StoredDeepResearchReport,
     WatchlistRepository,
     to_company_profile,
     to_financial_period,
     to_price_bar,
 )
-from domain import CURRENT_SCORE_VERSION, build_company_metrics
+from deep_research import DeepResearchReport
+from domain import CURRENT_SCORE_VERSION, build_company_metrics, normalise_currency
+from domain.metrics import fundamentals_are_stale
 from research import ResearchReport
 from stock_screener.scoring import ScoreDetail, latest_score
 
@@ -35,6 +40,7 @@ if TYPE_CHECKING:
     from sqlalchemy.orm import Session
 
     from data_access import Company
+    from domain import CompanyMetrics, FxConversion
     from stock_screener.config import Settings
 
 #: Metrics the detail page shows, in reading order, with how to render each.
@@ -67,12 +73,19 @@ class MetricView:
         value: The figure, or None when the data cannot support it. None is
             rendered as unknown and never as zero.
         unit: How to format it — `percent`, `points` or `money`.
+        currency: For a `money` metric, the currency the figure is actually in.
+            Not decoration: a foreign issuer's net cash is in the currency it
+            files in, and prefixing every money figure with a dollar sign would
+            state that TSM holds a trillion dollars when the number is Taiwan
+            dollars. None for anything that is not money, where it has no
+            meaning.
     """
 
     key: str
     label: str
     value: float | None
     unit: str
+    currency: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -85,7 +98,31 @@ class StockDetail:
         sector: Sector classification, when known.
         industry: Industry classification, when known.
         exchange: Listing exchange, when known.
-        market_cap: Market capitalisation at the time of scoring.
+        market_cap: Market capitalisation at the time of scoring, in
+            `market_cap_currency` — the currency the *listing* trades in, which
+            is what a reader expects to see for a U.S.-listed security. The
+            converted figure the valuation ratios were computed from is
+            deliberately not shown in its place; it is an internal quantity, not
+            the quoted size of the company.
+        market_cap_currency: What `market_cap` is denominated in. USD for every
+            listing this screen admits.
+        reporting_currency: What the company's statements — and therefore its
+            money metrics — are denominated in.
+        fx: The rate that brought the two together, with the date and source it
+            came from, or None when none was needed or none was found.
+        fundamental_cadence: How often this company reports — `QUARTERLY`,
+            `SEMIANNUAL` or `ANNUAL`. Shown because "revenue growth" means a
+            different span of time for each, and a screen that omitted it would
+            invite a reader to take an annual filer's figures for current-quarter
+            ones.
+        fundamentals_through: The end of the newest reported period. Read with
+            the cadence beside it.
+        ttm_basis: Whether the trailing-year figures are one stated fiscal year,
+            four quarters or two half-years.
+        fundamentals_stale: Whether the newest reported period is older than
+            this company's own cadence explains. Judged against the cadence, so
+            an annual filer eight months past its year end is current while a
+            quarterly one is not.
         market_cap_source: Whether a provider supplied it or it was multiplied
             out from filings and a price.
         ranking_state: `PRELIMINARY` until candidate enrichment has verified the
@@ -104,6 +141,13 @@ class StockDetail:
     industry: str | None
     exchange: str | None
     market_cap: float | None
+    market_cap_currency: str
+    reporting_currency: str
+    fx: dict[str, Any] | None
+    fundamental_cadence: str
+    fundamentals_through: str | None
+    ttm_basis: str
+    fundamentals_stale: bool
     market_cap_source: str | None
     ranking_state: str | None
     watched: bool
@@ -142,6 +186,7 @@ def stock_detail(
     report = ResearchReportRepository(session).latest_for_company(
         company.id, score_version=score_version
     )
+    metrics = _company_metrics(session, settings, company)
 
     return StockDetail(
         ticker=company.ticker,
@@ -150,13 +195,35 @@ def stock_detail(
         industry=company.industry,
         exchange=company.exchange,
         market_cap=snapshot.market_cap if snapshot else company.market_cap,
+        market_cap_currency=normalise_currency(company.quote_currency),
+        reporting_currency=normalise_currency(metrics.reported_currency),
+        fx=_fx_payload(metrics.fx),
+        fundamental_cadence=metrics.fundamental_cadence.value,
+        fundamentals_through=(
+            metrics.fundamentals_through.isoformat() if metrics.fundamentals_through else None
+        ),
+        ttm_basis=metrics.ttm_basis,
+        fundamentals_stale=fundamentals_are_stale(metrics, datetime.now(UTC).date()),
         market_cap_source=snapshot.market_cap_source if snapshot else "UNKNOWN",
         ranking_state=snapshot.ranking_state if snapshot else None,
         watched=WatchlistRepository(session).get(company.id) is not None,
         score=_score_payload(detail),
-        metrics=_metrics(session, settings, company),
+        metrics=_metric_views(metrics),
         has_research=report is not None,
     )
+
+
+def _fx_payload(conversion: FxConversion | None) -> dict[str, Any] | None:
+    """Flatten a conversion for JSON, keeping the date and source visible."""
+    if conversion is None:
+        return None
+    return {
+        "base": conversion.base,
+        "quote": conversion.quote,
+        "rate": conversion.rate,
+        "rate_date": conversion.rate_date.isoformat(),
+        "provider": conversion.provider,
+    }
 
 
 def research_view(
@@ -247,15 +314,28 @@ def _score_payload(detail: ScoreDetail | None) -> dict[str, Any] | None:
         "score_date": detail.score_date.isoformat(),
         "score_version": detail.score_version,
         "scoring_status": detail.scoring_status,
+        "exclusion_reasons": list(detail.exclusion_reasons),
         "final_score": detail.final_score,
         "score_change_7d": detail.score_change_7d,
         "score_change_30d": detail.score_change_30d,
         "breakdown": detail.breakdown,
+        # Served so the page can say why a real score is not in any ranking.
+        # Stated rather than implied: the staleness bound depends on reporting
+        # cadence, so a client comparing dates would reach its own answer and the
+        # two would disagree.
+        "freshness": detail.freshness,
+        "rank_eligible": detail.rank_eligible,
     }
 
 
-def _metrics(session: Session, settings: Settings, company: Company) -> list[MetricView]:
-    """Rebuild the displayed metrics from the same inputs the score used."""
+def _company_metrics(session: Session, settings: Settings, company: Company) -> CompanyMetrics:
+    """Rebuild one company's metrics from the same inputs the score used.
+
+    No exchange rate is supplied. This is a read path serving a page, so it must
+    not reach a vendor; the money metrics it displays are reported figures and
+    need no conversion to be shown correctly, as long as the screen says which
+    currency they are in.
+    """
     periods = [
         to_financial_period(row)
         for row in FinancialSnapshotRepository(session).list_for_company(company.id)
@@ -263,13 +343,209 @@ def _metrics(session: Session, settings: Settings, company: Company) -> list[Met
     bars = [
         to_price_bar(row) for row in PriceHistoryRepository(session).list_for_company(company.id)
     ]
-    metrics = build_company_metrics(
+    return build_company_metrics(
         to_company_profile(company),
         periods,
         bars,
         bar_volume_basis=settings.bar_volume_basis,
     )
+
+
+def _metric_views(metrics: CompanyMetrics) -> list[MetricView]:
+    """Turn the derived metrics into the subset a screen shows."""
+    reporting = normalise_currency(metrics.reported_currency)
     return [
-        MetricView(key=key, label=label, value=getattr(metrics, key), unit=unit)
+        MetricView(
+            key=key,
+            label=label,
+            value=getattr(metrics, key),
+            unit=unit,
+            currency=reporting if unit == "money" else None,
+        )
         for key, label, unit in METRIC_FIELDS
+    ]
+
+
+_SECTION_LABELS: dict[str, str] = {
+    "company_overview": "Company Overview",
+    "current_snapshot": "Current Snapshot",
+    "why_the_algorithm_likes_it": "Why the Algorithm Likes It",
+    "growth_quality": "Growth Quality",
+    "financial_quality": "Financial Quality",
+    "valuation": "Valuation",
+    "latest_earnings": "Latest Earnings",
+    "recent_developments": "Recent Developments",
+    "competitive_position": "Competitive Position",
+    "catalysts": "Catalysts",
+    "major_risks": "Major Risks",
+    "bull_case": "Bull Case",
+    "bear_case": "Bear Case",
+    "thesis_breakers": "Thesis Breakers",
+    "what_the_market_may_be_missing": "What the Market May Be Missing",
+    "what_to_watch_next": "What to Watch Next",
+    "research_conclusion": "Research Conclusion",
+}
+"""Display names for the seventeen sections, in reading order.
+
+Written out rather than derived from the enum by title-casing, because
+`Why The Algorithm Likes It` and `What The Market May Be Missing` read as
+machine output. A section added to the contract without a label here shows its
+raw key, which is ugly enough to notice.
+"""
+
+
+def _deep_report_payload(row: StoredDeepResearchReport) -> dict[str, Any]:
+    """Flatten one stored deep report into what a reading surface needs.
+
+    **Only validated content leaves this function.** The stored document is a
+    `DeepResearchReport`, which is the type validation produces and nothing else
+    does, so there is no path here to a draft, a rejected claim's text, a prompt
+    or a provider's raw output. Issues are served as codes and section names
+    only — enough to see that something was dropped, never enough to read what.
+
+    Args:
+        row: The stored report.
+
+    Returns:
+        JSON-ready data, including the section order a page should render and
+        the reason behind every `UNKNOWN` section.
+    """
+    report = DeepResearchReport.model_validate(row.validated_report_json)
+    reasons = report.unknown_reasons
+
+    return {
+        "id": row.id,
+        "ticker": report.ticker,
+        "status": report.status.value,
+        "as_of": report.as_of.isoformat(),
+        "generated_at": report.generated_at.isoformat(),
+        "score_version": report.score_version,
+        "contract_version": report.contract_version,
+        "prompt_version": report.prompt_version,
+        "model_id": report.model_id,
+        "confidence": report.confidence.model_dump(mode="json"),
+        "unknowns": list(report.unknowns),
+        "unknown_reasons": {section: reason.value for section, reason in reasons.items()},
+        "external_state": row.external_state,
+        "external_collected_at": (
+            row.external_collected_at.isoformat() if row.external_collected_at else None
+        ),
+        "sections": [
+            {
+                "key": section.value,
+                "label": _SECTION_LABELS.get(section.value, section.value),
+                "unknown_reason": reasons.get(section.value),
+                "claims": [
+                    {
+                        "text": claim.text,
+                        "basis": claim.basis.value,
+                        "evidence": list(claim.evidence),
+                        "unknown_reason": (
+                            claim.unknown_reason.value if claim.unknown_reason else None
+                        ),
+                    }
+                    for claim in claims
+                ],
+            }
+            for section, claims in report.sections.iter_sections()
+        ],
+        "sources": [
+            {
+                "evidence_id": item.evidence_id,
+                "source_type": item.source_type.value,
+                "tier": item.tier.value,
+                "publisher": item.publisher,
+                "title": item.title,
+                "url": item.url,
+                "published_at": item.published_at.isoformat() if item.published_at else None,
+                "retrieved_at": item.retrieved_at.isoformat(),
+            }
+            for item in report.external_evidence
+        ],
+        # Codes and locations only. The text a claim was rejected for saying is
+        # exactly what validation refused to publish, and serving it here would
+        # undo the refusal.
+        "issues": [
+            {
+                "code": issue.code.value,
+                "section": issue.section.value if issue.section else None,
+            }
+            for issue in report.issues
+        ],
+    }
+
+
+def deep_research_view(session: Session, ticker: str) -> dict[str, Any] | None:
+    """Return a company's most recent validated deep research report.
+
+    Args:
+        session: Open database session.
+        ticker: The symbol to look up.
+
+    Returns:
+        The report as JSON-ready data, or None when the company is unknown or
+        has never been researched.
+    """
+    company = CompanyRepository(session).get_by_ticker(ticker)
+    if company is None:
+        return None
+
+    row = DeepResearchReportRepository(session).latest_for_company(company.id)
+    return None if row is None else _deep_report_payload(row)
+
+
+def deep_research_report(session: Session, report_id: int) -> dict[str, Any] | None:
+    """Return one historical deep research report by id.
+
+    Args:
+        session: Open database session.
+        report_id: The stored report to read.
+
+    Returns:
+        The report, or None when no such report exists.
+    """
+    row = session.get(StoredDeepResearchReport, report_id)
+    return None if row is None else _deep_report_payload(row)
+
+
+def deep_research_history(
+    session: Session, ticker: str, *, limit: int = 20
+) -> list[dict[str, Any]] | None:
+    """Return a company's deep research reports, newest first.
+
+    Summaries rather than whole documents: a history control needs enough to
+    label a row and nothing more, and returning twenty full reports to render a
+    dropdown would be wasteful.
+
+    Args:
+        session: Open database session.
+        ticker: The symbol to look up.
+        limit: Most reports to return.
+
+    Returns:
+        One summary per report, newest first, or None when the company is
+        unknown. An empty list means the company exists and has never been
+        researched.
+    """
+    company = CompanyRepository(session).get_by_ticker(ticker)
+    if company is None:
+        return None
+
+    return [
+        {
+            "id": row.id,
+            "generated_at": row.generated_at.isoformat(),
+            "as_of": row.as_of.isoformat(),
+            "status": row.status,
+            "confidence": row.confidence,
+            "model_id": row.model_id,
+            "prompt_version": row.prompt_version,
+            "external_state": row.external_state,
+            "external_collected_at": (
+                row.external_collected_at.isoformat() if row.external_collected_at else None
+            ),
+        }
+        for row in DeepResearchReportRepository(session).history_for_company(
+            company.id, limit=limit
+        )
     ]

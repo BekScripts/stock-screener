@@ -83,6 +83,149 @@ and stops both. Its scope and known limitations are documented in
 The MVP is finished. Phases 1 through 5 are all complete, and none of them is a
 place to add to without being asked.
 
+**Phase 6 (on-demand deep research) is complete and frozen.** Deep research is a separate layer
+over the screener, not a change to it: a person types a ticker and one company
+is investigated against its current fundamentals, its filings and what has since
+been published about it. `packages/deep-research` holds the contract — the `W.`
+external evidence namespace, `DeepResearchBrief` and its three fingerprints, the
+seventeen report sections, and the provenance rules — and
+`deep_research_reports` (migration `0013`) stores a validated report. Its scope
+and what it deliberately excludes are documented in
+`docs/reference/project-phases/phase6.md`, and the placement decision in ADR
+0010.
+
+Four rules govern that layer:
+
+- **Web evidence never changes the CompounderScore.** `research.EvidenceKind`
+  has no `W.` member, so an external id is unresolvable to the Phase 3
+  validator; the sections that explain the score accept `DETERMINISTIC` claims
+  only; and `DeepResearchReport` has no score field. All three are load-bearing.
+- **Phase 3 is frozen and reused, never edited.** `deep-research` imports
+  `ScoreEvidence`, `MetricFact`, `ReportedPeriod`, `FilingText` and the rest
+  outright. Never add a member to a Phase 3 enum, never subclass a Phase 3
+  class. `ResearchReport` and `DeepResearchReport` are unrelated types in
+  different tables.
+- **Deep reports append; they never overwrite.** `research_reports` upserts on
+  its cache key. `deep_research_reports` has no unique constraint, because a
+  deep report is a dated investigation and the history of what was concluded is
+  the point.
+- **A deep report issues no instructions.** No BUY/SELL/HOLD, no price target,
+  no position sizing — absent from the contract structurally, not forbidden by a
+  prompt.
+
+Phase 6B adds `src/stock_screener/deep_research/`: `prepare_company` refreshes
+one ticker by running the **existing** ingestion and scoring passes narrowed by
+their `tickers` argument, and `assemble_deep_brief` reads the result back with no
+network access at all. `deep-research prepare <TICKER>` is the CLI. Two rules
+govern it:
+
+- **A stage is an existing pass, never new pipeline code.** No second
+  fundamentals engine, no deep-research metric, and no second score — the
+  snapshot written is an ordinary `COMPOUNDER_V1_1` row.
+- **Network first, assembly second.** Everything that fetches lives in
+  `preparation`; `brief` only reads. That is what makes fingerprints reproducible
+  and the cache usable.
+
+Phase 6C adds the `W.` namespace in practice: `ExternalResearchProvider` in
+`api-clients` (one `search` method, `TavilySearch` and `MockExternalResearch`),
+`deep_research/sources.py` for the tier policy, and
+`deep_research/collection.py` for the collector. `prepare <TICKER> --external`
+runs it. Three rules:
+
+- **An unrecognised domain is rejected, not demoted.** The allowlist in
+  `sources.py` is the whole policy, and its default is refusal. Social platforms,
+  forums and aggregator finance sites are additionally named in a denylist.
+- **`X.` stays authoritative for filings.** A web copy of a filing the brief
+  already quotes is rejected; commentary about one is not.
+- **Collection is optional and never fatal.** A vendor being unconfigured,
+  unreachable or out of quota costs a brief nothing — `external=()` is complete.
+
+Phase 6D generates and validates: `api-clients` holds the provider,
+`deep_research.validation` decides what survives, and
+`src/stock_screener/deep_research/runner.py` runs the sequence — prepare,
+collect, assemble, measure, cache, guard, generate, validate, persist. The cache
+is consulted before the provider and the prompt is measured before it is sent,
+because both exist to avoid spending badly. Phase 6E is the dashboard:
+`/research` and `/research/[ticker]`, with execution going through the existing
+job system rather than a second path.
+
+Two more rules govern those layers:
+
+- **Nothing unvalidated is stored or served.** The provider returns a draft; only
+  validation constructs a report. Rejected text never reaches the database, the
+  API or a screen — publishing what validation refused to publish would defeat
+  the refusal.
+- **An empty section says which kind of empty it is.** `NO_EVIDENCE` means the
+  brief had nothing; `NO_VALID_CLAIMS` means it had plenty and nothing survived.
+  Collapsing them blames the data for a failure of the generation.
+
+Not built, and not to be started without being asked: scheduled or automatic
+deep research, report diffing or comparison, alerts, charts, and any second
+execution path for a job.
+
+**Phase 7 (international coverage) is complete and frozen.** Foreign private
+issuers run through the same pipeline as everything else — same ingestion, same
+metric engine, same CompounderScore, same rankings. There is no international
+score and no second fundamentals engine.
+
+`COMPOUNDER_V1_2` is current. It is V1.1's formulas *exactly* — every scoring
+file is byte-unchanged since the last V1.1 commit — plus one policy: a score
+built on `STALE` fundamentals keeps its number everywhere the number describes
+the company, and is excluded from current rankings. 1,929 companies scored under
+both versions with zero numeric differences.
+
+Phase 7F ran the full 762-company recoverable cohort against a **copy**, and
+`compounder_radar.db` has not received it. Code completion and data promotion are
+separate operations; promoting is a deliberate, separate step. Two limitations
+are documented rather than fixed: interim statements published only via 6-K
+(which is why every current-rank-eligible foreign company is an annual filer),
+and the us-gaap capital-expenditure basis. See
+`docs/reference/project-phases/phase7.md`. Every fix landed in the input layer:
+`ifrs-full` is a second concept table in `api-clients/edgar.py` selected per
+company, the money unit is read from the filing rather than assumed, and
+`score_snapshots.exclusion_reasons` (migration `0016`) records why an ineligible
+company was not scored. Its scope and limits are in
+`docs/reference/project-phases/phase7.md`.
+
+Three rules govern that layer:
+
+- **The filing's unit is authoritative, never the vendor's.** `reporting_currency`
+  comes from the XBRL unit key; `quote_currency` is what the listed share trades
+  in, and the two are separate fields because one field held both and whichever
+  provider wrote last won. Mixing TSM's TWD statements with its USD market cap
+  yields an EV/Revenue of 0.38x against a true 24.07x — a factor of 63, and the
+  error this layer exists to prevent.
+- **Convert the market side, never the statements.** Reported history stays in
+  the money it was filed in; restating it would put FX movement into revenue
+  growth and margins, which are properties of the business. Only the market
+  capitalisation crosses. Every ratio against it reads
+  `CompanyMetrics.market_cap_for_ratios` — converted where a rate exists, **None**
+  where one does not, never the unconverted figure. `CompanyMetrics` refuses to
+  hold an enterprise value without the conversion that would justify it.
+- **A rate belongs to a date and a source.** `fx_rates` (migration `0017`) stores
+  one row per `(base, quote, rate_date, provider)` so a score reproduces rather
+  than re-deriving at today's rate. The ECB answers first and names the business
+  day it used; a broad dataset answers only for pairs the ECB does not publish,
+  TWD among them. Rates are bounded to five days before the score date, never
+  after it, and resolved once per pair per run. An FX outage costs foreign
+  companies their currency-sensitive sub-scores and nothing else —
+  `FX_UNAVAILABLE` is a warning, not an exclusion.
+- **Coverage is never bought with a fabricated period.** Four annual periods are
+  not a trailing year and six-month figures are never halved into quarters. TSM,
+  ASML, SAP and NVO are annual-only and remain unrankable; they gain a correct
+  currency, a stated exclusion reason and an indexed 20-F, not a score.
+- **A share count that cannot be multiplied by the price is not read.** Cover-page
+  counts on a 20-F or 40-F are ordinary shares while the listed security is an
+  ADS, and no XBRL field gives the ratio — TSM's is five, the other three are
+  one. `MarketCapSource.CALCULATED` is never produced for those filers; it falls
+  to `PROVIDER` or `UNKNOWN`.
+
+Not built, and not to be started without being asked: converting the *statements*
+into another currency, annual or semiannual period semantics, ADR ratio lookup,
+and reading filing documents to recover figures the companyfacts API omits.
+Period semantics is Phase 7D and is what still keeps TSM, ASML, SAP and NVO
+unrankable — currency is no longer their blocker.
+
 Three rules govern that layer:
 
 - **A job is an existing command, never new pipeline code.** `JOB_KINDS` maps a
@@ -135,6 +278,25 @@ protecting:
   policy means a new version and a new `CURRENT_SCORE_VERSION` — never an edit
   to an existing one — and `docs/reference/compounder-score.md` changes in the
   same commit. `COMPOUNDER_V1_1` is current; `COMPOUNDER_V1` history is kept.
+
+  **A data-quality fix is not a policy change.** The two are distinguished by one
+  question: *does any company's number change?*
+
+  | Change | Version |
+  | --- | --- |
+  | A curve, a weight, a redistribution cap, a coverage minimum, or which statuses may be ranked | **new version** |
+  | Identifying a company the existing policy already excluded, or correcting an input that was read wrongly | **no version change** |
+
+  Excluding banks is V1.1 policy already. Recognising a bank that both vendors
+  mislabelled enforces that policy; it does not alter it, and every company that
+  still scores scores exactly what it scored before. Bumping the version there
+  would invalidate the whole score history to record that nothing about the
+  arithmetic moved. Prove it rather than assert it: a test asserting an
+  unclassified and a classified operating company produce identical scores is
+  what makes this rule checkable.
+
+  Historical snapshots are never rewritten either way. A company excluded today
+  keeps the rows it earned under the rules of the day it was scored.
 - **Not every company gets a number.** A bank, an ineligible security and a
   company with two quarters of history get a stored row carrying the status that
   says why. Forcing a score onto them would put meaningless values into a

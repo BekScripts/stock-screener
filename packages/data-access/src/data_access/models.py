@@ -1,11 +1,16 @@
 """SQLAlchemy tables for companies, fundamentals, prices, scores and research.
 
-Three tables carry Phase 1, two more carry Phase 2, and one carries Phase 3's
-research reports. Their unique constraints
+Three tables carry Phase 1, two more carry Phase 2, one carries Phase 3's
+research reports, and one carries Phase 6's deep research reports. Their unique
+constraints
 are load-bearing: they are what makes re-running the daily job idempotent, and
 they are what the upsert helpers in `repositories` target. Removing one would not
 fail a test immediately — it would slowly fill the database with duplicate
 quarters that quietly double a trailing-twelve-month figure.
+
+`deep_research_reports` is the one deliberate exception. It has no unique
+constraint and appends rather than upserting, because a deep report is a dated
+investigation and its history is the point. See the class for why.
 
 Scores live in their own table rather than as columns on `financial_snapshots`.
 That table holds reported facts; a score is an opinion derived from them under a
@@ -74,9 +79,25 @@ class Company(Base):
     # The liquidity threshold is calibrated against this, not against volume
     # derived from a single-exchange price feed.
     average_volume: Mapped[float | None] = mapped_column(Float)
-    # ISO code the company reports in. NULL means the provider did not say,
-    # which the eligibility screen treats as USD.
-    currency: Mapped[str | None] = mapped_column(String(3))
+    # The same measure taken from the consolidated tape over a window this
+    # project chose, rather than one a vendor declines to publish. Preferred
+    # where both exist; `volume_source` records which feed produced it.
+    consolidated_avg_volume: Mapped[float | None] = mapped_column(Float)
+    volume_source: Mapped[str | None] = mapped_column(String(20))
+    # Which accounting model the filing follows, classified from the concepts it
+    # tags. NULL reads as GENERAL. This is the only durable record of statement
+    # shape: the concept names are discarded after ingestion, and by scoring time
+    # a bank's normalised figures look exactly like a shop's.
+    statement_profile: Mapped[str | None] = mapped_column(String(30))
+    # ISO code the company states its *financial statements* in, read from the
+    # filing. NULL means nobody said, which is treated as USD.
+    reporting_currency: Mapped[str | None] = mapped_column(String(3))
+    # ISO code the *listed security* trades in, and therefore what `market_cap`
+    # and every price are quoted in. Kept apart from the column above because
+    # the two were one field and their two sources disagreed about its meaning:
+    # EDGAR wrote the filing's currency, a market-data vendor wrote the trading
+    # currency, and whichever arrived last won.
+    quote_currency: Mapped[str | None] = mapped_column(String(3))
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_utcnow, server_default=func.now()
@@ -110,6 +131,9 @@ class Company(Base):
     research_reports: Mapped[list[StoredResearchReport]] = relationship(
         back_populates="company", cascade="all, delete-orphan"
     )
+    deep_research_reports: Mapped[list[StoredDeepResearchReport]] = relationship(
+        back_populates="company", cascade="all, delete-orphan"
+    )
 
 
 class FinancialSnapshot(Base):
@@ -133,6 +157,11 @@ class FinancialSnapshot(Base):
         ForeignKey("companies.id", ondelete="CASCADE"), nullable=False
     )
     period_end: Mapped[date] = mapped_column(Date, nullable=False)
+    # First day of the period, and how long it covers. A period is whatever the
+    # company reported — a quarter, a half-year or a full year — and the cadence
+    # is what stops a year of revenue being read as a quarter of it.
+    period_start: Mapped[date | None] = mapped_column(Date)
+    cadence: Mapped[str] = mapped_column(String(12), nullable=False, default="UNKNOWN")
 
     revenue: Mapped[float | None] = mapped_column(Float)
     gross_profit: Mapped[float | None] = mapped_column(Float)
@@ -211,6 +240,47 @@ class BenchmarkPrice(Base):
     volume: Mapped[float] = mapped_column(Float, nullable=False)
 
 
+class FxRate(Base):
+    """One exchange rate observation, kept so a score stays reproducible.
+
+    Rates are stored rather than fetched-and-forgotten for the same reason
+    scores are: a valuation computed from a rate nobody wrote down cannot be
+    checked afterwards, and re-deriving it later would use a different rate and
+    quietly produce a different answer to the same question.
+
+    The unique constraint spans the provider as well as the pair and the date,
+    because two sources publishing the same pair on the same day are two
+    observations rather than a conflict — the ECB's official fixing and a
+    broader dataset's figure differ by a few tenths of a percent, and the row
+    should say which one a score used rather than averaging them into a number
+    neither published.
+    """
+
+    __tablename__ = "fx_rates"
+    __table_args__ = (
+        UniqueConstraint(
+            "base_currency",
+            "quote_currency",
+            "rate_date",
+            "provider",
+            name="uq_fx_rate_observation",
+        ),
+        Index("ix_fx_rates_pair_date", "base_currency", "quote_currency", "rate_date"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    base_currency: Mapped[str] = mapped_column(String(3), nullable=False)
+    quote_currency: Mapped[str] = mapped_column(String(3), nullable=False)
+    # The date the rate is *for*, which on a weekend is the preceding business
+    # day rather than the date it was asked for.
+    rate_date: Mapped[date] = mapped_column(Date, nullable=False)
+    rate: Mapped[float] = mapped_column(Float, nullable=False)
+    provider: Mapped[str] = mapped_column(String(40), nullable=False)
+    retrieved_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=_utcnow, server_default=func.current_timestamp()
+    )
+
+
 class ScoreSnapshot(Base):
     """One company's CompounderScore on one day under one set of rules.
 
@@ -234,6 +304,10 @@ class ScoreSnapshot(Base):
         ),
         Index("ix_score_snapshots_company_date", "company_id", "score_date"),
         Index("ix_score_snapshots_ranking", "score_version", "score_date", "final_score"),
+        # Serves `latest_score_date`, which asks for the newest *market-wide*
+        # day. Without the coverage column in the index that lookup scans every
+        # snapshot ever written.
+        Index("ix_score_snapshots_coverage_date", "score_version", "coverage", "score_date"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -242,6 +316,11 @@ class ScoreSnapshot(Base):
     )
     score_date: Mapped[date] = mapped_column(Date, nullable=False)
     score_version: Mapped[str] = mapped_column(String(40), nullable=False)
+    # Whether the run that wrote this row covered the market or one company.
+    # Ranking views read the newest MARKET day, so a per-ticker run — which
+    # scores one company on whatever date its data reaches — cannot become
+    # "the latest ranking" and reduce the dashboard to a single row.
+    coverage: Mapped[str] = mapped_column(String(10), nullable=False, default="MARKET")
     calculated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_utcnow, server_default=func.now()
     )
@@ -274,6 +353,22 @@ class ScoreSnapshot(Base):
     # What the liquidity figure behind this score represented. A ranking row
     # showing single-exchange volume must not be read as a verified one.
     volume_basis: Mapped[str | None] = mapped_column(String(20))
+
+    # Every eligibility check the security failed, pipe-separated, or None where
+    # it passed. `scoring_status` says a company was not scored; this says why,
+    # and the difference is the whole distance between a screen full of dashes
+    # and a screen that explains itself. A company reporting in TWD, a fund, a
+    # delisted shell and a stock that trades too thinly all arrive as
+    # `NOT_ELIGIBLE` and are four very different things.
+    exclusion_reasons: Mapped[str | None] = mapped_column(String(200))
+
+    # Whether the fundamentals behind this score were current when it was
+    # computed. Recorded rather than derived: the staleness bound depends on the
+    # company's reporting cadence, so a reader comparing dates against a fixed
+    # window would disagree with the screen that produced the row. V1.2 keeps
+    # stale scores out of current rankings and nowhere else. NULL reads as
+    # CURRENT, which is what every pre-V1.2 row meant.
+    freshness: Mapped[str | None] = mapped_column(String(10))
 
     # The inputs a ranking displays beside the score. Copied here so a ranking
     # is one query rather than a re-scan, and so the row records the figures the
@@ -512,3 +607,115 @@ class StoredResearchReport(Base):
     issues: Mapped[list[object] | None] = mapped_column(JSON)
 
     company: Mapped[Company] = relationship(back_populates="research_reports")
+
+
+class StoredDeepResearchReport(Base):
+    """One validated deep research report about one company.
+
+    A separate table from `research_reports`, not a status column on it. The two
+    hold different contracts — different sections, different bases, a different
+    evidence namespace — and the moment they shared a table, every read would
+    have to filter on which kind it was holding and every schema change to one
+    would risk the other.
+
+    **This table appends; it never overwrites.** `research_reports` carries a
+    unique constraint on its cache key and upserts into it, which is right for a
+    report explaining a stored snapshot: re-running the same evidence should not
+    accumulate rows. A deep report is a dated investigation of a company at a
+    moment, and the history of what was concluded and on what evidence is the
+    interesting part. Two runs a month apart over identical evidence are two
+    facts about what this system said, and both are kept.
+
+    Caching is therefore "the newest row matching the key" rather than "the row",
+    and the key is `(company_id, deterministic_fingerprint, evidence_fingerprint,
+    prompt_version)` — the company, a hash of everything calculated or filed, a
+    hash of that plus the external sources, and the prompt that turned it into
+    prose. `ix_deep_research_reports_cache` serves that lookup.
+
+    Two fingerprints rather than one, because there are two reasons to regenerate
+    and they are worth telling apart: the fundamentals moved, or somebody
+    published something. A caller can ask "is the deterministic half of this
+    report still current?" without rehashing the news.
+
+    `ticker` is denormalised alongside `company_id` deliberately, in the same
+    spirit as `jobs.target`: a report is a record of what was said about a symbol
+    on a date, and it stays readable after the company row is renamed.
+
+    The report is kept as JSON rather than as a column per section — it is read
+    whole, by a person or an API response, and never queried section by section.
+    `status` and `confidence` are denormalised out of that document because
+    "which reports came back thin" is worth answering without parsing every row.
+    """
+
+    __tablename__ = "deep_research_reports"
+    __table_args__ = (
+        Index(
+            "ix_deep_research_reports_cache",
+            "company_id",
+            "deterministic_fingerprint",
+            "evidence_fingerprint",
+            "prompt_version",
+        ),
+        Index("ix_deep_research_reports_company_generated", "company_id", "generated_at"),
+        Index(
+            "ix_deep_research_reports_collection",
+            "company_id",
+            "deterministic_fingerprint",
+            "external_collected_at",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    company_id: Mapped[int] = mapped_column(
+        ForeignKey("companies.id", ondelete="CASCADE"), nullable=False
+    )
+    ticker: Mapped[str] = mapped_column(String(20), nullable=False)
+
+    # The score date the report describes. Every deterministic figure in it
+    # belongs to this date, and external evidence was read against it.
+    as_of: Mapped[date] = mapped_column(Date, nullable=False)
+    score_version: Mapped[str] = mapped_column(String(40), nullable=False)
+
+    # The two halves of the cache key. The first covers everything this system
+    # calculated or the company filed; the second covers that plus the external
+    # sources. A change in one and not the other says which kind of staleness
+    # this is.
+    deterministic_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    evidence_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+
+    contract_version: Mapped[str] = mapped_column(String(40), nullable=False)
+    prompt_version: Mapped[str] = mapped_column(String(40), nullable=False)
+    model_id: Mapped[str] = mapped_column(String(120), nullable=False)
+
+    # COMPLETE, PARTIAL or FAILED. A failed row records that a run tried and
+    # could not, which is why it is stored rather than swallowed.
+    status: Mapped[str] = mapped_column(String(20), nullable=False)
+    # LOW, MEDIUM or HIGH, after validation lowered it. Denormalised so a thin
+    # report can be found without opening the document.
+    confidence: Mapped[str] = mapped_column(String(20), nullable=False)
+
+    generated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow, server_default=func.now()
+    )
+
+    # The validated report, including the external sources its claims cite —
+    # so a `W.` citation still resolves to a title, publisher, URL and date long
+    # after the brief that produced it is gone. No draft is ever stored here:
+    # only a validated report has this shape.
+    validated_report_json: Mapped[dict[str, object]] = mapped_column(JSON, nullable=False)
+    validation_issues_json: Mapped[list[object] | None] = mapped_column(JSON)
+
+    # The external evidence this report was collected from, whole — not just the
+    # sources its claims ended up citing. A rerun rebuilds its brief from this,
+    # and a subset would produce a different fingerprint and miss the cache it
+    # was trying to hit.
+    #
+    # `external_state` guards the reuse decision: FRESH is safe to reuse,
+    # DEGRADED is a collection whose searches partly failed and whose thinness
+    # must not be frozen in place for the length of the window.
+    external_state: Mapped[str | None] = mapped_column(String(20))
+    external_collected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    collected_external_json: Mapped[list[object] | None] = mapped_column(JSON)
+
+    company: Mapped[Company] = relationship(back_populates="deep_research_reports")

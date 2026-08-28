@@ -23,3 +23,4 @@ See the `adr` skill for when to write one and the format to use.
 | [0007](0007-missing-metrics-are-carried-by-their-own-component.md) | A missing metric is carried by its own component | Accepted |
 | [0008](0008-broad-scan-on-free-data-metered-enrichment-last.md) | Scan on free data; spend metered requests on candidates only | Accepted |
 | [0009](0009-the-research-contract-is-its-own-package.md) | The AI research contract is its own package, and holds no model client | Accepted |
+| [0010](0010-deep-research-is-its-own-package.md) | Deep research is its own package, and appends its reports rather than replacing them | Accepted |

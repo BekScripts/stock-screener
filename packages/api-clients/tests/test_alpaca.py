@@ -11,13 +11,14 @@ adapter returns `PriceBar.close`, never `"c"`.
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 import httpx
 import pytest
 
 from api_clients import AlpacaMarketData, ProviderAuthError, ProviderDataError, ProviderError
+from api_clients.alpaca import SIP_MIN_DELAY_MINUTES
 
 START = date(2026, 1, 2)
 END = date(2026, 1, 6)
@@ -316,3 +317,74 @@ def test_the_feed_can_be_set_to_sip() -> None:
     adapter.get_daily_prices("XYZ", START, END)
 
     assert seen["feed"] == "sip"
+
+
+@pytest.mark.unit
+def test_the_eligibility_read_always_uses_the_consolidated_tape() -> None:
+    # Independent of the configured feed. Price history may come from a single
+    # exchange, but a liquidity threshold calibrated for the whole market can
+    # only be applied to the whole market's volume.
+    seen: dict[str, str] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.update(dict(request.url.params))
+        return httpx.Response(200, json={"bars": {}})
+
+    adapter = _adapter(handler)  # built with the default iex feed
+    adapter.get_average_volume(["XYZ"])
+
+    assert seen["feed"] == "sip"
+
+
+@pytest.mark.unit
+def test_the_eligibility_read_ends_outside_the_recency_window() -> None:
+    # A free plan serves SIP historically and refuses it for recent data, so the
+    # query must end in the past — and `end` must be a timestamp, because a bare
+    # date is read as end-of-day and refused however old the rest of the range is.
+    seen: dict[str, str] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.update(dict(request.url.params))
+        return httpx.Response(200, json={"bars": {}})
+
+    as_of = datetime(2026, 8, 20, 18, 0, tzinfo=UTC)
+    _adapter(handler).get_average_volume(["XYZ"], as_of=as_of, delay_minutes=15)
+
+    ended = datetime.strptime(seen["end"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC)
+    assert ended == as_of - timedelta(minutes=15)
+    assert as_of - ended >= timedelta(minutes=SIP_MIN_DELAY_MINUTES)
+
+
+@pytest.mark.unit
+def test_the_eligibility_read_averages_only_the_requested_window() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "bars": {
+                    "XYZ": [
+                        _bar("2026-08-03", 10.0) | {"v": 999_999_999},
+                        _bar("2026-08-04", 10.0) | {"v": 100},
+                        _bar("2026-08-05", 10.0) | {"v": 300},
+                    ]
+                }
+            },
+        )
+
+    averages = _adapter(handler).get_average_volume(["XYZ"], window=2)
+
+    # The oldest bar is outside the window and must not drag the average.
+    assert averages["XYZ"] == pytest.approx(200.0)
+
+
+@pytest.mark.unit
+def test_a_symbol_the_tape_has_no_bars_for_is_absent_rather_than_zero() -> None:
+    # An unknown volume is not a volume of zero: absent leaves the company to the
+    # vendor figure later, whereas zero would fail it out of the screen outright.
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"bars": {"XYZ": [_bar("2026-08-05", 10.0)]}})
+
+    averages = _adapter(handler).get_average_volume(["XYZ", "NONE"])
+
+    assert "NONE" not in averages
+    assert averages["XYZ"] == pytest.approx(1_000_000.0)

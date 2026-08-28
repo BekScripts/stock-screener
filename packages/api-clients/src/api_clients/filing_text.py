@@ -23,6 +23,10 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from html.parser import HTMLParser
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
 
 MAX_SECTION_CHARS = 40000
 """Characters kept per extracted section.
@@ -102,6 +106,36 @@ _ITEM_PATTERNS: dict[str, re.Pattern[str]] = {
         re.IGNORECASE,
     ),
 }
+
+#: The same three sections in a 20-F, which numbers its items differently.
+#:
+#: A foreign private issuer's annual report is not a 10-K with a different cover.
+#: Its business description is Item 4 and its MD&A equivalent is Item 5, so the
+#: 10-K patterns above match nothing at all in one — reading a 20-F with them
+#: yields an empty tuple rather than a wrong section, which is why this went
+#: unnoticed rather than producing bad text.
+#:
+#: Risk factors are the awkward one. A 10-K gives them their own numbered item;
+#: a 20-F does not — they are a titled subsection inside Item 3, Key Information.
+#: The pattern is therefore anchored to the start of a line, because "Risk
+#: Factors" also appears throughout the prose as a cross-reference ("please see
+#: Item 3. Key Information - Risk Factors"), and matching those would quote a
+#: sentence about the section instead of the section. Where the heading cannot
+#: be found on its own line the section is simply absent, which is the outcome
+#: this module prefers over an approximation.
+_TWENTY_F_PATTERNS: dict[str, re.Pattern[str]] = {
+    BUSINESS: re.compile(
+        rf"item\s*4{_SEPARATOR}information\s+on\s+the\s+company\b",
+        re.IGNORECASE,
+    ),
+    RISK_FACTORS: re.compile(r"^\s*risk\s+factors\s*$", re.IGNORECASE | re.MULTILINE),
+    MDA: re.compile(
+        rf"item\s*5{_SEPARATOR}operating\s+and\s+financial\s+review",
+        re.IGNORECASE,
+    ),
+}
+
+_TWENTY_F_SECTIONS = (BUSINESS, RISK_FACTORS, MDA)
 
 _EIGHT_K_ITEM = re.compile(rf"item\s*(\d\.\d\d){_SEPARATOR}", re.IGNORECASE)
 
@@ -202,9 +236,19 @@ def extract_sections(form: str, text: str) -> tuple[ExtractedSection, ...]:
     cannot hide a section while the text quoted stays exactly as filed.
 
     Args:
-        form: The filing type. Anything other than `10-K`, `10-Q` or `8-K`
-            yields nothing — there is no generic fallback, because guessing at
-            an unfamiliar form is how a cover page becomes a business summary.
+        form: The filing type. Anything other than `10-K`, `10-Q`, `8-K` or
+            `20-F` yields nothing — there is no generic fallback, because
+            guessing at an unfamiliar form is how a cover page becomes a
+            business summary.
+
+            `6-K` is deliberately absent despite being a foreign private
+            issuer's only current report. A 6-K has no item structure at all:
+            TSM files hundreds carrying monthly revenue releases, board changes,
+            AGM notices and half-year statements, distinguishable only by a
+            document name each filer chooses for itself. `40-F` is absent too —
+            it is a wrapper that incorporates a Canadian annual information form
+            by reference, so its item numbers name exhibits rather than the
+            prose those exhibits contain.
         text: The cleaned document text.
 
     Returns:
@@ -216,19 +260,33 @@ def extract_sections(form: str, text: str) -> tuple[ExtractedSection, ...]:
     if normalised == "8-K":
         return _eight_k_items(text, headings)
     if normalised == "10-K":
-        return _named_sections(text, headings, _TEN_K_SECTIONS)
+        return _named_sections(text, headings, _TEN_K_SECTIONS, _ITEM_PATTERNS)
     if normalised == "10-Q":
-        return _named_sections(text, headings, _TEN_Q_SECTIONS)
+        return _named_sections(text, headings, _TEN_Q_SECTIONS, _ITEM_PATTERNS)
+    if normalised == "20-F":
+        return _named_sections(text, headings, _TWENTY_F_SECTIONS, _TWENTY_F_PATTERNS)
     return ()
 
 
 def _named_sections(
-    text: str, headings: str, wanted: tuple[str, ...]
+    text: str,
+    headings: str,
+    wanted: tuple[str, ...],
+    patterns: Mapping[str, re.Pattern[str]],
 ) -> tuple[ExtractedSection, ...]:
-    """Extract the periodic-report items a 10-K or 10-Q should carry."""
+    """Extract the periodic-report items an annual or quarterly report carries.
+
+    Args:
+        text: The document as filed, which every body is taken from.
+        headings: The punctuation-folded copy every heading is located in.
+        wanted: Section slugs to look for, in reading order.
+        patterns: The heading pattern for each slug on this form. A 10-K and a
+            20-F name the same sections under different item numbers, so the
+            table travels with the form rather than being global.
+    """
     found: list[ExtractedSection] = []
     for section in wanted:
-        body = _best_body(text, headings, _ITEM_PATTERNS[section])
+        body = _best_body(text, headings, patterns[section])
         if body is not None:
             found.append(ExtractedSection(section=section, text=body))
     return tuple(found)

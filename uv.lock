@@ -10,6 +10,7 @@ resolution-markers = [
 members = [
     "api-clients",
     "data-access",
+    "deep-research",
     "domain",
     "research",
     "stock-screener",
@@ -85,6 +86,7 @@ version = "0.1.0"
 source = { editable = "packages/api-clients" }
 dependencies = [
     { name = "anthropic" },
+    { name = "deep-research" },
     { name = "domain" },
     { name = "httpx" },
     { name = "pydantic" },
@@ -95,6 +97,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "anthropic", specifier = ">=0.116" },
+    { name = "deep-research", editable = "packages/deep-research" },
     { name = "domain", editable = "packages/domain" },
     { name = "httpx", specifier = ">=0.28" },
     { name = "pydantic", specifier = ">=2.9" },
@@ -339,6 +342,7 @@ name = "data-access"
 version = "0.1.0"
 source = { editable = "packages/data-access" }
 dependencies = [
+    { name = "deep-research" },
     { name = "domain" },
     { name = "psycopg", extra = ["binary"] },
     { name = "research" },
@@ -347,10 +351,28 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "deep-research", editable = "packages/deep-research" },
     { name = "domain", editable = "packages/domain" },
     { name = "psycopg", extras = ["binary"], specifier = ">=3.2" },
     { name = "research", editable = "packages/research" },
     { name = "sqlalchemy", specifier = ">=2.0" },
+]
+
+[[package]]
+name = "deep-research"
+version = "0.1.0"
+source = { editable = "packages/deep-research" }
+dependencies = [
+    { name = "domain" },
+    { name = "pydantic" },
+    { name = "research" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "domain", editable = "packages/domain" },
+    { name = "pydantic", specifier = ">=2.9" },
+    { name = "research", editable = "packages/research" },
 ]
 
 [[package]]
@@ -1575,6 +1597,7 @@ dependencies = [
     { name = "alembic" },
     { name = "api-clients" },
     { name = "data-access" },
+    { name = "deep-research" },
     { name = "domain" },
     { name = "fastapi" },
     { name = "pydantic" },
@@ -1625,6 +1648,7 @@ requires-dist = [
     { name = "alembic", specifier = ">=1.14" },
     { name = "api-clients", editable = "packages/api-clients" },
     { name = "data-access", editable = "packages/data-access" },
+    { name = "deep-research", editable = "packages/deep-research" },
     { name = "domain", editable = "packages/domain" },
     { name = "fastapi", specifier = ">=0.115" },
     { name = "pydantic", specifier = ">=2.9" },

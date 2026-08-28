@@ -64,6 +64,25 @@ column, and the ranking still works. Companies whose consolidated volume turns
 out to be below the threshold drop out here — which is exactly what the second
 pass is for.
 
+### A spent quota is not a coverage gap
+
+`rate_limited` and `uncovered` count two different things, and conflating them
+turns "we have not asked yet" into "the vendor does not have it":
+
+| Outcome | Means | What to do |
+| --- | --- | --- |
+| `uncovered` | The vendor returned nothing for the symbol. | Nothing — it is not on this plan. |
+| `rate_limited` | The daily allowance is spent. The symbol was never asked about. | Run the pass again tomorrow. |
+
+This is why `enrich` uses `build_profile_provider` — the metered vendor alone —
+rather than `CompositeFundamentals`. The composite treats a provider failure as
+recoverable and falls back to EDGAR, which is right during ingestion, where the
+statements are the part that cannot be reconstructed. Here it would swallow the
+`429`, return a profile carrying no market capitalisation, and let the pass walk
+every remaining candidate into the same wall while reporting them all as
+uncovered. A Phase 7 rollout did exactly that to 103 companies before the
+distinction was drawn.
+
 ## Read the rankings
 
 ```bash

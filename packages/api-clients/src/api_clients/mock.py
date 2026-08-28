@@ -17,11 +17,20 @@ loudly, rather than propagating a nonsense number into a metric.
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, ClassVar
 
 from api_clients.errors import ProviderDataError
-from domain import CompanyProfile, Filing, FilingExcerpt, FinancialPeriod, PriceBar
+from domain import (
+    CompanyProfile,
+    Filing,
+    FilingExcerpt,
+    FinancialPeriod,
+    FxConversion,
+    PriceBar,
+    normalise_currency,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping, Sequence
@@ -266,3 +275,45 @@ def _fixture_profile(entry: dict[str, Any]) -> CompanyProfile:
         key: value for key, value in entry.items() if key not in {"bars", "periods", "filings"}
     }
     return CompanyProfile(**fields)
+
+
+class MockFxRates:
+    """Fixed exchange rates, for tests and for running without a network.
+
+    Rates are supplied as `{(base, quote): rate}` and answered on whatever date
+    is asked for, so a test can pin a conversion without pinning a calendar. A
+    pair that was not supplied returns None — the same answer a real source
+    gives for a currency it does not publish, which is the branch worth testing.
+
+    Args:
+        rates: Rates by currency pair. Defaults to a small set covering the
+            currencies the audit companies file in.
+    """
+
+    name = "mock-fx"
+
+    #: One rate per audit company's reporting currency, at 2026-08-14.
+    DEFAULT_RATES: ClassVar[dict[tuple[str, str], float]] = {
+        ("USD", "EUR"): 0.86453,
+        ("USD", "DKK"): 6.463,
+        ("USD", "TWD"): 31.99226,
+        ("USD", "CAD"): 1.3875,
+    }
+
+    def __init__(self, rates: Mapping[tuple[str, str], float] | None = None) -> None:
+        self._rates = dict(self.DEFAULT_RATES if rates is None else rates)
+
+    def get_rate(self, base: str, quote: str, as_of: date) -> FxConversion | None:
+        """Return the configured rate for a pair, or None when none was given."""
+        base, quote = normalise_currency(base), normalise_currency(quote)
+        rate = 1.0 if base == quote else self._rates.get((base, quote))
+        if rate is None:
+            return None
+        return FxConversion(
+            base=base,
+            quote=quote,
+            rate=rate,
+            rate_date=as_of,
+            provider=self.name,
+            retrieved_at=datetime.now(UTC),
+        )

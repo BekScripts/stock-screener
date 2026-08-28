@@ -8,6 +8,7 @@ license = "MIT"
 authors = [{ name = "Aziz", email = "azizzbek.io@gmail.com" }]
 
 dependencies = [
+    "deep-research",
     "anthropic>=0.116",
     "domain",
     "httpx>=0.28",
@@ -25,5 +26,6 @@ module-name = "api_clients"
 module-root = "src"
 
 [tool.uv.sources]
+deep-research = { workspace = true }
 domain = { workspace = true }
 research = { workspace = true }

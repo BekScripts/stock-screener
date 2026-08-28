@@ -46,6 +46,7 @@ Installed as `stock-screener`; also reachable as `python -m stock_screener`.
 | --- | --- |
 | `update-universe` | Refreshes the company list from the market-data provider. |
 | `update-market` | Refreshes daily OHLCV for stored companies, resuming from the last stored session. |
+| `update-eligibility-volume` | Refreshes consolidated average volume for the liquidity screen, from the consolidated tape rather than the price feed. Writes no price history. Run it before `enrich`: it is unmetered, so a company failing the liquidity gate here costs no provider request. |
 | `update-benchmark` | Refreshes the benchmark's price history. Relative strength cannot be calculated without it. |
 | `update-fundamentals` | Refreshes profiles and quarterly statements, skipping companies already current. |
 | `scan` | Screens stored data and prints the eligible companies. Calculates no score. |
@@ -84,7 +85,7 @@ ranking never depend on a model being reachable.
 | Option | Applies to | Effect |
 | --- | --- | --- |
 | `--ticker` / `-t` | the update commands, `scan`, `score` | Restrict to a symbol. Repeatable. |
-| `--limit` / `-n` | `update-market`, `update-fundamentals`, `score` | Process at most this many companies, in ticker order. Bounds a first run against a metered provider. |
+| `--limit` / `-n` | `update-market`, `update-eligibility-volume`, `update-fundamentals`, `score` | Process at most this many companies, in ticker order. Bounds a first run against a metered provider. |
 | `--force` | `update-fundamentals` | Re-store every period even when the provider has nothing newer. The incremental skip compares reporting dates and cannot tell that the adapter changed, so this is what picks up a normalisation fix. |
 | `--output` / `-o` | `scan`, `run-scan`, the ranking commands | Write the result to a CSV. |
 | `--all` | `scan` | Show excluded companies and their reasons in the table. |

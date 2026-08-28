@@ -18,7 +18,8 @@ from typing import Any
 import httpx
 import pytest
 
-from api_clients import FmpFundamentals
+from api_clients import FmpFundamentals, ProviderRateLimitError
+from api_clients._http import RetryPolicy
 
 INCOME = [
     {
@@ -246,7 +247,7 @@ def test_debt_is_none_when_only_one_maturity_is_reported() -> None:
 
 
 @pytest.mark.unit
-def test_the_reporting_currency_is_captured_from_the_profile() -> None:
+def test_the_quote_currency_is_captured_from_the_profile() -> None:
     adapter = _adapter(
         {"profile": [{"symbol": "XYZ", "companyName": "Example", "currency": "EUR"}]}
     )
@@ -254,8 +255,16 @@ def test_the_reporting_currency_is_captured_from_the_profile() -> None:
     profile = adapter.get_company_profile("XYZ")
 
     assert profile is not None
-    assert profile.currency == "EUR"
-    assert profile.reports_in_usd is False
+    # FMP's profile currency is what the *share* trades in, never what the
+    # company files in. Putting it in `reporting_currency` was how an ADR's USD
+    # quote came to stand in for a TWD balance sheet.
+    assert profile.quote_currency == "EUR"
+    # And it decides nothing about the statements. `reports_in_usd` reads the
+    # reporting currency alone, so a vendor's quote currency can no longer stand
+    # in for one — which is how an ADR's dollar quote came to be read as a
+    # dollar balance sheet.
+    assert profile.reporting_currency is None
+    assert profile.reports_in_usd is True
 
 
 @pytest.mark.unit
@@ -313,3 +322,36 @@ def test_the_consolidated_average_volume_is_captured() -> None:
 
     assert profile is not None
     assert profile.average_volume == pytest.approx(53_498_387)
+
+
+# -- quota exhaustion is not a coverage gap ---------------------------------
+
+
+def _responding(status: int, payload: Any) -> FmpFundamentals:
+    """Build an adapter whose every request gets one canned response."""
+    return FmpFundamentals(
+        api_key="test-key",
+        client=httpx.Client(
+            transport=httpx.MockTransport(lambda _: httpx.Response(status, json=payload)),
+            base_url="https://fmp.test",
+        ),
+        retry=RetryPolicy(attempts=1),
+    )
+
+
+@pytest.mark.unit
+def test_a_symbol_the_vendor_does_not_cover_returns_none() -> None:
+    # An empty array is the vendor's way of saying "no such symbol here".
+    assert _responding(200, []).get_company_profile("NOPE") is None
+
+
+@pytest.mark.unit
+def test_a_spent_quota_raises_rather_than_looking_uncovered() -> None:
+    # These two outcomes look identical to a caller that only checks for None,
+    # and they mean opposite things: one company is not on the plan, the other
+    # was never asked. A Stage C run mistook the second for the first for 103
+    # companies and reported them as missing market caps.
+    adapter = _responding(429, {"Error Message": "Limit Reach . Please upgrade your plan"})
+
+    with pytest.raises(ProviderRateLimitError):
+        adapter.get_company_profile("XYZ")

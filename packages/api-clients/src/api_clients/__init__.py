@@ -17,8 +17,19 @@ which one is in use.
 
 from api_clients._http import RateLimiter, RetryPolicy
 from api_clients.alpaca import AlpacaMarketData
-from api_clients.base import FundamentalsProvider, MarketDataProvider
+from api_clients.base import (
+    ExternalResearchProvider,
+    FundamentalsProvider,
+    FxProvider,
+    MarketDataProvider,
+)
 from api_clients.composite import CompositeFundamentals
+from api_clients.deep_research import (
+    AnthropicDeepResearch,
+    DeepResearchCompletion,
+    DeepResearchProvider,
+    MockDeepResearch,
+)
 from api_clients.edgar import SecEdgarFundamentals
 from api_clients.errors import (
     ProviderAuthError,
@@ -38,7 +49,17 @@ from api_clients.filing_text import (
     extract_sections,
 )
 from api_clients.fmp import FmpFundamentals
-from api_clients.mock import MockFundamentals, MockMarketData, load_fixture_providers
+from api_clients.fx import (
+    BroadFxRates,
+    CompositeFxRates,
+    EcbFxRates,
+)
+from api_clients.mock import (
+    MockFundamentals,
+    MockFxRates,
+    MockMarketData,
+    load_fixture_providers,
+)
 from api_clients.research import (
     DEFAULT_MAX_OUTPUT_TOKENS,
     DEFAULT_RESEARCH_MODEL,
@@ -50,6 +71,7 @@ from api_clients.research import (
     estimate_cost_usd,
     parse_draft,
 )
+from api_clients.websearch import MockExternalResearch, TavilySearch
 
 __all__ = [
     "DEFAULT_MAX_OUTPUT_TOKENS",
@@ -58,13 +80,24 @@ __all__ = [
     "MAX_SECTION_CHARS",
     "MIN_SECTION_CHARS",
     "AlpacaMarketData",
+    "AnthropicDeepResearch",
     "AnthropicResearch",
+    "BroadFxRates",
     "CompositeFundamentals",
+    "CompositeFxRates",
+    "DeepResearchCompletion",
+    "DeepResearchProvider",
+    "EcbFxRates",
+    "ExternalResearchProvider",
     "ExtractedSection",
     "FmpFundamentals",
     "FundamentalsProvider",
+    "FxProvider",
     "MarketDataProvider",
+    "MockDeepResearch",
+    "MockExternalResearch",
     "MockFundamentals",
+    "MockFxRates",
     "MockMarketData",
     "MockResearch",
     "ProviderAuthError",
@@ -80,6 +113,7 @@ __all__ = [
     "ResearchProvider",
     "RetryPolicy",
     "SecEdgarFundamentals",
+    "TavilySearch",
     "clean_filing_text",
     "estimate_cost_usd",
     "extract_sections",

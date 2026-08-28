@@ -37,14 +37,15 @@ unanswerable question and reads very differently from a blank.
 
 from __future__ import annotations
 
-import math
-import re
-from dataclasses import dataclass
-from enum import StrEnum, auto
 from typing import TYPE_CHECKING
 
-from domain import MetricUnit
 from research.brief import EvidenceKind, Quantity, RankingState, evidence_kind
+from research.quantities import (
+    LITERAL,
+    find_advice,
+    quoted_quantities,
+)
+from research.quantities import unsupported_figures as _unsupported_figures
 from research.report import (
     MAX_CLAIM_CHARS,
     Basis,
@@ -112,86 +113,6 @@ _DETERMINISTIC_KINDS = frozenset(
     {EvidenceKind.SCORE, EvidenceKind.METRIC, EvidenceKind.STATEMENT, EvidenceKind.ENRICHMENT}
 )
 
-_FORM_TYPES = re.compile(r"\b\d{1,2}-[A-Z]{1,2}\b")
-"""Filing form types — `10-K`, `8-K`, `20-F`. Stripped before scanning for
-figures, since the digits in them are part of a name, not a quantity."""
-
-_NUMBER = re.compile(
-    r"(?P<currency>\$)?\s*"
-    r"(?P<digits>\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?)"
-    r"\s*(?P<suffix>%|pp|percentage points|bps|x|×|"  # noqa: RUF001 — both multiplication signs
-    r"thousand|million|billion|trillion|[kKmMbB](?![\w-]))?",
-    re.IGNORECASE,
-)
-
-_MAGNITUDES: dict[str, float] = {
-    "k": 1e3,
-    "thousand": 1e3,
-    "m": 1e6,
-    "million": 1e6,
-    "b": 1e9,
-    "billion": 1e9,
-    "trillion": 1e12,
-}
-
-_ADVICE = re.compile(
-    r"(?<![\w-])("
-    r"buy|sell|short the stock|price target|target price|fair value target|"
-    r"overweight|underweight|outperform rating|accumulate|"
-    r"position siz(?:e|ing)|stop loss|take profits?|"
-    r"recommend (?:buying|selling|holding)"
-    r")(?![\w-])",
-    re.IGNORECASE,
-)
-"""Phrases that turn a research note into a recommendation.
-
-Deliberately narrow. `undervalued`, `expensive` and `overvalued` are valuation
-interpretation and stay legal; `buy` and `price target` are instructions and do
-not. Hyphen boundaries keep `sell-through`, `cross-sell` and `buy-side` out of
-the match, since those describe a business rather than an action to take.
-"""
-
-_LITERAL = re.compile(r"\d+(?:\.\d+)?")
-
-_SCORE_SCALE = re.compile(
-    r"(?P<score>\d+(?:\.\d+)?)\s*(?:/|\s+(?:out\s+of|of)\s+)(?P<scale>100)\b"
-    r"(?!\s*(?:%|x\b|×|million|billion|thousand|bn\b|m\b|k\b))",  # noqa: RUF001
-    re.IGNORECASE,
-)
-"""A CompounderScore written against its own scale: "72.63 of 100", "72.63/100".
-
-The scale is the one number a claim may contain that no brief supplies, because
-it is a property of the formula rather than of the company. Recognising it needs
-the numerator too — a bare 100 says nothing, but a 100 standing under a score the
-brief actually recorded is the denominator of a fact, not a figure about a
-business. Anything else keeping company with a 100 — millions, percentages,
-multiples, counts — is excluded by the lookahead and stays subject to the
-ordinary rule.
-"""
-
-_TOLERANCE = 1e-9
-
-
-class _Marker(StrEnum):
-    """What unit a figure in prose was written in."""
-
-    BARE = auto()
-    PERCENT = auto()
-    POINTS = auto()
-    MULTIPLE = auto()
-    MONEY = auto()
-    UNSUPPORTED = auto()
-
-
-@dataclass(frozen=True, slots=True)
-class _Figure:
-    """One number as it appears in a claim, with how it was written."""
-
-    value: float
-    decimals: int
-    marker: _Marker
-    scale: float
-
 
 def allowed_bases(section: Section) -> frozenset[Basis]:
     """Return every basis a section accepts.
@@ -205,98 +126,22 @@ def allowed_bases(section: Section) -> frozenset[Basis]:
     return _ALLOWED_BASES[section] | {Basis.UNKNOWN}
 
 
-def find_advice(text: str) -> str | None:
-    """Return the first recommendation phrase in a claim, if any.
-
-    Args:
-        text: The claim's text.
-
-    Returns:
-        The matched phrase, or None when the claim recommends nothing.
-    """
-    found = _ADVICE.search(text)
-    return found.group(0) if found is not None else None
-
-
-def _parse_figures(text: str) -> tuple[_Figure, ...]:
-    """Return every quantity written in a claim."""
-    scrubbed = _FORM_TYPES.sub(" ", text)
-
-    figures: list[_Figure] = []
-    for match in _NUMBER.finditer(scrubbed):
-        digits = match.group("digits").replace(",", "")
-        suffix = (match.group("suffix") or "").strip().lower()
-        _, _, fraction = digits.partition(".")
-
-        marker, scale = _classify(suffix, currency=match.group("currency") is not None)
-        figures.append(
-            _Figure(value=float(digits), decimals=len(fraction), marker=marker, scale=scale)
-        )
-    return tuple(figures)
-
-
-def _classify(suffix: str, *, currency: bool) -> tuple[_Marker, float]:
-    """Return the unit and magnitude a written suffix implies."""
-    if suffix == "%":
-        return _Marker.PERCENT, 1.0
-    if suffix in {"pp", "percentage points"}:
-        return _Marker.POINTS, 1.0
-    if suffix in {"x", "×"}:  # noqa: RUF001 — a model may write either multiplication sign
-        return _Marker.MULTIPLE, 1.0
-    if suffix == "bps":
-        return _Marker.UNSUPPORTED, 1.0
-
-    scale = _MAGNITUDES.get(suffix, 1.0)
-    return (_Marker.MONEY if currency else _Marker.BARE), scale
-
-
-def _renderings(quantity: Quantity, figure: _Figure) -> tuple[float, ...]:
-    """Return the ways a brief quantity could legitimately have been written.
-
-    Only renderings compatible with how the figure was written count. A number
-    the model marked `%` must come from a percentage in the brief — otherwise a
-    claim could borrow an unrelated integer and dress it up as a rate.
-    """
-    magnitude = abs(quantity.value) / figure.scale
-    unit = quantity.unit
-
-    if figure.marker is _Marker.PERCENT:
-        return (magnitude * 100,) if unit is MetricUnit.PERCENT else ()
-    if figure.marker is _Marker.POINTS:
-        return (magnitude * 100,) if unit is MetricUnit.POINTS else ()
-    if figure.marker is _Marker.MULTIPLE:
-        return (magnitude,) if unit is MetricUnit.MULTIPLE else ()
-    if figure.marker is _Marker.MONEY:
-        return (magnitude,) if unit in {MetricUnit.MONEY, MetricUnit.COUNT} else ()
-    if figure.marker is _Marker.BARE:
-        if unit in {MetricUnit.PERCENT, MetricUnit.POINTS}:
-            return (magnitude, magnitude * 100)
-        return (magnitude,)
-    return ()
-
-
-def _rounds_to(candidate: float, figure: _Figure) -> bool:
-    """Whether a brief value, rounded as written, is the figure in the claim."""
-    return math.isclose(round(candidate, figure.decimals), figure.value, abs_tol=_TOLERANCE)
-
-
 def unsupported_figures(
     text: str, brief: ResearchBrief, *, cited: Sequence[str] = ()
 ) -> tuple[str, ...]:
     """Return every number in a claim that its evidence does not contain.
 
-    This is the rule that does the real work against fabrication, and against the
-    subtler failure of a model quietly computing a ratio the pipeline never
-    calculated. A figure is supported when some value in the evidence, rendered
-    in the unit the claim used and rounded to the precision the claim used, is
-    the number written.
+    A thin scoping layer over `research.quantities.unsupported_figures`, which
+    holds the matching rule itself. What this decides is *which* values the claim
+    may draw on, and there are two pools with a deliberate difference between
+    them.
 
-    Two pools of evidence, and the difference between them matters. The brief's
-    structured quantities are available to every claim: they are facts about the
-    company, addressable by id, and any claim may restate one. Numbers inside
-    filing text are available **only to a claim that cites the excerpt they
-    appear in** — a figure in one 8-K says nothing about a sentence describing
-    another, and pooling them would let any quoted number legitimise any claim.
+    The brief's structured quantities are available to every claim: they are
+    facts about the company, addressable by id, and any claim may restate one.
+    Numbers inside filing text are available **only to a claim that cites the
+    excerpt they appear in** — a figure in one 8-K says nothing about a sentence
+    describing another, and pooling them would let any quoted number legitimise
+    any claim.
 
     Bare numbers are also matched against every digit sequence in the brief's
     structured fields — dates, share counts, form periods — because a quarter
@@ -314,116 +159,25 @@ def unsupported_figures(
     Returns:
         The unsupported figures as written, in the order they appear.
     """
-    quantities = (*brief.quantities, *_quoted_quantities(brief, cited))
-    structured = brief.model_copy(update={"excerpts": ()}).model_dump_json()
-    literals = {float(token) for token in _LITERAL.findall(structured)}
-
-    unsupported: list[str] = []
-    for figure in _parse_figures(_mask_score_scale(text, brief)):
-        bare = figure.marker is _Marker.BARE and figure.scale == 1.0
-        if bare and any(_rounds_to(literal, figure) for literal in literals):
-            continue
-        supported = any(
-            _rounds_to(rendering, figure)
-            for quantity in quantities
-            for rendering in _renderings(quantity, figure)
-        )
-        if not supported:
-            unsupported.append(_written(figure))
-    return tuple(unsupported)
-
-
-def _quoted_quantities(brief: ResearchBrief, cited: Sequence[str]) -> tuple[Quantity, ...]:
-    """Return the numbers written in the excerpts a claim actually cites.
-
-    Filing text is parsed with the same machinery a claim is, so `4.750%` in a
-    note offering is a percentage, `$1,000,000,000` is money and `2031` is a
-    bare year — and a claim may only restate one in a unit it could legitimately
-    have been written in. A quoted figure is evidence in exactly the way a
-    metric is; what it is not is evidence for a sentence that cites something
-    else.
-    """
     wanted = {
         identifier for identifier in cited if evidence_kind(identifier) is EvidenceKind.EXCERPT
     }
-    if not wanted:
-        return ()
-
-    quantities: list[Quantity] = []
+    quoted: list[Quantity] = []
     for excerpt in brief.excerpts:
-        if excerpt.id not in wanted:
-            continue
-        quantities.extend(_as_quantity(figure) for figure in _parse_figures(excerpt.text))
-    return tuple(quantities)
+        if excerpt.id in wanted:
+            quoted.extend(quoted_quantities(excerpt.text))
 
-
-def _as_quantity(figure: _Figure) -> Quantity:
-    """Read a figure written in prose as a quantity in this codebase's units.
-
-    The inverse of `_renderings`: percentages become decimal proportions, scaled
-    magnitudes are multiplied out, and a plain integer becomes a count. Going
-    through `Quantity` rather than comparing raw numbers is what keeps the unit
-    rules identical for a figure from a filing and a figure from a metric.
-    """
-    value = figure.value * figure.scale
-    if figure.marker is _Marker.PERCENT:
-        return Quantity(value=value / 100, unit=MetricUnit.PERCENT)
-    if figure.marker is _Marker.POINTS:
-        return Quantity(value=value / 100, unit=MetricUnit.POINTS)
-    if figure.marker is _Marker.MULTIPLE:
-        return Quantity(value=value, unit=MetricUnit.MULTIPLE)
-    if figure.marker is _Marker.MONEY:
-        return Quantity(value=value, unit=MetricUnit.MONEY)
-    return Quantity(value=value, unit=MetricUnit.COUNT)
-
-
-def _mask_score_scale(text: str, brief: ResearchBrief) -> str:
-    """Blank out the `100` in a score written against its own scale.
-
-    Narrow on purpose, in both directions. The numerator is left in the text and
-    checked like any other figure, so a score the brief never recorded is still
-    rejected — and rejected together with its denominator, since a scale is only
-    a scale when it scales something real.
-
-    Args:
-        text: The claim's text.
-        brief: The evidence, supplying the scores a 100 may stand under.
-
-    Returns:
-        The text with qualifying scale denominators replaced by spaces.
-    """
+    structured = brief.model_copy(update={"excerpts": ()}).model_dump_json()
     scores = [
         value for value in (brief.score.final_score, brief.score.raw_score) if value is not None
     ]
-    if not scores:
-        return text
 
-    masked = list(text)
-    for match in _SCORE_SCALE.finditer(text):
-        written = match.group("score")
-        _, _, fraction = written.partition(".")
-        numerator = _Figure(
-            value=float(written), decimals=len(fraction), marker=_Marker.BARE, scale=1.0
-        )
-        if not any(_rounds_to(score, numerator) for score in scores):
-            continue
-        start, end = match.span("scale")
-        masked[start:end] = " " * (end - start)
-    return "".join(masked)
-
-
-def _written(figure: _Figure) -> str:
-    """Render a figure roughly as it appeared, for an issue message."""
-    suffix = {
-        _Marker.PERCENT: "%",
-        _Marker.POINTS: "pp",
-        _Marker.MULTIPLE: "x",
-        _Marker.MONEY: " (currency)",
-        _Marker.UNSUPPORTED: " (unsupported unit)",
-        _Marker.BARE: "",
-    }[figure.marker]
-    scale = "" if figure.scale == 1.0 else f" x{figure.scale:g}"
-    return f"{figure.value:g}{suffix}{scale}"
+    return _unsupported_figures(
+        text,
+        quantities=(*brief.quantities, *quoted),
+        literals={float(token) for token in LITERAL.findall(structured)},
+        scale_values=scores,
+    )
 
 
 def confidence_ceiling(brief: ResearchBrief, *, cites_filing: bool) -> ConfidenceLevel:

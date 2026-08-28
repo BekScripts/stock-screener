@@ -28,6 +28,7 @@ import structlog
 from api_clients import ProviderAuthError, ProviderError, ProviderRateLimitError
 from data_access import FINAL, CompanyRepository, ScoreRecord, ScoreSnapshotRepository
 from domain import CURRENT_SCORE_VERSION, MARKET_CAP_DISCREPANCY_THRESHOLD
+from stock_screener.fx import FxRateResolver, build_fx_provider
 from stock_screener.scoring.engine import build_scores, load_benchmark_returns
 from stock_screener.scoring.rankings import top_opportunities
 
@@ -219,7 +220,18 @@ def _rescore(
     not apply the threshold to single-exchange volume.
     """
     benchmark = load_benchmark_returns(session, settings.benchmark_symbol)
-    scored = build_scores(session, settings, benchmark, tickers=tickers)
+    # The same exchange rates the market-wide pass uses. Without a resolver a
+    # foreign company's market capitalisation cannot be expressed in the currency
+    # of its statements, so valuation and cash-vs-debt come back empty — and this
+    # pass writes its rows as FINAL, which would replace a complete preliminary
+    # score with a worse one for exactly the companies enrichment exists to
+    # verify.
+    fx = FxRateResolver(
+        session,
+        build_fx_provider(settings),
+        max_age_days=settings.fx_max_rate_age_days,
+    )
+    scored = build_scores(session, settings, benchmark, tickers=tickers, fx=fx, as_of=score_date)
 
     for row in scored:
         discrepancy = row.metrics.market_cap_discrepancy
@@ -235,7 +247,14 @@ def _rescore(
 
     written = ScoreSnapshotRepository(session).upsert_scores(
         [
-            ScoreRecord(row.company_id, row.score, row.metrics, ranking_state=FINAL)
+            ScoreRecord(
+                row.company_id,
+                row.score,
+                row.metrics,
+                ranking_state=FINAL,
+                exclusion_reasons=row.exclusion_reasons,
+                freshness=row.freshness,
+            )
             for row in scored
         ],
         score_date,

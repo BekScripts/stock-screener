@@ -21,12 +21,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Protocol
 
 import structlog
 from sqlalchemy.exc import SQLAlchemyError
 
 from api_clients import ProviderAuthError, ProviderError, ProviderPlanError
+from api_clients.alpaca import CONSOLIDATED_FEED
 from api_clients.edgar import DEFAULT_FILING_LIMIT
 from data_access import (
     BenchmarkPriceRepository,
@@ -228,6 +229,100 @@ def update_market_data(
         _ingest_price_batch(batch, provider, prices, default_start, as_of, report)
 
     log.info("market data updated", summary=report.summary())
+    return report
+
+
+#: Recorded beside every figure this pass writes, so a liquidity decision can be
+#: traced to the tape behind it rather than assumed.
+_VOLUME_SOURCE = f"ALPACA_{CONSOLIDATED_FEED.upper()}"
+
+
+class ConsolidatedVolumeSource(Protocol):
+    """A market-data source that can read the consolidated tape.
+
+    Narrower than `MarketDataProvider` because it is a narrower question: not
+    every feed can answer it, and one that cannot is a missing figure rather than
+    a failure.
+    """
+
+    def get_average_volume(
+        self, tickers: Sequence[str], *, window: int = 20, delay_minutes: int = 15
+    ) -> dict[str, float]:
+        """Return average daily share volume across every venue, by ticker."""
+        ...
+
+
+def update_eligibility_volume(
+    session: Session,
+    provider: MarketDataProvider | ConsolidatedVolumeSource,
+    settings: Settings,
+    *,
+    tickers: Sequence[str] | None = None,
+    limit: int | None = None,
+) -> IngestionReport:
+    """Refresh the consolidated average volume the liquidity screen reads.
+
+    Separate from `update_market_data` on purpose, and it writes no price
+    history. Prices come from whichever feed is configured; this figure must come
+    from the consolidated tape or it cannot be compared with a threshold
+    calibrated for the whole market. Keeping the two passes apart is what stops
+    one table holding two feeds' volume, which no later reader could untangle.
+
+    Cheap and unmetered, so it belongs *before* the paid profile call rather than
+    after it: a company that fails the liquidity gate here never costs a request.
+
+    Args:
+        session: Open database session. The caller commits.
+        provider: Market-data source. Must expose `get_average_volume`; one that
+            does not leaves the figure absent, which is not an error.
+        settings: Supplies the batch size and the recency delay.
+        tickers: Restrict to these symbols. Defaults to every stored company.
+        limit: Process at most this many companies, in ticker order.
+
+    Returns:
+        Counts for the pass. `skipped` counts companies the tape had no bars for.
+    """
+    report = IngestionReport()
+    companies = CompanyRepository(session)
+    selected = _select_companies(companies, tickers, limit)
+    if not selected:
+        return report
+
+    fetch = getattr(provider, "get_average_volume", None)
+    if not settings.eligibility_volume_enabled or fetch is None:
+        log.info(
+            "consolidated volume not read; liquidity stays on the vendor figure",
+            enabled=settings.eligibility_volume_enabled,
+            provider=type(provider).__name__,
+        )
+        return report
+
+    for batch in _batches(list(selected), settings.provider_batch_size):
+        symbols = [ticker for _, ticker in batch]
+        report.processed += len(symbols)
+        try:
+            averages = fetch(symbols, delay_minutes=settings.eligibility_volume_delay_minutes)
+        except ProviderError as exc:
+            # A plan without historical SIP, or an outage. Neither is fatal: the
+            # vendor's consolidated figure still arrives with enrichment, which
+            # is exactly where the gate ran before this pass existed.
+            report.failed += len(symbols)
+            log.warning("consolidated volume unavailable", symbols=len(symbols), error=str(exc))
+            continue
+
+        for company_id, ticker in batch:
+            volume = averages.get(ticker)
+            if volume is None:
+                report.skipped += 1
+                continue
+            # A targeted update rather than `upsert_profile`: this pass observes
+            # two fields and has no opinion about the rest, and a profile built
+            # to carry them would have to invent a `name` that would then be
+            # written over the real one.
+            companies.set_consolidated_volume(company_id, volume, source=_VOLUME_SOURCE)
+            report.succeeded += 1
+
+    log.info("consolidated volume updated", summary=report.summary())
     return report
 
 
@@ -727,6 +822,6 @@ def _select_companies(
     return selected[:limit] if limit is not None else selected
 
 
-def _batches(items: list[_PriceTarget], size: int) -> list[list[_PriceTarget]]:
+def _batches[T](items: list[T], size: int) -> list[list[T]]:
     """Split a list into chunks of at most `size`."""
     return [items[index : index + size] for index in range(0, len(items), max(1, size))]

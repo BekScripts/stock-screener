@@ -62,6 +62,8 @@ nav:
       - Phase 3 brief: reference/project-phases/phase3.md
       - Phase 4 brief: reference/project-phases/phase4.md
       - Phase 5 brief: reference/project-phases/phase5.md
+      - Phase 6 brief: reference/project-phases/phase6.md
+      - Phase 7 brief: reference/project-phases/phase7.md
   - Explanation:
       - explanation/index.md
       - Architecture: explanation/architecture.md
@@ -76,3 +78,4 @@ nav:
       - 0007 Missing metrics stay in their component: adr/0007-missing-metrics-are-carried-by-their-own-component.md
       - 0008 Broad scan free, enrichment last: adr/0008-broad-scan-on-free-data-metered-enrichment-last.md
       - 0009 The research contract is its own package: adr/0009-the-research-contract-is-its-own-package.md
+      - 0010 Deep research is its own package: adr/0010-deep-research-is-its-own-package.md

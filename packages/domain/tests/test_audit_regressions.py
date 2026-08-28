@@ -122,16 +122,37 @@ def test_a_negative_market_cap_is_rejected() -> None:
 
 
 @pytest.mark.unit
-def test_a_company_reporting_in_a_foreign_currency_is_excluded() -> None:
+def test_a_foreign_reporter_without_a_rate_is_flagged_rather_than_excluded() -> None:
     # Market cap comes from the market in USD while the statements may be filed
     # in another currency. Dividing one by the other is how Phase 2 would
-    # produce an EV/Revenue multiple that is wrong by the exchange rate.
-    profile = _profile(currency="EUR")
+    # produce an EV/Revenue multiple wrong by the exchange rate — so the ratio
+    # is withheld, not the company. Its growth and margins are computed in one
+    # currency each and remain perfectly good.
+    profile = _profile(reporting_currency="EUR")
+    metrics = _metrics().model_copy(update={"reported_currency": "EUR", "quote_currency": "USD"})
 
-    result = evaluate_eligibility(profile, _metrics(), THRESHOLDS)
+    result = evaluate_eligibility(profile, metrics, THRESHOLDS)
 
-    assert result.eligible is False
-    assert ExclusionReason.UNSUPPORTED_CURRENCY in result.reasons
+    assert result.eligible is True
+    assert EligibilityWarning.FX_UNAVAILABLE in result.warnings
+    assert metrics.market_cap_for_ratios is None
+
+
+@pytest.mark.unit
+def test_a_foreign_reporter_with_a_rate_carries_no_currency_warning() -> None:
+    profile = _profile(reporting_currency="EUR")
+    metrics = _metrics().model_copy(
+        update={
+            "reported_currency": "EUR",
+            "quote_currency": "USD",
+            "market_cap_reporting_currency": _metrics().market_cap * 0.86453,
+        }
+    )
+
+    result = evaluate_eligibility(profile, metrics, THRESHOLDS)
+
+    assert result.eligible is True
+    assert EligibilityWarning.FX_UNAVAILABLE not in result.warnings
 
 
 @pytest.mark.unit
@@ -140,7 +161,7 @@ def test_usd_and_unknown_currencies_are_accepted(currency: str | None) -> None:
     # None means the provider did not say. The overwhelming majority of
     # U.S.-listed common stock reports in USD, so an unknown is admitted rather
     # than emptying the universe — the risk is documented instead.
-    result = evaluate_eligibility(_profile(currency=currency), _metrics(), THRESHOLDS)
+    result = evaluate_eligibility(_profile(reporting_currency=currency), _metrics(), THRESHOLDS)
 
     assert result.eligible is True
 
@@ -249,6 +270,42 @@ def test_bars_are_used_when_no_consolidated_average_exists() -> None:
     value, basis = resolve_liquidity(profile, 10.0, bars, bar_volume_basis=VolumeBasis.PARTIAL)
 
     assert value == pytest.approx(200_000.0)
+    assert basis is VolumeBasis.PARTIAL
+
+
+@pytest.mark.unit
+def test_the_tape_figure_is_preferred_over_the_vendors() -> None:
+    # Both are consolidated, so both are comparable with the threshold. The one
+    # computed here wins because its window is the twenty sessions the threshold
+    # was calibrated for, while a vendor averages over a window it never states.
+    profile = CompanyProfile(
+        ticker="XYZ",
+        name="Example",
+        average_volume=1_000_000.0,
+        consolidated_avg_volume=400_000.0,
+        volume_source="ALPACA_SIP",
+    )
+
+    value, basis = resolve_liquidity(profile, 10.0, [], bar_volume_basis=VolumeBasis.PARTIAL)
+
+    assert value == pytest.approx(4_000_000.0)
+    assert basis is VolumeBasis.CONSOLIDATED
+
+
+@pytest.mark.unit
+def test_single_exchange_volume_never_passes_as_consolidated() -> None:
+    # The property the whole liquidity design rests on. IEX carried between
+    # 0.006% and 12% of the consolidated figure across 259 measured companies, so
+    # a partial number must never be handed to a threshold calibrated for the
+    # whole market wearing a label that says it may be.
+    profile = CompanyProfile(ticker="XYZ", name="Example")
+    bars = [
+        PriceBar(date=date(2026, 6, 1), open=10, high=10, low=10, close=10.0, volume=500_000),
+    ]
+
+    value, basis = resolve_liquidity(profile, 10.0, bars, bar_volume_basis=VolumeBasis.PARTIAL)
+
+    assert value == pytest.approx(5_000_000.0)
     assert basis is VolumeBasis.PARTIAL
 
 

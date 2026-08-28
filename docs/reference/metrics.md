@@ -131,6 +131,17 @@ number outstanding on any single day, so multiplying it by a price values the
 company on a share base that did not exist; and a point-in-time count differenced
 against itself measures issuance plus timing rather than dilution.
 
+Cover-page counts stated on a **20-F or 40-F are not read at all**. They are in
+ordinary shares while the U.S.-listed security is an American Depositary Share
+representing some number of them — five for TSM, one for ASML, SAP and NVO — and
+nothing in the XBRL says which. TSM's cover page calls the security "Common
+Shares" and the ratio appears only in a prose footnote, so multiplying that count
+by a U.S. price is right three times in four and 5x wrong the fourth, valuing the
+company at $11tn against a real $2.2tn. Without the count there is no calculated
+market cap, so `market_cap_source` falls to `PROVIDER` or `UNKNOWN` — which is
+the honest outcome, because a company whose size is unknown is unscreenable and
+`MISSING_REQUIRED_DATA` says so.
+
 From EDGAR the second comes from `dei:EntityCommonStockSharesOutstanding`, the
 count every 10-Q and 10-K states on its cover page. It is dated near the filing
 rather than at the quarter end, so it is matched to the quarter it was filed with
@@ -232,11 +243,17 @@ never derived from one half.
 
 ### Average dollar volume, and what it represents
 
-The figure is taken from a provider's **consolidated** average daily share
-volume where one exists — FMP supplies this on the same profile request already
-made — multiplied by the latest close. Only when no such average exists does it
-fall back to the mean of `close × volume` over the most recent sessions, up to
-twenty.
+The figure is a **consolidated** average daily share volume multiplied by the
+latest close. Two sources can supply one, preferred in this order:
+
+1. `consolidated_avg_volume` — a twenty-session average this project computes
+   from the consolidated tape, written by `update-eligibility-volume`. Preferred
+   because its window is the one the threshold was calibrated for.
+2. `average_volume` — the vendor's figure, which arrives on the profile request
+   enrichment already makes, over a window it does not publish.
+
+Only when neither exists does it fall back to the mean of `close × volume` over
+the most recent sessions, up to twenty.
 
 The distinction matters and travels with the number as `liquidity_basis`:
 
@@ -246,10 +263,23 @@ The distinction matters and travels with the number as `liquidity_basis`:
 | `PARTIAL` | One exchange, e.g. a free IEX-only feed | **No** — warning instead |
 | `UNKNOWN` | No volume, or no statement of origin | **No** — warning instead |
 
-A single-exchange feed carries roughly 2–4% of consolidated volume, so applying
-a whole-market threshold to it would be about twenty-five times too strict. The
-screen therefore reports `LIQUIDITY_UNVERIFIED` rather than excluding. See
+A single-exchange feed carries a few percent of consolidated volume, so applying
+a whole-market threshold to it would be far too strict. The screen therefore
+reports `LIQUIDITY_UNVERIFIED` rather than excluding. See
 [ADR-0004](../adr/0004-apply-the-liquidity-threshold-only-to-consolidated-volume.md).
+
+**And the share is not a constant.** Measured across 259 companies holding both
+figures, the IEX share of consolidated dollar volume ranged from 0.006% to 12% —
+a spread of two thousand times, with a median near 4%. So a partial figure cannot
+be rescued by scaling either: there is no factor to scale by. This is why
+`update-eligibility-volume` exists. It reads consolidated daily bars directly,
+which a free Alpaca plan serves for any window ending at least fifteen minutes in
+the past, and stores the result in `consolidated_avg_volume` with
+`volume_source` recording the tape it came from.
+
+Running it before `enrich` means the liquidity gate applies before the metered
+profile request rather than after it. Across a 762-company foreign cohort that
+took provider requests from 496 to 351 for five Alpaca requests.
 
 The **insufficient-history** check is separate and still excludes: it requires
 `trading_days_used >= MIN_TRADING_DAYS` (default 20) whatever the basis, so four
@@ -277,7 +307,7 @@ A security is eligible when every check passes. Thresholds come from
 | `LOW_LIQUIDITY` | `trading_days_used < MIN_TRADING_DAYS`, or a **consolidated** ADV below `MIN_AVG_DOLLAR_VOLUME` |
 | `INACTIVE` | The provider reports the security as not trading |
 | `UNSUPPORTED_SECURITY_TYPE` | Not common stock on NASDAQ, NYSE or NYSE American |
-| `UNSUPPORTED_CURRENCY` | The company files its statements in a currency other than USD |
+| `UNSUPPORTED_CURRENCY` | The company files its statements in a currency other than USD, read from the XBRL unit key where the filings state one and from the provider's profile otherwise |
 | `MISSING_REQUIRED_DATA` | Price or market cap unavailable |
 
 A verdict may also carry warnings, which qualify it without excluding:
@@ -305,6 +335,129 @@ statements in another currency is therefore **excluded** with
 two would be wrong by an exchange rate. A provider that does not report a
 currency is treated as USD, which is true for the overwhelming majority of
 U.S.-listed common stock.
+
+The size of that error is worth stating. Mixing TSM's TWD statements with its
+USD market capitalisation produces an EV/Revenue of **0.38x** where the truth is
+**24.07x** — a factor of sixty-three, and the difference between the most
+expensive large cap on the board and the cheapest.
+
+### Which side is converted
+
+**The market side, never the statements.** A company's reported history stays in
+the money it was filed in. Restating it would put exchange-rate movement into
+revenue growth and margins, which are properties of the business and are already
+currency-invariant when every period is compared in one currency — TSM's FY2024
+revenue grew 33.9% in TWD and 25.0% in USD, and only the first is a fact about
+the business. Just one number crosses:
+
+```
+market_cap_reporting_currency = market_cap_quote_currency x FX(quote -> reporting)
+enterprise_value              = market_cap_reporting_currency + debt - cash
+```
+
+Every ratio of a financial figure to a market capitalisation reads
+`CompanyMetrics.market_cap_for_ratios`, which is the converted figure for a
+foreign issuer and the plain one for a domestic company. There are exactly four:
+the quality component's `cash_vs_debt`, the valuation component's multiple and
+`fcf_yield`, and the risk assessment's leverage. When a conversion was needed and
+no rate was available it returns **None**, and those sub-scores are unavailable —
+a missing sub-score is a gap, a mixed-currency one is a wrong answer wearing the
+costume of a right one. `CompanyMetrics` refuses outright to hold an enterprise
+value in that situation, so no path can build one quietly.
+
+### Where a rate comes from
+
+Rates are dated, stored and attributed. `fx_rates` keeps one row per
+`(base, quote, rate_date, provider)`, so a stored score can be reproduced rather
+than re-derived at whatever today's rate happens to be.
+
+| Source | Covers | Used for |
+| --- | --- | --- |
+| European Central Bank daily reference rates | 30 currencies | Everything it publishes |
+| A broad daily dataset | ~340 currencies | Only pairs the ECB does not publish — `TWD`, `ARS` |
+
+The order is a statement about authority rather than a consensus: one source
+answers and the row records which. The ECB is asked first and reports the
+business day it actually used, so a Sunday score date resolves to Friday's fixing
+rather than to a fixing that never happened.
+
+Freshness is bounded by `FX_MAX_RATE_AGE_DAYS`, five days by default: enough for
+a weekend with a holiday either side, and short enough that a rate from the far
+side of a real gap in the series is refused. A rate dated *after* the score date
+is refused outright — money from the future is not evidence about the past. A
+company whose pair cannot be resolved carries the `FX_UNAVAILABLE` eligibility
+warning and keeps every metric that does not need both sides.
+
+**The currency comes from the filing, not the vendor.** A market-data provider's
+`currency` field for an ADR is the currency the *share* trades in, which is USD
+for every foreign issuer on a U.S. exchange. Trusting it would hold this gate
+open on exactly the companies it exists to catch, so `CompanyMetrics`
+carries the reporting currency read from the XBRL unit key and the screen
+consults that first.
+
+### Two taxonomies, one normalised period
+
+EDGAR serves foreign private issuers' statements under `ifrs-full` rather than
+`us-gaap`, and the taxonomy is detected per company from the facts document
+rather than inferred. Nothing about a company predicts it: ASML and TSM both
+file a 20-F, and ASML's statements arrive under `us-gaap` while TSM's arrive
+under `ifrs-full`. A filer that changed taxonomy keeps the old block forever, so
+the taxonomies are ranked by how many revenue facts each carries rather than by
+which exists.
+
+Both resolve through the same concept chains into the same `FinancialPeriod`.
+Two fields need more than a renamed chain:
+
+- **Borrowings.** Where a filer states an entity-wide `ifrs-full:Borrowings`,
+  that is the whole answer and nothing is added to it — SAP's EUR 6,150.0m is
+  exactly its non-current plus current, and its EUR 5,294.0m of `BondsIssued` is
+  part of that total rather than a further debt. Where no total is stated,
+  non-current bonds are summed with non-current borrowings, because TSM carries
+  NT$926.6bn of bonds beside NT$31.8bn of bank loans and reading the loans alone
+  reports 3% of its debt. Current bonds are **not** added to current maturities:
+  TSM's NT$57.1bn of them sit inside the NT$59.9bn line its balance sheet shows.
+- **Capital expenditure.** SAP states one concept covering property, intangibles,
+  investment property and other non-current assets; TSM and NVO state property
+  and intangibles separately. A stated combined figure wins, and the components
+  are summed only where none exists. The two bases are close but not identical,
+  which is a real comparability limit between filers rather than a mapping
+  choice.
+
+#### KNOWN_CAPEX_BASIS_LIMITATION
+
+Capital expenditure is on a slightly different basis under the two taxonomies,
+and this is recorded rather than fixed.
+
+The IFRS chain sums property with intangibles, because that is how TSM and NVO
+present their cash-flow statements and SAP states a single concept covering
+both. The us-gaap chain reads property alone: `PaymentsToAcquireIntangibleAssets`
+is not in it and has never been, so every domestic company has been scored
+without intangible purchases since Phase 1. ASML files under us-gaap concept
+names, so its capital expenditure — and therefore its free cash flow and FCF
+margin — is on the narrower basis while NVO's is on the wider one.
+
+Adding the concept would change the free cash flow of **every domestic
+company**, and with it their scores. That is a cross-taxonomy normalisation
+decision needing a representative audit of domestic filers first, and the
+options are genuinely open: narrow IFRS to property alone to match current
+domestic semantics, or broaden us-gaap to include intangible investment. Neither
+is a change to make as a side effect of international coverage, so the
+limitation is documented and left alone.
+
+**Measured in the Phase 7 rollout**, over 146 newly scored foreign companies (28
+us-gaap, 118 IFRS): **7 affected** — a quarter of the us-gaap filers, 5% of the
+cohort — and **none of them in the Top 100**, the best-ranked sitting at 155.
+Intangible purchases were 1-14% of true capital spending for those seven, and the
+resulting score sensitivity was at most **0.04 points** (CGNT −0.01, QGEN −0.03,
+NOA −0.03, HUYA −0.04; MNDY, ASML and EH unmoved). The limitation changes no
+ranking conclusion, which is why it stays a limitation.
+
+Short-term investments are not added to cash for an IFRS filer. No IFRS concept
+is reliably the same measure — TSM's `ShorttermInvestmentsClassifiedAsCashEquivalents`
+is already inside cash equivalents and would double-count — so cash is cash and
+equivalents alone. That understates the liquid position of a company holding
+marketable securities, which is the safe direction: it lowers net cash and the
+quality sub-score built on it.
 
 ## Plausibility
 

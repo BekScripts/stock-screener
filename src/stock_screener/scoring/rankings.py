@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING, Any
 import structlog
 
 from data_access import PRELIMINARY, CompanyRepository, ScoreSnapshotRepository
-from domain import CURRENT_SCORE_VERSION, RiskLevel
+from domain import CURRENT_SCORE_VERSION, Freshness, RiskLevel, ScoringStatus, is_rank_eligible
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -120,6 +120,9 @@ class RankingRow:
             different one — a column named `30d` holding a 90-day change would
             otherwise be silently wrong.
         warnings: Caveats recorded with the score.
+        freshness: Whether the fundamentals behind the score were current. Always
+            `CURRENT` in a current ranking — carried so an exported row states it
+            rather than leaving it to be assumed.
     """
 
     rank: int
@@ -153,6 +156,7 @@ class RankingRow:
     score_change_30d: float | None = None
     score_change_window_days: int = LONG_CHANGE_WINDOW_DAYS
     warnings: tuple[str, ...] = ()
+    freshness: str = Freshness.CURRENT.value
 
 
 @dataclass(frozen=True, slots=True)
@@ -170,6 +174,17 @@ class ScoreDetail:
         score_change_30d: Against the nearest snapshot a month or more old.
         breakdown: The complete `CompanyScore` as stored, component by
             component and metric by metric.
+        exclusion_reasons: Every eligibility check the security failed. Empty
+            both for a company that passed and for a row scored before the
+            reasons were recorded — the two are told apart by `scoring_status`,
+            since only a `NOT_ELIGIBLE` row can have failed anything.
+        freshness: Whether the fundamentals behind the score were current.
+            `STALE` means the number is real but describes the company as it last
+            reported, and V1.2 keeps it out of current rankings for that reason.
+        rank_eligible: Whether this score may appear in a current ranking. Stated
+            outright rather than left for a reader to infer from a status and a
+            date, because the staleness bound depends on reporting cadence and
+            two readers inferring it would disagree.
     """
 
     ticker: str
@@ -181,6 +196,9 @@ class ScoreDetail:
     score_change_7d: float | None = None
     score_change_30d: float | None = None
     breakdown: dict[str, Any] = field(default_factory=dict)
+    exclusion_reasons: tuple[str, ...] = ()
+    freshness: str = Freshness.CURRENT.value
+    rank_eligible: bool = True
 
 
 def top_opportunities(
@@ -384,7 +402,27 @@ def latest_score(
         score_change_7d=short,
         score_change_30d=long,
         breakdown=dict(breakdown),
+        exclusion_reasons=_split_reasons(snapshot.exclusion_reasons),
+        freshness=_freshness(snapshot),
+        rank_eligible=is_rank_eligible(
+            ScoringStatus(snapshot.scoring_status), Freshness(_freshness(snapshot))
+        ),
     )
+
+
+def _freshness(snapshot: ScoreSnapshot) -> str:
+    """Return a snapshot's freshness, reading NULL as CURRENT.
+
+    Every row written before V1.2 has NULL here, and those rows were ranked under
+    rules where freshness did not bear on ranking. Reading them as stale now
+    would rewrite what they meant.
+    """
+    return snapshot.freshness or Freshness.CURRENT.value
+
+
+def _split_reasons(stored: str | None) -> tuple[str, ...]:
+    """Turn the stored pipe-separated reasons back into a tuple."""
+    return tuple(part for part in (stored or "").split("|") if part)
 
 
 def _with_changes(
@@ -489,6 +527,7 @@ def _row(
         score_change_30d=score_change_30d,
         score_change_window_days=score_change_window_days,
         warnings=tuple(str(warning) for warning in warnings),
+        freshness=_freshness(snapshot),
     )
 
 

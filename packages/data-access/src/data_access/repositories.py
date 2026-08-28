@@ -1,4 +1,4 @@
-"""Reading and writing the five tables.
+"""Reading and writing the tables.
 
 Every write is an upsert. The daily job re-fetches overlapping data by design —
 a restated quarter has to replace the old one, and the last few price bars are
@@ -19,10 +19,10 @@ ingestion tests run against in-memory SQLite with no patching.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import and_, case, func, or_, select
+from sqlalchemy import and_, case, func, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as postgres_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
@@ -32,21 +32,27 @@ from data_access.models import (
     FilingExcerptRecord,
     FilingRecord,
     FinancialSnapshot,
+    FxRate,
     JobRecord,
     PriceHistory,
     ScoreSnapshot,
+    StoredDeepResearchReport,
     StoredResearchReport,
     WatchlistEntry,
     _utcnow,
 )
-from domain import ScoringStatus
+from domain import Freshness, ScoringStatus
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable, Sequence
+    from domain import FxConversion
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable, Mapping, Sequence
     from datetime import date
 
     from sqlalchemy.orm import Session
 
+    from deep_research import DeepResearchReport
     from domain import (
         CompanyMetrics,
         CompanyProfile,
@@ -80,6 +86,21 @@ but labelled, because it has not been checked against a second source.
 FINAL = "FINAL"
 """A score whose company has been through candidate enrichment."""
 
+MARKET_COVERAGE = "MARKET"
+"""A scoring run that covered the whole stored universe.
+
+The only kind a ranking may be built from. A ranking is a comparison, and a day
+holding two companies is not one.
+"""
+
+SINGLE_COVERAGE = "SINGLE"
+"""A scoring run for one company, from single-stock preparation.
+
+A real snapshot, stored and readable like any other — a deep research report has
+to explain a score that exists. It is simply not a day the market was ranked, so
+`latest_score_date` does not see it.
+"""
+
 JOB_RUNNING = "RUNNING"
 """A spawned command with a live process behind it."""
 
@@ -88,6 +109,19 @@ JOB_SUCCEEDED = "SUCCEEDED"
 
 JOB_FAILED = "FAILED"
 """A command whose process exited non-zero. Its log says why."""
+
+EXTERNAL_FRESH = "FRESH"
+"""External evidence gathered by this run's own searches."""
+
+EXTERNAL_REUSED = "REUSED"
+"""External evidence carried over from a recent collection, unsearched."""
+
+EXTERNAL_DEGRADED = "DEGRADED"
+"""External evidence gathered by searches that partly failed.
+
+Never reused. The set is thin because the collection went wrong, and treating
+that as a healthy cache would hold the gap open for the whole window.
+"""
 
 JOB_UNKNOWN = "UNKNOWN"
 """A run whose process is gone without ever being closed.
@@ -162,7 +196,11 @@ class CompanyRepository:
             "industry": profile.industry,
             "market_cap": profile.market_cap,
             "average_volume": profile.average_volume,
-            "currency": profile.currency,
+            "consolidated_avg_volume": profile.consolidated_avg_volume,
+            "volume_source": profile.volume_source,
+            "statement_profile": profile.statement_profile,
+            "reporting_currency": profile.reporting_currency,
+            "quote_currency": profile.quote_currency,
             "is_active": profile.is_active,
         }
         updatable = [key for key, value in values.items() if value is not None and key != "ticker"]
@@ -177,6 +215,26 @@ class CompanyRepository:
 
         self._session.execute(
             statement.on_conflict_do_update(index_elements=[Company.ticker], set_=set_)
+        )
+
+    def set_consolidated_volume(self, company_id: int, volume: float, *, source: str) -> None:
+        """Record the consolidated average volume the liquidity screen reads.
+
+        Deliberately not `upsert_profile`: the pass that calls this observes two
+        fields and nothing else, and building a whole profile to carry them would
+        mean supplying a `name` it does not know, which would then be written
+        over the real one.
+
+        Args:
+            company_id: The company to update.
+            volume: Average daily share volume across every venue.
+            source: Which feed produced it, so a liquidity decision stays
+                traceable to the tape behind it.
+        """
+        self._session.execute(
+            update(Company)
+            .where(Company.id == company_id)
+            .values(consolidated_avg_volume=volume, volume_source=source, updated_at=_utcnow())
         )
 
     def get_by_ticker(self, ticker: str) -> Company | None:
@@ -265,6 +323,8 @@ class FinancialSnapshotRepository:
             {
                 "company_id": company_id,
                 "period_end": period.period_end,
+                "period_start": period.period_start,
+                "cadence": period.cadence.value,
                 "revenue": period.revenue,
                 "gross_profit": period.gross_profit,
                 "gross_profit_basis": period.gross_profit_basis,
@@ -524,6 +584,101 @@ class BenchmarkPriceRepository:
         return self._session.scalar(select(func.count()).select_from(BenchmarkPrice)) or 0
 
 
+class FxRateRepository:
+    """Reads and writes the `fx_rates` table.
+
+    Small on purpose. Scoring needs to ask one question — what was this pair
+    worth on or shortly before this date — and to record the answer so the same
+    question gets the same answer tomorrow.
+
+    Args:
+        session: The session to operate in. Not owned; the caller commits.
+    """
+
+    def __init__(self, session: Session) -> None:
+        self._session = session
+
+    def latest_on_or_before(
+        self,
+        base: str,
+        quote: str,
+        as_of: date,
+        *,
+        max_age_days: int,
+    ) -> FxRate | None:
+        """Return the newest stored rate for a pair at or before a date.
+
+        **Never looks forward.** A rate published after the score date did not
+        exist when the score was computed, and using one would restate a
+        historical valuation in money from the future — the specific error that
+        makes a stored score irreproducible.
+
+        Args:
+            base: Currency converted from.
+            quote: Currency converted to.
+            as_of: The date wanted.
+            max_age_days: How far back to accept. A rate older than this is
+                refused rather than returned, because a fixing series has no
+                ordinary gaps longer than a holiday weekend and a stale rate is
+                a worse answer than no rate.
+
+        Returns:
+            The newest acceptable observation, or None. Where two providers
+            published the same date, the one whose name sorts first is taken so
+            the choice is deterministic rather than dependent on insert order.
+        """
+        oldest = as_of - timedelta(days=max_age_days)
+        return self._session.scalars(
+            select(FxRate)
+            .where(
+                FxRate.base_currency == base,
+                FxRate.quote_currency == quote,
+                FxRate.rate_date <= as_of,
+                FxRate.rate_date >= oldest,
+            )
+            .order_by(FxRate.rate_date.desc(), FxRate.provider.asc())
+            .limit(1)
+        ).first()
+
+    def save(self, conversion: FxConversion) -> None:
+        """Store one observation, replacing any earlier fetch of the same one.
+
+        Idempotent on `(base, quote, rate_date, provider)`, so re-running a
+        scoring run does not append a second copy of a rate that cannot have
+        changed — a past day's fixing is final.
+
+        Args:
+            conversion: The rate to store.
+        """
+        insert = _insert_for(self._session)
+        statement = insert(FxRate).values(
+            base_currency=conversion.base,
+            quote_currency=conversion.quote,
+            rate_date=conversion.rate_date,
+            rate=conversion.rate,
+            provider=conversion.provider,
+            retrieved_at=conversion.retrieved_at or _utcnow(),
+        )
+        self._session.execute(
+            statement.on_conflict_do_update(
+                index_elements=[
+                    FxRate.base_currency,
+                    FxRate.quote_currency,
+                    FxRate.rate_date,
+                    FxRate.provider,
+                ],
+                set_={
+                    "rate": statement.excluded.rate,
+                    "retrieved_at": statement.excluded.retrieved_at,
+                },
+            )
+        )
+
+    def count(self) -> int:
+        """Return how many rate observations are stored."""
+        return self._session.scalar(select(func.count()).select_from(FxRate)) or 0
+
+
 @dataclass(frozen=True, slots=True)
 class ScoreRecord:
     """One company's score, ready to persist.
@@ -537,12 +692,23 @@ class ScoreRecord:
             anything.
         ranking_state: Whether this row's inputs have been through candidate
             enrichment. `PRELIMINARY` until they have.
+        freshness: Whether the fundamentals behind the score were current. A
+            stale score keeps its number everywhere the number describes the
+            company, and is kept out of current rankings only.
+        exclusion_reasons: Every eligibility check the security failed, in the
+            order the screen reports them. Empty for a company that passed.
+            Stored because `NOT_ELIGIBLE` on its own cannot tell a company that
+            reports in a currency this system will not mix from one that is
+            delisted, and a reader looking at a blank row deserves the
+            difference.
     """
 
     company_id: int
     score: CompanyScore
     metrics: CompanyMetrics | None = None
     ranking_state: str = PRELIMINARY
+    exclusion_reasons: tuple[str, ...] = ()
+    freshness: Freshness = Freshness.CURRENT
 
 
 class ScoreSnapshotRepository:
@@ -581,12 +747,19 @@ class ScoreSnapshotRepository:
         "market_cap_source",
         "volume_basis",
         "breakdown",
+        "exclusion_reasons",
     )
 
     def __init__(self, session: Session) -> None:
         self._session = session
 
-    def upsert_scores(self, records: Sequence[ScoreRecord], score_date: date) -> int:
+    def upsert_scores(
+        self,
+        records: Sequence[ScoreRecord],
+        score_date: date,
+        *,
+        coverage: str = MARKET_COVERAGE,
+    ) -> int:
         """Insert or replace one day's scores.
 
         Re-running the scoring command on the same day replaces that day's rows
@@ -596,11 +769,14 @@ class ScoreSnapshotRepository:
         Args:
             records: The scores to store.
             score_date: The day the scores describe.
+            coverage: Whether this run covered the market or a single company.
+                Only market-wide runs are eligible to become "the latest
+                ranking"; see `latest_score_date`.
 
         Returns:
             How many rows were written.
         """
-        rows = [_score_values(record, score_date) for record in records]
+        rows = [_score_values(record, score_date, coverage) for record in records]
         if not rows:
             return 0
 
@@ -623,11 +799,29 @@ class ScoreSnapshotRepository:
             )
         )
 
-    def latest_score_date(self, *, score_version: str) -> date | None:
-        """Return the most recent day scores were stored for, or None."""
+    def latest_score_date(
+        self, *, score_version: str, coverage: str = MARKET_COVERAGE
+    ) -> date | None:
+        """Return the most recent day the market was scored, or None.
+
+        Filtered to market-wide runs by default, which is what makes the ranking
+        views safe from single-stock preparation. A per-ticker run writes a real
+        snapshot on whatever date its data reaches; without this filter the
+        newest date would be that one company, and every ranking would show a
+        list of one.
+
+        Args:
+            score_version: The formula version to read.
+            coverage: Which kind of run to consider. Pass `SINGLE_COVERAGE` only
+                to ask when a per-ticker run last happened.
+
+        Returns:
+            The date, or None when nothing of that kind has been scored.
+        """
         return self._session.scalar(
             select(func.max(ScoreSnapshot.score_date)).where(
-                ScoreSnapshot.score_version == score_version
+                ScoreSnapshot.score_version == score_version,
+                ScoreSnapshot.coverage == coverage,
             )
         )
 
@@ -710,6 +904,7 @@ class ScoreSnapshotRepository:
         min_quality_score: float | None = None,
         max_valuation_score: float | None = None,
         exclude_risk_levels: Sequence[str] = (),
+        rank_eligible_only: bool = True,
         limit: int | None = None,
     ) -> list[tuple[ScoreSnapshot, Company]]:
         """Return ranked snapshots with their companies, best first.
@@ -732,6 +927,12 @@ class ScoreSnapshotRepository:
             max_valuation_score: Upper bound on the valuation component, for
                 finding good companies at a poor price.
             exclude_risk_levels: Risk labels to leave out.
+            rank_eligible_only: Drop snapshots that may not appear in a *current*
+                ranking — under V1.2, those built on stale fundamentals. On by
+                default because that is what every ranking view wants and
+                forgetting it would silently readmit them. Pass False to read the
+                complete set, which is what a score-change comparison needs: a
+                company that went stale did not have its history deleted.
             limit: Maximum rows to return.
 
         Returns:
@@ -768,6 +969,17 @@ class ScoreSnapshotRepository:
         if exclude_risk_levels:
             statement = statement.where(ScoreSnapshot.risk_level.not_in(exclude_risk_levels))
 
+        if rank_eligible_only:
+            # NULL is CURRENT. Every row written before V1.2 has one, and those
+            # rows were ranked under rules where freshness did not bear on
+            # ranking — reading them as stale now would rewrite history.
+            statement = statement.where(
+                or_(
+                    ScoreSnapshot.freshness.is_(None),
+                    ScoreSnapshot.freshness != Freshness.STALE.value,
+                )
+            )
+
         statement = statement.order_by(
             ScoreSnapshot.final_score.desc(),
             ScoreSnapshot.raw_score.desc(),
@@ -779,6 +991,63 @@ class ScoreSnapshotRepository:
             statement = statement.limit(limit)
 
         return [(row[0], row[1]) for row in self._session.execute(statement)]
+
+    def latest_scored_population(self, *, score_version: str) -> list[tuple[int, float]]:
+        """Return every company's most recent scored value, one row per company.
+
+        Ranking on a single `score_date` is right for the dashboard views, where
+        a nightly run scored the whole market on one day. It became wrong the
+        moment single-stock preparation existed: scoring one ticker writes a
+        snapshot on today's date, and that date then holds exactly one company —
+        so "rank 1 of 1" is technically true and completely useless.
+
+        This reads each company's newest scored snapshot instead, whatever day it
+        landed on, which is what a person means by "where does this company
+        stand". A company rescored this morning is compared against the rest of
+        the market as most recently known, rather than against whoever happened
+        to be rescored alongside it.
+
+        Args:
+            score_version: The formula version to read. Never crosses versions,
+                for the same reason nothing else here does.
+
+        Returns:
+            `(company_id, final_score)` for every company with a scored snapshot,
+            unordered. Empty when nothing has been scored under this version.
+        """
+        newest = (
+            select(
+                ScoreSnapshot.company_id.label("company_id"),
+                func.max(ScoreSnapshot.score_date).label("score_date"),
+            )
+            .where(
+                ScoreSnapshot.score_version == score_version,
+                ScoreSnapshot.scoring_status == _SCORED,
+            )
+            .group_by(ScoreSnapshot.company_id)
+            .subquery()
+        )
+
+        statement = (
+            select(ScoreSnapshot.company_id, ScoreSnapshot.final_score)
+            .join(
+                newest,
+                and_(
+                    ScoreSnapshot.company_id == newest.c.company_id,
+                    ScoreSnapshot.score_date == newest.c.score_date,
+                ),
+            )
+            .where(
+                ScoreSnapshot.score_version == score_version,
+                ScoreSnapshot.scoring_status == _SCORED,
+                ScoreSnapshot.final_score.is_not(None),
+            )
+        )
+
+        return [
+            (int(company_id), float(final_score))
+            for company_id, final_score in self._session.execute(statement)
+        ]
 
     def history_for_company(
         self, company_id: int, *, score_version: str, limit: int | None = None
@@ -1303,6 +1572,244 @@ class ResearchReportRepository:
         return self._session.scalar(select(func.count()).select_from(StoredResearchReport)) or 0
 
 
+class DeepResearchReportRepository:
+    """Reads and writes the `deep_research_reports` table.
+
+    Three things this repository does differently from `ResearchReportRepository`,
+    all deliberate.
+
+    It **appends, never overwrites.** `save` always inserts. Re-running deep
+    research over identical evidence produces a second row rather than replacing
+    the first, because a deep report is a dated investigation and the record of
+    what was concluded, when, and on what evidence is the thing worth keeping.
+    Nothing here updates or deletes a stored report.
+
+    It **caches on the newest match** rather than on a unique row. `find_cached`
+    returns the most recently generated report for a cache key, which is what
+    lets history accumulate without a stale row being served ahead of a fresh
+    one.
+
+    It **only accepts a validated report.** `save` takes a
+    `deep_research.DeepResearchReport`, the type only deep validation produces. A
+    `DeepResearchDraft` — unchecked model output — does not type-check here and
+    does not have the fields this table needs.
+
+    As with Phase 3, there is no write path from here to `score_snapshots`. A
+    deep report explains a score and cannot revise one, and neither can anything
+    in the `W.` namespace that fed it.
+
+    Args:
+        session: The session to operate in. Not owned; the caller commits.
+    """
+
+    def __init__(self, session: Session) -> None:
+        self._session = session
+
+    def latest_collection(
+        self,
+        company_id: int,
+        *,
+        deterministic_fingerprint: str,
+        since: datetime,
+    ) -> StoredDeepResearchReport | None:
+        """Return the newest healthy external collection still inside its window.
+
+        The read behind external-evidence reuse. Three conditions, and each one
+        is there for a reason:
+
+        The deterministic fingerprint must match, because reusing yesterday's
+        news beside today's rescored fundamentals would produce a brief that
+        never existed.
+
+        The collection must be recent, because a reuse window is a bound on
+        staleness rather than a licence to stop looking.
+
+        And it must have been `FRESH` — a collection whose searches partly
+        failed produced a thin set on purpose, and caching that would freeze the
+        gap in place for the length of the window.
+
+        Args:
+            company_id: The company.
+            deterministic_fingerprint: The deterministic half of the current
+                brief, which the stored collection must have been gathered
+                against.
+            since: Earliest collection time still considered fresh.
+
+        Returns:
+            The newest qualifying row, or None when the evidence must be
+            collected again.
+        """
+        return self._session.scalars(
+            select(StoredDeepResearchReport)
+            .where(
+                StoredDeepResearchReport.company_id == company_id,
+                StoredDeepResearchReport.deterministic_fingerprint == deterministic_fingerprint,
+                StoredDeepResearchReport.external_state == EXTERNAL_FRESH,
+                StoredDeepResearchReport.external_collected_at.is_not(None),
+                StoredDeepResearchReport.external_collected_at >= since,
+            )
+            .order_by(
+                StoredDeepResearchReport.external_collected_at.desc(),
+                StoredDeepResearchReport.id.desc(),
+            )
+            .limit(1)
+        ).first()
+
+    def save(
+        self,
+        company_id: int,
+        report: DeepResearchReport,
+        *,
+        external_state: str = EXTERNAL_FRESH,
+        external_collected_at: datetime | None = None,
+        collected_external: Sequence[Mapping[str, Any]] = (),
+    ) -> StoredDeepResearchReport:
+        """Insert one report, keeping every earlier one.
+
+        Args:
+            company_id: The company the report is about.
+            report: A validated report. There is no way to pass an unvalidated
+                one: only deep validation constructs this type.
+            external_state: Whether the external evidence behind this report was
+                freshly collected, reused from a recent collection, or degraded.
+            external_collected_at: When that evidence was actually gathered —
+                which is not when this report was generated, if it was reused.
+            collected_external: The **whole** accepted external set, not just
+                the sources the claims cite. A rerun rebuilds its brief from
+                this, and a subset would fingerprint differently.
+
+        Returns:
+            The newly inserted row. Never an updated one — a caller wanting to
+            know whether an equivalent report already existed asks `find_cached`
+            first.
+        """
+        row = StoredDeepResearchReport(
+            **_deep_research_values(company_id, report),
+            external_state=external_state,
+            external_collected_at=external_collected_at,
+            collected_external_json=list(collected_external),
+        )
+        self._session.add(row)
+        self._session.flush()
+        return row
+
+    def find_cached(
+        self,
+        company_id: int,
+        *,
+        deterministic_fingerprint: str,
+        evidence_fingerprint: str,
+        prompt_version: str,
+    ) -> StoredDeepResearchReport | None:
+        """Return the newest report for one cache key, or None.
+
+        Args:
+            company_id: The company.
+            deterministic_fingerprint: Hash of the calculated and filed evidence.
+            evidence_fingerprint: Hash of that plus the external evidence.
+            prompt_version: The prompt that produced it.
+
+        Returns:
+            The most recently generated matching row, whatever its status.
+            Deciding whether a `FAILED` row counts as a hit is the caller's
+            judgement, not the storage layer's.
+        """
+        return self._session.scalars(
+            select(StoredDeepResearchReport)
+            .where(
+                StoredDeepResearchReport.company_id == company_id,
+                StoredDeepResearchReport.deterministic_fingerprint == deterministic_fingerprint,
+                StoredDeepResearchReport.evidence_fingerprint == evidence_fingerprint,
+                StoredDeepResearchReport.prompt_version == prompt_version,
+            )
+            .order_by(
+                StoredDeepResearchReport.generated_at.desc(),
+                StoredDeepResearchReport.id.desc(),
+            )
+            .limit(1)
+        ).first()
+
+    def latest_for_company(self, company_id: int) -> StoredDeepResearchReport | None:
+        """Return a company's most recently generated deep report.
+
+        Not filtered by score version, unlike the Phase 3 equivalent. A deep
+        report is asked for by ticker rather than read off a ranking, so "the
+        last thing we concluded about this company" is a question worth
+        answering across versions — the row carries its own `score_version` for a
+        caller that cares.
+
+        Args:
+            company_id: The company.
+
+        Returns:
+            The newest row, or None when the company has never been researched.
+        """
+        return self._session.scalars(
+            select(StoredDeepResearchReport)
+            .where(StoredDeepResearchReport.company_id == company_id)
+            .order_by(
+                StoredDeepResearchReport.generated_at.desc(),
+                StoredDeepResearchReport.id.desc(),
+            )
+            .limit(1)
+        ).first()
+
+    def history_for_company(
+        self, company_id: int, *, limit: int = 20
+    ) -> tuple[StoredDeepResearchReport, ...]:
+        """Return a company's deep reports, newest first.
+
+        The reason the table appends. Reading how a thesis changed across runs is
+        only possible because nothing overwrote the earlier ones.
+
+        Args:
+            company_id: The company.
+            limit: How many to return, newest first.
+
+        Returns:
+            The reports, newest first, empty when there are none.
+        """
+        return tuple(
+            self._session.scalars(
+                select(StoredDeepResearchReport)
+                .where(StoredDeepResearchReport.company_id == company_id)
+                .order_by(
+                    StoredDeepResearchReport.generated_at.desc(),
+                    StoredDeepResearchReport.id.desc(),
+                )
+                .limit(limit)
+            ).all()
+        )
+
+    def count(self) -> int:
+        """Return how many deep research reports are stored."""
+        return self._session.scalar(select(func.count()).select_from(StoredDeepResearchReport)) or 0
+
+
+def _deep_research_values(company_id: int, report: DeepResearchReport) -> dict[str, Any]:
+    """Flatten one validated deep report into the table's column layout.
+
+    The whole report document goes into `validated_report_json`, external sources
+    included, so a stored row resolves its own `W.` citations without a join.
+    """
+    return {
+        "company_id": company_id,
+        "ticker": report.ticker,
+        "as_of": report.as_of,
+        "score_version": report.score_version,
+        "deterministic_fingerprint": report.deterministic_fingerprint,
+        "evidence_fingerprint": report.evidence_fingerprint,
+        "contract_version": report.contract_version,
+        "prompt_version": report.prompt_version,
+        "model_id": report.model_id,
+        "status": report.status.value,
+        "confidence": report.confidence.level.value,
+        "generated_at": report.generated_at,
+        "validated_report_json": report.model_dump(mode="json"),
+        "validation_issues_json": [issue.model_dump(mode="json") for issue in report.issues],
+    }
+
+
 def _research_values(company_id: int, report: ResearchReport) -> dict[str, Any]:
     """Flatten one validated report into the `research_reports` column layout."""
     return {
@@ -1320,7 +1827,7 @@ def _research_values(company_id: int, report: ResearchReport) -> dict[str, Any]:
     }
 
 
-def _score_values(record: ScoreRecord, score_date: date) -> dict[str, Any]:
+def _score_values(record: ScoreRecord, score_date: date, coverage: str) -> dict[str, Any]:
     """Flatten one score into the `score_snapshots` column layout.
 
     Component scores are None whenever the status is not `SCORED`. They are
@@ -1335,6 +1842,7 @@ def _score_values(record: ScoreRecord, score_date: date) -> dict[str, Any]:
     return {
         "company_id": record.company_id,
         "score_date": score_date,
+        "coverage": coverage,
         "score_version": score.score_version,
         "calculated_at": _utcnow(),
         "scoring_status": score.status.value,
@@ -1358,4 +1866,8 @@ def _score_values(record: ScoreRecord, score_date: date) -> dict[str, Any]:
         "market_cap_source": metrics.market_cap_source.value if metrics else None,
         "volume_basis": metrics.liquidity_basis.value if metrics else None,
         "breakdown": score.model_dump(mode="json"),
+        # Pipe-separated rather than JSON: the set is small, closed and ordered,
+        # and the scan report already writes it this way.
+        "exclusion_reasons": "|".join(record.exclusion_reasons) or None,
+        "freshness": record.freshness.value,
     }

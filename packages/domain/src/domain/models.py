@@ -11,11 +11,13 @@ package can have, so no model ever defaults a financial field to zero.
 
 from __future__ import annotations
 
-from datetime import date  # noqa: TC003 — pydantic needs the runtime symbol
+from datetime import date, datetime  # noqa: TC003 — pydantic needs the runtime symbols
 from enum import StrEnum
 from typing import Annotated, Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+from domain.statements import StatementProfile  # noqa: TC001 — pydantic needs it at runtime
 
 #: A price or size that cannot meaningfully be negative. Rejecting these at the
 #: boundary means a garbled provider response fails as a `ProviderDataError` for
@@ -23,7 +25,24 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 NonNegativeFloat = Annotated[float, Field(ge=0)]
 
 USD = "USD"
-"""The only reporting currency the metric engine can safely mix with market cap."""
+"""The currency U.S.-listed securities are quoted in, and the default for both
+a reporting currency and a quote currency that nobody stated."""
+
+
+def normalise_currency(value: str | None) -> str:
+    """Return an ISO currency code in canonical form, defaulting to USD.
+
+    An absent code is USD rather than an error. Most filings do not restate the
+    obvious, and treating silence as unknown-and-therefore-excluded would empty
+    a universe that is overwhelmingly dollar-denominated.
+
+    Args:
+        value: A raw currency code from a filing, provider or database row.
+
+    Returns:
+        The stripped, upper-cased code, or `USD` when there was none.
+    """
+    return value.strip().upper() if value and value.strip() else USD
 
 
 def normalise_ticker(value: str) -> str:
@@ -82,12 +101,87 @@ class PriceBar(_Frozen):
         return self
 
 
+class PeriodCadence(StrEnum):
+    """How long a reporting period covers, classified from its actual dates.
+
+    Read from the XBRL context, never from the form that carried it or a label
+    the filer wrote. A `6-K` may hold a six-month statement, a three-month
+    result, an earnings release or nothing financial at all; a `20-F` normally
+    holds a year. The duration is the fact and the form is a hint.
+
+    Companies are compared *within* a cadence and never across one. A year of
+    revenue and a quarter of revenue are both real figures and neither is the
+    other divided or multiplied by anything.
+    """
+
+    QUARTERLY = "QUARTERLY"
+    """About three months."""
+
+    SEMIANNUAL = "SEMIANNUAL"
+    """About six months. The interim cadence most foreign private issuers file,
+    and never half a year pretending to be two quarters."""
+
+    ANNUAL = "ANNUAL"
+    """About twelve months, including a 52- or 53-week fiscal year."""
+
+    UNKNOWN = "UNKNOWN"
+    """A duration matching none of the above, or a period with no start date.
+    Carried rather than guessed: an unclassifiable period is excluded from
+    comparisons instead of being forced into the nearest bucket."""
+
+
+#: Duration bands, in days, that classify a period. Deliberately wide.
+#:
+#: Fiscal calendars are not calendar quarters: a 13-week quarter is 91 days but
+#: drifts a few days either side, and a 52/53-week fiscal year is 364 or 371
+#: days rather than 365. Requiring exact counts would classify a large share of
+#: real filers as UNKNOWN.
+#:
+#: The bands do not touch. A 120-day duration is not a long quarter or a short
+#: half-year, it is something else, and calling it either would put a figure
+#: covering four months into a series of three-month ones.
+CADENCE_BANDS: tuple[tuple[PeriodCadence, int, int], ...] = (
+    (PeriodCadence.QUARTERLY, 80, 100),
+    (PeriodCadence.SEMIANNUAL, 165, 200),
+    (PeriodCadence.ANNUAL, 340, 380),
+)
+
+
+def classify_cadence(start: date | None, end: date) -> PeriodCadence:
+    """Return the cadence a period's own dates put it in.
+
+    Args:
+        start: First day of the period. None yields `UNKNOWN` — a duration
+            cannot be measured from one end.
+        end: Last day of the period.
+
+    Returns:
+        The matching cadence, or `UNKNOWN` when the span matches no band.
+    """
+    if start is None:
+        return PeriodCadence.UNKNOWN
+    span = (end - start).days
+    for cadence, low, high in CADENCE_BANDS:
+        if low <= span <= high:
+            return cadence
+    return PeriodCadence.UNKNOWN
+
+
 class FinancialPeriod(_Frozen):
-    """One reporting period of normalised fundamentals, usually a quarter.
+    """One reporting period of normalised fundamentals.
+
+    A quarter for a domestic filer, and a half-year or a full year for the many
+    foreign issuers that report on those cadences. The period is whatever the
+    company actually reported: nothing here is a year divided by four.
 
     Attributes:
+        period_start: First day of the reporting period, when the source says.
+            None for a period whose duration is unknown — chiefly a balance
+            sheet joined to nothing else.
         period_end: Last day of the reporting period. Periods are compared and
             ordered by this field.
+        cadence: How long the period covers, classified from its dates. The
+            field that stops a year of revenue being read as a quarter of it.
         revenue: Total revenue for the period.
         gross_profit: Revenue less cost of revenue.
         gross_profit_basis: How `gross_profit` was arrived at — the provider's
@@ -124,6 +218,8 @@ class FinancialPeriod(_Frozen):
     """
 
     period_end: date
+    period_start: date | None = None
+    cadence: PeriodCadence = PeriodCadence.UNKNOWN
     revenue: float | None = None
     gross_profit: float | None = None
     gross_profit_basis: str | None = None
@@ -137,6 +233,20 @@ class FinancialPeriod(_Frozen):
     common_shares_outstanding: float | None = None
     reported_currency: str | None = None
     source: str = "unknown"
+
+    @model_validator(mode="after")
+    def _derive_cadence(self) -> Self:
+        """Classify the period from its own dates unless a cadence was given.
+
+        Deriving rather than requiring it means every existing construction
+        site keeps working, and a period built with real dates is classified
+        correctly without anyone remembering to pass the field.
+        """
+        if self.cadence is PeriodCadence.UNKNOWN and self.period_start is not None:
+            object.__setattr__(
+                self, "cadence", classify_cadence(self.period_start, self.period_end)
+            )
+        return self
 
 
 class Filing(_Frozen):
@@ -218,6 +328,17 @@ class EligibilityWarning(StrEnum):
     """Only partial-market volume was available, so the liquidity threshold was
     not applied. The company may or may not clear it."""
 
+    STALE_FUNDAMENTALS = "STALE_FUNDAMENTALS"
+    """The newest reported period is older than this company's own reporting
+    cadence explains.
+
+    Judged against the cadence, not a fixed calendar. An annual filer whose last
+    statement covers a year ending eight months ago is reporting entirely
+    normally; a quarterly filer in the same position has missed two quarters.
+    A warning rather than an exclusion — the figures are real and were true of
+    the period they cover — but a score built on statements two reporting cycles
+    old is describing a company that may no longer exist in that shape."""
+
     MARKET_CAP_CALCULATED = "MARKET_CAP_CALCULATED"
     """Market capitalisation was multiplied out from filings and a price rather
     than supplied by a provider. Good enough to screen on, worth verifying
@@ -228,6 +349,19 @@ class EligibilityWarning(StrEnum):
     materially. Neither is discarded and neither is averaged — the difference is
     surfaced, because its usual causes (a stale share count, multiple share
     classes, a recent issuance) each mean something different."""
+
+    FX_UNAVAILABLE = "FX_UNAVAILABLE"
+    """The company reports in one currency and trades in another, and no
+    exchange rate was available to bring them together.
+
+    A caveat rather than an exclusion, because it costs the company only the
+    part of the picture that needs both sides. Revenue growth, margins and every
+    price-based figure are computed from one currency each and remain perfectly
+    valid; what cannot be computed is any ratio of a financial figure to a
+    market capitalisation, and those return None rather than a mixed-currency
+    number. The company is screened, and usually lands on `INSUFFICIENT_DATA`
+    because valuation could not reach its coverage floor — which is the honest
+    account of what is known about it."""
 
 
 class FilingExcerpt(_Frozen):
@@ -264,6 +398,45 @@ class FilingExcerpt(_Frozen):
     source: str = "unknown"
 
 
+class ExternalSearchResult(_Frozen):
+    """One hit from an external search provider, before any judgement is applied.
+
+    The raw shape at the provider boundary, normalised only enough to be the same
+    across vendors: Tavily, Exa and Brave all return a title, a URL, a snippet and
+    sometimes a date, under different field names. Translating them here is what
+    keeps the collector free of vendor shapes — ADR 0003's rule, applied to a
+    fourth kind of provider.
+
+    Deliberately **not** `deep_research.ExternalEvidence`. A search hit is a
+    candidate; evidence is what survived tiering, deduplication and validation.
+    Keeping the two types apart is what stops an unvetted result reaching a brief,
+    in the same way `DraftReport` and `ResearchReport` are kept apart.
+
+    No tier and no source type here. Both are collection policy — a judgement
+    about who published this and how close they sit to the facts — and a provider
+    has no basis for either.
+
+    Attributes:
+        title: The headline, as the provider reports it.
+        url: Where it can be read. The identity of the result.
+        snippet: The provider's extract. May be empty, which usually disqualifies
+            the result: evidence with nothing quotable supports no claim.
+        published_at: Publication date when the provider supplies one, and None
+            when it does not. Never inferred — a guessed date on a piece of
+            current evidence is worse than an absent one.
+        publisher: Site or outlet name when the provider names one. The domain is
+            derived from `url` rather than trusted from here.
+        author: Byline when supplied.
+    """
+
+    title: str
+    url: str
+    snippet: str = ""
+    published_at: date | None = None
+    publisher: str = ""
+    author: str = ""
+
+
 class CompanyProfile(_Frozen):
     """Identity and classification for one listed company.
 
@@ -279,8 +452,34 @@ class CompanyProfile(_Frozen):
         average_volume: Average daily share volume across **all** venues, when a
             provider supplies it. This is the trustworthy liquidity input; a
             figure derived from single-exchange bars is not comparable with it.
-        currency: ISO code the company reports its financials in, when the
-            provider says. None means unknown, which is treated as USD.
+        reporting_currency: ISO code the company states its **financial
+            statements** in, read from the filing. None means unknown, which is
+            treated as USD.
+        quote_currency: ISO code the **listed security** trades in, and
+            therefore the currency `market_cap` and every price are quoted in.
+            None means unknown, which is treated as USD — the only listings this
+            screen admits are NASDAQ, NYSE and NYSE American, all of which quote
+            in dollars.
+
+            Kept apart from `reporting_currency` because the two were one field
+            and the two sources disagreed about what it meant: EDGAR wrote the
+            filing's currency into it and a market-data vendor wrote the trading
+            currency, which for an ADR is USD whatever the company reports in.
+            One field could only ever hold one of those answers, and whichever
+            arrived last won.
+        consolidated_avg_volume: Average daily share volume computed here from
+            consolidated-tape bars, rather than taken from a vendor. Preferred
+            over `average_volume` when both exist, because its window is known
+            to be the one the threshold was calibrated for.
+        volume_source: Where the consolidated figure came from, when there is
+            one. Provenance travels with the number so a liquidity decision can
+            be traced to the feed that made it.
+        statement_profile: Which accounting model the filing follows, read from
+            the concepts it tags. `FINANCIAL_INSTITUTION` means the general
+            metrics do not describe this business, whatever its labels say.
+            None means nobody has looked — distinct from `GENERAL`, which is a
+            classification, so that a market-data profile carrying no opinion
+            cannot erase one the filings produced.
         is_fund: Whether the provider classifies this as an ETF or fund. A
             provider's own flag is far more reliable than inferring it from the
             name, so when it is set the name heuristics are not consulted.
@@ -294,7 +493,11 @@ class CompanyProfile(_Frozen):
     industry: str | None = None
     market_cap: float | None = Field(default=None, ge=0)
     average_volume: float | None = Field(default=None, ge=0)
-    currency: str | None = None
+    consolidated_avg_volume: float | None = Field(default=None, ge=0)
+    volume_source: str | None = None
+    reporting_currency: str | None = None
+    quote_currency: str | None = None
+    statement_profile: StatementProfile | None = None
     is_fund: bool = False
     is_active: bool = True
 
@@ -308,13 +511,57 @@ class CompanyProfile(_Frozen):
 
     @property
     def reports_in_usd(self) -> bool:
-        """Whether the company's statements are comparable with its market cap.
+        """Whether the company states its financial statements in dollars.
 
         An unknown currency counts as USD: the overwhelming majority of
         U.S.-listed common stock reports in dollars, and excluding every company
         whose provider omitted the field would empty the universe.
         """
-        return self.currency is None or self.currency.strip().upper() == USD
+        return normalise_currency(self.reporting_currency) == USD
+
+    @property
+    def needs_conversion(self) -> bool:
+        """Whether statements and market capitalisation are in different money.
+
+        True for TSM, ASML, SAP and NVO; false for every domestic filer, which
+        is what keeps the FX layer entirely off the domestic path.
+        """
+        return normalise_currency(self.reporting_currency) != normalise_currency(
+            self.quote_currency
+        )
+
+
+class FxConversion(_Frozen):
+    """One exchange rate, with enough provenance to reproduce it.
+
+    A rate without its date is not a fact about anything: applying today's rate
+    to a score computed three months ago silently restates that score in money
+    that did not exist yet. So the date actually used travels with the number,
+    and it is the date the *rate* is for — not the date it was asked for, which
+    on a weekend is a day no market fixed a price.
+
+    Attributes:
+        base: The currency being converted **from** — the quote currency of the
+            listed security, so a market capitalisation is in this money.
+        quote: The currency being converted **to** — the company's reporting
+            currency, so a balance sheet is in this money.
+        rate: How many units of `quote` one unit of `base` buys. Multiply.
+        rate_date: The date the rate is for, which may be earlier than the date
+            requested when that fell on a weekend or a holiday.
+        provider: Which source published it.
+        retrieved_at: When it was fetched, which is not when it applied.
+    """
+
+    base: str
+    quote: str
+    rate: float = Field(gt=0)
+    rate_date: date
+    provider: str
+    retrieved_at: datetime | None = None
+
+    def convert(self, amount: float | None) -> float | None:
+        """Return `amount`, expressed in `quote`. None stays None."""
+        return None if amount is None else amount * self.rate
 
 
 class CompanyMetrics(_Frozen):
@@ -376,6 +623,27 @@ class CompanyMetrics(_Frozen):
         low_52w: Lowest close in the past year.
         distance_from_52w_high: Latest close over the 52-week high, less one.
             Negative when the stock trades below its high.
+        reported_currency: The currency the fundamental figures here are
+            denominated in, taken from the latest period. None when no period
+            said. Fundamentals are kept in the money the company reported them
+            in and are never restated — converting a history would put exchange
+            rate movement into revenue growth, where it is not.
+        quote_currency: The currency `price` and `market_cap` are in. USD for
+            every listing this screen admits.
+        market_cap_reporting_currency: `market_cap` expressed in
+            `reported_currency`. Equal to `market_cap` when the two currencies
+            match, and None when they differ and no rate was available.
+        fx: The conversion used, or None when none was needed or none was
+            found. Carried so a stored score can say which rate, from which
+            date and which source, produced its valuation.
+        fundamental_cadence: How often this company reports. The field that
+            stops a screen calling an annual filer's revenue growth a
+            "latest-quarter" figure.
+        fundamentals_through: The end of the most recent reported period. Read
+            with the cadence beside it: eight months after a fiscal year end is
+            ordinary for an annual filer and very stale for a quarterly one.
+        ttm_basis: How the trailing-year figures were formed — one stated
+            fiscal year, four quarters, or two half-years.
     """
 
     ticker: str
@@ -418,6 +686,74 @@ class CompanyMetrics(_Frozen):
     high_52w: float | None = None
     low_52w: float | None = None
     distance_from_52w_high: float | None = None
+
+    reported_currency: str | None = None
+    quote_currency: str | None = None
+    market_cap_reporting_currency: float | None = None
+    fx: FxConversion | None = None
+
+    fundamental_cadence: PeriodCadence = PeriodCadence.UNKNOWN
+    fundamentals_through: date | None = None
+    ttm_basis: str = "UNAVAILABLE"
+
+    @property
+    def market_cap_for_ratios(self) -> float | None:
+        """Market capitalisation in the same money as the fundamentals here.
+
+        **The only market capitalisation any ratio against a financial figure
+        may use.** `market_cap` is quoted in dollars while a foreign issuer's
+        cash, debt and revenue are not, so dividing one by the other is wrong by
+        an exchange rate — for TSM that is a factor of about thirty-two, which
+        turns the most expensive large cap on the board into the cheapest.
+
+        Returns None rather than falling back to the unconverted figure when a
+        conversion was needed and unavailable. A missing sub-score is a gap; a
+        mixed-currency sub-score is a wrong answer that looks like a right one.
+        """
+        if not self.needs_conversion:
+            return self.market_cap
+        return self.market_cap_reporting_currency
+
+    @property
+    def needs_conversion(self) -> bool:
+        """Whether the fundamentals and the market capitalisation differ in money."""
+        return normalise_currency(self.reported_currency) != normalise_currency(self.quote_currency)
+
+    @property
+    def reports_in_usd(self) -> bool:
+        """Whether these fundamentals may be compared with a USD market cap.
+
+        An unknown currency counts as USD, matching `CompanyProfile`: the
+        overwhelming majority of U.S.-listed common stock reports in dollars,
+        and excluding every company whose filings did not say would empty the
+        universe.
+        """
+        return normalise_currency(self.reported_currency) == USD
+
+    @model_validator(mode="after")
+    def _check_currency_coherence(self) -> Self:
+        """Reject an enterprise value that no market capitalisation supports.
+
+        An enterprise value is a market capitalisation plus debt less cash. If
+        the market capitalisation could not be expressed in the currency of the
+        debt and the cash, there is no arithmetic that produces a meaningful
+        answer — so holding one here would mean some path had quietly built the
+        mixed-currency figure this whole layer exists to prevent.
+
+        Raising rather than clearing it, because a value that got this far is
+        evidence of a bug upstream and silently blanking it would hide the bug
+        while fixing the symptom.
+        """
+        if (
+            self.enterprise_value is not None
+            and self.needs_conversion
+            and self.market_cap_reporting_currency is None
+        ):
+            raise ValueError(
+                f"{self.ticker}: enterprise value in {self.reported_currency} cannot come from a "
+                f"market capitalisation in {self.quote_currency} with no conversion"
+            )
+        return self
 
     @model_validator(mode="after")
     def _normalise_ticker(self) -> Self:

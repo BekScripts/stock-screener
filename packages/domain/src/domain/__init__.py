@@ -55,6 +55,7 @@ from domain.metrics import (
     yoy_revenue_growth,
 )
 from domain.models import (
+    CADENCE_BANDS,
     USD,
     CompanyMetrics,
     CompanyProfile,
@@ -62,22 +63,29 @@ from domain.models import (
     EligibilityThresholds,
     EligibilityWarning,
     ExclusionReason,
+    ExternalSearchResult,
     Filing,
     FilingExcerpt,
     FinancialPeriod,
+    FxConversion,
     MarketCapSource,
+    PeriodCadence,
     PriceBar,
     VolumeBasis,
+    classify_cadence,
+    normalise_currency,
     normalise_ticker,
 )
 from domain.scores import (
     COMPOUNDER_V1,
     COMPOUNDER_V1_1,
+    COMPOUNDER_V1_2,
     CURRENT_SCORE_VERSION,
     BenchmarkReturns,
     CompanyScore,
     ComponentScore,
     ComponentStatus,
+    Freshness,
     MetricUnit,
     RiskAssessment,
     RiskLevel,
@@ -86,6 +94,7 @@ from domain.scores import (
     ScoringStatus,
     SubScore,
     ValuationBasis,
+    is_rank_eligible,
 )
 from domain.scoring import (
     GROWTH_MAX,
@@ -116,6 +125,7 @@ from domain.scoring import (
     valuation_multiple,
 )
 from domain.sectors import is_unsupported_sector
+from domain.statements import StatementProfile, classify_statement_profile
 from domain.universe import (
     SUPPORTED_EXCHANGES,
     is_common_stock,
@@ -124,8 +134,10 @@ from domain.universe import (
 )
 
 __all__ = [
+    "CADENCE_BANDS",
     "COMPOUNDER_V1",
     "COMPOUNDER_V1_1",
+    "COMPOUNDER_V1_2",
     "CURRENT_SCORE_VERSION",
     "DEFAULT_LIQUIDITY_WINDOW",
     "GROWTH_MAX",
@@ -156,11 +168,15 @@ __all__ = [
     "EligibilityThresholds",
     "EligibilityWarning",
     "ExclusionReason",
+    "ExternalSearchResult",
     "Filing",
     "FilingExcerpt",
     "FinancialPeriod",
+    "Freshness",
+    "FxConversion",
     "MarketCapSource",
     "MetricUnit",
+    "PeriodCadence",
     "PriceBar",
     "RiskAssessment",
     "RiskLevel",
@@ -168,6 +184,7 @@ __all__ = [
     "ScoreWarning",
     "ScoringError",
     "ScoringStatus",
+    "StatementProfile",
     "SubScore",
     "ValuationBasis",
     "VolumeBasis",
@@ -178,6 +195,8 @@ __all__ = [
     "calculated_market_cap",
     "cash_runway_months",
     "categorise",
+    "classify_cadence",
+    "classify_statement_profile",
     "distance_from_52w_high",
     "enterprise_value",
     "evaluate_eligibility",
@@ -193,6 +212,7 @@ __all__ = [
     "interpolate",
     "is_common_stock",
     "is_cyclical_rebound",
+    "is_rank_eligible",
     "is_supported_exchange",
     "is_supported_listing",
     "is_unsupported_sector",
@@ -201,6 +221,7 @@ __all__ = [
     "low_52w",
     "market_cap_discrepancy",
     "net_cash",
+    "normalise_currency",
     "normalise_ticker",
     "operating_margin",
     "operating_margin_change",

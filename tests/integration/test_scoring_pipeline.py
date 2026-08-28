@@ -12,6 +12,7 @@ from datetime import date, timedelta
 from typing import TYPE_CHECKING, Any
 
 import pytest
+from sqlalchemy import text
 
 from data_access import (
     BenchmarkPriceRepository,
@@ -59,12 +60,16 @@ def _quarters(
     debt: float = 50_000_000.0,
     dilution: float = 0.01,
     count: int = 16,
+    age_days: int = 0,
 ) -> list[FinancialPeriod]:
     """Build a history whose year-over-year revenue growth is exactly `growth`.
 
     `margin_trend` widens the gross and operating margins by that many decimal
     percentage points a year, so a test can ask for a company whose margins are
     improving without hand-writing sixteen quarters.
+
+    `age_days` shifts the whole history back, which is how a test asks for a
+    company that has stopped reporting.
     """
     periods = []
     for index in range(count):
@@ -72,7 +77,7 @@ def _quarters(
         revenue = base_revenue * (1 + growth) ** years
         periods.append(
             FinancialPeriod(
-                period_end=TODAY - timedelta(days=QUARTER_DAYS * (count - 1 - index)),
+                period_end=TODAY - timedelta(days=QUARTER_DAYS * (count - 1 - index) + age_days),
                 revenue=revenue,
                 gross_profit=revenue * (gross_margin + margin_trend * years),
                 operating_income=revenue * (operating_margin + margin_trend * years),
@@ -437,3 +442,121 @@ def _lower_stored_score(
             continue
         snapshot.final_score = round(snapshot.final_score - by, 2)
     session.flush()
+
+
+# -- V1.2: stale fundamentals leave the ranking, not the database -----------
+
+
+@pytest.mark.integration
+def test_a_current_company_scores_exactly_what_v1_1_scored(session: Session) -> None:
+    # The whole claim of V1.2, pinned to a number. Every formula, curve, weight,
+    # cap and threshold is V1.1's, so a company whose fundamentals are current
+    # must produce the identical figure — not merely a similar one.
+    #
+    # These values were not copied from the current implementation. They were
+    # measured by running this exact company through the last V1.1 commit and
+    # through V1.2 and comparing: both produce 75.75, component for component.
+    # If a later change moves any of them, it is a scoring change and needs its
+    # own version.
+    _store(session, "CURR")
+    _store_benchmark(session)
+
+    score_market(session, SETTINGS, score_date=TODAY)
+    session.flush()
+
+    row = top_opportunities(session)[0]
+    assert row.ticker == "CURR"
+    assert row.final_score == pytest.approx(75.75, abs=0.01)
+    assert row.raw_score == pytest.approx(75.75, abs=0.01)
+    assert row.growth_score == pytest.approx(23.50, abs=0.01)
+    assert row.quality_score == pytest.approx(17.65, abs=0.01)
+    assert row.valuation_score == pytest.approx(22.68, abs=0.01)
+    assert row.momentum_score == pytest.approx(11.92, abs=0.01)
+    assert row.risk_penalty == pytest.approx(0.0, abs=0.01)
+    assert row.data_coverage == pytest.approx(1.0, abs=0.001)
+
+
+@pytest.mark.integration
+def test_a_stale_company_keeps_its_score_and_leaves_the_ranking(session: Session) -> None:
+    # Centerra Gold, in miniature: a real score of the company as it last
+    # reported, ranked against a market capitalisation two years newer. The
+    # number is not wrong — it is not an answer to what looks interesting now.
+    _store(session, "FRESH")
+    _store(session, "STALE", quarter_fields={"age_days": 900})
+    _store_benchmark(session)
+
+    score_market(session, SETTINGS, score_date=TODAY)
+    session.flush()
+
+    assert [row.ticker for row in top_opportunities(session)] == ["FRESH"]
+
+    # The score itself survives in full, which is what the stock page reads.
+    detail = latest_score(session, "STALE")
+    assert detail is not None
+    assert detail.scoring_status == ScoringStatus.SCORED.value
+    assert detail.final_score is not None
+    assert detail.freshness == "STALE"
+    assert detail.rank_eligible is False
+
+    current = latest_score(session, "FRESH")
+    assert current is not None
+    assert current.freshness == "CURRENT"
+    assert current.rank_eligible is True
+
+
+@pytest.mark.integration
+def test_every_current_ranking_view_excludes_a_stale_score(session: Session) -> None:
+    # One filter in one place, four views. A view that built its own query would
+    # be the one that quietly readmitted them.
+    _store(
+        session, "STALE", growth=0.60, market_cap=300_000_000.0, quarter_fields={"age_days": 900}
+    )
+    _store_benchmark(session)
+
+    score_market(session, SETTINGS, score_date=TODAY)
+    session.flush()
+
+    assert top_opportunities(session) == []
+    assert hidden_gems(session) == []
+    assert great_company_wrong_price(session) == []
+    assert improving_fast(session) == []
+
+
+@pytest.mark.integration
+def test_a_stale_row_is_still_stored_and_countable(session: Session) -> None:
+    # Excluded from a ranking is not deleted. The row, its status and its number
+    # are all still there for history and for the stock page.
+    _store(session, "STALE", quarter_fields={"age_days": 900})
+    _store_benchmark(session)
+
+    score_market(session, SETTINGS, score_date=TODAY)
+    session.flush()
+
+    stored = ScoreSnapshotRepository(session).list_scored(
+        score_version=CURRENT_SCORE_VERSION, rank_eligible_only=False
+    )
+    assert [company.ticker for _, company in stored] == ["STALE"]
+    assert stored[0][0].final_score is not None
+    assert stored[0][0].freshness == "STALE"
+
+
+@pytest.mark.integration
+def test_a_snapshot_predating_freshness_still_ranks(session: Session) -> None:
+    # Every V1.1 row has NULL here, and was ranked under rules where freshness
+    # did not bear on ranking. Reading NULL as stale would empty the history.
+    company_id = _store(session, "OLD")
+    _store_benchmark(session)
+    score_market(session, SETTINGS, score_date=TODAY)
+    session.flush()
+
+    session.execute(
+        text("UPDATE score_snapshots SET freshness = NULL WHERE company_id = :id"),
+        {"id": company_id},
+    )
+    session.flush()
+
+    assert [row.ticker for row in top_opportunities(session)] == ["OLD"]
+    detail = latest_score(session, "OLD")
+    assert detail is not None
+    assert detail.freshness == "CURRENT"
+    assert detail.rank_eligible is True

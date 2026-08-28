@@ -17,6 +17,7 @@ from api_clients import (
     MockFundamentals,
     MockMarketData,
     ProviderAuthError,
+    ProviderError,
     ProviderPlanError,
 )
 from data_access import (
@@ -28,6 +29,7 @@ from data_access import (
 from domain import (
     CompanyProfile,
     EligibilityThresholds,
+    EligibilityWarning,
     ExclusionReason,
     FinancialPeriod,
     PriceBar,
@@ -36,6 +38,7 @@ from stock_screener.config import Settings
 from stock_screener.scanning import (
     scan_market,
     update_benchmark,
+    update_eligibility_volume,
     update_fundamentals,
     update_market_data,
     update_universe,
@@ -331,15 +334,18 @@ def test_a_padded_ticker_does_not_create_a_second_company(session: Session) -> N
 
 
 @pytest.mark.integration
-def test_a_foreign_currency_reporter_is_excluded_end_to_end(
+def test_a_foreign_currency_reporter_without_a_rate_keeps_its_ratios_empty(
     session: Session, make: type[Make]
 ) -> None:
+    # No FX resolver is passed, which is what an offline scan looks like. The
+    # company is screened rather than dropped, and only the figures needing both
+    # a balance sheet and a market capitalisation are withheld.
     profile = CompanyProfile(
         ticker="EURO",
         name="Continental Holdings",
         exchange="NYSE",
         market_cap=2_000_000_000.0,
-        currency="EUR",
+        reporting_currency="EUR",
     )
     market_data = MockMarketData([profile], {"EURO": make.bars(30)})
 
@@ -349,8 +355,13 @@ def test_a_foreign_currency_reporter_is_excluded_end_to_end(
     session.flush()
     result = scan_market(session, THRESHOLDS)
 
-    assert result.eligible == ()
-    assert ExclusionReason.UNSUPPORTED_CURRENCY in result.rows[0].eligibility.reasons
+    row = result.rows[0]
+    assert EligibilityWarning.FX_UNAVAILABLE in row.eligibility.warnings
+    assert row.metrics.market_cap_for_ratios is None
+    assert row.metrics.enterprise_value is None
+    # The dollar market capitalisation itself is untouched: it is a real figure
+    # about a real listing, and only its use against a euro balance sheet is not.
+    assert row.metrics.market_cap == 2_000_000_000.0
 
 
 @pytest.mark.integration
@@ -568,3 +579,99 @@ def test_re_running_the_benchmark_update_does_not_duplicate_sessions(
     session.flush()
 
     assert BenchmarkPriceRepository(session).count() == 30
+
+
+class _ConsolidatedVolume:
+    """A market-data source that also answers for the consolidated tape."""
+
+    def __init__(self, averages: dict[str, float], *, failing: bool = False) -> None:
+        self._averages = averages
+        self._failing = failing
+        self.calls: list[tuple[tuple[str, ...], int]] = []
+
+    def get_average_volume(
+        self, tickers: Sequence[str], *, window: int = 20, delay_minutes: int = 15
+    ) -> dict[str, float]:
+        self.calls.append((tuple(tickers), delay_minutes))
+        if self._failing:
+            raise ProviderError("subscription does not permit querying recent SIP data")
+        return {t: v for t, v in self._averages.items() if t in set(tickers)}
+
+
+@pytest.mark.integration
+def test_consolidated_volume_is_stored_with_the_feed_that_produced_it(session: Session) -> None:
+    CompanyRepository(session).upsert_profile(CompanyProfile(ticker="XYZ", name="XYZ Corp"))
+    session.flush()
+
+    provider = _ConsolidatedVolume({"XYZ": 1_250_000.0})
+    report = update_eligibility_volume(session, provider, SETTINGS)
+    session.flush()
+
+    stored = CompanyRepository(session).get_by_ticker("XYZ")
+    assert stored is not None
+    assert stored.consolidated_avg_volume == pytest.approx(1_250_000.0)
+    # Provenance travels with the number: a liquidity decision must be traceable
+    # to the tape behind it rather than assumed to be consolidated.
+    assert stored.volume_source == "ALPACA_SIP"
+    assert report.succeeded == 1
+
+
+@pytest.mark.integration
+def test_the_consolidated_pass_writes_no_price_history(session: Session) -> None:
+    # Keeping the two feeds in separate columns is what stops one table holding
+    # two bases of volume, which no later reader could untangle.
+    CompanyRepository(session).upsert_profile(CompanyProfile(ticker="XYZ", name="XYZ Corp"))
+    session.flush()
+    company = CompanyRepository(session).get_by_ticker("XYZ")
+    assert company is not None
+
+    update_eligibility_volume(session, _ConsolidatedVolume({"XYZ": 900_000.0}), SETTINGS)
+    session.flush()
+
+    assert PriceHistoryRepository(session).latest_date(company.id) is None
+
+
+@pytest.mark.integration
+def test_the_company_name_survives_the_consolidated_pass(session: Session) -> None:
+    # The pass observes two fields and has no opinion about the rest. Writing a
+    # whole profile to carry them would have overwritten the registered name
+    # with the ticker.
+    CompanyRepository(session).upsert_profile(
+        CompanyProfile(ticker="XYZ", name="Example Industries")
+    )
+    session.flush()
+
+    update_eligibility_volume(session, _ConsolidatedVolume({"XYZ": 900_000.0}), SETTINGS)
+    session.flush()
+
+    stored = CompanyRepository(session).get_by_ticker("XYZ")
+    assert stored is not None
+    assert stored.name == "Example Industries"
+
+
+@pytest.mark.integration
+def test_a_tape_without_access_costs_the_pass_nothing(session: Session) -> None:
+    # A plan without historical SIP is not fatal. The vendor's consolidated
+    # figure still arrives with enrichment, which is where the gate ran before
+    # this pass existed.
+    CompanyRepository(session).upsert_profile(CompanyProfile(ticker="XYZ", name="XYZ Corp"))
+    session.flush()
+
+    report = update_eligibility_volume(session, _ConsolidatedVolume({}, failing=True), SETTINGS)
+    session.flush()
+
+    assert report.failed == 1
+    stored = CompanyRepository(session).get_by_ticker("XYZ")
+    assert stored is not None
+    assert stored.consolidated_avg_volume is None
+
+
+@pytest.mark.integration
+def test_a_provider_without_a_tape_is_not_an_error(session: Session) -> None:
+    CompanyRepository(session).upsert_profile(CompanyProfile(ticker="XYZ", name="XYZ Corp"))
+    session.flush()
+
+    report = update_eligibility_volume(session, MockMarketData({}, {}), SETTINGS)
+
+    assert report.processed == 0
+    assert report.failed == 0

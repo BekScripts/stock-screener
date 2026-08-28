@@ -135,6 +135,7 @@ def request_json(
     *,
     provider: str,
     params: Mapping[str, Any] | None = None,
+    json: Mapping[str, Any] | None = None,
     limiter: RateLimiter | None = None,
     retry: RetryPolicy | None = None,
 ) -> Any:
@@ -150,6 +151,8 @@ def request_json(
         url: Absolute or client-relative URL.
         provider: Name used in error messages.
         params: Query parameters.
+        json: Request body, encoded as JSON. For vendors whose search endpoint
+            is a POST — the same retry and error policy applies either way.
         limiter: Applied before every attempt, including retries.
         retry: Retry policy. Defaults to three attempts with one-second backoff.
 
@@ -170,7 +173,7 @@ def request_json(
             limiter.wait()
 
         try:
-            response = client.request(method, url, params=params)
+            response = client.request(method, url, params=params, json=json)
         except httpx.HTTPError as exc:
             last_error = ProviderRequestError(f"{provider} request failed: {type(exc).__name__}")
         else:

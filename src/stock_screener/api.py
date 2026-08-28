@@ -35,7 +35,14 @@ from data_access import (
     create_engine_from_url,
 )
 from stock_screener.config import get_settings
-from stock_screener.dashboard import research_view, stock_detail, watchlist_view
+from stock_screener.dashboard import (
+    deep_research_history,
+    deep_research_report,
+    deep_research_view,
+    research_view,
+    stock_detail,
+    watchlist_view,
+)
 from stock_screener.jobs import (
     JOB_KINDS,
     JobAlreadyRunningError,
@@ -374,6 +381,82 @@ def stock_research(session: SessionDep, ticker: str) -> dict[str, Any]:
     payload = research_view(session, ticker)
     if payload is None:
         raise HTTPException(status_code=404, detail=f"no research stored for {ticker.upper()}")
+    return payload
+
+
+@app.get("/api/deep-research/{ticker}")
+def deep_research_latest(session: SessionDep, ticker: str) -> dict[str, Any]:
+    """Return the latest validated deep research report for one company.
+
+    Read-only, like every deep research endpoint here. Running deep research is
+    a job — `POST /api/jobs` with `kind=deep-research` — because it takes minutes
+    and can spend money, and neither belongs inside an HTTP request. Duplicating
+    the job system with a second execution path would mean two places to get the
+    concurrency guard right.
+
+    Only validated content is served. There is no endpoint that returns a draft,
+    a rejected claim's text or a prompt, because the read model has no path to
+    any of them.
+
+    Args:
+        session: Database session, injected.
+        ticker: The symbol to look up.
+
+    Returns:
+        The report, its claims grouped into the seventeen sections in reading
+        order, the reason behind every `UNKNOWN` section, and the sources its
+        claims cite.
+
+    Raises:
+        HTTPException: 404 when the company has no deep research yet.
+    """
+    payload = deep_research_view(session, ticker)
+    if payload is None:
+        raise HTTPException(status_code=404, detail=f"no deep research stored for {ticker.upper()}")
+    return payload
+
+
+@app.get("/api/deep-research/{ticker}/history")
+def deep_research_history_list(session: SessionDep, ticker: str) -> list[dict[str, Any]]:
+    """Return a company's deep research reports, newest first.
+
+    Summaries only — enough to label a row in a history control. Deep reports are
+    append-only, so this grows rather than changing.
+
+    Args:
+        session: Database session, injected.
+        ticker: The symbol to look up.
+
+    Returns:
+        One summary per report, newest first. Empty when the company exists and
+        has never been researched.
+
+    Raises:
+        HTTPException: 404 when the company is unknown.
+    """
+    payload = deep_research_history(session, ticker)
+    if payload is None:
+        raise HTTPException(status_code=404, detail=f"unknown company {ticker.upper()}")
+    return payload
+
+
+@app.get("/api/deep-research/reports/{report_id}")
+def deep_research_by_id(session: SessionDep, report_id: int) -> dict[str, Any]:
+    """Return one historical deep research report.
+
+    Args:
+        session: Database session, injected.
+        report_id: The stored report to read.
+
+    Returns:
+        The report, in the same shape as the latest one.
+
+    Raises:
+        HTTPException: 404 when no such report exists.
+    """
+    payload = deep_research_report(session, report_id)
+    if payload is None:
+        raise HTTPException(status_code=404, detail=f"no deep research report {report_id}")
     return payload
 
 

@@ -8,6 +8,7 @@ license = "MIT"
 authors = [{ name = "Aziz", email = "azizzbek.io@gmail.com" }]
 
 dependencies = [
+    "deep-research",
     "domain",
     "psycopg[binary]>=3.2",
     "research",
@@ -23,5 +24,6 @@ module-name = "data_access"
 module-root = "src"
 
 [tool.uv.sources]
+deep-research = { workspace = true }
 domain = { workspace = true }
 research = { workspace = true }

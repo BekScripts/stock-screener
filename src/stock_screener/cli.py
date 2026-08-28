@@ -25,9 +25,21 @@ from api_clients import ProviderInvalidRequestError
 from data_access import build_session_factory, create_engine_from_url, session_scope
 from research import build_system_prompt, render_brief
 from stock_screener.config import Settings, get_settings
+from stock_screener.deep_research import (
+    PreparationError,
+    assemble_deep_brief,
+    collect_external_evidence,
+    format_collection,
+    format_preparation,
+    format_run,
+    prepare_company,
+    run_deep_research,
+)
 from stock_screener.logging import configure_logging
 from stock_screener.providers import (
     ConfigurationError,
+    build_deep_research_provider,
+    build_external_research_provider,
     build_fundamentals_provider,
     build_market_data_provider,
     build_profile_provider,
@@ -48,6 +60,7 @@ from stock_screener.scanning import (
     format_table,
     scan_market,
     update_benchmark,
+    update_eligibility_volume,
     update_filing_text,
     update_filings,
     update_fundamentals,
@@ -160,6 +173,29 @@ def update_market_command(tickers: TickerOption = None, limit: CompanyLimitOptio
         report = update_market_data(session, provider, settings, tickers=tickers, limit=limit)
 
     typer.echo(f"market data: {report.summary()}")
+
+
+@app.command("update-eligibility-volume")
+def update_eligibility_volume_command(
+    tickers: TickerOption = None, limit: CompanyLimitOption = None
+) -> None:
+    """Refresh consolidated average volume for the liquidity screen.
+
+    Reads the consolidated tape rather than the feed price history comes from,
+    because the dollar-volume threshold is calibrated for the whole market and a
+    single exchange carries a few percent of it. Writes no price history.
+
+    Cheap and unmetered, so run it before `enrich`: a company that fails the
+    liquidity gate on this figure never costs a paid profile request.
+    """
+    settings = _bootstrap()
+    provider = build_market_data_provider(settings)
+    with _database(settings) as factory, session_scope(factory) as session:
+        report = update_eligibility_volume(
+            session, provider, settings, tickers=tickers, limit=limit
+        )
+
+    typer.echo(f"eligibility volume: {report.summary()}")
 
 
 @app.command("update-benchmark")
@@ -695,6 +731,153 @@ def research_run_command(
         raise typer.Exit(code=2) from exc
 
     typer.echo(format_research_run(outcomes))
+
+
+deep_research_app = typer.Typer(
+    name="deep-research",
+    help="On-demand deep research. Phase 6B prepares one company; no model is called.",
+    no_args_is_help=True,
+)
+app.add_typer(deep_research_app)
+
+
+@deep_research_app.command("prepare")
+def deep_research_prepare_command(
+    ticker: Annotated[str, typer.Argument(help="The single symbol to prepare.")],
+    external: Annotated[
+        bool,
+        typer.Option(
+            "--external",
+            help="Also collect current external evidence (W.*). Calls a search provider.",
+        ),
+    ] = False,
+    as_json: Annotated[
+        bool,
+        typer.Option("--json", help="Print the whole brief as JSON instead of a summary."),
+    ] = False,
+) -> None:
+    """Refresh one company end to end and assemble its deep research brief.
+
+    Runs the existing ingestion and scoring passes for this ticker only — prices,
+    fundamentals, the benchmark if it has fallen behind, the CompounderScore, the
+    SEC filing index and the text behind it — then reads the result back out of
+    the database as a `DeepResearchBrief`.
+
+    With `--external`, current public material is searched for and the sources
+    worth citing are attached as `W.` evidence. Without it the brief carries none,
+    which is a complete brief: deterministic preparation never depends on a search
+    vendor being configured or reachable.
+
+    No model is called either way.
+    """
+    settings = _bootstrap()
+    with _database(settings) as factory, session_scope(factory) as session:
+        try:
+            result = prepare_company(
+                session,
+                settings,
+                build_market_data_provider(settings),
+                build_fundamentals_provider(settings),
+                ticker,
+            )
+        except PreparationError as error:
+            typer.echo(f"Cannot prepare {ticker.upper()}: {error}")
+            raise typer.Exit(code=1) from error
+
+        brief = assemble_deep_brief(session, settings, result.ticker, preparation=result)
+        if brief is None:  # pragma: no cover — preparation raises before this can happen
+            typer.echo(f"Prepared {result.ticker} but could not assemble a brief.")
+            raise typer.Exit(code=1)
+
+        collection = None
+        if external:
+            provider = build_external_research_provider(settings)
+            if provider is None:
+                typer.echo(
+                    "External collection is disabled. Set EXTERNAL_RESEARCH_PROVIDER to enable it."
+                )
+                raise typer.Exit(code=1)
+            collection = collect_external_evidence(provider, settings, brief)
+            brief = assemble_deep_brief(
+                session,
+                settings,
+                result.ticker,
+                preparation=result,
+                external=collection.evidence,
+            )
+            if brief is None:  # pragma: no cover — it assembled a moment ago
+                typer.echo(f"Prepared {result.ticker} but could not assemble a brief.")
+                raise typer.Exit(code=1)
+
+        if as_json:
+            rendered = brief.model_dump_json(indent=2)
+        else:
+            rendered = format_preparation(result, brief)
+            if collection is not None:
+                rendered = f"{rendered}\n\n{format_collection(collection, brief)}"
+
+    typer.echo(rendered)
+
+
+@deep_research_app.command("run")
+def deep_research_run_command(
+    ticker: Annotated[str, typer.Argument(help="The single symbol to research.")],
+    no_external: Annotated[
+        bool,
+        typer.Option(
+            "--no-external",
+            help="Skip external collection and research from deterministic and SEC evidence only.",
+        ),
+    ] = False,
+    refresh_external: Annotated[
+        bool,
+        typer.Option(
+            "--refresh-external",
+            help="Search for current evidence again instead of reusing a recent collection.",
+        ),
+    ] = False,
+    as_json: Annotated[
+        bool,
+        typer.Option("--json", help="Print the validated report as JSON."),
+    ] = False,
+) -> None:
+    """Research one company and persist a validated deep research report.
+
+    Refreshes the company, collects current external evidence unless
+    `--no-external`, assembles the brief, and — only if no identical report
+    already exists — asks a model for a draft and validates it. **This spends
+    money**, unless the cache answers first.
+
+    External evidence collected recently is reused rather than searched for
+    again, so a repeated request inside the window costs nothing at all.
+    `--refresh-external` is the deliberate "get me current news" override.
+
+    Nothing unvalidated is ever stored. A provider failure persists nothing at
+    all, and a prompt above the input ceiling is refused before the call rather
+    than trimmed to fit.
+    """
+    settings = _bootstrap()
+    with _database(settings) as factory, session_scope(factory) as session:
+        external = None if no_external else build_external_research_provider(settings)
+        run = run_deep_research(
+            session,
+            settings,
+            synthesis=build_deep_research_provider(settings),
+            market_data=build_market_data_provider(settings),
+            fundamentals=build_fundamentals_provider(settings),
+            external=external,
+            ticker=ticker,
+            refresh_external=refresh_external,
+        )
+        rendered = (
+            run.report.model_dump_json(indent=2)
+            if as_json and run.report is not None
+            else format_run(run)
+        )
+
+    typer.echo(rendered)
+    if run.report is None:
+        raise typer.Exit(code=1)
 
 
 @app.command("run-daily")

@@ -29,7 +29,10 @@ from domain import EligibilityThresholds, VolumeBasis
 Environment = Literal["local", "test", "staging", "production"]
 MarketDataProviderName = Literal["alpaca", "mock"]
 FundamentalsProviderName = Literal["edgar", "edgar+fmp", "fmp", "mock"]
+FxProviderName = Literal["ecb", "ecb+fallback", "none", "mock"]
 ResearchProviderName = Literal["anthropic", "mock"]
+ExternalResearchProviderName = Literal["tavily", "mock", "none"]
+DeepResearchProviderName = Literal["anthropic", "mock"]
 
 
 class Settings(BaseSettings):
@@ -107,10 +110,33 @@ class Settings(BaseSettings):
     alpaca_feed: Literal["iex", "sip"] = Field(
         default="iex",
         description=(
-            "Which tape to read. `sip` is the consolidated tape and needs a paid "
-            "data subscription; `iex` is what a free account can read, and it "
-            "reports only that exchange's share of volume — roughly 2-4% of the "
-            "real figure. See the liquidity note in docs/reference/metrics.md."
+            "Which tape to read for price history. `sip` is the consolidated "
+            "tape and needs a paid subscription for recent data; `iex` is what a "
+            "free account reads live, and it reports only that exchange's share "
+            "of volume. Prices from it are sound, which is why it remains the "
+            "default — volume from it is not, which is what "
+            "`eligibility_volume_enabled` exists to fix. See the liquidity note "
+            "in docs/reference/metrics.md."
+        ),
+    )
+    eligibility_volume_enabled: bool = Field(
+        default=True,
+        description=(
+            "Whether `update-eligibility-volume` may read the consolidated tape "
+            "for the liquidity screen. A free plan serves SIP historically — "
+            "only recent data is withheld — so this needs no subscription. Turn "
+            "it off to fall back to the vendor's average volume, which arrives "
+            "later in the pipeline and costs a metered request."
+        ),
+    )
+    eligibility_volume_delay_minutes: int = Field(
+        default=15,
+        ge=15,
+        description=(
+            "How far in the past a consolidated-tape query must end. Fifteen "
+            "minutes is the measured boundary: below it the request is refused "
+            "as too recent. The floor is enforced here because a smaller value "
+            "does not fetch fresher data, it fetches none."
         ),
     )
 
@@ -224,6 +250,147 @@ class Settings(BaseSettings):
             "tokens already spent."
         ),
     )
+    # -- deep research synthesis (Phase 6D) ---------------------------------
+
+    deep_research_provider: DeepResearchProviderName = Field(
+        default="mock",
+        description=(
+            "Which model writes deep research reports. `mock` returns a canned "
+            "draft and calls nothing, which is what lets the whole pipeline — "
+            "brief, validation, persistence, cache — be exercised without cost."
+        ),
+    )
+    deep_research_model: str = Field(
+        default="claude-sonnet-5",
+        description=(
+            "Model identifier for deep research. Stored on every report, because "
+            "a report written by one model is not evidence about what another "
+            "would have said."
+        ),
+    )
+    deep_research_max_input_tokens: int = Field(
+        default=30_000,
+        ge=1,
+        description=(
+            "Hard ceiling on the prompt a deep research run may send. A safety "
+            "guard, never a truncation target: a brief that exceeds it aborts "
+            "before the provider is called and reports its measured size. "
+            "Silently dropping evidence to fit would produce a report whose "
+            "gaps nobody could see."
+        ),
+    )
+    deep_research_max_output_tokens: int = Field(
+        default=8_000,
+        ge=1,
+        description=(
+            "Ceiling on one deep report's generated tokens. On a thinking model "
+            "this covers the reasoning as well as the seventeen sections."
+        ),
+    )
+    deep_research_effort: Literal["low", "medium", "high"] = Field(
+        default="medium",
+        description=(
+            "How hard the model works per deep report. The determinism and cost "
+            "lever, as in Phase 3: current Claude models reject `temperature`, so "
+            "effort plus a deterministic prompt is what replaces it."
+        ),
+    )
+    deep_research_timeout_seconds: float = Field(
+        default=180.0,
+        gt=0,
+        description=(
+            "Per-request timeout. Longer than Phase 3's because seventeen "
+            "sections over a wider evidence set is slower, and a timeout "
+            "mid-report costs the tokens already spent."
+        ),
+    )
+    deep_research_external_cache_hours: float = Field(
+        default=6.0,
+        gt=0,
+        description=(
+            "How long a company's collected external evidence may be reused "
+            "before it is searched for again. Exists because a search engine "
+            "returns a slightly different valid article set every few minutes: "
+            "the fingerprint change is real, but paying a model to re-read "
+            "substantially the same news is not worth it. Six hours keeps a "
+            "morning and an afternoon run distinct while making a repeated "
+            "request free."
+        ),
+    )
+    deep_research_max_cost_usd: float = Field(
+        default=1.0,
+        gt=0,
+        description=(
+            "Estimated spend allowed for one company's deep research run. "
+            "Checked against the measured input size before the request, so a "
+            "run that would cross it never starts. Per company rather than per "
+            "run, because deep research is asked for one ticker at a time."
+        ),
+    )
+
+    # -- external research (Phase 6C) ---------------------------------------
+
+    external_research_provider: ExternalResearchProviderName = Field(
+        default="none",
+        description=(
+            "Where current external evidence comes from. `none` disables "
+            "collection entirely, which is the default because deterministic "
+            "preparation must never depend on it — a company with no external "
+            "evidence is a legal brief. `mock` serves fixture results."
+        ),
+    )
+    external_research_api_key: SecretStr | None = Field(
+        default=None,
+        description=(
+            "Credential for the external research provider. Required unless the "
+            "provider is `none` or `mock`."
+        ),
+    )
+    external_research_base_url: str = Field(
+        default="https://api.tavily.com",
+        description="API host for the external research provider.",
+    )
+    external_research_window_days: int = Field(
+        default=90,
+        ge=1,
+        description=(
+            "How far back a search reaches, in days. Deep research is about what "
+            "is true now, and an unbounded window fills the evidence set with "
+            "history the deterministic layers already cover better."
+        ),
+    )
+    external_research_max_items: int = Field(
+        default=15,
+        ge=1,
+        description=(
+            "Most external evidence items one brief may carry. The bound is a "
+            "quality lever, not a storage one: five articles about one earnings "
+            "release are worse evidence than five about five different events."
+        ),
+    )
+    external_research_max_per_domain: int = Field(
+        default=3,
+        ge=1,
+        description=(
+            "Most items one publisher may contribute. Stops a single outlet's "
+            "coverage crowding out the diversity of events the set exists for."
+        ),
+    )
+    external_research_max_results: int = Field(
+        default=20,
+        ge=1,
+        description=(
+            "Results requested per search query, before filtering. Raising it "
+            "costs nothing per search with most vendors but gives the tier and "
+            "duplicate filters more to reject."
+        ),
+    )
+    external_research_timeout_seconds: float = Field(
+        default=30.0,
+        gt=0,
+        description="Per-request timeout for the external research provider.",
+    )
+
     research_max_run_cost_usd: float = Field(
         default=5.0,
         gt=0,
@@ -235,6 +402,33 @@ class Settings(BaseSettings):
             "an intended run finishes, low enough that a mistaken loop over the "
             "whole market does not. The estimate errs high and ignores "
             "introductory discounts, so the real bill lands under it."
+        ),
+    )
+
+    fx_provider: FxProviderName = Field(
+        default="ecb+fallback",
+        description=(
+            "Where exchange rates come from. Only used for companies that file "
+            "in a currency other than the one their shares trade in; a domestic "
+            "company needs no rate and triggers no request. `ecb` is the "
+            "European Central Bank's official daily reference rates, free and "
+            "keyless, covering thirty currencies. `ecb+fallback` adds a broad "
+            "community dataset for the currencies the ECB does not publish — "
+            "Taiwan's dollar among them, which is the currency TSM files in. "
+            "`none` disables fetching and serves only rates already stored, "
+            "which is the right setting for an offline run."
+        ),
+    )
+
+    fx_max_rate_age_days: int = Field(
+        default=5,
+        ge=0,
+        description=(
+            "How many days before a score date an exchange rate may be dated "
+            "and still be used. Three days covers a weekend and five covers a "
+            "weekend with a holiday either side, which is the longest ordinary "
+            "gap in a published fixing series. A longer window silently values "
+            "a company on a rate from the far side of a real hole in the data."
         ),
     )
 

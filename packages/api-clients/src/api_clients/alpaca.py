@@ -12,7 +12,7 @@ coverage gap, not a bug in this adapter.
 
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import UTC, date, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
 import httpx
@@ -44,16 +44,38 @@ DEFAULT_FEED = "iex"
 """Which tape to read.
 
 `sip` is the consolidated tape — every U.S. exchange — and is the correct source
-for both price and volume. It requires a paid Alpaca data subscription; a free
-account asking for it gets `403 subscription does not permit querying recent SIP
-data`.
+for both price and volume.
 
-`iex` is a single exchange and is what a free account can read. **Its prices are
-sound but its volume is not comparable**: IEX carries roughly 2-4% of
-consolidated volume, so a dollar-volume figure derived from it understates the
-real one by a factor of twenty-five or more. The liquidity threshold in the
-eligibility screen is calibrated against consolidated volume, so on this feed it
-excludes companies that are in fact liquid enough.
+`iex` is a single exchange and is what a free account reads in real time. **Its
+prices are sound but its volume is not comparable**: measured against a vendor's
+consolidated figure across 259 companies, IEX carried between 0.006% and 12% of
+it, a spread of two thousand times. A dollar-volume threshold calibrated for the
+whole market therefore cannot be applied to an IEX figure at all — not even
+scaled, because the scale factor is not a constant.
+
+**A free account can still read SIP historically.** The refusal is about
+recency, not about the tape: a request whose `end` is at least
+`SIP_MIN_DELAY_MINUTES` in the past is served, and one inside that window returns
+`403 subscription does not permit querying recent SIP data`. That is enough for
+an eligibility screen, which asks what a company's average volume has been rather
+than what it is this second — see `get_average_volume`.
+"""
+
+CONSOLIDATED_FEED = "sip"
+"""The consolidated tape, and the only feed a liquidity threshold may read."""
+
+#: RFC3339, which is what the recency check parses. A bare date is not this.
+_TIMESTAMP_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
+
+SIP_MIN_DELAY_MINUTES = 15
+"""How far in the past a SIP query must end to be served without a paid plan.
+
+Measured against the live account rather than taken from documentation: 5 and 10
+minutes are refused, 15 and 20 are served.
+
+**`end` must be a timestamp, not a date.** A bare `YYYY-MM-DD` is read as the end
+of that day, which is in the future for today and is refused however old the rest
+of the range is — the failure this constant exists to avoid.
 """
 
 
@@ -183,7 +205,7 @@ class AlpacaMarketData:
         """
         results: dict[str, list[PriceBar]] = {}
         for batch in _chunked(list(tickers), self._batch_size):
-            self._collect_batch(batch, start, end, results)
+            self._collect_batch(batch, start.isoformat(), end.isoformat(), results, feed=self._feed)
 
         # Sorted once at the end rather than per batch: pages arrive in no
         # guaranteed order, but re-sorting every accumulated symbol after each
@@ -192,25 +214,93 @@ class AlpacaMarketData:
             bars.sort(key=lambda bar: bar.date)
         return results
 
+    def get_average_volume(
+        self,
+        tickers: Sequence[str],
+        *,
+        window: int = 20,
+        as_of: datetime | None = None,
+        delay_minutes: int = SIP_MIN_DELAY_MINUTES,
+    ) -> dict[str, float]:
+        """Return average daily share volume from the consolidated tape.
+
+        Deliberately narrow. It exists so the eligibility screen can apply a
+        threshold calibrated for the whole market to a figure that describes the
+        whole market — nothing else here reads this feed, and no bar fetched by
+        this method is stored as price history. Mixing two feeds' volume in one
+        table is the failure it is built to avoid.
+
+        The query ends `delay_minutes` in the past because that is what a free
+        plan permits on SIP, and it ends on a *timestamp* because a bare date is
+        read as end-of-day and refused.
+
+        Args:
+            tickers: Symbols to fetch.
+            window: Sessions to average over. The eligibility threshold is a
+                twenty-day average, which is the default.
+            as_of: Moment to measure back from. Defaults to now.
+            delay_minutes: How far before `as_of` the query ends.
+
+        Returns:
+            Average share volume by ticker, over however many of the last
+            `window` sessions Alpaca returned. Symbols it had no bars for are
+            absent rather than zero — an unknown volume is not a quiet one.
+
+        Raises:
+            ProviderError: If a request failed, including the `403` a plan
+                without SIP access returns for too recent a window.
+        """
+        end = (as_of or datetime.now(UTC)) - timedelta(minutes=delay_minutes)
+        # Calendar days, not sessions: weekends and holidays are not bars, so a
+        # window of twenty sessions needs appreciably more than twenty days of
+        # range. Over-fetching costs nothing — the tail is trimmed below.
+        start = end - timedelta(days=window * 2 + 15)
+
+        results: dict[str, list[PriceBar]] = {}
+        for batch in _chunked(list(tickers), self._batch_size):
+            self._collect_batch(
+                batch,
+                start.strftime(_TIMESTAMP_FORMAT),
+                end.strftime(_TIMESTAMP_FORMAT),
+                results,
+                feed=CONSOLIDATED_FEED,
+            )
+
+        averages: dict[str, float] = {}
+        for symbol, bars in results.items():
+            if not bars:
+                continue
+            recent = sorted(bars, key=lambda bar: bar.date)[-window:]
+            averages[symbol] = sum(bar.volume for bar in recent) / len(recent)
+        return averages
+
     # -- internals ---------------------------------------------------------
 
     def _collect_batch(
         self,
         batch: list[str],
-        start: date,
-        end: date,
+        start: str,
+        end: str,
         results: dict[str, list[PriceBar]],
+        *,
+        feed: str,
     ) -> None:
-        """Fetch one batch, following `next_page_token` until it is exhausted."""
+        """Fetch one batch, following `next_page_token` until it is exhausted.
+
+        `start` and `end` arrive already formatted because the two callers format
+        them differently: price history wants whole sessions and passes dates,
+        while the eligibility read must pass a timestamp to stay outside the SIP
+        recency window.
+        """
         page_token: str | None = None
         while True:
             params: dict[str, Any] = {
                 "symbols": ",".join(batch),
                 "timeframe": _DAILY_TIMEFRAME,
-                "start": start.isoformat(),
-                "end": end.isoformat(),
+                "start": start,
+                "end": end,
                 "adjustment": _ADJUSTMENT,
-                "feed": self._feed,
+                "feed": feed,
                 "limit": 10_000,
             }
             if page_token:

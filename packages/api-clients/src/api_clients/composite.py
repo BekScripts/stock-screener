@@ -52,30 +52,65 @@ class CompositeFundamentals:
         self._fall_back = fall_back_to_statement_profile
 
     def get_company_profile(self, ticker: str) -> CompanyProfile | None:
-        """Return a profile, preferring the source that knows market cap.
+        """Return one profile combining what each source actually knows.
 
-        A profile provider that fails is not fatal: the statements are the part
-        that cannot be reconstructed, and a company missing only its market cap
-        is excluded with a reason rather than lost.
+        **Not "whichever provider answered".** The two sources are authoritative
+        about different things, and taking either wholesale throws away what the
+        other one knew:
+
+        * The market-data provider knows the size and liquidity of the *listing* —
+          market capitalisation, consolidated volume, the currency the share
+          trades in, and whether it is a fund. EDGAR is a filings archive and has
+          none of that.
+        * EDGAR knows what the *filings* say — above all the currency the company
+          reports in, read from the XBRL unit key. A market-data vendor's
+          currency field for an ADR is the currency the share trades in, which is
+          USD for every foreign issuer on a U.S. exchange, so it cannot answer
+          this question and must not be allowed to appear to.
+
+        Merging field by field is what keeps TSM's `reporting_currency` as TWD
+        while its market capitalisation comes from the vendor that has one. The
+        previous behaviour returned the vendor's profile entire, which left the
+        reporting currency empty and made a company filing in Taiwan dollars look
+        like one filing in dollars.
 
         Args:
             ticker: The symbol to look up.
 
         Returns:
-            The richer profile when available, otherwise the fallback, otherwise
-            None.
+            The merged profile, or None when neither source knows the symbol. A
+            profile provider that fails is not fatal — the statements are the
+            part that cannot be reconstructed, and a company missing only its
+            market cap is excluded with a reason rather than lost.
         """
         try:
-            profile = self._profiles.get_company_profile(ticker)
+            market = self._profiles.get_company_profile(ticker)
         except ProviderError:
             log.warning("profile source failed, falling back", ticker=ticker)
-            profile = None
+            market = None
 
-        if profile is not None:
-            return profile
-        if not self._fall_back:
-            return None
-        return self._statements.get_company_profile(ticker)
+        filings = self._statements.get_company_profile(ticker) if self._fall_back else None
+        if market is None:
+            return filings
+        if filings is None:
+            return market
+
+        return market.model_copy(
+            update={
+                # The filing's own unit, which only EDGAR has. Everything the FX
+                # layer and the eligibility screen do with currency rests on it.
+                "reporting_currency": filings.reporting_currency or market.reporting_currency,
+                # EDGAR's SIC description is what makes the unsupported-sector
+                # rule work when a vendor classifies a bank as "Financials" and
+                # nothing more specific.
+                "industry": market.industry or filings.industry,
+                # Read from the filing's own concepts, which is the only place it
+                # can be read from. A market-data vendor sells labels, and labels
+                # are exactly what this classification exists to overrule.
+                "statement_profile": filings.statement_profile or market.statement_profile,
+                "name": market.name or filings.name,
+            }
+        )
 
     def get_financial_statements(self, ticker: str, limit: int = 20) -> list[FinancialPeriod]:
         """Return quarterly financials from the statement source.

@@ -13,8 +13,10 @@ recorded.
 
 from __future__ import annotations
 
+from datetime import UTC, date, datetime
 from typing import TYPE_CHECKING
 
+from domain.metrics import fundamentals_are_stale
 from domain.models import (
     EligibilityResult,
     EligibilityThresholds,
@@ -41,6 +43,8 @@ def evaluate_eligibility(
     profile: CompanyProfile,
     metrics: CompanyMetrics,
     thresholds: EligibilityThresholds | None = None,
+    *,
+    today: date | None = None,
 ) -> EligibilityResult:
     """Screen one security against the configured minimums.
 
@@ -59,10 +63,21 @@ def evaluate_eligibility(
     arrived is not implicitly small or implicitly large — it is unscreenable, and
     `MISSING_REQUIRED_DATA` says so instead of a threshold silently deciding.
 
-    A company filing in a currency other than USD is excluded outright. Its
-    market cap is quoted in dollars while its revenue is not, so every ratio
-    built from the two would be wrong by an exchange rate — silently, and by a
-    factor that looks like a plausible valuation.
+    A company filing in a currency other than the one its shares trade in is
+    **screened, not excluded** — provided an exchange rate was available to
+    bring the two together. Where none was, the verdict carries
+    `FX_UNAVAILABLE`: the company still has valid revenue growth, margins and
+    price history, and only the ratios needing both a financial figure and a
+    market capitalisation are unavailable. Those return None rather than a
+    mixed-currency number, so the company usually settles on
+    `INSUFFICIENT_DATA` at scoring rather than being removed from the universe.
+
+    That replaces an outright `UNSUPPORTED_CURRENCY` exclusion, which was the
+    right answer only while nothing could convert. The danger it guarded against
+    is real and unchanged — mixing TSM's TWD statements with its USD market
+    capitalisation yields an EV/Revenue of 0.40x where the truth is 24.68x — but
+    it is now headed off where the arithmetic happens rather than by refusing to
+    look at the company at all.
 
     A market capitalisation calculated from filings and a price is screened on
     exactly like a provider's, and carries a warning saying which it is. The
@@ -73,6 +88,8 @@ def evaluate_eligibility(
         profile: Identity, exchange and activity status for the security.
         metrics: Its calculated metrics, as produced by `build_company_metrics`.
         thresholds: The minimums to apply. Defaults to the Phase 1 values.
+        today: The date staleness is measured against. Defaults to the current
+            UTC date; injected by tests so a fixture does not age.
 
     Returns:
         The verdict, with every failed check listed in `reasons`.
@@ -88,8 +105,7 @@ def evaluate_eligibility(
     if profile.is_fund or not is_supported_listing(profile.ticker, profile.name, profile.exchange):
         reasons.append(ExclusionReason.UNSUPPORTED_SECURITY_TYPE)
 
-    if not profile.reports_in_usd:
-        reasons.append(ExclusionReason.UNSUPPORTED_CURRENCY)
+    fx_missing = metrics.needs_conversion and metrics.market_cap_for_ratios is None
 
     if metrics.price is None or metrics.market_cap is None:
         reasons.append(ExclusionReason.MISSING_REQUIRED_DATA)
@@ -101,6 +117,10 @@ def evaluate_eligibility(
         reasons.append(ExclusionReason.MARKET_CAP_BELOW_MINIMUM)
 
     warnings: list[EligibilityWarning] = []
+    if fundamentals_are_stale(metrics, today or datetime.now(UTC).date()):
+        warnings.append(EligibilityWarning.STALE_FUNDAMENTALS)
+    if fx_missing:
+        warnings.append(EligibilityWarning.FX_UNAVAILABLE)
     if metrics.market_cap_source is MarketCapSource.CALCULATED:
         warnings.append(EligibilityWarning.MARKET_CAP_CALCULATED)
     if (

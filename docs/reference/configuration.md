@@ -62,22 +62,35 @@ target different databases.
 | `ALPACA_SECRET_KEY` | secret | unset | Required when the market-data provider is `alpaca`. |
 | `ALPACA_TRADING_BASE_URL` | str | `https://api.alpaca.markets` | Host serving `/v2/assets`. **Paper keys (beginning `PK`) need `https://paper-api.alpaca.markets`** or every request returns 401. |
 | `ALPACA_DATA_BASE_URL` | str | `https://data.alpaca.markets` | Host serving `/v2/stocks/bars`. |
-| `ALPACA_FEED` | `iex` \| `sip` | `iex` | Which tape to read. See the warning below. |
+| `ALPACA_FEED` | `iex` \| `sip` | `iex` | Which tape price history is read from. See the warning below. |
+| `ELIGIBILITY_VOLUME_ENABLED` | bool | `true` | Whether `update-eligibility-volume` may read the consolidated tape for the liquidity screen. Needs no paid plan. |
+| `ELIGIBILITY_VOLUME_DELAY_MINUTES` | int ≥ 15 | `15` | How far in the past a consolidated query must end. Below the floor the request is refused as too recent and fetches nothing. |
 
 ### Feed choice distorts liquidity
 
-`sip` is the consolidated tape — every U.S. exchange — and is correct for both
-price and volume. It requires a paid Alpaca data plan; a free account requesting
-it gets `403 subscription does not permit querying recent SIP data`.
+`iex` is a single exchange and is what a free account reads live. Its **prices
+are sound**, but it reports only IEX's share of volume. Measured across 259
+companies that also carry a vendor's consolidated figure, that share ranged from
+**0.006% to 12%** — a spread of two thousand times. `MIN_AVG_DOLLAR_VOLUME` is
+calibrated against consolidated volume, so on this feed the liquidity screen is
+both far too strict and inconsistently so; it cannot be corrected by scaling,
+because there is no constant to scale by.
 
-`iex` is a single exchange and is what a free account can read. Its **prices are
-sound**, but it reports only IEX's share of volume, measured at roughly **2–4%**
-of consolidated. Since `MIN_AVG_DOLLAR_VOLUME` is calibrated against
-consolidated volume, on this feed the liquidity screen behaves like a threshold
-twenty-five times higher and excludes genuinely liquid companies.
+The screen therefore refuses to apply the threshold to a `PARTIAL` figure at all,
+warning `LIQUIDITY_UNVERIFIED` instead.
 
-Building the provider logs a warning when the feed is `iex`, because the symptom
-is silent: a shorter list of eligible companies, with nothing marked wrong.
+**Consolidated volume without a paid plan.** `ELIGIBILITY_VOLUME_ENABLED` lets
+`update-eligibility-volume` read consolidated daily bars directly. The
+subscription limit is about *recency*, not the tape: a query ending at least
+`ELIGIBILITY_VOLUME_DELAY_MINUTES` in the past is served, and one inside that
+window returns `403 subscription does not permit querying recent SIP data`. An
+eligibility screen asks what average volume *has been*, so the delay costs it
+nothing. The `end` parameter must be a timestamp — a bare date is read as
+end-of-day and refused however old the rest of the range is.
+
+That figure is stored separately from the price feed's, in
+`consolidated_avg_volume` with `volume_source` naming the tape, so one column
+never holds two bases of volume.
 | `FUNDAMENTALS_API_KEY` | secret | unset | Required when the fundamentals provider is `fmp`. |
 | `FUNDAMENTALS_BASE_URL` | str | `https://financialmodelingprep.com` | FMP host. |
 | `FUNDAMENTALS_API_ROOT` | str | `/stable` | Path prefix before each FMP endpoint. `/api/v3` is retired for keys issued today. |

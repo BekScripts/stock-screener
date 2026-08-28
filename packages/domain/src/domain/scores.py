@@ -47,7 +47,30 @@ growth plus acceleration are capped for a company whose growth does not persist.
 The four components are still 35/25/25/15 and the risk penalties are untouched.
 """
 
-CURRENT_SCORE_VERSION = COMPOUNDER_V1_1
+COMPOUNDER_V1_2 = "COMPOUNDER_V1_2"
+"""V1.1 with one policy change, and no change to any number.
+
+**Every formula, curve, weight, threshold and penalty is V1.1's.** Growth,
+quality, valuation and momentum are computed identically, redistribution still
+caps at 1.15, the component and coverage minimums are unchanged, the category
+bands are unchanged, and the currency and cadence rules are untouched. A company
+whose fundamentals are current scores exactly what it scored under V1.1, to the
+last decimal — there is a test that asserts it.
+
+What changed is which scores a **current** ranking may contain. A score built on
+stale fundamentals is still a real score of the company as it last reported, and
+it stays on the stock page, in research and in history. It is simply not an
+answer to "what looks interesting *now*": Centerra Gold ranked twenty-eighth on
+revenue from 2023 measured against a market capitalisation from 2026, which is a
+mixed-vintage valuation in the same way a converted market cap over unconverted
+statements is a mixed-currency one.
+
+This needed a version because it changes what a ranking *is*, and rankings from
+before and after are therefore not comparable — even though no company's number
+moved.
+"""
+
+CURRENT_SCORE_VERSION = COMPOUNDER_V1_2
 """The version every new score is stamped with.
 
 Changing a curve, a weight or a policy means a new identifier and a new value
@@ -77,6 +100,46 @@ class ScoringStatus(StrEnum):
     ERROR = "ERROR"
     """Scoring raised. Recorded rather than swallowed so one broken company is
     visible without ending the run."""
+
+
+class Freshness(StrEnum):
+    """Whether a score's fundamentals are recent enough to describe the company now.
+
+    Recorded on the snapshot rather than worked out by whoever reads it. The
+    bound depends on the company's reporting cadence — an annual filer is not
+    stale eight months after its year end — so a reader comparing a date against
+    a fixed window would get a different answer from the screen that produced the
+    row, and two readers would get different answers from each other.
+    """
+
+    CURRENT = "CURRENT"
+    """The newest statement is no older than the cadence explains."""
+
+    STALE = "STALE"
+    """The company has effectively skipped a reporting period. The score is still
+    a real score of the company as it last reported, and it remains on the stock
+    page, in research and in history — it is simply not an answer to what looks
+    interesting *now*, because the market side of every ratio in it has moved on
+    and the statements have not."""
+
+
+def is_rank_eligible(status: ScoringStatus, freshness: Freshness) -> bool:
+    """Whether a snapshot may appear in a **current** ranking.
+
+    The whole of the V1.2 policy change, in one function, so that every ranking
+    view answers the question the same way and none of them re-derives it.
+
+    Args:
+        status: The scoring status of the snapshot.
+        freshness: Whether its fundamentals are current.
+
+    Returns:
+        True only for a scored company whose fundamentals are current. A stale
+        score is deliberately *not* unscored: it keeps its number everywhere the
+        number is presented as a description of the company rather than as a
+        ranking of it.
+    """
+    return status is ScoringStatus.SCORED and freshness is Freshness.CURRENT
 
 
 class ComponentStatus(StrEnum):

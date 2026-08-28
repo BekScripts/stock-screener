@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING
 import structlog
 
 from data_access import (
+    MARKET_COVERAGE,
     BenchmarkPriceRepository,
     CompanyRepository,
     ScoreRecord,
@@ -31,12 +32,15 @@ from data_access import (
 from domain import (
     BenchmarkReturns,
     CompanyScore,
+    EligibilityWarning,
+    Freshness,
     ScoringError,
     ScoringStatus,
     return_6m,
     return_12m,
     score_company,
 )
+from stock_screener.fx import FxRateResolver, build_fx_provider, pairs_needed
 from stock_screener.scanning import scan_market
 
 if TYPE_CHECKING:
@@ -60,12 +64,20 @@ class ScoredCompany:
         profile: Identity and classification.
         metrics: Every derived figure the score was based on.
         score: The score, including the status explaining an absent number.
+        exclusion_reasons: Every eligibility check the security failed. Empty
+            for one that passed. Carried so the stored snapshot can say *why* a
+            company has no score rather than only that it has none.
+        freshness: Whether the fundamentals behind the score were current. V1.2
+            keeps a stale score out of current rankings and nowhere else — it
+            remains on the stock page, in research and in history.
     """
 
     company_id: int
     profile: CompanyProfile
     metrics: CompanyMetrics
     score: CompanyScore
+    exclusion_reasons: tuple[str, ...] = ()
+    freshness: Freshness = Freshness.CURRENT
 
     @property
     def ticker(self) -> str:
@@ -135,6 +147,8 @@ def build_scores(
     *,
     tickers: Sequence[str] | None = None,
     limit: int | None = None,
+    fx: FxRateResolver | None = None,
+    as_of: date | None = None,
 ) -> list[ScoredCompany]:
     """Score companies from stored data without persisting anything.
 
@@ -149,6 +163,9 @@ def build_scores(
         benchmark: Market returns for relative strength.
         tickers: Restrict to these symbols. Defaults to every stored company.
         limit: Score at most this many companies, in ticker order.
+        fx: Resolves the rate each foreign company needs. None leaves their
+            currency-sensitive metrics unavailable and touches nothing else.
+        as_of: The date rates are wanted for.
 
     Returns:
         One entry per company examined, in ticker order.
@@ -158,6 +175,8 @@ def build_scores(
         settings.eligibility_thresholds,
         tickers=tickers,
         bar_volume_basis=settings.bar_volume_basis,
+        fx=fx,
+        as_of=as_of,
     )
     identifiers = {company.ticker: company.id for company in CompanyRepository(session).list_all()}
 
@@ -173,6 +192,16 @@ def build_scores(
                 profile=scan_row.profile,
                 metrics=scan_row.metrics,
                 score=_score_one(scan_row.profile, scan_row.metrics, benchmark, scan_row.eligible),
+                exclusion_reasons=tuple(reason.value for reason in scan_row.eligibility.reasons),
+                # Taken from the screen that already decided it, rather than
+                # recomputed here. The staleness bound scales with reporting
+                # cadence, and two places deciding it separately is two places to
+                # drift apart.
+                freshness=(
+                    Freshness.STALE
+                    if EligibilityWarning.STALE_FUNDAMENTALS in scan_row.eligibility.warnings
+                    else Freshness.CURRENT
+                ),
             )
         )
     return rows
@@ -186,6 +215,7 @@ def score_market(
     limit: int | None = None,
     score_date: date | None = None,
     persist: bool = True,
+    coverage: str = MARKET_COVERAGE,
 ) -> ScoringRun:
     """Score every stored company and, by default, save the day's snapshots.
 
@@ -198,6 +228,9 @@ def score_market(
         persist: Write the snapshots. False computes and returns without
             touching the table, which is what makes it safe to inspect a
             formula change before it enters the history.
+        coverage: Whether this run covers the market or one company. A
+            single-stock run must pass `SINGLE_COVERAGE`, or its snapshot
+            becomes the newest ranking and every ranking view shows one row.
 
     Returns:
         The run, holding one entry per company examined.
@@ -217,12 +250,42 @@ def score_market(
             symbol=settings.benchmark_symbol,
         )
 
-    rows = build_scores(session, settings, benchmark, tickers=tickers, limit=limit)
+    fx = FxRateResolver(
+        session,
+        build_fx_provider(settings),
+        max_age_days=settings.fx_max_rate_age_days,
+    )
+    # Resolved before the loop rather than inside it. Forty companies reporting
+    # in euros need one USD/EUR rate between them, and doing this up front also
+    # means a rate failure is logged once, here, rather than five thousand times
+    # in the middle of a scan.
+    needed = pairs_needed(
+        (company.quote_currency, company.reporting_currency)
+        for company in CompanyRepository(session).list_all()
+    )
+    if needed:
+        found = fx.warm(needed, as_of)
+        log.info("fx rates resolved", pairs=len(needed), resolved=found, as_of=str(as_of))
+
+    rows = build_scores(
+        session, settings, benchmark, tickers=tickers, limit=limit, fx=fx, as_of=as_of
+    )
 
     persisted = 0
     if persist and rows:
         persisted = ScoreSnapshotRepository(session).upsert_scores(
-            [ScoreRecord(row.company_id, row.score, row.metrics) for row in rows], as_of
+            [
+                ScoreRecord(
+                    row.company_id,
+                    row.score,
+                    row.metrics,
+                    exclusion_reasons=row.exclusion_reasons,
+                    freshness=row.freshness,
+                )
+                for row in rows
+            ],
+            as_of,
+            coverage=coverage,
         )
 
     run = ScoringRun(score_date=as_of, benchmark=benchmark, rows=tuple(rows), persisted=persisted)

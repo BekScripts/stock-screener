@@ -9,10 +9,12 @@ The production scoring rules, in full. This page and
 `packages/domain/src/domain/scoring.py` describe the same formula; a change to
 one without the other is a bug.
 
-**Current version: `COMPOUNDER_V1_1`.** It is V1's weights and curves, unchanged,
-plus three guards — see [what changed in V1.1](#what-changed-in-v11). Snapshots
-scored under `COMPOUNDER_V1` remain in the database and are never recomputed;
-no comparison crosses versions.
+**Current version: `COMPOUNDER_V1_2`.** Every formula, curve, weight and
+threshold is V1.1's — see [what changed in V1.2](#what-changed-in-v12) — which
+in turn is V1's plus three guards, see
+[what changed in V1.1](#what-changed-in-v11). Snapshots scored under an earlier
+version remain in the database and are never recomputed; no comparison crosses
+versions.
 
 ```text
 Growth                35  ┐
@@ -310,8 +312,41 @@ A company in the financial sector whose industry is unknown is also excluded:
 within financials the industry is the only thing separating a payments company
 from a lender.
 
-They stay in the universe and keep their metrics. No bank-specific model exists
-yet.
+### When the label is wrong
+
+The rule above reads the provider's label. A label can be wrong, and it is wrong
+in the direction that matters: Kaspi.kz is a deposit-funded bank that one vendor
+classifies as `Software - Infrastructure` and the SEC's own SIC list as
+`Business Services`. On those two opinions it scored 74.78 and ranked
+twenty-first — gross margin computed without interest expense, and no leverage
+penalty at all, because a bank's funding carries no `Borrowings` tag and its debt
+therefore read as unknown.
+
+So a second gate reads the **statements** rather than the label. A filer is
+`UNSUPPORTED_SECTOR` when its XBRL concepts show deposit funding *and* at least
+two of: a loan book, banking interest revenue, central-bank balances, or a
+loan-loss allowance specific to lending. Both taxonomies are covered — IFRS
+`DepositsFromCustomers` and US-GAAP `Deposits` reach the same conclusion.
+
+Two signals rather than one, because deposit funding alone is not decisive: a
+lithium miner tags customer prepayments as `DepositsFromCustomers`, and a
+pharmaceutical company tags the cash it holds at banks as `DepositsFromBanks`.
+Neither is a bank, and neither clears two. The threshold was measured against
+eighteen banks and seventy-eight operating companies; see
+`domain.statements` for the tags this deliberately refuses to use and why.
+
+This is a **supplement**, not a replacement. A bank whose label is right is still
+caught by its label, and two banks in the reference set tag too sparsely to be
+classified from their statements at all. Missing one that the label gate catches
+costs nothing; classifying a miner as a bank costs a candidate.
+
+Neither gate changes any score. The scoring formula is unchanged — every company
+that scores under it scores exactly what it scored before. What changed is which
+companies are admitted, and admitting a bank was never the policy.
+
+They stay in the universe and keep their metrics, their reporting currency and
+their market capitalisation, so deep research can still read them. No
+bank-specific model exists yet.
 
 ## What changed in V1.1
 
@@ -385,13 +420,62 @@ Order matters and is fixed: the rebound guard runs first and only touches
 acceleration; the lumpy guard then applies to whatever the pair is worth
 together; the redistribution cap applies last, when the component is assembled.
 
+## What changed in V1.2
+
+**No number moved.** V1.2 preserves all V1.1 scoring formulas and curves. It
+excludes scores based on `STALE` fundamentals from current rankings while
+retaining those scores for stock detail, research and historical analysis.
+
+A company whose fundamentals are current scores exactly what it scored under
+V1.1, component for component. That is asserted rather than claimed: the golden
+value in `test_a_current_company_scores_exactly_what_v1_1_scored` was measured by
+running one company through the last V1.1 commit and through V1.2 and comparing.
+
+### Why a version, if nothing moved
+
+Because it changes what a ranking *is*, so rankings from before and after are not
+comparable — which is exactly what a version identifier exists to record.
+
+Centerra Gold ranked twenty-eighth on revenue from 2023 measured against a market
+capitalisation from 2026. Every figure in that score was correct; the score was
+not an answer to "what looks interesting now". A mixed-vintage valuation is wrong
+in the same way a mixed-currency one is, and the fix is the same: refuse the
+comparison rather than present it.
+
+### What stale does and does not do
+
+| | Stale score |
+| --- | --- |
+| Numerical CompounderScore | **kept** |
+| Stock detail page | **shown**, with a notice saying why it is not ranked |
+| Research and Deep Research | **available** |
+| Historical snapshots | **untouched** |
+| Current rankings — all four views | **excluded** |
+
+Freshness is recorded on the snapshot as `CURRENT` or `STALE`, not derived by
+whoever reads it. The staleness bound scales with reporting cadence — an annual
+filer is not stale eight months after its year end — so a reader comparing a date
+against a fixed window would disagree with the screen that produced the row, and
+two readers would disagree with each other. `domain.is_rank_eligible` is the
+single place the question is answered.
+
+Rows written before V1.2 have no freshness recorded. They read as `CURRENT`,
+which is what they meant: they were ranked under rules where freshness had no
+bearing on ranking, and reading them as stale now would rewrite history.
+
 ## Score version
 
-Every snapshot records the version it was scored under — `COMPOUNDER_V1_1`
-today, `COMPOUNDER_V1` for rows written before these guards. Changing a curve, a weight or a policy
-means a new version identifier, not an edit to this one — and score changes are
-only ever calculated between snapshots of the same version. See
+Every snapshot records the version it was scored under — `COMPOUNDER_V1_2`
+today, `COMPOUNDER_V1_1` for rows written before the staleness policy, and
+`COMPOUNDER_V1` for rows written before the guards. Changing a curve, a weight or
+a policy means a new version identifier, not an edit to this one — and score
+changes are only ever calculated between snapshots of the same version. See
 [ADR-0006](../adr/0006-score-snapshots-are-versioned-and-immutable.md).
+
+A **data-quality fix is not a policy change**: identifying a company an existing
+policy already excluded, or correcting an input that was read wrongly, changes no
+company's number and needs no new version. The test is simply whether any score
+moves.
 
 ## Two passes, one formula
 

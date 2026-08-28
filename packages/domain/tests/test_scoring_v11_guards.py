@@ -11,7 +11,7 @@ from __future__ import annotations
 import pytest
 
 from domain import (
-    COMPOUNDER_V1_1,
+    COMPOUNDER_V1_2,
     CURRENT_SCORE_VERSION,
     GROWTH_MAX,
     MAX_REDISTRIBUTION_MULTIPLIER,
@@ -322,11 +322,14 @@ def test_all_three_guards_stack_without_a_combined_cap(make) -> None:
 
 
 @pytest.mark.unit
-def test_a_score_is_stamped_with_the_new_version(make) -> None:
+def test_a_score_is_stamped_with_the_current_version(make) -> None:
+    # The guards in this module arrived with V1.1 and are unchanged since. What
+    # a fresh score is *stamped* with is whatever version is current — V1.2 today
+    # — because a snapshot has to record the rules it was produced under.
     score = score_company(make.profile(), make.metrics(), make.benchmark())
 
-    assert score.score_version == COMPOUNDER_V1_1
-    assert CURRENT_SCORE_VERSION == COMPOUNDER_V1_1
+    assert score.score_version == CURRENT_SCORE_VERSION
+    assert CURRENT_SCORE_VERSION == COMPOUNDER_V1_2
 
 
 @pytest.mark.unit
