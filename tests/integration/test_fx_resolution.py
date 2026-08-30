@@ -274,3 +274,35 @@ def test_warming_reports_how_many_pairs_resolved(session: Session) -> None:
     )
 
     assert resolved == 1
+
+
+@pytest.mark.integration
+def test_one_resolver_reused_across_dates_does_not_leak_a_future_rate(
+    session: Session,
+) -> None:
+    """The memo key must carry the date, not just the pair.
+
+    Every current caller builds a fresh resolver per run, so this was latent —
+    but a backtest walking dates with one resolver would have received the
+    first date's rate for every later date, sailing past both the SQL bound and
+    `_within_bounds` because neither is reached on a cache hit.
+    """
+    FxRateRepository(session).save(
+        FxConversion(
+            base="USD",
+            quote="EUR",
+            rate=0.85,
+            rate_date=date(2026, 8, 25),
+            provider="ecb",
+        )
+    )
+    session.flush()
+    resolver = FxRateResolver(session, None, max_age_days=5)
+
+    recent = resolver.rate_for("USD", "EUR", date(2026, 8, 26))
+    historical = resolver.rate_for("USD", "EUR", date(2020, 6, 1))
+
+    assert recent is not None
+    assert recent.rate == 0.85
+    # A 2026 rate is not evidence about 2020, and asking second must not inherit it.
+    assert historical is None

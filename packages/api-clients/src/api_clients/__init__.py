@@ -30,7 +30,12 @@ from api_clients.deep_research import (
     DeepResearchProvider,
     MockDeepResearch,
 )
-from api_clients.edgar import SecEdgarFundamentals
+from api_clients.edgar import (
+    SecEdgarFundamentals,
+    facts_document_from_observations,
+    periods_from_facts_document,
+    periods_from_observations,
+)
 from api_clients.errors import (
     ProviderAuthError,
     ProviderConfigurationError,
@@ -117,8 +122,11 @@ __all__ = [
     "clean_filing_text",
     "estimate_cost_usd",
     "extract_sections",
+    "facts_document_from_observations",
     "load_fixture_providers",
     "parse_draft",
+    "periods_from_facts_document",
+    "periods_from_observations",
 ]
 
 __version__ = "0.1.0"

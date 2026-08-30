@@ -780,6 +780,85 @@ class ExclusionReason(StrEnum):
     MISSING_REQUIRED_DATA = "MISSING_REQUIRED_DATA"
 
 
+class FilingObservation(_Frozen):
+    """One figure as one filing reported it, with the provenance to date it.
+
+    `FinancialPeriod` is the normalised, merged view a metric engine consumes:
+    one row per period, every concept resolved to its most recently filed value.
+    That resolution is exactly what a point-in-time record cannot afford, because
+    it discards both the earlier value and the date either became knowable.
+
+    This is the unresolved form. One observation is one concept, in one
+    taxonomy, for one period, as stated by one filing — so a restatement is two
+    observations rather than one overwrite, and `filed_date` says when each
+    became public.
+
+    **`filed_date` is the availability date; `period_end` is not.** A quarter
+    ending in December and filed in February was not knowable in January.
+    Anything selecting observations for a past decision must compare against
+    `filed_date`, and an observation without one cannot participate at all.
+
+    Attributes:
+        taxonomy: XBRL namespace the concept was tagged in — `us-gaap`,
+            `ifrs-full`, `dei`.
+        concept: The concept name, verbatim.
+        value: The reported figure, unnormalised and unsigned-adjusted. This is
+            what the filing said, not what the metric engine makes of it.
+        unit: The unit key the filer tagged — `USD`, `TWD`, `shares`.
+        period_end: Last day of the period, or the instant for a balance-sheet
+            figure.
+        period_start: First day of the period. None for an instant.
+        filed_date: When the filing carrying this figure was filed. None when
+            the source does not say, which makes the observation unusable for
+            point-in-time selection.
+        accession: The filing's accession number.
+        form: The form that carried it — `10-K`, `10-Q`, `20-F`, `6-K`.
+        fiscal_year: Fiscal year the filer assigned.
+        fiscal_period: Fiscal period the filer assigned — `FY`, `Q1`.
+        frame: The comparability frame, when the source publishes one.
+        source: Identifier of the provider the observation came from.
+    """
+
+    taxonomy: str
+    concept: str
+    value: float
+    unit: str
+    period_end: date
+    period_start: date | None = None
+    filed_date: date | None = None
+    accession: str | None = None
+    form: str | None = None
+    fiscal_year: int | None = None
+    fiscal_period: str | None = None
+    frame: str | None = None
+    source: str = "unknown"
+
+
+class AcceptedFiling(_Frozen):
+    """When one filing became public, to the second.
+
+    A filing *date* cannot answer whether a document was available to a decision
+    taken during that day: measured across XBRL-bearing filings, 45.7% of those
+    accepted on their stated filing date were accepted after the 16:00 New York
+    close. The instant can answer it; the date cannot.
+
+    Attributes:
+        accession: The filing's accession number. Unique across all filers, so
+            this is the join key back to any fact the filing carried.
+        accepted_at: When the SEC accepted it, as an aware UTC instant.
+        filed_date: The date the submissions index states, kept so the two views
+            can be reconciled rather than assumed to agree.
+        form: The form type, when the source says.
+        source: Identifier of the provider the record came from.
+    """
+
+    accession: str
+    accepted_at: datetime
+    filed_date: date | None = None
+    form: str | None = None
+    source: str = "unknown"
+
+
 class EligibilityThresholds(_Frozen):
     """The configurable bar a security must clear to enter the scan.
 

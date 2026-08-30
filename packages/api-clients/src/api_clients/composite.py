@@ -22,7 +22,14 @@ from api_clients.errors import ProviderError
 
 if TYPE_CHECKING:
     from api_clients.base import FundamentalsProvider
-    from domain import CompanyProfile, Filing, FilingExcerpt, FinancialPeriod
+    from domain import (
+        AcceptedFiling,
+        CompanyProfile,
+        Filing,
+        FilingExcerpt,
+        FilingObservation,
+        FinancialPeriod,
+    )
 
 log = structlog.get_logger(__name__)
 
@@ -147,6 +154,63 @@ class CompositeFundamentals:
             ProviderError: If the statement source failed.
         """
         return self._statements.get_filings(ticker, limit=limit)
+
+    def get_filing_observations(self, ticker: str) -> list[FilingObservation]:
+        """Return the individual reported facts from the statement source.
+
+        Delegated for the same reason the statements are: only the source that
+        reads the filer's own submissions knows what each filing said, and only
+        it publishes a filing date per fact.
+
+        The capability is optional, so a statement source without it yields an
+        empty list rather than an error — the composite must not require of its
+        sources something the protocol does not.
+
+        Args:
+            ticker: The symbol to look up.
+
+        Returns:
+            Every observation the statement source reports, or empty when it
+            reports none.
+
+        Raises:
+            ProviderError: If the statement source failed.
+        """
+        reader = getattr(self._statements, "get_filing_observations", None)
+        if reader is None:
+            log.debug(
+                "statement source publishes no filing observations",
+                source=type(self._statements).__name__,
+            )
+            return []
+        observations: list[FilingObservation] = reader(ticker)
+        return observations
+
+    def get_filing_acceptance(self, ticker: str) -> list[AcceptedFiling]:
+        """Return when the statement source's filings were accepted.
+
+        Delegated for the same reason as the observations: only the source that
+        reads the filer's own submissions publishes an acceptance clock.
+        Optional, so a statement source without it yields an empty list.
+
+        Args:
+            ticker: The symbol to look up.
+
+        Returns:
+            Every acceptance record the statement source reports.
+
+        Raises:
+            ProviderError: If the statement source failed.
+        """
+        reader = getattr(self._statements, "get_filing_acceptance", None)
+        if reader is None:
+            log.debug(
+                "statement source publishes no acceptance times",
+                source=type(self._statements).__name__,
+            )
+            return []
+        records: list[AcceptedFiling] = reader(ticker)
+        return records
 
     def get_filing_excerpts(self, ticker: str, filing: Filing) -> list[FilingExcerpt]:
         """Return quotable filing text from the statement source.

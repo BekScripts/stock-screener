@@ -150,6 +150,22 @@ JOB_KINDS: dict[str, JobKind] = {
     "scan": JobKind(("scan",), "Eligibility scan", minutes=1),
     "score": JobKind(("score",), "Score the market", minutes=1),
     "enrich": JobKind(("enrich",), "Enrich top candidates", spends_money=True, minutes=5),
+    # Point-in-time capture. Reads the stored market and writes immutable rows;
+    # it calls no provider, so it costs nothing and cannot fail on a vendor.
+    # Mutating like the rest, because a capture taken while `score` is rewriting
+    # the day's rows would record a half-updated market.
+    "capture": JobKind(("capture",), "Capture point-in-time state", minutes=10),
+    # Derives market signals from the captured features. Reads only the
+    # immutable point-in-time rows, so it neither calls a provider nor depends
+    # on anything the operational tables do afterwards.
+    "signals": JobKind(("derive-signals",), "Derive market signals", minutes=10),
+    # Appends the filing record. Reuses the company-facts document
+    # `update-fundamentals` just read, so back to back the two cost one fetch.
+    "observations": JobKind(("update-observations",), "Record filing observations", minutes=30),
+    # Resolves each filing's acceptance instant, which is what makes a
+    # point-in-time availability test correct. Skips companies already resolved,
+    # so a repeat run is nearly free.
+    "acceptance": JobKind(("update-acceptance",), "Record filing acceptance times", minutes=45),
     # `--prepare` fetches this company's filing index and text from EDGAR before
     # the brief is assembled. Without it a company nobody has ingested filings
     # for is still researched, and pays full price for a report whose

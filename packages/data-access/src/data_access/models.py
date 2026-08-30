@@ -134,6 +134,24 @@ class Company(Base):
     deep_research_reports: Mapped[list[StoredDeepResearchReport]] = relationship(
         back_populates="company", cascade="all, delete-orphan"
     )
+    pit_scores: Mapped[list[PitScoreSnapshot]] = relationship(
+        back_populates="company", cascade="all, delete-orphan", passive_deletes=True
+    )
+    pit_features: Mapped[list[PitFeatureSnapshot]] = relationship(
+        back_populates="company", cascade="all, delete-orphan", passive_deletes=True
+    )
+    pit_signals: Mapped[list[PitSignalSnapshot]] = relationship(
+        back_populates="company", cascade="all, delete-orphan", passive_deletes=True
+    )
+    fundamental_observations: Mapped[list[FundamentalObservation]] = relationship(
+        back_populates="company", cascade="all, delete-orphan", passive_deletes=True
+    )
+    universe_events: Mapped[list[UniverseEvent]] = relationship(
+        back_populates="company", cascade="all, delete-orphan", passive_deletes=True
+    )
+    corporate_actions: Mapped[list[CorporateAction]] = relationship(
+        back_populates="company", cascade="all, delete-orphan", passive_deletes=True
+    )
 
 
 class FinancialSnapshot(Base):
@@ -719,3 +737,534 @@ class StoredDeepResearchReport(Base):
     collected_external_json: Mapped[list[object] | None] = mapped_column(JSON)
 
     company: Mapped[Company] = relationship(back_populates="deep_research_reports")
+
+
+class PitCaptureRun(Base):
+    """One attempt to record what the system knew on one day.
+
+    Phase 8B's snapshot tables answer "what did we know then". This table
+    answers "and was that record complete", which is the question that decides
+    whether the day may be used at all. A run reaching `COMPLETE` is a promise
+    that every company the capture examined was written; a run that failed
+    leaves a `FAILED` row and **no** snapshot rows, because the snapshots are
+    written in the same transaction that marks the run complete.
+
+    There is deliberately no unique constraint on `snapshot_date`. Attempts are
+    history — a failed run followed by a successful one is two rows, and hiding
+    the first would hide exactly the operational fact this table exists to
+    record. Uniqueness that matters lives on the snapshot tables, one row per
+    company per date per version.
+    """
+
+    __tablename__ = "pit_capture_runs"
+    __table_args__ = (Index("ix_pit_capture_runs_date_status", "snapshot_date", "status"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    # The trading day the capture describes. UTC calendar date, matching
+    # `score_snapshots.score_date`; see the module docstring in
+    # `stock_screener.pit` for why the two must agree.
+    snapshot_date: Mapped[date] = mapped_column(Date, nullable=False)
+    # When the process ran. Distinct from `snapshot_date` on purpose: a capture
+    # for Friday started at 00:05 on Saturday describes Friday, and conflating
+    # the two is how a dataset silently acquires look-ahead.
+    started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow, server_default=func.now()
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # RUNNING, COMPLETE or FAILED. Only COMPLETE may be read as a day's record.
+    status: Mapped[str] = mapped_column(String(20), nullable=False)
+    score_version: Mapped[str] = mapped_column(String(40), nullable=False)
+    feature_version: Mapped[str] = mapped_column(String(40), nullable=False)
+    scores_captured: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    features_captured: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    universe_events_recorded: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # Why a run failed, when it did. Free text for an operator, never parsed.
+    detail: Mapped[str | None] = mapped_column(Text)
+
+    scores: Mapped[list[PitScoreSnapshot]] = relationship(
+        back_populates="run", cascade="all, delete-orphan", passive_deletes=True
+    )
+    features: Mapped[list[PitFeatureSnapshot]] = relationship(
+        back_populates="run", cascade="all, delete-orphan", passive_deletes=True
+    )
+    signals: Mapped[list[PitSignalSnapshot]] = relationship(
+        back_populates="run", cascade="all, delete-orphan", passive_deletes=True
+    )
+
+
+class PitScoreSnapshot(Base):
+    """What the scoring system believed about one company on one day.
+
+    A copy, not a view. `score_snapshots` is the operational table and it
+    upserts: re-running the score command replaces the day's rows with better
+    information, which is right for a screener and fatal for a backtest. This
+    table is written once and never updated, so a strategy calibrated six months
+    from now reads the number that was actually on the screen, not the number
+    today's data would produce for that date.
+
+    `source_score_date` records which operational row was copied. It is normally
+    equal to `snapshot_date`, and when it is not, the capture read an older
+    score because the day's scoring had not run — a fact a reader must be able
+    to see rather than infer.
+    """
+
+    __tablename__ = "pit_score_snapshots"
+    __table_args__ = (
+        UniqueConstraint(
+            "company_id", "snapshot_date", "score_version", name="uq_pit_score_snapshot"
+        ),
+        Index("ix_pit_score_snapshots_date_version", "snapshot_date", "score_version"),
+        Index("ix_pit_score_snapshots_company_date", "company_id", "snapshot_date"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    run_id: Mapped[int] = mapped_column(
+        ForeignKey("pit_capture_runs.id", ondelete="CASCADE"), nullable=False
+    )
+    company_id: Mapped[int] = mapped_column(
+        ForeignKey("companies.id", ondelete="CASCADE"), nullable=False
+    )
+    # The symbol as it stood on the capture date. Denormalised deliberately: a
+    # ticker is reassigned when a company delists, and a join through
+    # `companies` months later would report today's owner of the symbol.
+    ticker: Mapped[str] = mapped_column(String(20), nullable=False)
+    snapshot_date: Mapped[date] = mapped_column(Date, nullable=False)
+    captured_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow, server_default=func.now()
+    )
+    source_score_date: Mapped[date] = mapped_column(Date, nullable=False)
+    score_version: Mapped[str] = mapped_column(String(40), nullable=False)
+
+    scoring_status: Mapped[str] = mapped_column(String(30), nullable=False)
+    final_score: Mapped[float | None] = mapped_column(Float)
+    raw_score: Mapped[float | None] = mapped_column(Float)
+    growth_score: Mapped[float | None] = mapped_column(Float)
+    quality_score: Mapped[float | None] = mapped_column(Float)
+    valuation_score: Mapped[float | None] = mapped_column(Float)
+    momentum_score: Mapped[float | None] = mapped_column(Float)
+    risk_penalty: Mapped[float | None] = mapped_column(Float)
+    risk_level: Mapped[str | None] = mapped_column(String(20))
+    score_category: Mapped[str | None] = mapped_column(String(40))
+    valuation_basis: Mapped[str | None] = mapped_column(String(20))
+    data_coverage: Mapped[float | None] = mapped_column(Float)
+    risk_coverage: Mapped[float | None] = mapped_column(Float)
+    market_cap: Mapped[float | None] = mapped_column(Float)
+    market_cap_source: Mapped[str | None] = mapped_column(String(20))
+    volume_basis: Mapped[str | None] = mapped_column(String(20))
+    revenue_growth_yoy: Mapped[float | None] = mapped_column(Float)
+    revenue_growth_acceleration: Mapped[float | None] = mapped_column(Float)
+    enterprise_value: Mapped[float | None] = mapped_column(Float)
+    freshness: Mapped[str | None] = mapped_column(String(10))
+    coverage: Mapped[str] = mapped_column(String(10), nullable=False)
+    ranking_state: Mapped[str | None] = mapped_column(String(20))
+    exclusion_reasons: Mapped[str | None] = mapped_column(String(200))
+    # Whether this row was admissible to a *current* ranking on the day, under
+    # the rules of its own score version. Recorded rather than derived, because
+    # the rule is versioned and a later reader would apply a later rule.
+    rank_eligible: Mapped[bool] = mapped_column(Boolean, nullable=False)
+
+    run: Mapped[PitCaptureRun] = relationship(back_populates="scores")
+    company: Mapped[Company] = relationship(back_populates="pit_scores")
+
+
+class PitFeatureSnapshot(Base):
+    """The market state observed for one company on one day.
+
+    Structured features, never a score and never a ranking. Phase 8A established
+    that fundamental attractiveness and tradability are close to orthogonal, and
+    that averaging anti-correlated dimensions into one number produces something
+    meaningless; so this table stores the dimensions and leaves the judgement to
+    whatever later phase earns the right to make it.
+
+    Windows are strict — a field named for 60 sessions used exactly 60 or is
+    NULL — so two rows of this table are comparable. `bars_available` and
+    `feature_as_of` record what the computation actually had: `feature_as_of` is
+    the date of the newest bar used, which is earlier than `snapshot_date` for a
+    security that has stopped trading.
+    """
+
+    __tablename__ = "pit_feature_snapshots"
+    __table_args__ = (
+        UniqueConstraint(
+            "company_id", "snapshot_date", "feature_version", name="uq_pit_feature_snapshot"
+        ),
+        Index("ix_pit_feature_snapshots_date_version", "snapshot_date", "feature_version"),
+        Index("ix_pit_feature_snapshots_company_date", "company_id", "snapshot_date"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    run_id: Mapped[int] = mapped_column(
+        ForeignKey("pit_capture_runs.id", ondelete="CASCADE"), nullable=False
+    )
+    company_id: Mapped[int] = mapped_column(
+        ForeignKey("companies.id", ondelete="CASCADE"), nullable=False
+    )
+    ticker: Mapped[str] = mapped_column(String(20), nullable=False)
+    snapshot_date: Mapped[date] = mapped_column(Date, nullable=False)
+    captured_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow, server_default=func.now()
+    )
+    feature_version: Mapped[str] = mapped_column(String(40), nullable=False)
+    # Date of the newest bar the features were computed from — the data
+    # watermark. Equal to `snapshot_date` for an actively trading security.
+    feature_as_of: Mapped[date] = mapped_column(Date, nullable=False)
+    bars_available: Mapped[int] = mapped_column(Integer, nullable=False)
+    benchmark_symbol: Mapped[str | None] = mapped_column(String(20))
+
+    last_close: Mapped[float | None] = mapped_column(Float)
+    atr_pct_14: Mapped[float | None] = mapped_column(Float)
+    atr_pct_20: Mapped[float | None] = mapped_column(Float)
+    atr_pct_60: Mapped[float | None] = mapped_column(Float)
+    rvol_5_pct: Mapped[float | None] = mapped_column(Float)
+    rvol_20_pct: Mapped[float | None] = mapped_column(Float)
+    rvol_60_pct: Mapped[float | None] = mapped_column(Float)
+    rvol_252_pct: Mapped[float | None] = mapped_column(Float)
+    vol_expansion_ratio: Mapped[float | None] = mapped_column(Float)
+    avg_abs_ret_20_pct: Mapped[float | None] = mapped_column(Float)
+    avg_abs_ret_60_pct: Mapped[float | None] = mapped_column(Float)
+    avg_abs_ret_252_pct: Mapped[float | None] = mapped_column(Float)
+    median_abs_ret_252_pct: Mapped[float | None] = mapped_column(Float)
+    max_abs_ret_60_pct: Mapped[float | None] = mapped_column(Float)
+    max_abs_ret_252_pct: Mapped[float | None] = mapped_column(Float)
+    days_over_1pct_share: Mapped[float | None] = mapped_column(Float)
+    days_over_2pct_share: Mapped[float | None] = mapped_column(Float)
+    days_over_3pct_share: Mapped[float | None] = mapped_column(Float)
+    median_range_pct: Mapped[float | None] = mapped_column(Float)
+    range_over_1pct_share: Mapped[float | None] = mapped_column(Float)
+    range_over_2pct_share: Mapped[float | None] = mapped_column(Float)
+    # The two markers Phase 8A found actually identify an untradable security.
+    # Neither is a volatility measure: a name can carry a high average true
+    # range from overnight gaps while printing an unchanged bar most sessions.
+    flat_bar_share: Mapped[float | None] = mapped_column(Float)
+    zero_move_share: Mapped[float | None] = mapped_column(Float)
+    closing_band_pct: Mapped[float | None] = mapped_column(Float)
+    ret_5d_pct: Mapped[float | None] = mapped_column(Float)
+    ret_20d_pct: Mapped[float | None] = mapped_column(Float)
+    ret_60d_pct: Mapped[float | None] = mapped_column(Float)
+    ret_252d_pct: Mapped[float | None] = mapped_column(Float)
+    trend_r2: Mapped[float | None] = mapped_column(Float)
+    trend_slope: Mapped[float | None] = mapped_column(Float)
+    above_sma20_share: Mapped[float | None] = mapped_column(Float)
+    high_52w: Mapped[float | None] = mapped_column(Float)
+    low_52w: Mapped[float | None] = mapped_column(Float)
+    distance_from_52w_high: Mapped[float | None] = mapped_column(Float)
+    gap_over_1pct_share: Mapped[float | None] = mapped_column(Float)
+    gap_over_2pct_share: Mapped[float | None] = mapped_column(Float)
+    mean_abs_gap_pct: Mapped[float | None] = mapped_column(Float)
+    max_abs_gap_pct: Mapped[float | None] = mapped_column(Float)
+    # Named for the venue, not for liquidity. Stored bars come from a single
+    # exchange and are a small, highly variable fraction of the consolidated
+    # tape, so these are a floor on real turnover and never an estimate of it.
+    venue_dollar_volume_median: Mapped[float | None] = mapped_column(Float)
+    venue_dollar_volume_mean: Mapped[float | None] = mapped_column(Float)
+    venue_volume_stability: Mapped[float | None] = mapped_column(Float)
+    venue_volume_ratio: Mapped[float | None] = mapped_column(Float)
+    beta_60: Mapped[float | None] = mapped_column(Float)
+    correlation_60: Mapped[float | None] = mapped_column(Float)
+    rel_strength_20_pct: Mapped[float | None] = mapped_column(Float)
+    rel_strength_60_pct: Mapped[float | None] = mapped_column(Float)
+    # A 40%+ single session. An integrity flag for a reader, **not** a corporate
+    # action: this project never infers a split from a price movement.
+    has_extreme_move: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+
+    run: Mapped[PitCaptureRun] = relationship(back_populates="features")
+    company: Mapped[Company] = relationship(back_populates="pit_features")
+
+
+class FundamentalObservation(Base):
+    """One reported figure, as one filing stated it, kept forever.
+
+    `financial_snapshots` holds the current normalised view and overwrites on
+    `(company_id, period_end)`: a restatement replaces the original and the
+    original is gone. That is correct for scoring — the newest figure is the
+    best estimate of the truth — and it destroys the only thing a backtest
+    needs, which is the figure that was on the wire at the time.
+
+    So this table appends. A revision of the same period arrives as a second row
+    with a later `filed_date`, and both survive. Selection is by
+    `filed_date <= as_of`, never by `period_end`: a quarter ending in December
+    that was filed in February was not knowable in January, and treating the
+    period end as the availability date is the single most common way a
+    backtest quietly reads the future.
+
+    `observation_fingerprint` is what makes re-ingestion idempotent. It hashes
+    the identity of the observation — period, concept, filing, value — so
+    re-reading the same filing writes nothing, while a genuine revision hashes
+    differently and appends. A unique constraint over the raw columns could not
+    do this: `filed_date` and `accession` are nullable for sources that do not
+    supply them, and SQL treats two NULLs as distinct, so repeated ingestion
+    would accumulate duplicates.
+    """
+
+    __tablename__ = "fundamental_observations"
+    __table_args__ = (
+        UniqueConstraint(
+            "company_id", "observation_fingerprint", name="uq_fundamental_observation"
+        ),
+        Index("ix_fundamental_observations_pit", "company_id", "concept", "filed_date"),
+        Index("ix_fundamental_observations_period", "company_id", "period_end", "filed_date"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    company_id: Mapped[int] = mapped_column(
+        ForeignKey("companies.id", ondelete="CASCADE"), nullable=False
+    )
+    # Hex SHA-256 over the observation's identity. See the class docstring.
+    observation_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    # The XBRL namespace the concept was tagged in — `us-gaap`, `ifrs-full`,
+    # `dei`. Kept because the same economic quantity has different names in each
+    # and a reader must be able to tell which table produced a figure.
+    taxonomy: Mapped[str] = mapped_column(String(40), nullable=False)
+    concept: Mapped[str] = mapped_column(String(120), nullable=False)
+    value: Mapped[float] = mapped_column(Float, nullable=False)
+    # The unit key the filer tagged, verbatim — `USD`, `TWD`, `shares`. The
+    # filing's unit is authoritative; a vendor's assumption is not.
+    unit: Mapped[str] = mapped_column(String(20), nullable=False)
+    period_start: Mapped[date | None] = mapped_column(Date)
+    period_end: Mapped[date] = mapped_column(Date, nullable=False)
+    # NULL only where the source genuinely does not supply one. A NULL here is
+    # not a licence to fall back on `period_end` — it means the observation
+    # cannot participate in point-in-time selection at all.
+    filed_date: Mapped[date | None] = mapped_column(Date)
+    accession: Mapped[str | None] = mapped_column(String(30))
+    form: Mapped[str | None] = mapped_column(String(20))
+    fiscal_year: Mapped[int | None] = mapped_column(Integer)
+    fiscal_period: Mapped[str | None] = mapped_column(String(10))
+    frame: Mapped[str | None] = mapped_column(String(40))
+    source: Mapped[str] = mapped_column(String(50), nullable=False)
+    observed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow, server_default=func.now()
+    )
+
+    company: Mapped[Company] = relationship(back_populates="fundamental_observations")
+
+
+class UniverseEvent(Base):
+    """An observed change in whether a security is part of the investable set.
+
+    Append-only, and forward-looking only. Phase 8A found the universe was
+    created in a single day with no membership history, so any historical study
+    over it is survivorship-biased. This table starts fixing that from the day
+    it is first written — it does not, and must not, invent what happened
+    before.
+
+    `observation_kind` is the field that keeps this honest. `BASELINE` is the
+    state as first seen, carrying the capture date and asserting nothing about
+    when it became true. `OBSERVED` is a transition the system actually watched
+    happen, and only those rows may be read as events with meaningful dates. A
+    delisting inferred from a guessed date would be indistinguishable from one
+    that was witnessed, which is why the distinction is a column rather than a
+    convention.
+    """
+
+    __tablename__ = "universe_events"
+    __table_args__ = (
+        UniqueConstraint("company_id", "event_fingerprint", name="uq_universe_event"),
+        Index("ix_universe_events_company_date", "company_id", "effective_date"),
+        Index("ix_universe_events_date", "effective_date"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    company_id: Mapped[int] = mapped_column(
+        ForeignKey("companies.id", ondelete="CASCADE"), nullable=False
+    )
+    event_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    ticker: Mapped[str] = mapped_column(String(20), nullable=False)
+    # ADDED, ACTIVE, DELISTED or REACTIVATED.
+    event_type: Mapped[str] = mapped_column(String(20), nullable=False)
+    # BASELINE for state as first seen, OBSERVED for a witnessed transition.
+    observation_kind: Mapped[str] = mapped_column(String(10), nullable=False)
+    # For an OBSERVED row, the date the change was seen. For a BASELINE row, the
+    # date the state was first recorded — never a guess at when it began.
+    effective_date: Mapped[date] = mapped_column(Date, nullable=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    exchange: Mapped[str | None] = mapped_column(String(50))
+    source: Mapped[str] = mapped_column(String(50), nullable=False)
+    observed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow, server_default=func.now()
+    )
+
+    company: Mapped[Company] = relationship(back_populates="universe_events")
+
+
+class CorporateAction(Base):
+    """A split or a distribution, as a source reported it.
+
+    Stored prices are adjusted retroactively — the close recorded for a session
+    last year is a function of every corporate action since — so the series as
+    it appeared on the day cannot be rebuilt without the factors. This table is
+    where they belong.
+
+    It is deliberately empty until a source is wired to it. Phase 8A established
+    that a split cannot be inferred from a price movement: an unadjusted 2-for-1
+    and a genuine halving are the same bar, and a project that guessed would
+    manufacture exactly the fake history this phase exists to prevent. An empty
+    table that says "no source yet" is worth more than a populated one that says
+    something untrue.
+    """
+
+    __tablename__ = "corporate_actions"
+    __table_args__ = (
+        UniqueConstraint("company_id", "action_fingerprint", name="uq_corporate_action"),
+        Index("ix_corporate_actions_company_date", "company_id", "ex_date"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    company_id: Mapped[int] = mapped_column(
+        ForeignKey("companies.id", ondelete="CASCADE"), nullable=False
+    )
+    action_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    ticker: Mapped[str] = mapped_column(String(20), nullable=False)
+    # SPLIT, REVERSE_SPLIT, CASH_DIVIDEND, STOCK_DIVIDEND or SPINOFF.
+    action_type: Mapped[str] = mapped_column(String(30), nullable=False)
+    # The date the action takes effect in the price — the first session trading
+    # without it. Never derived from where a price happens to jump.
+    ex_date: Mapped[date] = mapped_column(Date, nullable=False)
+    # New shares per old share: 2.0 for a 2-for-1, 0.1 for a 1-for-10 reverse.
+    # NULL for a cash distribution.
+    split_factor: Mapped[float | None] = mapped_column(Float)
+    # Cash per share, in `currency`. NULL for a split.
+    cash_amount: Mapped[float | None] = mapped_column(Float)
+    currency: Mapped[str | None] = mapped_column(String(3))
+    record_date: Mapped[date | None] = mapped_column(Date)
+    payable_date: Mapped[date | None] = mapped_column(Date)
+    source: Mapped[str] = mapped_column(String(50), nullable=False)
+    # The identifier the source itself uses, so a row can be traced back.
+    source_id: Mapped[str | None] = mapped_column(String(80))
+    observed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow, server_default=func.now()
+    )
+
+    company: Mapped[Company] = relationship(back_populates="corporate_actions")
+
+
+class PitSignalSnapshot(Base):
+    """One security's market state on one date, under one set of signal rules.
+
+    Derived from `pit_feature_snapshots` and stored rather than recomputed on
+    read. The features are immutable, so a signal could in principle be
+    rebuilt from them at any time — but only by running the code that built it,
+    and that code changes. Storing the result decouples the record from the
+    repository's history, exactly as `score_snapshots` is stored rather than
+    recomputed from `financial_snapshots`. See ADR-0011.
+
+    Immutable and unique on `(company_id, snapshot_date, signal_version)`. A
+    later version of the rules run over the same day appends a second row
+    beside the first; neither overwrites the other, so a change in definitions
+    can never silently restate what the system said at the time.
+
+    `run_id` points at the capture run whose features were read. It is the
+    provenance link that makes a signal reproducible: the exact feature rows are
+    identified, not merely the date.
+
+    This table holds no ranking and no composite. Phase 8A established that the
+    dimensions here are anti-correlated and that averaging them produces a
+    number which looks meaningful and is not.
+    """
+
+    __tablename__ = "pit_signal_snapshots"
+    __table_args__ = (
+        UniqueConstraint(
+            "company_id", "snapshot_date", "signal_version", name="uq_pit_signal_snapshot"
+        ),
+        Index("ix_pit_signal_snapshots_date_version", "snapshot_date", "signal_version"),
+        Index("ix_pit_signal_snapshots_company_date", "company_id", "snapshot_date"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    run_id: Mapped[int] = mapped_column(
+        ForeignKey("pit_capture_runs.id", ondelete="CASCADE"), nullable=False
+    )
+    company_id: Mapped[int] = mapped_column(
+        ForeignKey("companies.id", ondelete="CASCADE"), nullable=False
+    )
+    ticker: Mapped[str] = mapped_column(String(20), nullable=False)
+    snapshot_date: Mapped[date] = mapped_column(Date, nullable=False)
+    captured_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow, server_default=func.now()
+    )
+    signal_version: Mapped[str] = mapped_column(String(40), nullable=False)
+    # The feature definitions the signals were derived from. Two versions travel
+    # together because a signal is only meaningful against the features it read.
+    feature_version: Mapped[str] = mapped_column(String(40), nullable=False)
+    feature_as_of: Mapped[date] = mapped_column(Date, nullable=False)
+    bars_available: Mapped[int] = mapped_column(Integer, nullable=False)
+    # How many companies the cross-sectional percentiles were measured against.
+    # Stored because a percentile is meaningless without its population.
+    peer_population: Mapped[int] = mapped_column(Integer, nullable=False)
+
+    compression_ratio: Mapped[float | None] = mapped_column(Float)
+    volatility_expansion_ratio: Mapped[float | None] = mapped_column(Float)
+    distance_from_52w_high: Mapped[float | None] = mapped_column(Float)
+    distance_from_52w_low: Mapped[float | None] = mapped_column(Float)
+    stretch_20d: Mapped[float | None] = mapped_column(Float)
+    trend_direction: Mapped[str] = mapped_column(String(10), nullable=False)
+    trend_r2: Mapped[float | None] = mapped_column(Float)
+
+    # Percentile per ranked feature. JSON because the key set belongs to the
+    # signal version rather than to the schema, and a new version may rank a
+    # different set without a migration.
+    percentiles_json: Mapped[dict[str, object] | None] = mapped_column(JSON)
+
+    # Pipe-separated, as `exclusion_reasons` is: the set is small, closed and
+    # ordered, and a reader can filter on it with LIKE without parsing JSON.
+    # Multi-label — a security can compress while trending.
+    setups: Mapped[str] = mapped_column(String(120), nullable=False)
+    setup_evidence_json: Mapped[list[object] | None] = mapped_column(JSON)
+
+    # TRADABLE, UNTRADABLE or UNVERIFIED. Three states, never a boolean: the
+    # honest answer for much of this universe is that nobody can tell, and
+    # collapsing that into either neighbour invents a certainty.
+    tradability: Mapped[str] = mapped_column(String(20), nullable=False)
+    tradability_reasons_json: Mapped[list[object] | None] = mapped_column(JSON)
+    # Whether stored venue volume established a *minimum* consolidated turnover.
+    # False means unproven, never illiquid.
+    liquidity_floor_proven: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+
+    run: Mapped[PitCaptureRun] = relationship(back_populates="signals")
+    company: Mapped[Company] = relationship(back_populates="pit_signals")
+
+
+class FilingAcceptance(Base):
+    """When the SEC actually accepted one filing, to the second.
+
+    `companyfacts` publishes a filing *date* and nothing finer, which is not
+    enough to decide availability. Measured across 2,546 XBRL-bearing filings,
+    45.7% of those accepted on their stated filing date were accepted **after**
+    the 16:00 ET close — so treating the date as availability shows a
+    close-of-day decision roughly half of that day's filings before they were
+    public. Treating it as unavailable until the next day is wrong the other
+    way, hiding the 54.3% that genuinely were.
+
+    The submissions endpoint publishes `acceptanceDateTime` per accession, and
+    every observation carries an accession, so the two join exactly.
+
+    Keyed by accession alone rather than by company: an accession is unique
+    across all filers, and one row then serves every observation that cites it —
+    a filing carrying two hundred facts is stored once.
+
+    Append-only, like the observation record it qualifies. A re-fetch of the
+    same accession writes nothing; the SEC does not revise an acceptance time,
+    and if it ever did, the first observation is the one a past decision used.
+    """
+
+    __tablename__ = "filing_acceptance"
+    __table_args__ = (
+        UniqueConstraint("accession", name="uq_filing_acceptance"),
+        Index("ix_filing_acceptance_accepted", "accepted_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    accession: Mapped[str] = mapped_column(String(30), nullable=False)
+    # Aware UTC. The SEC publishes this as an ISO instant with a `Z` suffix;
+    # verified against known filings — a 10-Q accepted at 20:00Z corresponds to
+    # 16:00 New York, so the offset is real and not an Eastern time mislabelled.
+    accepted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    # What the submissions index calls `filingDate`, kept so the date-level and
+    # instant-level views can be reconciled and disagreements found.
+    filed_date: Mapped[date | None] = mapped_column(Date)
+    form: Mapped[str | None] = mapped_column(String(20))
+    source: Mapped[str] = mapped_column(String(50), nullable=False)
+    observed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow, server_default=func.now()
+    )

@@ -15,6 +15,7 @@ are being emitted as JSON.
 from __future__ import annotations
 
 from contextlib import contextmanager
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated
 
@@ -36,6 +37,12 @@ from stock_screener.deep_research import (
     run_deep_research,
 )
 from stock_screener.logging import configure_logging
+from stock_screener.pit import (
+    capture_day,
+    ingest_filing_acceptance,
+    ingest_filing_observations,
+    record_capture_failure,
+)
 from stock_screener.providers import (
     ConfigurationError,
     build_deep_research_provider,
@@ -81,6 +88,7 @@ from stock_screener.scoring import (
     top_opportunities,
     write_rankings_csv,
 )
+from stock_screener.signals import derive_market_signals
 
 if TYPE_CHECKING:
     from collections.abc import Iterator, Sequence
@@ -165,12 +173,32 @@ def update_universe_command() -> None:
 
 
 @app.command("update-market")
-def update_market_command(tickers: TickerOption = None, limit: CompanyLimitOption = None) -> None:
+def update_market_command(
+    tickers: TickerOption = None,
+    limit: CompanyLimitOption = None,
+    since: Annotated[
+        datetime | None,
+        typer.Option(
+            "--since",
+            formats=["%Y-%m-%d"],
+            help="Backfill from this date instead of resuming from each "
+            "company's last stored session. Use it to deepen history; the "
+            "nightly top-up should omit it.",
+        ),
+    ] = None,
+) -> None:
     """Refresh daily price history for stored companies."""
     settings = _bootstrap()
     provider = build_market_data_provider(settings)
     with _database(settings) as factory, session_scope(factory) as session:
-        report = update_market_data(session, provider, settings, tickers=tickers, limit=limit)
+        report = update_market_data(
+            session,
+            provider,
+            settings,
+            tickers=tickers,
+            limit=limit,
+            since=since.date() if since else None,
+        )
 
     typer.echo(f"market data: {report.summary()}")
 
@@ -199,7 +227,17 @@ def update_eligibility_volume_command(
 
 
 @app.command("update-benchmark")
-def update_benchmark_command() -> None:
+def update_benchmark_command(
+    since: Annotated[
+        datetime | None,
+        typer.Option(
+            "--since",
+            formats=["%Y-%m-%d"],
+            help="Backfill from this date instead of resuming. The benchmark "
+            "bounds every market-relative figure, so deepen it alongside prices.",
+        ),
+    ] = None,
+) -> None:
     """Refresh the broad-market benchmark's price history.
 
     Relative strength is a company's return less this series', so scoring
@@ -209,7 +247,9 @@ def update_benchmark_command() -> None:
     settings = _bootstrap()
     provider = build_market_data_provider(settings)
     with _database(settings) as factory, session_scope(factory) as session:
-        report = update_benchmark(session, provider, settings)
+        report = update_benchmark(
+            session, provider, settings, since=since.date() if since else None
+        )
 
     typer.echo(f"benchmark {settings.benchmark_symbol}: {report.summary()}")
 
@@ -393,6 +433,147 @@ def score_command(
     if top:
         typer.echo("")
         typer.echo(format_rankings_table(top))
+
+
+@app.command("capture")
+def capture_command(
+    snapshot_date: Annotated[
+        datetime | None,
+        typer.Option(
+            "--date",
+            formats=["%Y-%m-%d"],
+            help="The day to describe. Defaults to today in UTC, matching how "
+            "`score` sets its score date.",
+        ),
+    ] = None,
+) -> None:
+    """Record what the system knows today, in tables that never change.
+
+    Copies the current scores and computes the observed market state, then
+    writes both as immutable rows. Nothing is fetched and no formula runs — the
+    scores captured are the ones `score` already produced.
+
+    Safe to re-run: a day that already completed is left alone rather than
+    rewritten, because replacing a point-in-time row would substitute hindsight
+    for the record. A failure rolls the whole day back and records why, so a day
+    is never half-captured and marked good.
+    """
+    settings = _bootstrap()
+    target = snapshot_date.date() if snapshot_date else None
+    with _database(settings) as factory:
+        try:
+            with session_scope(factory) as session:
+                result = capture_day(session, settings, snapshot_date=target)
+        except Exception as error:
+            with session_scope(factory) as session:
+                record_capture_failure(
+                    session,
+                    target or datetime.now(UTC).date(),
+                    f"{type(error).__name__}: {error}",
+                )
+            raise
+
+    typer.echo(f"capture: {result.summary()}")
+    if not result.already_captured:
+        typer.echo(
+            f"  score version {result.score_version}   "
+            f"feature version {result.feature_version}   "
+            f"scores copied from {result.source_score_date}"
+        )
+
+
+@app.command("update-acceptance")
+def update_acceptance_command(
+    tickers: TickerOption = None,
+    limit: CompanyLimitOption = None,
+    refetch: Annotated[
+        bool,
+        typer.Option(
+            "--refetch", help="Re-read every company, not only those with unresolved filings."
+        ),
+    ] = False,
+) -> None:
+    """Record when each filing was accepted, so availability can be judged.
+
+    A filing date cannot say whether a document was public at the moment a
+    decision was taken: measured across XBRL-bearing filings, 45.7% of those
+    accepted on their stated filing date arrived after the 16:00 New York close.
+    This stores the instant the SEC accepted each filing, which can.
+
+    Cheap to re-run: a company whose filings are all resolved is skipped without
+    a request unless `--refetch` is given.
+    """
+    settings = _bootstrap()
+    provider = build_fundamentals_provider(settings)
+    with _database(settings) as factory, session_scope(factory) as session:
+        result = ingest_filing_acceptance(
+            session, provider, tickers=tickers, limit=limit, only_missing=not refetch
+        )
+
+    typer.echo(f"acceptance: {result.summary()}")
+    if result.failures:
+        typer.echo(result.retry_report())
+
+
+@app.command("derive-signals")
+def derive_signals_command(
+    snapshot_date: Annotated[
+        datetime | None,
+        typer.Option(
+            "--date",
+            formats=["%Y-%m-%d"],
+            help="The captured day to derive. Defaults to the newest day with stored features.",
+        ),
+    ] = None,
+) -> None:
+    """Describe what the market was doing, from the captured features.
+
+    Reads the immutable feature snapshots and writes market signals beside them:
+    peer percentiles, a multi-label setup, and a tradability verdict of
+    TRADABLE, UNTRADABLE or UNVERIFIED.
+
+    This produces no ranking and no score. The dimensions it reports are
+    anti-correlated, so averaging them would rank highest whatever is mediocre
+    at everything — deciding what to do with these facts belongs to a strategy
+    layer that does not exist yet.
+
+    Re-running a day already derived under the same version writes nothing. A
+    new version appends beside the old one rather than restating it.
+    """
+    settings = _bootstrap()
+    with _database(settings) as factory, session_scope(factory) as session:
+        result = derive_market_signals(
+            session, snapshot_date=snapshot_date.date() if snapshot_date else None
+        )
+
+    typer.echo(f"signals: {result.summary()}")
+    if result.setups:
+        ordered = sorted(result.setups.items(), key=lambda item: -item[1])
+        typer.echo("  setups: " + "   ".join(f"{name} {count}" for name, count in ordered))
+
+
+@app.command("update-observations")
+def update_observations_command(
+    tickers: TickerOption = None,
+    limit: CompanyLimitOption = None,
+) -> None:
+    """Append what each filing reported, keeping every earlier version.
+
+    The ordinary fundamentals pass overwrites a restated period. This one keeps
+    both figures with the dates they were filed, which is what makes a past
+    decision reconstructible without reading the future.
+
+    Costs no extra request when run after `update-fundamentals` for the same
+    symbols: the filing document just read is reused.
+    """
+    settings = _bootstrap()
+    provider = build_fundamentals_provider(settings)
+    with _database(settings) as factory, session_scope(factory) as session:
+        result = ingest_filing_observations(session, provider, tickers=tickers, limit=limit)
+
+    typer.echo(f"observations: {result.summary()}")
+    if result.failures:
+        typer.echo(result.retry_report())
 
 
 @app.command("enrich")

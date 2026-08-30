@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING
 from domain import (
     CompanyProfile,
     Filing,
+    FilingObservation,
     FinancialPeriod,
     PeriodCadence,
     PriceBar,
@@ -28,6 +29,7 @@ if TYPE_CHECKING:
         Company,
         FilingRecord,
         FinancialSnapshot,
+        FundamentalObservation,
         PriceHistory,
     )
 
@@ -88,6 +90,37 @@ def to_financial_period(snapshot: FinancialSnapshot) -> FinancialPeriod:
         common_shares_outstanding=snapshot.common_shares_outstanding,
         reported_currency=snapshot.reported_currency,
         source=snapshot.source,
+    )
+
+
+def to_filing_observation(row: FundamentalObservation) -> FilingObservation:
+    """Convert a stored observation row into its domain form.
+
+    The append-only record stores exactly what one filing said about one
+    concept, so the conversion is a field-for-field copy. Nothing is resolved
+    here: two rows for the same period stay two observations, because deciding
+    between them belongs to whatever normalises them.
+
+    Args:
+        row: The stored row.
+
+    Returns:
+        The equivalent `FilingObservation`.
+    """
+    return FilingObservation(
+        taxonomy=row.taxonomy,
+        concept=row.concept,
+        value=row.value,
+        unit=row.unit,
+        period_end=row.period_end,
+        period_start=row.period_start,
+        filed_date=row.filed_date,
+        accession=row.accession,
+        form=row.form,
+        fiscal_year=row.fiscal_year,
+        fiscal_period=row.fiscal_period,
+        frame=row.frame,
+        source=row.source,
     )
 
 

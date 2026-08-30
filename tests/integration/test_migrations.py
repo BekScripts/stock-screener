@@ -27,6 +27,14 @@ _TABLES = {
     "benchmark_prices",
     "research_reports",
     "filings",
+    # Phase 8B's point-in-time layer. Listed so `test_downgrade_removes_every_table`
+    # actually exercises 0021's downgrade rather than assuming it works.
+    "pit_capture_runs",
+    "pit_score_snapshots",
+    "pit_feature_snapshots",
+    "fundamental_observations",
+    "universe_events",
+    "corporate_actions",
 }
 
 # The autouse `isolated_env` fixture chdirs into a tmp_path, so both paths are

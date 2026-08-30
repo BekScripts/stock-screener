@@ -188,6 +188,7 @@ def update_market_data(
     tickers: Sequence[str] | None = None,
     limit: int | None = None,
     today: date | None = None,
+    since: date | None = None,
 ) -> IngestionReport:
     """Refresh daily price history for stored companies.
 
@@ -198,6 +199,8 @@ def update_market_data(
         session: Open database session. The caller commits.
         provider: Source of the price bars.
         settings: Supplies the history window and batch size.
+        since: Start every company at this date instead of resuming from its
+            last stored session. The backfill path — see the note above.
         tickers: Restrict to these symbols. Defaults to every stored company.
         limit: Process at most this many companies, in ticker order. Use it to
             bound a first run against a metered provider.
@@ -216,12 +219,18 @@ def update_market_data(
     prices = PriceHistoryRepository(session)
 
     as_of = today or datetime.now(UTC).date()
-    default_start = as_of - timedelta(days=settings.price_history_days)
+    default_start = since or (as_of - timedelta(days=settings.price_history_days))
 
     # Pair each company with the last session already stored, so the fetch
     # resumes there instead of re-downloading the full window every night.
+    #
+    # `since` overrides that. Resuming is right for a nightly top-up and wrong
+    # for a backfill: a company whose history starts in 2025 would resume at
+    # 2025 forever, and no amount of widening the window would reach behind it.
+    # Passing `since` starts every company at that date instead, and the unique
+    # constraint on `(company_id, date)` makes the overlap a no-op.
     selected = [
-        (company_id, ticker, prices.latest_date(company_id))
+        (company_id, ticker, None if since else prices.latest_date(company_id))
         for company_id, ticker in _select_companies(companies, tickers, limit)
     ]
 
@@ -402,6 +411,7 @@ def update_benchmark(
     settings: Settings,
     *,
     today: date | None = None,
+    since: date | None = None,
 ) -> IngestionReport:
     """Refresh the broad-market benchmark's daily price history.
 
@@ -416,6 +426,10 @@ def update_benchmark(
         settings: Supplies the benchmark symbol and the history window.
         today: Treat this as the current date. Injected so tests are not
             dependent on when they run.
+        since: Start at this date instead of resuming from the last stored
+            session. The benchmark bounds every market-relative figure, so a
+            company history deeper than this series buys nothing — a backfill of
+            one is only useful alongside a backfill of the other.
 
     Returns:
         Counts for the pass, covering the single benchmark symbol.
@@ -428,11 +442,11 @@ def update_benchmark(
     symbol = normalise_ticker(settings.benchmark_symbol)
 
     as_of = today or datetime.now(UTC).date()
-    stored = prices.latest_date(symbol)
+    stored = None if since else prices.latest_date(symbol)
     start = (
         stored - timedelta(days=_PRICE_OVERLAP_DAYS)
         if stored is not None
-        else as_of - timedelta(days=settings.price_history_days)
+        else (since or as_of - timedelta(days=settings.price_history_days))
     )
 
     report.processed += 1

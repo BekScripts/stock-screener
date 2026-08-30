@@ -169,11 +169,16 @@ class Settings(BaseSettings):
     # -- ingestion --------------------------------------------------------
 
     price_history_days: int = Field(
-        default=400,
+        default=2400,
         ge=1,
         description=(
-            "Calendar days of price history to keep. 400 covers a 52-week high "
-            "and a twelve-month return with room for market holidays."
+            "Calendar days of price history to fetch. 2400 is about six and a "
+            "half years, which reaches the floor of the configured IEX feed "
+            "(measured: no bar before 2020-07-27 on this plan). 400 was enough "
+            "for a 52-week high and a twelve-month return; research needs the "
+            "depth. Raising this alone does not backfill an existing company - "
+            "the pass resumes from its last stored session - so use "
+            "`update-market --since` for that."
         ),
     )
     fundamentals_quarters: int = Field(
