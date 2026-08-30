@@ -18,6 +18,8 @@ reference page, that sentence belongs in
 - [Commands](commands.md) — every `make` target and CLI command
 - [Metrics](metrics.md) — every calculation, its formula, and when it is unavailable
 - [CompounderScore v1](compounder-score.md) — every scoring rule, penalty and status
+- [Market signals](market-signals.md) — the descriptive market-state layer, and what it deliberately is not
+- [Point-in-time metrics](point-in-time.md) — fundamentals as they stood on a past date, and what that still does not enable
 - [Project brief](project-intro.md) — the full Compounder Radar MVP specification
 - [Phase 1 brief](project-phases/phase1.md) — the data and screening scope
 - [Phase 2 brief](project-phases/phase2.md) — the scoring and ranking scope

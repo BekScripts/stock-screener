@@ -48,13 +48,49 @@ Phase 5; Phases 6 and 7 are layers over it, not revisions of it.
 | 5 | Run control — jobs, ticker search, CSV export | complete, frozen |
 | 6 | On-demand deep research (6A–6E: contract, prepare, collect, generate, dashboard) | complete, frozen |
 | 7 | International coverage (7B–7F: currency, IFRS, cadence, FX, rollout) | complete, frozen |
+| 8A | Market opportunity audit | complete, frozen |
+| 8B | Point-in-time capture | complete, under review |
+| 8C | Market signals | complete, under review |
+| 8D | Point-in-time metric engine | complete, accepted |
+| 8E | Data readiness — observation population and blocker audit | complete |
+| 8F | Availability semantics and price depth | **complete, under review** |
 
-**Nothing is in progress.** No phase 8 exists and none is to be started without
-being asked.
+**Phases 8B, 8C and 8D are implemented and awaiting review.** Nothing is committed.
+
+Phase 8A was an audit, not an implementation: it established that the ranking is
+not "dead" (Top 100 median ATR 4.01% against 3.36% for the universe) and that the
+real blockers are measurement, not scoring. Its findings are in the Phase 8A
+report; the ones that became requirements are recorded below.
+
+Phase 8C adds the descriptive market-state layer over 8B's feature record:
+peer percentiles, a multi-label setup, and a tri-state tradability verdict. It
+produces no score, no ranking and no blend — Phase 8A falsified all three.
+
+Phase 8D closes the last structural point-in-time gap: fundamental metrics can
+now be built from what had actually been filed by a given date, reusing the
+frozen normalisation and the frozen arithmetic unchanged. It adds no table and no
+migration.
+
+Strategy research is **not** started and is not to be started without being
+asked. The binding constraint is unchanged and is not architectural: the
+observation record is empty and the point-in-time history is one day.
 
 ### Data state
 
-**The primary database has not received the Phase 7F foreign cohort.**
+**The observation record is populated on staging.** A full-universe run on
+2026-08-30 ingested **5,711,643 observations across 5,497 of 5,769 companies
+(95.3%)**, with filing dates spanning 2009-04-15 to 2026-08-28 and zero undated.
+2,632 companies carry ten years or more of point-in-time filing history. The
+primary database did not receive it — as with Phase 7F, code and data promotion
+are separate operations.
+
+**Correction, found during Phase 8A:** the primary database *does* contain the
+foreign cohort. GFI, ERO, DLO and ARIS all rank inside the current Top 20, and a
+full `COMPOUNDER_V1_2` run is stored for 2026-08-26. The paragraph below was
+written from the Phase 7 documents and was already stale; the database is the
+authority.
+
+~~**The primary database has not received the Phase 7F foreign cohort.**~~
 `compounder_radar.db` is byte-identical to its pre-rollout state — the entire
 Phase 7 validation ran against copies, verified by row count and checksum before
 and after each stage.
@@ -149,6 +185,101 @@ convention, and none may be relaxed without an explicit instruction.
 - **Nothing unvalidated is stored or served.**
 - **An empty section says which kind of empty it is.** `NO_EVIDENCE` means the
   brief had nothing; `NO_VALID_CLAIMS` means nothing survived validation.
+
+### Phase 8B — point-in-time capture
+
+- **The operational tables stay mutable; the record does not.** `score_snapshots`
+  upserts and `financial_snapshots` overwrites, because a screener must be able to
+  re-score and to accept a restatement. The `pit_*` tables and
+  `fundamental_observations` sit beside them and are never updated. Both layers
+  are correct; conflating them is what makes a backtest dishonest.
+- **A day is wholly captured or wholly absent.** The run row reaches `COMPLETE`
+  in the same transaction as the snapshots. A failure rolls everything back and
+  records a `FAILED` run carrying no rows.
+- **`filed_date` is the availability date; `period_end` never is.** Point-in-time
+  selection compares `filed_date <= as_of`. An observation with no filing date is
+  excluded from selection rather than falling back to its period end.
+- **A restatement appends.** Two filings of one period are two rows. Idempotency
+  comes from a content fingerprint, not from a unique constraint over nullable
+  columns, which SQL would let duplicate.
+- **`BASELINE` is not an event.** A state seen for the first time is dated the day
+  it was seen and asserts nothing about when it began. Only `OBSERVED` rows are
+  transitions the system watched. No historical membership is ever invented.
+- **A corporate action is never inferred from a price movement.** An unadjusted
+  split and a genuine halving are the same bar. The table is created empty and
+  stays empty until a source is wired to it.
+- **Windows are strict.** A feature named `_60` used exactly 60 sessions or is
+  `None`. A window that quietly shortens itself makes two rows of a time series
+  incomparable while looking identical.
+- **Features are structured values, never a composite.** No OpportunityScore, no
+  ranking, no signal — Phase 8A showed the dimensions are anti-correlated and a
+  scalar over them means nothing.
+
+### Phase 8C — market signals
+
+- **No composite, ever.** The dimensions are anti-correlated (volatility against
+  distance-from-high, Spearman -0.58), so an averaged 0-100 score ranks highest
+  whatever is mediocre at everything. There is no score column in
+  `pit_signal_snapshots` and there must never be one.
+- **No blend with CompounderScore.** A 50/50 percentile blend retained one name
+  of the fundamental top twenty. The layers stay separate and a future strategy
+  decides how to weigh them.
+- **Tradability is three-valued.** `UNVERIFIED` is never collapsed into either
+  neighbour. Missing data is its own answer.
+- **Liquidity reads in one direction only.** Stored volume is a single venue and
+  a strict subset of the tape, so clearing a floor proves a minimum and failing
+  it proves nothing. No IEX-to-consolidated ratio is ever assumed.
+- **Structural activity outranks volatility.** Flat-bar share, zero-move share
+  and closing-band width are checked before anything else, because HBB carried a
+  3.91% average true range while printing an unchanged bar on 59.9% of sessions.
+- **Every threshold is provisional.** None is fitted to returns, because one day
+  of history cannot support calibration. They live in a parameter object so a
+  future version calibrates without touching the rules.
+- **Signals read the feature record and nothing else.** Not `score_snapshots`,
+  not `financial_snapshots`, not `companies` — that is what makes a past
+  signal unable to drift.
+
+### Phase 8D — point-in-time metrics
+
+- **The temporal bound has exactly one home.** `available_as_of` selects
+  observations by `filed_date`; everything downstream is indifferent to when it
+  is called. `build_company_metrics` was already a pure function over injected
+  periods, so no arithmetic changed.
+- **The provider's normalisation is reused, never reimplemented.**
+  `periods_from_facts_document` is shared byte for byte by the live path and the
+  point-in-time path. A second normaliser would drift, and drift here would look
+  like history rather than like a bug.
+- **No new metric version.** The definitions are unchanged; only the source and
+  its bound differ. Minting a version to record that nothing moved would devalue
+  the mechanism `score_version` depends on. See ADR-0012.
+- **Nothing is persisted.** A metric is a function of one company's own facts and
+  can be rebuilt exactly from the immutable observation record, so a second copy
+  would earn nothing.
+- **`period_end` is never a proxy for availability**, at any level, with no
+  fallback. An observation without a filing date is stored, counted, and never
+  selected.
+
+### Phase 8F — availability semantics
+
+- **`as_of` means the close of that trading day**, 16:00 America/New_York, and
+  the close follows daylight saving. Stated once in
+  `stock_screener.pit.decision_time` rather than implied by a comparison
+  operator.
+- **Availability is decided by an instant, never by a date.** Measured on the
+  full 5.78M-observation record: 61.0% of observations come from filings
+  accepted after the close, so `filed_date <= as_of` reveals 3.5M of them early;
+  39.0% were public before it, so `filed_date < as_of` would withhold 2.3M
+  unnecessarily. Neither operator is a correct test — which is why the fix was
+  a new table and not a changed character.
+- **Where the instant is unknown, the filing waits.** The fallback requires
+  `filed_date < as_of`. It can delay a filing by a day and can never reveal one
+  early.
+- **Raising the price window does not backfill.** The market pass resumes from
+  each company's last stored session, so `update-market --since` is the only way
+  to deepen existing history.
+- **Feeds are never mixed in one series.** IEX and SIP disagree by 36x on volume
+  and differ on the close, and `price_history` records no provenance, so a
+  partial SIP backfill would create an invisible discontinuity.
 
 ### Phase 7 — international
 
@@ -362,7 +493,7 @@ The map in `src/stock_screener/jobs.py` is the entire allowlist.
 
 ## Database migrations
 
-Head is **`0020`**. One revision per schema change; the chain is linear.
+Head is **`0023`**. One revision per schema change; the chain is linear.
 
 | Rev | Adds |
 | --- | --- |
@@ -386,12 +517,21 @@ Head is **`0020`**. One revision per schema change; the chain is linear.
 | `0018` | `period_start` and `cadence`; existing rows backfilled `QUARTERLY` |
 | `0019` | `statement_profile`, `consolidated_avg_volume`, `volume_source` |
 | `0020` | score freshness; NULL reads as `CURRENT` |
+| `0023` | `filing_acceptance` — when the SEC accepted each filing, so availability is judged by instant rather than by date |
+| `0022` | `pit_signal_snapshots` — the derived market-state layer, append-only and versioned |
+| `0021` | the point-in-time layer — `pit_capture_runs`, `pit_score_snapshots`, `pit_feature_snapshots`, `fundamental_observations`, `universe_events`, `corporate_actions` |
 
 ### Tables
 
 `companies` · `financial_snapshots` · `price_history` · `benchmark_prices` ·
 `fx_rates` · `score_snapshots` · `filings` · `filing_excerpts` ·
 `research_reports` · `deep_research_reports` · `watchlist` · `jobs`
+
+Phase 8B's append-only layer, beside them: `pit_capture_runs` ·
+`pit_score_snapshots` · `pit_feature_snapshots` · `fundamental_observations` ·
+`universe_events` · `corporate_actions`
+
+Phase 8C adds one more: `pit_signal_snapshots`.
 
 ### The migration safety rule
 
@@ -497,6 +637,22 @@ learn.
 | `packages/domain/tests/test_scoring_currency_safety.py` | an enterprise value without a conversion is rejected outright |
 | `packages/domain/tests/test_statements.py` | a bank is recognised from its statements; a manufacturer with a finance arm is not |
 | `packages/deep-research/tests/test_brief.py` | fingerprints are reproducible across reassembly and refetch |
+| `tests/integration/test_pit_capture.py::test_a_completed_day_cannot_be_changed_by_a_later_score` | hindsight cannot rewrite the record — the property the whole phase rests on |
+| `tests/integration/test_pit_capture.py::test_a_partial_run_leaves_no_day_behind` | a crashed capture leaves no half-day marked good |
+| `tests/integration/test_pit_capture.py::test_the_first_capture_records_a_baseline_not_a_dated_event` | no membership date is ever fabricated |
+| `tests/integration/test_filing_observations.py::test_a_restatement_appends_and_the_original_survives` | a revision never destroys the figure it replaced |
+| `tests/integration/test_filing_observations.py::test_period_end_is_never_used_as_availability` | the classic look-ahead trap stays shut |
+| `packages/data-access/tests/test_pit_repositories.py` | immutability, append-only writes, and `filed_date` selection |
+| `packages/domain/tests/test_features.py` | a named window used exactly its named length |
+| `tests/integration/test_market_signals.py::test_a_stored_signal_cannot_change_when_operational_tables_move` | a derived signal cannot drift when the operational tables are rewritten |
+| `tests/integration/test_market_signals.py::test_deriving_signals_cannot_alter_any_score` | the market layer is inert with respect to CompounderScore |
+| `tests/integration/test_market_signals.py::test_a_new_version_appends_beside_the_old_one` | changing the rules never restates what was said at the time |
+| `packages/domain/tests/test_signals.py` | percentile determinism, multi-label setups, and the tri-state verdict |
+| `tests/integration/test_pit_metrics.py::test_a_restatement_is_invisible_until_it_is_filed` | the worked restatement: January sees nothing, March the original, May the revision |
+| `tests/integration/test_pit_metrics.py::test_the_operational_table_cannot_influence_a_historical_metric` | a historical metric cannot drift when `financial_snapshots` is overwritten |
+| `tests/integration/test_pit_metrics.py::test_a_metric_waits_for_its_slowest_input` | a multi-concept metric uses only facts available at the date |
+| `tests/integration/test_pit_metrics.py::test_two_decision_dates_see_two_different_companies` | the end-to-end temporal scenario |
+| `packages/api-clients/tests/test_edgar_observations.py::test_rebuilding_a_document_reproduces_the_same_periods` | the point-in-time path normalises identically to the live one |
 
 ### The gate
 
@@ -520,6 +676,12 @@ started without being asked:
 2. **Phase 7D — period semantics.** Annual and semiannual reporting periods as
    first-class citizens. This is what still keeps TSM, ASML, SAP and NVO
    unrankable.
+3. **Point-in-time market capitalisation.** Nothing records what it was on a past
+   date, so any ratio against it is point-in-time on its fundamental side only.
+   Share counts are now in the observation record, so it is derivable — but only
+   once corporate actions exist, because stored closes are split-adjusted.
+4. **Filing acceptance time.** `filed_date` is a date; 60.3% of same-day filings
+   are accepted after the close. See the Phase 8E audit.
 
 A longer-term direction document exists at `docs/reference/roadmap.md`. It is
 aspiration, not commitment: nothing in it is authorised, scoped or scheduled, and
@@ -567,8 +729,10 @@ Not a backlog. These exclusions are deliberate.
 | | |
 | --- | --- |
 | Commit | `9ca5dfb` — feat: complete foreign issuer coverage and current rankings |
-| Branch | `feat/phase-6b-single-stock-prepare` (the branch name predates the Phase 7 work it now carries) |
-| Migration head | `0020` |
-| Score version | `COMPOUNDER_V1_2` |
-| Primary database | pre-rollout state; Phase 7F cohort **not** promoted |
-| Checkpoint date | 2026-08-27 |
+| Branch | `feat/phase-8d-pit-metric-engine` (8A-8E all uncommitted) |
+| Migration head | `0023` |
+| Score version | `COMPOUNDER_V1_2` (unchanged by 8A or 8B) |
+| Feature version | `MARKET_FEATURES_V1` |
+| Signal version | `MARKET_SIGNALS_V1` |
+| Primary database | untouched by 8A-8D; verified byte-identical by SHA-256 |
+| Checkpoint date | 2026-08-29 |

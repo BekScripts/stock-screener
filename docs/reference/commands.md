@@ -45,7 +45,7 @@ Installed as `stock-screener`; also reachable as `python -m stock_screener`.
 | Command | Does |
 | --- | --- |
 | `update-universe` | Refreshes the company list from the market-data provider. |
-| `update-market` | Refreshes daily OHLCV for stored companies, resuming from the last stored session. |
+| `update-market` | Refreshes daily OHLCV for stored companies, resuming from the last stored session.  `--since` backfills from a date instead of resuming from each company's last stored session, which is the only way to deepen existing history. |
 | `update-eligibility-volume` | Refreshes consolidated average volume for the liquidity screen, from the consolidated tape rather than the price feed. Writes no price history. Run it before `enrich`: it is unmetered, so a company failing the liquidity gate here costs no provider request. |
 | `update-benchmark` | Refreshes the benchmark's price history. Relative strength cannot be calculated without it. |
 | `update-fundamentals` | Refreshes profiles and quarterly statements, skipping companies already current. |
@@ -64,6 +64,25 @@ Installed as `stock-screener`; also reachable as `python -m stock_screener`.
 | `improving` | The companies whose score has risen most over the window. |
 | `explain` | One company's latest score, metric by metric. Takes a ticker. |
 | `run-daily` | The whole nightly job: every update, then `score`, then `enrich`, then the ranking. |
+
+### Point-in-time capture (Phase 8B)
+
+Records what the system knew, on the day it knew it. Neither command calls a
+provider for market data, and neither changes a score.
+
+| Command | Does |
+| --- | --- |
+| `capture` | Copies the current scores and computes the observed market state, writing both as immutable rows for the day. Re-running a completed day writes nothing. A failure rolls the day back whole and records why. `--date` sets the day; it defaults to today in UTC, matching `score`. |
+| `update-observations` | Appends what each filing reported, keeping every earlier version with the date it was filed. Costs no extra request straight after `update-fundamentals`, which leaves the filing document cached. |
+| `update-acceptance` | Records when the SEC accepted each filing, which is what makes a point-in-time availability test correct. Skips companies already resolved, so a repeat run is nearly free. |
+| `derive-signals` | Derives market signals from the captured features — peer percentiles, a multi-label setup, and a tradability verdict. No provider call, no ranking, no score. See [Market signals](market-signals.md). |
+
+The distinction these two exist to preserve is between the operational tables,
+which are overwritten as better information arrives, and the point-in-time
+record, which is not. `score_snapshots` replaces the day's rows when `score` runs
+again; `pit_score_snapshots` never does. `financial_snapshots` overwrites a
+restated quarter; `fundamental_observations` appends the restatement beside the
+original. See [Project state](PROJECT_STATE.md) for the rules that govern them.
 
 ### AI research (Phase 3)
 
