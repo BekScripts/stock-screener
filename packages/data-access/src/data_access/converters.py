@@ -15,6 +15,8 @@ from typing import TYPE_CHECKING
 
 from domain import (
     CompanyProfile,
+    CorporateActionKind,
+    CorporateActionRecord,
     Filing,
     FilingObservation,
     FinancialPeriod,
@@ -27,6 +29,7 @@ if TYPE_CHECKING:
     from data_access.models import (
         BenchmarkPrice,
         Company,
+        CorporateAction,
         FilingRecord,
         FinancialSnapshot,
         FundamentalObservation,
@@ -165,4 +168,27 @@ def to_filing(record: FilingRecord) -> Filing:
         primary_document=record.primary_document,
         url=record.url,
         source=record.source,
+    )
+
+
+def to_corporate_action(action: CorporateAction) -> CorporateActionRecord:
+    """Convert a stored corporate action into its domain record.
+
+    Args:
+        action: The stored row.
+
+    Returns:
+        The equivalent `CorporateActionRecord`.
+    """
+    return CorporateActionRecord(
+        symbol=action.ticker,
+        kind=CorporateActionKind(action.action_type),
+        ex_date=action.ex_date,
+        split_factor=action.split_factor,
+        cash_amount=action.cash_amount,
+        currency=action.currency,
+        record_date=action.record_date,
+        payable_date=action.payable_date,
+        source=action.source,
+        source_id=action.source_id,
     )

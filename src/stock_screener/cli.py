@@ -15,7 +15,7 @@ are being emitted as JSON.
 from __future__ import annotations
 
 from contextlib import contextmanager
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated
 
@@ -39,8 +39,11 @@ from stock_screener.deep_research import (
 from stock_screener.logging import configure_logging
 from stock_screener.pit import (
     capture_day,
+    discover_delistings,
+    ingest_corporate_actions,
     ingest_filing_acceptance,
     ingest_filing_observations,
+    measure_forward_returns,
     record_capture_failure,
 )
 from stock_screener.providers import (
@@ -513,6 +516,102 @@ def update_acceptance_command(
     typer.echo(f"acceptance: {result.summary()}")
     if result.failures:
         typer.echo(result.retry_report())
+
+
+@app.command("update-actions")
+def update_actions_command(
+    start: Annotated[
+        str, typer.Option("--start", help="Earliest ex-date to fetch, as YYYY-MM-DD.")
+    ] = "2015-01-01",
+    end: Annotated[
+        str | None, typer.Option("--end", help="Latest ex-date to fetch. Defaults to today.")
+    ] = None,
+    tickers: TickerOption = None,
+    limit: CompanyLimitOption = None,
+) -> None:
+    """Record splits and distributions, so a past price can be read back.
+
+    Stored closes are adjusted retroactively, which makes them right for a
+    return and wrong for anything denominated in dollars per share. AAPL's
+    stored close for 2020-08-28 is 120.98; the security traded near 499 that
+    afternoon, and only the 4-for-1 factor recovers it.
+
+    Appends. Re-running fetches the same actions and stores none of them again.
+    """
+    settings = _bootstrap()
+    provider = build_market_data_provider(settings)
+    start_date = date.fromisoformat(start)
+    end_date = date.fromisoformat(end) if end else datetime.now(UTC).date()
+
+    with _database(settings) as factory, session_scope(factory) as session:
+        result = ingest_corporate_actions(
+            session, provider, start=start_date, end=end_date, tickers=tickers, limit=limit
+        )
+
+    typer.echo(f"actions: {result.summary()}")
+    for label, reason in result.failures[:10]:
+        typer.echo(f"  {label}: {reason}")
+
+
+@app.command("measure-returns")
+def measure_returns_command(
+    observation_date: Annotated[
+        str, typer.Argument(help="The observation date to measure from, as YYYY-MM-DD.")
+    ],
+    tickers: TickerOption = None,
+    limit: CompanyLimitOption = None,
+) -> None:
+    """Record what each security did after an observation date.
+
+    The entry is the open of the *next* session, because a snapshot computable
+    at a close cannot be filled at that close. Horizons are counted on the
+    market's calendar, so a security that stops trading does not quietly reach
+    its horizon on schedule.
+
+    Safe to re-run: a horizon already measured is skipped, and one that was
+    truncated because the future had not arrived is measured again once it has.
+    """
+    settings = _bootstrap()
+    with _database(settings) as factory, session_scope(factory) as session:
+        result = measure_forward_returns(
+            session,
+            date.fromisoformat(observation_date),
+            benchmark=settings.benchmark_symbol,
+            tickers=tickers,
+            limit=limit,
+        )
+
+    typer.echo(f"returns: {result.summary()}")
+
+
+@app.command("discover-delistings")
+def discover_delistings_command(
+    start: Annotated[
+        str, typer.Option("--start", help="Earliest effective date, as YYYY-MM-DD.")
+    ] = "2020-01-01",
+    end: Annotated[
+        str | None, typer.Option("--end", help="Latest effective date. Defaults to today.")
+    ] = None,
+) -> None:
+    """Record the securities that left the market, which no other table holds.
+
+    Across 4,599 companies and the 120 sessions after 2024-01-02, not one
+    security in the database stopped trading. A universe that size loses about a
+    hundred names to acquisitions and failures over six months — the zero is a
+    property of a table that holds only what is investable today.
+
+    Discovery is by date range rather than by symbol, because asking about a
+    symbol can only confirm the fate of one already known.
+    """
+    settings = _bootstrap()
+    provider = build_market_data_provider(settings)
+    start_date = date.fromisoformat(start)
+    end_date = date.fromisoformat(end) if end else datetime.now(UTC).date()
+
+    with _database(settings) as factory, session_scope(factory) as session:
+        result = discover_delistings(session, provider, start=start_date, end=end_date)
+
+    typer.echo(f"delistings: {result.summary()}")
 
 
 @app.command("derive-signals")

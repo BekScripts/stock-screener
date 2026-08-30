@@ -43,20 +43,30 @@ import structlog
 from api_clients import periods_from_observations
 from data_access import (
     CompanyRepository,
+    CorporateActionRepository,
     FundamentalObservationRepository,
     PriceHistoryRepository,
     to_company_profile,
+    to_corporate_action,
     to_filing_observation,
     to_price_bar,
 )
-from domain import DEFAULT_LIQUIDITY_WINDOW, VolumeBasis, build_company_metrics
+from domain import (
+    DEFAULT_LIQUIDITY_WINDOW,
+    VolumeBasis,
+    as_traded_price,
+    build_company_metrics,
+    latest_close,
+)
 from stock_screener.pit.decision_time import DecisionPoint, decision_instant
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
     from datetime import date
 
     from sqlalchemy.orm import Session
 
+    from data_access.models import FundamentalObservation
     from domain import CompanyMetrics, FinancialPeriod, FxConversion
 
 log = structlog.get_logger(__name__)
@@ -140,10 +150,13 @@ def build_metrics_as_of(
     before `as_of`; price bars are read with the same cutoff, so a metric
     cannot be computed against a session that had not happened.
 
-    The market capitalisation on the company profile is **not** bounded, because
-    nothing in this repository records what it was on a past date. See the
-    limitations in the point-in-time documentation: a ratio against market
-    capitalisation is only point-in-time on its fundamental side today.
+    The market capitalisation is point-in-time on both sides. The profile's
+    figure is a current quote and is suppressed outright — using it would value
+    a 2019 snapshot at today's price, which is the largest look-ahead available
+    in this codebase. What replaces it is the filed share count multiplied by
+    the price the security actually traded at, recovered from the stored close
+    with the split factors since. See `domain.pricing` for what that recovery
+    does and does not undo.
 
     Args:
         session: Open database session.
@@ -184,13 +197,40 @@ def build_metrics_as_of(
         to_price_bar(row)
         for row in PriceHistoryRepository(session).list_for_company(company_id, until=as_of)
     ]
+
+    # Every action, not only those on or before `as_of`. The ones *after* it are
+    # precisely the ones that need undoing: a stored close for 2020-08-28 is on
+    # today's basis because of a split that happened three days later, and
+    # bounding this read to the decision date would leave the very factor that
+    # makes the close wrong out of the correction. Nothing here is used as
+    # knowledge available on the date — a split is applied to a price, not read
+    # as a fact about the company.
+    actions = [
+        to_corporate_action(row)
+        for row in CorporateActionRepository(session).for_company(company_id)
+    ]
+    # Anchored on the date the share count describes, not on `as_of`. AAPL
+    # split on 2020-08-31 and did not file again until 2020-10-30; for those two
+    # months the newest available count is pre-split and the price is not.
+    # Anchoring on `as_of` applies no factor across that window and values the
+    # company at 557bn instead of 2.2tn. See `domain.pricing.market_cap_as_of`.
+    share_basis_close = as_traded_price(
+        latest_close(bars), actions, _share_count_date(observations) or as_of
+    )
+
+    # The stored market capitalisation is a current quote against a current
+    # share count. On a past date it is not merely stale, it is the answer to a
+    # different question, so it is withheld rather than aged.
+    profile = to_company_profile(company).model_copy(update={"market_cap": None})
+
     metrics = build_company_metrics(
-        to_company_profile(company),
+        profile,
         periods,
         bars,
         liquidity_window=liquidity_window,
         bar_volume_basis=bar_volume_basis,
         fx=fx,
+        share_basis_close=share_basis_close,
     )
     return PointInTimeMetrics(
         as_of=as_of,
@@ -198,3 +238,31 @@ def build_metrics_as_of(
         periods=tuple(periods),
         observations_available=len(observations),
     )
+
+
+#: The cover-page count's XBRL concept. `dei:EntityCommonStockSharesOutstanding`
+#: is what `api_clients.edgar` reads for `common_shares_outstanding`, so it is
+#: what dates that figure.
+_COVER_PAGE_SHARES = "EntityCommonStockSharesOutstanding"
+
+
+def _share_count_date(observations: Sequence[FundamentalObservation]) -> date | None:
+    """Return the instant the newest available cover-page share count describes.
+
+    Its own `period_end`, not the filing's date: a count stated as of 17 July
+    and filed on 31 July is a statement about 17 July, and a split between the
+    two would not be in it.
+
+    Args:
+        observations: The observations available on the decision date, as the
+            repository returned them.
+
+    Returns:
+        The date, or None when no cover-page count is among them.
+    """
+    dated = [
+        row.period_end
+        for row in observations
+        if row.concept.endswith(_COVER_PAGE_SHARES) and row.period_end is not None
+    ]
+    return max(dated) if dated else None

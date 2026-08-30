@@ -65,6 +65,11 @@ from stock_screener.pit.acceptance import (
     AcceptanceIngestResult,
     ingest_filing_acceptance,
 )
+from stock_screener.pit.actions import (
+    ActionIngestResult,
+    CorporateActionSource,
+    ingest_corporate_actions,
+)
 from stock_screener.pit.capture import (
     FEATURE_VERSION,
     CaptureResult,
@@ -77,26 +82,43 @@ from stock_screener.pit.decision_time import (
     DecisionPoint,
     decision_instant,
 )
+from stock_screener.pit.delistings import (
+    DelistingDiscoveryResult,
+    DelistingSource,
+    discover_delistings,
+)
 from stock_screener.pit.metrics import (
     PointInTimeMetrics,
     build_metrics_as_of,
     periods_as_of,
 )
 from stock_screener.pit.observations import ingest_filing_observations
+from stock_screener.pit.returns import (
+    ReturnMeasurementResult,
+    measure_forward_returns,
+)
 
 __all__ = [
     "FEATURE_VERSION",
     "MARKET_CLOSE",
     "MARKET_TIMEZONE",
     "AcceptanceIngestResult",
+    "ActionIngestResult",
     "CaptureResult",
+    "CorporateActionSource",
     "DecisionPoint",
+    "DelistingDiscoveryResult",
+    "DelistingSource",
     "PointInTimeMetrics",
+    "ReturnMeasurementResult",
     "build_metrics_as_of",
     "capture_day",
     "decision_instant",
+    "discover_delistings",
+    "ingest_corporate_actions",
     "ingest_filing_acceptance",
     "ingest_filing_observations",
+    "measure_forward_returns",
     "periods_as_of",
     "record_capture_failure",
 ]

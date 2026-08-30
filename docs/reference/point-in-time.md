@@ -148,16 +148,131 @@ historical study. It is not the study, and several other things still block one:
 | Still missing | Consequence |
 | --- | --- |
 | **Acceptance coverage** | A filing with no stored acceptance time falls back to the conservative date rule and is withheld a day longer than necessary. `update-acceptance` resolves them. |
-| **Point-in-time market capitalisation** | Read from the mutable company profile; nothing records what it was on a past date. Any ratio against it — valuation multiples, enterprise value — is point-in-time on its fundamental side only. |
-| **Corporate actions** | The table exists and is empty. Adjusted closes are still rewritten retroactively, so a past price series cannot be rebuilt as it appeared. |
-| **Historical universe membership** | Recorded forward from 2026-08-29 only. Anything earlier is survivorship-biased. |
+| **Historical universe membership** | `companies` holds what is investable today. Delistings are now discoverable and stored, but they are not company rows and no snapshot before 2026 was taken over the full historical set. |
 | **Consolidated liquidity** | A proven floor or unknown. No historical series. |
-| **Forward returns** | No outcome or label exists on any table. A decision cannot yet be joined to what happened next. |
-| **History** | The point-in-time record holds one day. Nothing calibrated against it is meaningful. |
+| **Score history** | The capture record holds one score date. Market features and signals backfill; scores do not. |
 
 The honest summary: the repository can now construct historical fundamental
-metrics correctly **once the observation record is populated**. It still cannot
-construct an honest backtest.
+metrics correctly, value them at a past date, and measure what followed. It
+still cannot construct a survivorship-free backtest, because the score half of
+the record has one day in it and the universe it ran over excludes everything
+that has since ceased to exist.
+
+## Market capitalisation on a past date
+
+Solved, on the split axis. `domain.pricing` recovers the price a security
+actually traded at from the stored close and the split factors since, and
+`build_metrics_as_of` withholds the profile's market capitalisation entirely —
+it is a current quote, and using it would value a 2019 snapshot at today's
+price.
+
+Two subtleties carry the correctness:
+
+**The anchor is the share count's date, not the valuation's.** AAPL split
+four-for-one on 2020-08-31 and did not file again until 2020-10-30. For those
+two months the newest available count is 4.28bn pre-split shares and the price
+has already quartered. Anchoring on the valuation date applies no factor —
+the split is in the past — and values Apple at $557bn. Anchoring on the count's
+own cover date applies the four across the whole window, which is what every
+market participant did at the time.
+
+**Distributions are not undone.** `adjustment=all` removes them too, and this
+layer leaves that removal in place, so a recovered price is low by the
+cumulative distribution yield since the date: about 3% for AAPL over six years,
+more for a high-yield security. A recovered price is a **lower bound**, stated
+here rather than hidden. Removing it needs a raw price series, which the
+provider serves and this project does not store.
+
+Verified against staging:
+
+| Date | Stored close | Point-in-time market cap |
+| --- | --- | --- |
+| 2020-08-28 | $120.98 | $2,069bn |
+| 2020-09-01 | $130.31 | $2,229bn |
+| 2021-01-04 | $125.80 | $2,139bn |
+| 2023-06-30 | $191.07 | $3,005bn |
+
+## Forward returns
+
+`forward_returns` stores what a security did at 1, 5, 20, 60 and 120 sessions
+from an observation date.
+
+**The entry is the next session's open.** A snapshot for date D is computable
+only once D has closed, so a decision taken on it cannot be filled at D's close;
+the first price a holder of that snapshot could transact at is the open of D+1.
+Close-to-close is the more common convention and is not available here, because
+it would pay the entry at a price the decision depended on.
+
+**The horizon is counted on the market's calendar**, taken from the benchmark
+series. Counting a security's own bars would let one that stopped trading for a
+month appear to reach its horizon on time.
+
+**A ratio of adjusted prices is a total return.** The basis that makes a stored
+close useless for a market capitalisation is what makes it right here:
+distributions are reflected on both ends and a split inside the horizon is a
+non-event. The two modules want opposite things from the same adjustment.
+
+Four statuses, and three of them carry no number on purpose:
+
+| Status | Means |
+| --- | --- |
+| `REALISED` | Both ends priced. A measurement. |
+| `TRUNCATED` | The horizon has not elapsed. Will realise on a later run. |
+| `INTERRUPTED` | The market kept trading and the security did not. No price series can say whether that was an acquisition or a failure. |
+| `UNPRICED` | The security was still trading and we have no bar. A gap in our record, not an event in the market — kept apart so a count of delistings never counts our missing rows. |
+| `NO_ENTRY` | No first price at all. |
+
+## The survivorship measurement
+
+Running the pass over staging produced the finding that governs everything else:
+
+> Across 4,599 companies and the 120 sessions after 2024-01-02, **not one
+> security stopped trading.**
+
+A universe that size loses roughly a hundred names to acquisitions and failures
+over six months. The zero is a property of the `companies` table, which holds
+what is investable today and therefore cannot contain anything that stopped
+being so. No amount of care in the point-in-time layers repairs it, because the
+rows were never there to bound.
+
+## Delistings
+
+`delistings` holds what `companies` structurally cannot. Keyed by ticker rather
+than `company_id`: giving each delisted security a company row would fix the
+join by putting thousands of untradeable tickers into the table the scanner, the
+rankings and the dashboard all read as the investable set.
+
+**Discovery is by date range, not by symbol.** Asking a provider about a symbol
+can only confirm the fate of one already known, which is no help when the
+missing securities are exactly those the database never had. The
+corporate-action endpoint also answers without a symbol filter, and that is what
+makes enumeration possible.
+
+The provider's own inactive-asset list does not: of twenty well-known large-cap
+delistings, **eighteen appear in neither the active nor the inactive list** —
+Twitter, Activision, VMware, Seagen, Splunk, Pioneer, Hess, Ansys, Juniper among
+them. The corporate-action record has all of them, with terminal values.
+
+Discovered over 2020–2026 against staging: 5,796 delistings, 5,448 distinct
+tickers, of which 2,199 carry a cash value and 436 are worthless removals.
+
+| Ticker | Kind | Effective | Terminal value |
+| --- | --- | --- | --- |
+| ATVI | Cash merger | 2023-10-13 | $95.00 |
+| SGEN | Cash merger | 2023-12-14 | $229.00 |
+| SPLK | Cash merger | 2024-03-18 | $157.00 |
+| PXD | Stock merger | 2024-05-03 | 2.3234 XOM |
+| HES | Stock merger | 2024-09-30 | 1.025 CVX |
+| ANSS | Stock and cash | 2025-07-18 | $199.91 + 0.3399 SNPS |
+
+**What it does not cover: receivership.** SVB and First Republic ended in FDIC
+receivership rather than a merger or removal, and neither appears under any
+type. Bank failures are a category this source does not report, and the gap is
+stated rather than filled.
+
+**Ticker reuse is real.** 138 delisted tickers are live symbols today belonging
+to different companies, so a study joining on ticker across time will attribute
+one company's history to another unless it resolves through this table.
 
 ## Usage
 

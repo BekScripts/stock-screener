@@ -859,6 +859,120 @@ class AcceptedFiling(_Frozen):
     source: str = "unknown"
 
 
+class CorporateActionKind(StrEnum):
+    """What a corporate action did to a security.
+
+    Only the kinds that change how a past price or share count must be read.
+    A dividend is here because it moves the adjusted series; a name change is
+    here because it breaks the identity a ticker is joined on.
+    """
+
+    FORWARD_SPLIT = "FORWARD_SPLIT"
+    REVERSE_SPLIT = "REVERSE_SPLIT"
+    CASH_DIVIDEND = "CASH_DIVIDEND"
+    STOCK_DIVIDEND = "STOCK_DIVIDEND"
+    SPIN_OFF = "SPIN_OFF"
+    CASH_MERGER = "CASH_MERGER"
+    STOCK_MERGER = "STOCK_MERGER"
+    STOCK_AND_CASH_MERGER = "STOCK_AND_CASH_MERGER"
+    WORTHLESS_REMOVAL = "WORTHLESS_REMOVAL"
+    NAME_CHANGE = "NAME_CHANGE"
+
+
+class CorporateActionRecord(_Frozen):
+    """One corporate action, as a source reported it.
+
+    The reason this exists rather than being inferred: stored closes are
+    retroactively split- and dividend-adjusted, so the price a trader saw on a
+    past date is not in the database. Recovering it needs the factor **and** the
+    date it applied, and a factor without an ex-date is worse than none — it
+    inserts a discontinuity on the wrong day.
+
+    Attributes:
+        symbol: The security the action applies to.
+        kind: What happened.
+        ex_date: First session trading without the action. The date every
+            adjustment pivots on.
+        split_factor: New shares per old share — 4.0 for a 4-for-1, 0.125 for a
+            1-for-8 reverse. None for a distribution.
+        cash_amount: Cash per share, in `currency`. None for a split.
+        currency: What `cash_amount` is denominated in.
+        record_date: When holders of record were determined, when stated.
+        payable_date: When the action paid, when stated.
+        new_symbol: The ticker after a name change, or the ticker received in a
+            spin-off or stock merger.
+        source: Identifier of the provider the record came from.
+        source_id: The provider's own identifier, so a row traces back.
+    """
+
+    symbol: str
+    kind: CorporateActionKind
+    ex_date: date
+    split_factor: float | None = None
+    cash_amount: float | None = None
+    currency: str | None = None
+    record_date: date | None = None
+    payable_date: date | None = None
+    new_symbol: str | None = None
+    source: str = "unknown"
+    source_id: str | None = None
+
+
+#: The kinds that end a security's life rather than adjust its price.
+DELISTING_KINDS: frozenset[CorporateActionKind] = frozenset(
+    {
+        CorporateActionKind.CASH_MERGER,
+        CorporateActionKind.STOCK_MERGER,
+        CorporateActionKind.STOCK_AND_CASH_MERGER,
+        CorporateActionKind.WORTHLESS_REMOVAL,
+    }
+)
+
+
+class DelistingRecord(_Frozen):
+    """A security's last day, and what a holder was left with.
+
+    Separate from `CorporateActionRecord` and separate from `universe_events`,
+    for the same reason in both cases: **this is about securities the database
+    does not have.** A universe event belongs to a company row; a delisted
+    security has none, and giving it one would put thousands of untradeable
+    tickers into the table the whole application reads as its investable set.
+
+    It exists because a forward return over a security that stopped trading has
+    no price to end on, and the three ways that happens are not interchangeable.
+    A cash merger paid a known amount, so the outcome is computable exactly. A
+    stock merger paid shares of a named acquirer, so the outcome is computable
+    if that acquirer's price is known. A worthless removal paid nothing, and
+    -100% is not an assumption there but the reported fact.
+
+    Attributes:
+        symbol: The security that ceased. For a merger this is the acquiree —
+            never the acquirer, which carries on and must not be attributed the
+            event.
+        kind: How it ended. One of `DELISTING_KINDS`.
+        effective_date: Its last day as a listed security.
+        cash_per_share: What a holder received per share, where cash was paid.
+            None for a pure stock merger, and None rather than 0.0 for a
+            worthless removal, which reports its own nothing through `kind`.
+        acquirer_symbol: Who paid, for a merger settled in shares.
+        acquirer_rate: Acquirer shares received per share held.
+        acquiree_rate: Shares surrendered, the denominator of `acquirer_rate`.
+            Usually one; stated because it is not always.
+        source: The provider that reported it.
+        source_id: That provider's own identifier, so a row traces back.
+    """
+
+    symbol: str
+    kind: CorporateActionKind
+    effective_date: date
+    cash_per_share: float | None = None
+    acquirer_symbol: str | None = None
+    acquirer_rate: float | None = None
+    acquiree_rate: float | None = None
+    source: str = ""
+    source_id: str | None = None
+
+
 class EligibilityThresholds(_Frozen):
     """The configurable bar a security must clear to enter the scan.
 

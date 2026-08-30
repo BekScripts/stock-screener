@@ -31,10 +31,12 @@ from data_access.models import (
     BenchmarkPrice,
     Company,
     CorporateAction,
+    Delisting,
     FilingAcceptance,
     FilingExcerptRecord,
     FilingRecord,
     FinancialSnapshot,
+    ForwardReturnRecord,
     FundamentalObservation,
     FxRate,
     JobRecord,
@@ -2571,9 +2573,17 @@ class CorporateActionRepository:
                 )
             )
         }
-        fresh = [
-            row for row in actions if (row["company_id"], row["action_fingerprint"]) not in seen
-        ]
+        # Deduplicated against the argument as well as the table. A caller
+        # batching a hundred symbols has no cheap way to know it was handed the
+        # same action twice, and an integrity error mid-batch would lose every
+        # row around it — including the ones that were fine.
+        fresh: list[Mapping[str, Any]] = []
+        for row in actions:
+            key = (row["company_id"], row["action_fingerprint"])
+            if key in seen:
+                continue
+            seen.add(key)
+            fresh.append(row)
         if not fresh:
             return 0
 
@@ -2607,6 +2617,164 @@ class CorporateActionRepository:
     def count(self) -> int:
         """Return how many actions are stored."""
         return self._session.scalar(select(func.count()).select_from(CorporateAction)) or 0
+
+
+class DelistingRepository:
+    """Reads and writes `delistings`, the record of securities that ceased.
+
+    Insert-only and identified by the source's own id, so a re-run of a window
+    already discovered stores nothing.
+    """
+
+    def __init__(self, session: Session) -> None:
+        """Bind the repository to a session."""
+        self._session = session
+
+    def add_all(self, rows: Sequence[Mapping[str, Any]]) -> int:
+        """Append delistings, skipping any already stored.
+
+        Args:
+            rows: Column mappings carrying `source` and `source_id`.
+
+        Returns:
+            How many rows were newly inserted.
+        """
+        if not rows:
+            return 0
+
+        seen = {
+            (source, source_id)
+            for source, source_id in self._session.execute(
+                select(Delisting.source, Delisting.source_id).where(
+                    Delisting.source.in_({row["source"] for row in rows})
+                )
+            )
+        }
+        fresh: list[Mapping[str, Any]] = []
+        for row in rows:
+            key = (row["source"], row["source_id"])
+            if key in seen:
+                continue
+            seen.add(key)
+            fresh.append(row)
+        if not fresh:
+            return 0
+
+        for chunk in _chunks(fresh, _INSERT_CHUNK_ROWS):
+            self._session.execute(sa_insert(Delisting), list(chunk))
+        return len(fresh)
+
+    def by_ticker(self, tickers: Sequence[str]) -> dict[str, Delisting]:
+        """Return the earliest delisting for each of these tickers.
+
+        Earliest, because a ticker can be reused: 94 of the provider's inactive
+        symbols are also live tickers belonging to different companies today.
+        A caller resolving what happened to a security it held in 2022 wants the
+        event that ended *that* security, not one recorded for its namesake.
+
+        Args:
+            tickers: Symbols to look up.
+
+        Returns:
+            One row per ticker that has one.
+        """
+        if not tickers:
+            return {}
+        found: dict[str, Delisting] = {}
+        rows = self._session.scalars(
+            select(Delisting)
+            .where(Delisting.ticker.in_({ticker.upper() for ticker in tickers}))
+            .order_by(Delisting.effective_date)
+        )
+        for row in rows:
+            found.setdefault(row.ticker, row)
+        return found
+
+    def count(self) -> int:
+        """Return how many delistings are stored."""
+        return self._session.scalar(select(func.count()).select_from(Delisting)) or 0
+
+
+class ForwardReturnRepository:
+    """Reads and writes `forward_returns`. Insert-only, like its PIT siblings.
+
+    A horizon already measured for a date is refused rather than replaced. There
+    is no update path and no upsert, because a realised return is arithmetic
+    over two published prices: a second run producing a different number would
+    mean an input changed underneath, which is exactly the event worth failing
+    on rather than absorbing.
+    """
+
+    def __init__(self, session: Session) -> None:
+        """Bind the repository to a session."""
+        self._session = session
+
+    def add_all(self, rows: Sequence[Mapping[str, Any]]) -> int:
+        """Append measurements, skipping any horizon already recorded.
+
+        Args:
+            rows: Column mappings carrying `company_id`, `observation_date` and
+                `horizon_sessions`.
+
+        Returns:
+            How many rows were newly inserted.
+        """
+        if not rows:
+            return 0
+
+        companies = {row["company_id"] for row in rows}
+        dates = {row["observation_date"] for row in rows}
+        seen = {
+            (company_id, observation_date, horizon)
+            for company_id, observation_date, horizon in self._session.execute(
+                select(
+                    ForwardReturnRecord.company_id,
+                    ForwardReturnRecord.observation_date,
+                    ForwardReturnRecord.horizon_sessions,
+                ).where(
+                    ForwardReturnRecord.company_id.in_(companies),
+                    ForwardReturnRecord.observation_date.in_(dates),
+                )
+            )
+        }
+        fresh: list[Mapping[str, Any]] = []
+        for row in rows:
+            key = (row["company_id"], row["observation_date"], row["horizon_sessions"])
+            if key in seen:
+                continue
+            seen.add(key)
+            fresh.append(row)
+        if not fresh:
+            return 0
+
+        for chunk in _chunks(fresh, _INSERT_CHUNK_ROWS):
+            self._session.execute(sa_insert(ForwardReturnRecord), list(chunk))
+        return len(fresh)
+
+    def measured_horizons(self, observation_date: date) -> set[tuple[int, int]]:
+        """Return the `(company_id, horizon)` pairs already measured for a date.
+
+        Lets a re-run skip work rather than compute it and discard it, which
+        matters when a horizon is measured over five thousand companies.
+
+        Args:
+            observation_date: The date to look up.
+
+        Returns:
+            The pairs already stored.
+        """
+        return {
+            (company_id, horizon)
+            for company_id, horizon in self._session.execute(
+                select(ForwardReturnRecord.company_id, ForwardReturnRecord.horizon_sessions).where(
+                    ForwardReturnRecord.observation_date == observation_date
+                )
+            )
+        }
+
+    def count(self) -> int:
+        """Return how many measurements are stored."""
+        return self._session.scalar(select(func.count()).select_from(ForwardReturnRecord)) or 0
 
 
 class PitSignalSnapshotRepository:

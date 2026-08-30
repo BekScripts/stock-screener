@@ -53,9 +53,10 @@ Phase 5; Phases 6 and 7 are layers over it, not revisions of it.
 | 8C | Market signals | complete, under review |
 | 8D | Point-in-time metric engine | complete, accepted |
 | 8E | Data readiness — observation population and blocker audit | complete |
-| 8F | Availability semantics and price depth | **complete, under review** |
+| 8F | Availability semantics and price depth | complete, under review |
+| 8G | Point-in-time research outcomes | **complete, under review** |
 
-**Phases 8B, 8C and 8D are implemented and awaiting review.** Nothing is committed.
+**Phases 8B, 8C, 8F and 8G are implemented and awaiting review.**
 
 Phase 8A was an audit, not an implementation: it established that the ranking is
 not "dead" (Top 100 median ATR 4.01% against 3.36% for the universe) and that the
@@ -71,9 +72,19 @@ now be built from what had actually been filed by a given date, reusing the
 frozen normalisation and the frozen arithmetic unchanged. It adds no table and no
 migration.
 
+Phase 8G adds the outcome half: a market capitalisation correct on a past date,
+forward returns at five horizons, and a delisting registry. It also produced the
+measurement that now governs the phase — **across 4,599 companies and the 120
+sessions after 2024-01-02, not one security stopped trading.** A universe that
+size loses roughly a hundred names to acquisitions and failures over six months.
+The zero is a property of `companies`, which holds what is investable today and
+therefore cannot contain anything that stopped being so.
+
 Strategy research is **not** started and is not to be started without being
-asked. The binding constraint is unchanged and is not architectural: the
-observation record is empty and the point-in-time history is one day.
+asked. The binding constraint has moved but not lifted: the observation record is
+now populated and the outcome layer exists, but the score history is one day and
+the universe every historical study would run over excludes everything that has
+since ceased to exist.
 
 ### Data state
 
@@ -99,6 +110,12 @@ Code completion and data promotion are separate operations. Promoting the cohort
 is a deliberate, separate step: apply the migrations, then run the ordinary
 passes — `update-eligibility-volume`, `enrich`, `update-fundamentals`, `score` —
 against the real database.
+
+**The outcome layer is populated on staging only.** `stage8e.db` carries 82,321
+corporate actions across 5,769 companies, 5,796 delistings over 2020–2026, and
+28,825 forward-return measurements from 2024-01-02. Market features and signals
+were backfilled for that date to prove they can be: 4,651 of each, from price
+data alone. `compounder_radar.db` has received none of it.
 
 ---
 
@@ -280,6 +297,50 @@ convention, and none may be relaxed without an explicit instruction.
 - **Feeds are never mixed in one series.** IEX and SIP disagree by 36x on volume
   and differ on the close, and `price_history` records no provenance, so a
   partial SIP backfill would create an invisible discontinuity.
+
+### Phase 8G — research outcomes
+
+**Migrations `0024` (`forward_returns`) and `0025` (`delistings`).** Both
+additive, neither uses `batch_alter_table`.
+
+- **A market capitalisation is anchored on the share count's date, not the
+  valuation's.** AAPL split four-for-one on 2020-08-31 and did not file again
+  until 2020-10-30; for those two months the newest available count is pre-split
+  and the price is not. Anchoring on the valuation date applies no factor and
+  values Apple at $557bn. `domain.pricing.market_cap_as_of` takes
+  `share_count_date` for this reason, and two regression tests name the wrong
+  anchor so reintroducing it fails.
+- **A recovered price is a lower bound, never an estimate.** Splits are undone
+  exactly; distributions are not, because `adjustment=all` removes them too.
+  The residual is one-directional and roughly the cumulative distribution yield
+  since the date — about 3% for AAPL over six years. Removing it needs a raw
+  price series, which the provider serves and this project does not store.
+- **The entry is the next session's open.** A snapshot computable at a close
+  cannot be filled at that close. Close-to-close would pay the entry at a price
+  the decision depended on.
+- **The horizon is counted on the market's calendar**, taken from the benchmark.
+  A security's own bars would let one that stopped trading appear to reach its
+  horizon on schedule.
+- **A security that stops trading has no return, and saying so is the point.**
+  `INTERRUPTED` carries no number: -100% would libel every company acquired for
+  cash, 0% would erase every failure, and omitting the row would rebuild the
+  survivorship bias. `UNPRICED` is kept separate for a gap in our own record, so
+  a count of delistings never counts our missing bars.
+- **`delistings` is keyed by ticker, not `company_id`.** Giving each delisted
+  security a company row would fix the join by putting thousands of untradeable
+  tickers into the table the scanner, the rankings and the dashboard all read as
+  the investable set.
+- **Delisting discovery is by date range, not by symbol.** Asking about a symbol
+  can only confirm the fate of one already known. The provider's inactive-asset
+  list is not a registry: 18 of 20 well-known large-cap delistings appear in
+  neither the active nor the inactive list, while the corporate-action record
+  has all of them with terminal values.
+- **Receivership is not covered.** SVB and First Republic appear under no type.
+  Documented, not guessed at.
+- **`build_company_metrics` gained `share_basis_close`, defaulting to None.**
+  The default path is byte-identical to before, which is what allows a
+  point-in-time caller to correct the market capitalisation without touching a
+  live score. No score version changed; no company's number moved.
 
 ### Phase 7 — international
 
@@ -493,7 +554,7 @@ The map in `src/stock_screener/jobs.py` is the entire allowlist.
 
 ## Database migrations
 
-Head is **`0023`**. One revision per schema change; the chain is linear.
+Head is **`0025`**. One revision per schema change; the chain is linear.
 
 | Rev | Adds |
 | --- | --- |
@@ -517,6 +578,8 @@ Head is **`0023`**. One revision per schema change; the chain is linear.
 | `0018` | `period_start` and `cadence`; existing rows backfilled `QUARTERLY` |
 | `0019` | `statement_profile`, `consolidated_avg_volume`, `volume_source` |
 | `0020` | score freshness; NULL reads as `CURRENT` |
+| `0025` | `delistings` — the securities that left the market, keyed by ticker because they have no company row |
+| `0024` | `forward_returns` — what a security did at 1/5/20/60/120 sessions from an observation date |
 | `0023` | `filing_acceptance` — when the SEC accepted each filing, so availability is judged by instant rather than by date |
 | `0022` | `pit_signal_snapshots` — the derived market-state layer, append-only and versioned |
 | `0021` | the point-in-time layer — `pit_capture_runs`, `pit_score_snapshots`, `pit_feature_snapshots`, `fundamental_observations`, `universe_events`, `corporate_actions` |
@@ -649,6 +712,14 @@ learn.
 | `tests/integration/test_market_signals.py::test_a_new_version_appends_beside_the_old_one` | changing the rules never restates what was said at the time |
 | `packages/domain/tests/test_signals.py` | percentile determinism, multi-label setups, and the tri-state verdict |
 | `tests/integration/test_pit_metrics.py::test_a_restatement_is_invisible_until_it_is_filed` | the worked restatement: January sees nothing, March the original, May the revision |
+| `packages/domain/tests/test_pricing.py::test_anchoring_on_the_valuation_date_would_undervalue_by_the_factor` | the wrong anchor is named, so reintroducing it fails rather than passes quietly |
+| `packages/domain/tests/test_pricing.py::test_the_window_between_a_split_and_the_next_filing` | the two months where the newest filed count is on the old basis |
+| `packages/domain/tests/test_pricing.py::test_the_valuation_is_continuous_across_the_split` | a company's size does not change because its shares were divided |
+| `packages/domain/tests/test_outcomes.py::test_the_observation_session_is_never_the_entry` | a snapshot computable at a close is never filled at that close |
+| `packages/domain/tests/test_outcomes.py::test_an_interrupted_outcome_has_no_return` | neither -100% nor 0% is assumed for a security that stopped trading |
+| `packages/domain/tests/test_outcomes.py::test_a_one_day_hole_is_unpriced_not_interrupted` | our missing bars are never counted as delistings |
+| `tests/integration/test_pit_outcomes.py::test_a_delisting_is_stored_without_a_company_row` | the delisting registry never pollutes the investable set |
+| `tests/integration/test_pit_outcomes.py::test_without_a_benchmark_there_is_no_calendar_and_nothing_is_measured` | a security's own bars never stand in for the market's sessions |
 | `tests/integration/test_pit_metrics.py::test_the_operational_table_cannot_influence_a_historical_metric` | a historical metric cannot drift when `financial_snapshots` is overwritten |
 | `tests/integration/test_pit_metrics.py::test_a_metric_waits_for_its_slowest_input` | a multi-concept metric uses only facts available at the date |
 | `tests/integration/test_pit_metrics.py::test_two_decision_dates_see_two_different_companies` | the end-to-end temporal scenario |
@@ -729,10 +800,10 @@ Not a backlog. These exclusions are deliberate.
 | | |
 | --- | --- |
 | Commit | `9ca5dfb` — feat: complete foreign issuer coverage and current rankings |
-| Branch | `feat/phase-8d-pit-metric-engine` (8A-8E all uncommitted) |
-| Migration head | `0023` |
-| Score version | `COMPOUNDER_V1_2` (unchanged by 8A or 8B) |
+| Branch | `feat/phase-8d-pit-metric-engine` (8F committed, 8G uncommitted) |
+| Migration head | `0025` |
+| Score version | `COMPOUNDER_V1_2` (unchanged by anything in Phase 8) |
 | Feature version | `MARKET_FEATURES_V1` |
 | Signal version | `MARKET_SIGNALS_V1` |
-| Primary database | untouched by 8A-8D; verified byte-identical by SHA-256 |
-| Checkpoint date | 2026-08-29 |
+| Primary database | untouched by 8A-8G; all work ran against `stage8e.db` |
+| Checkpoint date | 2026-08-30 |

@@ -152,6 +152,9 @@ class Company(Base):
     corporate_actions: Mapped[list[CorporateAction]] = relationship(
         back_populates="company", cascade="all, delete-orphan", passive_deletes=True
     )
+    forward_returns: Mapped[list[ForwardReturnRecord]] = relationship(
+        back_populates="company", cascade="all, delete-orphan", passive_deletes=True
+    )
 
 
 class FinancialSnapshot(Base):
@@ -1136,6 +1139,109 @@ class CorporateAction(Base):
     )
 
     company: Mapped[Company] = relationship(back_populates="corporate_actions")
+
+
+class Delisting(Base):
+    """A security's last day, and what a holder was left with.
+
+    Keyed by ticker and **not** by `company_id`, which is the whole point of the
+    table. Nearly every row here is a security the `companies` table has never
+    contained: it holds what is investable now, so a study run over it cannot
+    see a single company that was acquired or wound up, and measured over 4,599
+    companies across 120 sessions of 2024 it saw exactly zero. That is not a
+    quiet distortion, it is the survivorship bias in its pure form.
+
+    Giving these rows company records instead would fix the join and break
+    everything else — thousands of untradeable tickers would enter the table the
+    scanner, the rankings and the dashboard all read as the investable set.
+
+    Append-only, identified by the source's own id.
+    """
+
+    __tablename__ = "delistings"
+    __table_args__ = (
+        UniqueConstraint("source", "source_id", name="uq_delisting_source"),
+        Index("ix_delistings_ticker", "ticker"),
+        Index("ix_delistings_date", "effective_date"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    # The acquiree — the security that ceased. Never the acquirer, which
+    # carries on and must not be recorded as having ended.
+    ticker: Mapped[str] = mapped_column(String(20), nullable=False)
+    # CASH_MERGER, STOCK_MERGER, STOCK_AND_CASH_MERGER or WORTHLESS_REMOVAL.
+    kind: Mapped[str] = mapped_column(String(30), nullable=False)
+    effective_date: Mapped[date] = mapped_column(Date, nullable=False)
+    # Cash received per share. NULL for a pure stock merger, and NULL rather
+    # than 0.0 for a worthless removal, which reports its nothing through
+    # `kind` — a stored zero would be indistinguishable from an unknown.
+    cash_per_share: Mapped[float | None] = mapped_column(Float)
+    acquirer_ticker: Mapped[str | None] = mapped_column(String(20))
+    acquirer_rate: Mapped[float | None] = mapped_column(Float)
+    acquiree_rate: Mapped[float | None] = mapped_column(Float)
+    source: Mapped[str] = mapped_column(String(50), nullable=False)
+    source_id: Mapped[str | None] = mapped_column(String(80))
+    observed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow, server_default=func.now()
+    )
+
+
+class ForwardReturnRecord(Base):
+    """What a security did after a point-in-time observation date.
+
+    The other half of a research question. A snapshot says what was knowable;
+    this says what happened next, and the two together are what any study of
+    whether the score predicts anything has to join.
+
+    Append-only and versionless, because it is a measurement rather than a
+    policy: `1, 5, 20, 60, 120` sessions from an observation date is the same
+    fact whoever computes it, and a re-run of a realised horizon reproduces the
+    number exactly. The unique constraint is what enforces that — a horizon
+    already measured for a date is refused, never replaced.
+
+    **A row with no return is the point of the table, not a defect in it.**
+    `status` distinguishes a horizon that has not elapsed from a security that
+    stopped trading inside it, and dropping either kind would rebuild the
+    survivorship bias the point-in-time record exists to remove.
+    """
+
+    __tablename__ = "forward_returns"
+    __table_args__ = (
+        UniqueConstraint(
+            "company_id",
+            "observation_date",
+            "horizon_sessions",
+            name="uq_forward_return",
+        ),
+        Index("ix_forward_returns_date", "observation_date", "horizon_sessions"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    company_id: Mapped[int] = mapped_column(
+        ForeignKey("companies.id", ondelete="CASCADE"), nullable=False
+    )
+    # The date the snapshot describes. The entry is the session *after* it.
+    observation_date: Mapped[date] = mapped_column(Date, nullable=False)
+    horizon_sessions: Mapped[int] = mapped_column(Integer, nullable=False)
+    # REALISED, TRUNCATED, INTERRUPTED or NO_ENTRY.
+    status: Mapped[str] = mapped_column(String(20), nullable=False)
+    entry_date: Mapped[date | None] = mapped_column(Date)
+    entry_price: Mapped[float | None] = mapped_column(Float)
+    exit_date: Mapped[date | None] = mapped_column(Date)
+    exit_price: Mapped[float | None] = mapped_column(Float)
+    # `exit / entry - 1` on the adjusted basis, so distributions and splits are
+    # already in it. NULL unless `status` is REALISED — never zero, which would
+    # claim the security went nowhere.
+    total_return: Mapped[float | None] = mapped_column(Float)
+    # Where an interrupted security was last priced. Evidence about what
+    # happened, not a substitute for the exit that never came.
+    last_seen_date: Mapped[date | None] = mapped_column(Date)
+    last_seen_price: Mapped[float | None] = mapped_column(Float)
+    measured_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow, server_default=func.now()
+    )
+
+    company: Mapped[Company] = relationship(back_populates="forward_returns")
 
 
 class PitSignalSnapshot(Base):
