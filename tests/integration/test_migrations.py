@@ -35,6 +35,13 @@ _TABLES = {
     "fundamental_observations",
     "universe_events",
     "corporate_actions",
+    # Phase 8H's historical-security layer, keyed by CIK and separate from
+    # `companies` so a delisted name is addressable without polluting the
+    # investable set.
+    "historical_securities",
+    "historical_observations",
+    "historical_prices",
+    "historical_corporate_actions",
 }
 
 # The autouse `isolated_env` fixture chdirs into a tmp_path, so both paths are

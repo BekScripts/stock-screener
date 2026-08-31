@@ -55,8 +55,11 @@ Phase 5; Phases 6 and 7 are layers over it, not revisions of it.
 | 8E | Data readiness — observation population and blocker audit | complete |
 | 8F | Availability semantics and price depth | complete, under review |
 | 8G | Point-in-time research outcomes | **complete, under review** |
+| 8H | Backtest-readiness harness — survivorship, universe-as-of, score reconstruction | **complete, under review** |
+| 8I | Historical securities — delisted names reconstructable from free EDGAR + Alpaca | **complete, under review** |
+| 8J | Research dataset — backfilled signals and outcomes, coverage audit, identity guard | **complete, under review** |
 
-**Phases 8B, 8C, 8F and 8G are implemented and awaiting review.**
+**Phases 8B, 8C, 8F, 8G, 8H, 8I and 8J are implemented and awaiting review.**
 
 Phase 8A was an audit, not an implementation: it established that the ranking is
 not "dead" (Top 100 median ATR 4.01% against 3.36% for the universe) and that the
@@ -80,11 +83,97 @@ size loses roughly a hundred names to acquisitions and failures over six months.
 The zero is a property of `companies`, which holds what is investable today and
 therefore cannot contain anything that stopped being so.
 
+Phase 8H is the readiness harness that folds the point-in-time layers into one
+audit. `stock_screener.backtest` answers, for a security on a date, the seven
+questions a survivorship-aware study needs settled — universe membership,
+filed fundamentals, point-in-time market cap, CompounderScore, signals, forward
+outcomes and delisting fate — and names every gap it cannot fill. Its findings:
+the CompounderScore is fully reconstructable from point-in-time inputs because
+`score_company` has no cross-sectional term; delisting fate is classified as
+`ACQUIRED`, `BANKRUPT`, `DELISTED`, `RECEIVERSHIP` or `UNKNOWN`
+(`domain.DelistingReason`); and market-signal history is backfillable from stored
+prices with no provider and no look-ahead. It adds no table, no migration and no
+score version. See [Backtest readiness](backtest-readiness.md).
+Phase 8I closes the last of those gaps: a delisted security is now reconstructable
+from the free record that outlives its listing. `historical_securities` (migration
+`0026`) is keyed by **CIK** — stable across a ticker change, distinct under a
+reused ticker, separate for an acquiree and its acquirer — and is deliberately not
+a `companies` row, so a delisted name is addressable without entering the
+investable set. Its three child tables mirror the point-in-time company record
+(observations selected on `filed_date`, daily prices, corporate actions), and
+`stock_screener.backtest.reconstruct_historical_score` reads them through the same
+frozen `build_company_metrics` and `score_company` the live path uses. A
+representative cohort validates it end to end: ATVI reconstructs to a $65.5bn
+market cap, a 53.9 score and a $95.00 terminal value; a delisted bank is declined
+as `UNSUPPORTED_SECTOR`; and every gap the free data cannot fill — an FDIC-only
+bank's fundamentals, a pre-2009 filer, pre-2021 prices, a receivership's terminal
+value — is kept `UNKNOWN`, never guessed.
+Phase 8J turns the mechanisms into a dataset. `stock_screener.backtest.backfill`
+runs the *existing* daily passes over sessions that have already happened —
+`capture_day`, `derive_market_signals` and `measure_forward_returns`, unchanged —
+idempotently, resumably and one transaction per date, with a price cache that is
+proven equivalent to the repository read field by field. `backtest.coverage`
+audits the result as a funnel from "in the record" to "studiable without
+inventing anything", and reports universe membership as `reconstruct_universe`
+returns it rather than substituting a proxy for it.
+
+It also fixed an identity defect the audit exposed. Delistings join to companies
+by ticker, and a ticker is not an identity: `CZR`'s 2020 exit belongs to the
+Caesars that merged into Eldorado, not to the `CZR` printing bars today.
+`reconstruct_universe` was removing 127 live companies from every universe on
+that basis, and `security_readiness` was reporting them as acquired. The price
+record now adjudicates — a company still trading after an exit did not take it.
+No score, signal or version moved; this is a data-quality fix in the audit layer.
+
+**Measured on `stage9.db`, a throwaway copy of `stage8e.db`.** Forward returns:
+1,064 daily decision dates over 2022-01-03..2026-03-31, **30,669,800 measurements**
+across 5,765 securities, zero failed and zero missing. Market signals: 56
+month-end sessions over 2022-01-31..2026-08-28, **282,998 signal rows**, zero
+failed and zero missing; the full daily pass over 1,168 sessions runs at ~10s a
+session. Historical securities: **402 ingested**, 400 with fundamentals, 402 with
+prices, 291 with a stated terminal value, zero failures. The monthly coverage
+audit reports **51 consecutive month-ends with a median of 1,698 fully usable
+securities** (minimum 1,533, maximum 1,793), 2022-01-31 through 2026-03-31.
+
+Look-ahead was checked rather than assumed: across 30.67M measurements, zero rows
+have an entry on or before the decision date, zero have an exit on or before the
+entry, zero carry a number without `REALISED`, and a 200,000-row sample confirms
+every horizon spans exactly N benchmark sessions.
+
+The phase's own finding is the one that governs it: **the historical universe
+cannot be reconstructed at all.** Every company's membership record begins on
+2026-08-26, the day capture first ran, so `universe_members_as_of` returns
+*undetermined* — not baseline — for every earlier date, and the historical
+universe is empty on every date in the study window. That is not a backfillable
+gap. `companies` holds today's roster, so writing membership events for past
+dates would assert that today's survivors were present then, which is the exact
+survivorship bias the point-in-time record exists to remove.
+
+Two further limitations were measured and are accepted rather than fixed. **The
+dataset is censored, not survivorship-aware.** 3,801 securities left the market
+over 2022-01..2026-08; the record holds **22** of those exits as observable
+events (0.6%), because `companies` contains only what is investable today. The
+delisted names that would close the gap have recoverable prices — the free
+provider still serves them by ticker, verified on ATRS, SWIR, SIVB and BBBY — but
+nowhere to be stored: `price_history` requires a `companies` row and
+`historical_securities.cik` is `NOT NULL`, while the free record establishes a
+CIK for only **12.5%** of delisted tickers (Form 25 full-text search, which is
+additionally skewed to Nasdaq because only its exhibits embed the symbol).
+
+**A third identity problem is present and not fixable in this schema.** 638 of
+5,765 companies (11.1%) have a price series with a discontinuity longer than 120
+sessions, and only 34 of those have a delisting recorded inside the span. The
+proven case is `companies` row 2147: ticker `BBBY`, named *Neighborhood
+Intelligence, Inc.*, carrying Bed Bath & Beyond's collapse to $0.0743 on
+2023-05-02, a 26-month hole, then an unrelated company from 2025-07-14. One row,
+two issuers, and no CIK on `companies` to separate them.
+
 Strategy research is **not** started and is not to be started without being
-asked. The binding constraint has moved but not lifted: the observation record is
-now populated and the outcome layer exists, but the score history is one day and
-the universe every historical study would run over excludes everything that has
-since ceased to exist.
+asked. The binding constraint has moved but not lifted: the mechanisms are now
+built and tested, but two of their inputs only accumulate with time — universe
+membership is baseline-only until witnessed transitions land, and the *recorded*
+score and signal series begin the day capture first ran. Reconstruction reaches
+back over the observation record; the witnessed history does not yet exist.
 
 ### Data state
 
@@ -342,6 +431,32 @@ additive, neither uses `batch_alter_table`.
   point-in-time caller to correct the market capitalisation without touching a
   live score. No score version changed; no company's number moved.
 
+### Phase 8I — historical securities
+
+- **Identity is the CIK, never the ticker.** A ticker change (FB→META) keeps one
+  CIK, a reused ticker (BBBY today) is a different CIK, and an acquisition gives
+  acquiree and acquirer separate CIKs — so keying on CIK is what makes a ticker
+  change one security, a reuse two, and a merger two histories rather than one.
+  `primary_ticker` is a price-retrieval attribute that can change, never the key.
+- **A historical security is never a `companies` row.** `companies` is the
+  current investable universe; the historical layer is separate tables with no
+  foreign key to it, so the two sets cannot contaminate one another and a
+  reconstruction cannot read today's company state — a delisted name has none.
+- **Activity is decided by the date, not by today.** A historical security is
+  eligible only on a date at or before its last trading session; the live path's
+  current `is_active` flag is a look-ahead for a delisted name and is closed here.
+- **The frozen machinery is reused, never reimplemented.** Fundamentals go through
+  `periods_from_observations`, the market cap through `as_traded_price`,
+  eligibility through `evaluate_eligibility`, the score through `score_company` —
+  the same functions the live path calls. A test asserts the two paths produce an
+  identical score from identical data.
+- **UNKNOWN is preserved wherever free data cannot establish the truth.** An
+  FDIC-only bank's fundamentals (absent from EDGAR), a pre-2009 filer (no XBRL),
+  pre-2021 prices (beyond the free feed's reach) and a receivership's terminal
+  equity value (in no feed) are recorded as gaps and left NULL — never a guessed
+  zero. A receivership takes its status only from asserted evidence, never the
+  action feed.
+
 ### Phase 7 — international
 
 - **The filing's unit is authoritative, never the vendor's.** `reporting_currency`
@@ -384,7 +499,7 @@ A third deployable needs an ADR first and probably its own repository.
 
 | Package | Import | Holds | I/O |
 | --- | --- | --- | --- |
-| `packages/domain` | `domain` | models, metric engine, eligibility, CompounderScore, curves, sectors, statements, cadence | none |
+| `packages/domain` | `domain` | models, metric engine, eligibility, CompounderScore, curves, sectors, statements, cadence, survivorship | none |
 | `packages/data-access` | `data_access` | SQLAlchemy models, repositories, session | database |
 | `packages/api-clients` | `api_clients` | Alpaca, EDGAR, FMP, research providers, external search, FX | HTTP |
 | `packages/research` | `research` | Phase 3 contract, prompt, validation | none |
@@ -409,6 +524,9 @@ src/stock_screener/
   scoring/          engine, enrichment, rankings, report
   research/         candidates, brief, runner, report, store
   deep_research/    preparation, collection, sources, brief, runner, report
+  pit/              point-in-time capture, metrics, actions, returns, delistings
+  signals/          market-signal derivation from the feature record
+  backtest/         readiness harness, score reconstruction, historical securities
 ```
 
 ### Frontend routes
@@ -554,7 +672,7 @@ The map in `src/stock_screener/jobs.py` is the entire allowlist.
 
 ## Database migrations
 
-Head is **`0025`**. One revision per schema change; the chain is linear.
+Head is **`0026`**. One revision per schema change; the chain is linear.
 
 | Rev | Adds |
 | --- | --- |
@@ -578,6 +696,7 @@ Head is **`0025`**. One revision per schema change; the chain is linear.
 | `0018` | `period_start` and `cadence`; existing rows backfilled `QUARTERLY` |
 | `0019` | `statement_profile`, `consolidated_avg_volume`, `volume_source` |
 | `0020` | score freshness; NULL reads as `CURRENT` |
+| `0026` | `historical_securities` and its `historical_observations`, `historical_prices`, `historical_corporate_actions` children — delisted names keyed by CIK, separate from `companies`. Additive, no `batch_alter_table` |
 | `0025` | `delistings` — the securities that left the market, keyed by ticker because they have no company row |
 | `0024` | `forward_returns` — what a security did at 1/5/20/60/120 sessions from an observation date |
 | `0023` | `filing_acceptance` — when the SEC accepted each filing, so availability is judged by instant rather than by date |
@@ -595,6 +714,10 @@ Phase 8B's append-only layer, beside them: `pit_capture_runs` ·
 `universe_events` · `corporate_actions`
 
 Phase 8C adds one more: `pit_signal_snapshots`.
+
+Phase 8I adds the historical-security layer, keyed by CIK and separate from every
+table above: `historical_securities` · `historical_observations` ·
+`historical_prices` · `historical_corporate_actions`.
 
 ### The migration safety rule
 
@@ -624,6 +747,10 @@ Documented rather than fixed. Each is a deliberate stop, not a backlog item.
 | **No ADR ratio lookup** | Cover-page share counts on 20-F/40-F are not read; `market_cap_source` falls to `PROVIDER` or `UNKNOWN`. |
 | **Single-exchange price bars** | The IEX share of consolidated volume ranged from 0.006% to 12% across 259 companies, so the $1M gate cannot be applied to stored bars. `update-eligibility-volume` reads the consolidated tape instead. |
 | **No authentication on the job endpoints** | They spend money. Only reasonable because the API binds localhost. |
+| **FDIC-only bank fundamentals** (historical layer) | First Republic and Signature file under §12(i) with the FDIC, so EDGAR `companyfacts` returns 404. Their prices are free via Alpaca; their fundamentals are recorded as `NO_EDGAR_FUNDAMENTALS` and left UNKNOWN, never guessed. |
+| **Pre-2009 XBRL** (historical layer) | XBRL was not mandatory before 2009, so a filer that delisted earlier (Lehman) has no machine-readable fundamentals. Recorded, not reconstructed. |
+| **Pre-~2021 free price history** (historical layer) | Alpaca's free IEX feed does not reach back past roughly 2021 (AAPL 2016, Sprint 2020, Sears 2018 all return no bars), so an older delisting is `NO_FREE_PRICE_HISTORY` and cannot be given a point-in-time market cap. |
+| **Receivership terminal value** | No corporate-action feed files a receivership, so a failed bank's terminal equity value is UNKNOWN unless asserted from evidence outside the feed — never a guessed 0 or -100%. |
 
 ---
 
@@ -724,6 +851,16 @@ learn.
 | `tests/integration/test_pit_metrics.py::test_a_metric_waits_for_its_slowest_input` | a multi-concept metric uses only facts available at the date |
 | `tests/integration/test_pit_metrics.py::test_two_decision_dates_see_two_different_companies` | the end-to-end temporal scenario |
 | `packages/api-clients/tests/test_edgar_observations.py::test_rebuilding_a_document_reproduces_the_same_periods` | the point-in-time path normalises identically to the live one |
+| `packages/domain/tests/test_survivorship.py` | the delisting-reason taxonomy, the as-of membership rule, and the readiness gaps |
+| `tests/integration/test_backtest_readiness.py::test_a_security_delisted_before_the_date_is_not_a_member` | a delisted name leaves the past universe — survivorship in its pure form |
+| `tests/integration/test_backtest_readiness.py::test_a_filing_becomes_visible_only_after_it_was_filed` | the reconstructed score reads no fundamental before its filing date |
+| `tests/integration/test_backtest_readiness.py::test_a_delisted_only_security_is_answerable_through_its_fate` | a security with no company row is answered through the registry, never dropped |
+| `tests/integration/test_backtest_readiness.py::test_signals_backfill_for_a_past_date_from_stored_prices` | signal history is backfillable and point-in-time |
+| `tests/integration/test_historical_securities.py::test_a_delisted_security_reconstructs_with_no_companies_row` | a delisted name is scoreable with no `companies` row |
+| `tests/integration/test_historical_securities.py::test_a_namesake_company_cannot_change_the_historical_market_cap` | a reused ticker's live company cannot leak into a historical score |
+| `tests/integration/test_historical_securities.py::test_a_future_split_does_not_leak_a_share_count_backward` | a split after the date corrects the price, never the count |
+| `tests/integration/test_historical_securities.py::test_the_historical_path_scores_identically_to_the_company_path` | the historical path reuses the frozen scorer, not a second one |
+| `tests/integration/test_historical_securities.py::test_a_missing_terminal_value_stays_none_never_zero` | an unpriced receivership stays UNKNOWN |
 
 ### The gate
 
@@ -799,11 +936,11 @@ Not a backlog. These exclusions are deliberate.
 
 | | |
 | --- | --- |
-| Commit | `9ca5dfb` — feat: complete foreign issuer coverage and current rankings |
-| Branch | `feat/phase-8d-pit-metric-engine` (8F committed, 8G uncommitted) |
-| Migration head | `0025` |
-| Score version | `COMPOUNDER_V1_2` (unchanged by anything in Phase 8) |
+| Commit | `f9948be` — feat(pit): add point-in-time market cap, forward returns and delistings |
+| Branch | `feat/phase-8d-pit-metric-engine` (8F–8G committed, 8H–8I uncommitted) |
+| Migration head | `0026` — `historical_securities` and its three children (8I) |
+| Score version | `COMPOUNDER_V1_2` (unchanged by anything in Phase 8, including 8H–8I) |
 | Feature version | `MARKET_FEATURES_V1` |
 | Signal version | `MARKET_SIGNALS_V1` |
-| Primary database | untouched by 8A-8G; all work ran against `stage8e.db` |
+| Primary database | untouched by 8A–8I; all work ran against staging copies |
 | Checkpoint date | 2026-08-30 |

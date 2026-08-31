@@ -33,6 +33,9 @@ if TYPE_CHECKING:
         FilingRecord,
         FinancialSnapshot,
         FundamentalObservation,
+        HistoricalCorporateAction,
+        HistoricalObservation,
+        HistoricalPrice,
         PriceHistory,
     )
 
@@ -96,16 +99,22 @@ def to_financial_period(snapshot: FinancialSnapshot) -> FinancialPeriod:
     )
 
 
-def to_filing_observation(row: FundamentalObservation) -> FilingObservation:
+def to_filing_observation(
+    row: FundamentalObservation | HistoricalObservation,
+) -> FilingObservation:
     """Convert a stored observation row into its domain form.
 
-    The append-only record stores exactly what one filing said about one
-    concept, so the conversion is a field-for-field copy. Nothing is resolved
-    here: two rows for the same period stay two observations, because deciding
-    between them belongs to whatever normalises them.
+    Accepts a historical security's observation as well as a company's: the two
+    tables are separate because a delisted security is not a company, but an
+    observation is an observation and its normalisation must not be duplicated
+    for one. The append-only record stores exactly what one filing said about
+    one concept, so the conversion is a field-for-field copy. Nothing is
+    resolved here: two rows for the same period stay two observations, because
+    deciding between them belongs to whatever normalises them.
 
     Args:
-        row: The stored row.
+        row: The stored row, from `fundamental_observations` or
+            `historical_observations`.
 
     Returns:
         The equivalent `FilingObservation`.
@@ -127,15 +136,17 @@ def to_filing_observation(row: FundamentalObservation) -> FilingObservation:
     )
 
 
-def to_price_bar(row: PriceHistory | BenchmarkPrice) -> PriceBar:
+def to_price_bar(row: PriceHistory | BenchmarkPrice | HistoricalPrice) -> PriceBar:
     """Convert a stored price row into a domain bar.
 
-    Accepts a benchmark row as well as a company one. The two tables are
-    separate because a benchmark is not a company, but a bar is a bar and the
-    return calculations must not be duplicated for one.
+    Accepts a benchmark row and a historical security's row as well as a
+    company's. The tables are separate because a benchmark is not a company and
+    a delisted security is not either, but a bar is a bar and the return
+    calculations must not be duplicated for one.
 
     Args:
-        row: The stored row, from `price_history` or `benchmark_prices`.
+        row: The stored row, from `price_history`, `benchmark_prices` or
+            `historical_prices`.
 
     Returns:
         The equivalent `PriceBar`.
@@ -171,11 +182,18 @@ def to_filing(record: FilingRecord) -> Filing:
     )
 
 
-def to_corporate_action(action: CorporateAction) -> CorporateActionRecord:
+def to_corporate_action(
+    action: CorporateAction | HistoricalCorporateAction,
+) -> CorporateActionRecord:
     """Convert a stored corporate action into its domain record.
 
+    Accepts a historical security's action as well as a company's, so the same
+    split factors that make a past company price readable make a past historical
+    price readable too.
+
     Args:
-        action: The stored row.
+        action: The stored row, from `corporate_actions` or
+            `historical_corporate_actions`.
 
     Returns:
         The equivalent `CorporateActionRecord`.

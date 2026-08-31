@@ -14,6 +14,8 @@ are being emitted as JSON.
 
 from __future__ import annotations
 
+import csv
+import json
 from contextlib import contextmanager
 from datetime import UTC, date, datetime
 from pathlib import Path
@@ -24,7 +26,22 @@ import typer
 
 from api_clients import ProviderInvalidRequestError
 from data_access import build_session_factory, create_engine_from_url, session_scope
+from domain import DelistingReason
 from research import build_system_prompt, render_brief
+from stock_screener.backtest import (
+    Cadence,
+    CohortEntry,
+    DateCoverage,
+    DateResult,
+    HistoricalIngestResult,
+    backfill_returns,
+    backfill_signals,
+    date_coverage,
+    ingest_cohort,
+    market_sessions,
+    research_window,
+    sample,
+)
 from stock_screener.config import Settings, get_settings
 from stock_screener.deep_research import (
     PreparationError,
@@ -52,6 +69,7 @@ from stock_screener.providers import (
     build_external_research_provider,
     build_fundamentals_provider,
     build_market_data_provider,
+    build_observation_source,
     build_profile_provider,
     build_research_provider,
 )
@@ -651,6 +669,234 @@ def derive_signals_command(
         typer.echo("  setups: " + "   ".join(f"{name} {count}" for name, count in ordered))
 
 
+@app.command("backfill-signals")
+def backfill_signals_command(
+    start: Annotated[
+        str, typer.Option("--start", help="Earliest session to describe, as YYYY-MM-DD.")
+    ],
+    end: Annotated[
+        str | None, typer.Option("--end", help="Latest session to describe. Defaults to today.")
+    ] = None,
+    cadence: Annotated[
+        Cadence,
+        typer.Option(
+            "--cadence",
+            help="How densely to sample the calendar: every session, or the last of each week "
+            "or month.",
+        ),
+    ] = Cadence.MONTHLY,
+) -> None:
+    """Capture features and derive market signals for a range of past sessions.
+
+    Runs the ordinary `capture` and `derive-signals` passes over sessions that
+    have already happened, from the price history already stored. No provider is
+    called and no formula or threshold changes — this only makes the record
+    exist for days the system was not running on.
+
+    Safe to re-run and safe to interrupt: each session is its own transaction, a
+    day already captured is left alone, and stopping the run loses at most the
+    day in flight. Re-running resumes from the record itself.
+    """
+    settings = _bootstrap()
+    start_date = date.fromisoformat(start)
+    end_date = date.fromisoformat(end) if end else datetime.now(UTC).date()
+
+    with _database(settings) as factory:
+        with session_scope(factory) as session:
+            calendar = market_sessions(
+                session, settings.benchmark_symbol, start=start_date, end=end_date
+            )
+        wanted = sample(calendar, cadence)
+        if not wanted:
+            typer.echo("backfill-signals: no stored benchmark sessions in that range")
+            return
+        typer.echo(
+            f"backfill-signals: {len(wanted)} sessions "
+            f"({wanted[0]}..{wanted[-1]}, {cadence.value}) of {len(calendar)} in range"
+        )
+        report = backfill_signals(factory, settings, wanted, on_progress=_echo_progress)
+
+    typer.echo(report.summary())
+    _report_gaps(report.missing)
+    for failure in report.failed[:10]:
+        typer.echo(f"  {failure.session_date}: {failure.detail}")
+
+
+@app.command("backfill-returns")
+def backfill_returns_command(
+    start: Annotated[
+        str, typer.Option("--start", help="Earliest decision date to measure, as YYYY-MM-DD.")
+    ],
+    end: Annotated[
+        str | None,
+        typer.Option("--end", help="Latest decision date to measure. Defaults to today."),
+    ] = None,
+    cadence: Annotated[
+        Cadence,
+        typer.Option("--cadence", help="How densely to sample the calendar."),
+    ] = Cadence.MONTHLY,
+) -> None:
+    """Measure forward returns from a range of past decision dates.
+
+    Runs the ordinary `measure-returns` pass over many dates. The measurement is
+    unchanged: the entry is the open of the session strictly after the decision
+    date, horizons are counted on the market's calendar, and a security that
+    stopped trading is recorded as interrupted rather than filled in.
+
+    A horizon that has not elapsed yet is stored as `TRUNCATED` and measured
+    again on a later run, so re-running late in the window is how the tail of it
+    realises.
+    """
+    settings = _bootstrap()
+    start_date = date.fromisoformat(start)
+    end_date = date.fromisoformat(end) if end else datetime.now(UTC).date()
+
+    with _database(settings) as factory:
+        with session_scope(factory) as session:
+            calendar = market_sessions(
+                session, settings.benchmark_symbol, start=start_date, end=end_date
+            )
+        wanted = sample(calendar, cadence)
+        if not wanted:
+            typer.echo("backfill-returns: no stored benchmark sessions in that range")
+            return
+        typer.echo(
+            f"backfill-returns: {len(wanted)} decision dates "
+            f"({wanted[0]}..{wanted[-1]}, {cadence.value}) of {len(calendar)} in range"
+        )
+        report = backfill_returns(factory, settings, wanted, on_progress=_echo_progress)
+
+    typer.echo(report.summary())
+    _report_gaps(report.missing)
+    for failure in report.failed[:10]:
+        typer.echo(f"  {failure.session_date}: {failure.detail}")
+
+
+@app.command("research-coverage")
+def research_coverage_command(
+    start: Annotated[str, typer.Option("--start", help="Earliest date to measure, as YYYY-MM-DD.")],
+    end: Annotated[
+        str | None, typer.Option("--end", help="Latest date to measure. Defaults to today.")
+    ] = None,
+    cadence: Annotated[
+        Cadence,
+        typer.Option("--cadence", help="How densely to measure the calendar."),
+    ] = Cadence.MONTHLY,
+    output: Annotated[
+        Path | None,
+        typer.Option("--output", help="Write the per-date funnel to this CSV as well."),
+    ] = None,
+) -> None:
+    """Report how much of the record is usable, date by date.
+
+    Walks the roster on each measured date and counts how many securities
+    survive each stage between existing in the database and being studiable
+    without inventing anything: listed, priced deeply enough, filed by the date,
+    valued, scored, signalled, and measured forward.
+
+    Reads only. Nothing is written to the database and no formula runs that the
+    live path does not run. Universe membership is reported as
+    `reconstruct_universe` returns it — where the record cannot reach back to a
+    date, the count is zero and says so, rather than being replaced by a proxy.
+    """
+    settings = _bootstrap()
+    start_date = date.fromisoformat(start)
+    end_date = date.fromisoformat(end) if end else datetime.now(UTC).date()
+
+    with _database(settings) as factory, session_scope(factory) as session:
+        calendar = market_sessions(
+            session, settings.benchmark_symbol, start=start_date, end=end_date
+        )
+        wanted = sample(calendar, cadence)
+        if not wanted:
+            typer.echo("research-coverage: no stored benchmark sessions in that range")
+            return
+        typer.echo(f"research-coverage: measuring {len(wanted)} dates ({wanted[0]}..{wanted[-1]})")
+        measured = []
+        for index, day in enumerate(wanted, start=1):
+            coverage = date_coverage(session, settings, day)
+            measured.append(coverage)
+            typer.echo(
+                f"  [{index}/{len(wanted)}] {day}  members {coverage.universe_members:5d}  "
+                f"listed {coverage.listed_on_date:5d}  scored {coverage.score_reconstructable:5d}  "
+                f"signals {coverage.signals_available:5d}  "
+                f"returns {coverage.forward_returns_available:5d}  "
+                f"usable {coverage.fully_usable:5d}"
+            )
+
+    window = research_window(measured)
+    typer.echo(
+        f"window: {window.first_usable} .. {window.last_usable}   "
+        f"median usable {window.median_usable:.0f}   minimum {window.minimum_usable}   "
+        f"survivorship {window.survivorship}"
+    )
+    if window.longest_run is not None:
+        typer.echo(f"  longest continuous run: {window.longest_run[0]} .. {window.longest_run[1]}")
+    if output is not None:
+        _write_coverage_csv(measured, output)
+        typer.echo(f"  wrote {output}")
+
+
+@app.command("ingest-historical")
+def ingest_historical_command(
+    cohort: Annotated[
+        Path,
+        typer.Argument(
+            help="JSON Lines file, one delisted security per line, each carrying at "
+            "least cik, ticker, name, start and end."
+        ),
+    ],
+    limit: CompanyLimitOption = None,
+) -> None:
+    """Ingest delisted securities into the historical record, by CIK.
+
+    Reads a cohort whose identities a caller has already established, because a
+    delisting carries a ticker and a ticker is not an identity: EDGAR's current
+    map resolves fewer than four per cent of delisted symbols, and the ones it
+    does resolve are mostly symbols since reissued to a different filer.
+
+    Nothing is guessed. A filer EDGAR serves no facts for keeps empty
+    fundamentals and the gap `NO_EDGAR_FUNDAMENTALS`; a security outside the
+    free price window keeps `NO_FREE_PRICE_HISTORY`; a terminal value no source
+    states stays NULL, which is UNKNOWN and never zero.
+
+    Appends. Re-running the same cohort updates one row per CIK and stores no
+    observation, bar or action twice.
+    """
+    settings = _bootstrap()
+    entries = _read_cohort(cohort)
+    if limit is not None:
+        entries = entries[:limit]
+    if not entries:
+        typer.echo(f"ingest-historical: {cohort} holds no securities")
+        return
+
+    observations = build_observation_source(settings)
+    market = build_market_data_provider(settings)
+    typer.echo(f"ingest-historical: {len(entries)} securities from {cohort}")
+
+    def progress(result: HistoricalIngestResult, index: int) -> None:
+        typer.echo(f"  [{index}/{len(entries)}] {result.summary()}")
+
+    with _database(settings) as factory:
+        report = ingest_cohort(
+            factory,
+            observations_source=observations,
+            market=market,
+            cohort=entries,
+            on_progress=progress,
+        )
+
+    typer.echo(report.summary())
+    gaps = report.gap_counts()
+    if gaps:
+        typer.echo(
+            "  gaps: " + "   ".join(f"{name} {count}" for name, count in sorted(gaps.items()))
+        )
+    for ticker, reason in report.failures[:10]:
+        typer.echo(f"  {ticker}: {reason}")
+
+
 @app.command("update-observations")
 def update_observations_command(
     tickers: TickerOption = None,
@@ -1215,6 +1461,122 @@ def run_daily_command(
 
     typer.echo("")
     _emit_ranking(rows, output, label="Top Opportunities")
+
+
+def _echo_progress(result: DateResult, index: int, total: int) -> None:
+    """Print one backfilled session as it finishes.
+
+    A backfill runs for hours. Printing each day as it lands is what makes it
+    watchable rather than a process that either finishes or does not.
+    """
+    typer.echo(
+        f"  [{index}/{total}] {result.session_date} {result.status.value} "
+        f"{result.rows} rows in {result.seconds:.1f}s"
+    )
+
+
+def _report_gaps(missing: Sequence[date]) -> None:
+    """Print the requested sessions that still hold no rows."""
+    if not missing:
+        typer.echo("  no gaps: every requested session holds rows")
+        return
+    shown = ", ".join(str(day) for day in missing[:10])
+    more = f" (+{len(missing) - 10} more)" if len(missing) > 10 else ""
+    typer.echo(f"  gaps: {len(missing)} sessions hold no rows — {shown}{more}")
+
+
+def _read_cohort(path: Path) -> list[CohortEntry]:
+    """Read a cohort of delisted securities from a JSON Lines file.
+
+    Args:
+        path: The file to read. One JSON object per line.
+
+    Returns:
+        The entries, in file order.
+
+    Raises:
+        ProviderInvalidRequestError: If a line is not an object carrying the
+            required identity fields. Refused at the door rather than halfway
+            through a run that has already spent requests.
+    """
+    entries: list[CohortEntry] = []
+    for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+        if not line.strip():
+            continue
+        payload = json.loads(line)
+        missing = [key for key in ("cik", "ticker", "name", "start", "end") if key not in payload]
+        if missing:
+            message = f"{path}:{number} is missing {', '.join(missing)}"
+            raise ProviderInvalidRequestError(message)
+        status = payload.get("asserted_status")
+        entries.append(
+            CohortEntry(
+                cik=int(payload["cik"]),
+                ticker=str(payload["ticker"]),
+                name=str(payload["name"]),
+                start=date.fromisoformat(payload["start"]),
+                end=date.fromisoformat(payload["end"]),
+                exchange=payload.get("exchange"),
+                asserted_status=DelistingReason(status) if status else None,
+                asserted_terminal_value=payload.get("asserted_terminal_value"),
+                asserted_terminal_source=payload.get("asserted_terminal_source"),
+            )
+        )
+    return entries
+
+
+def _write_coverage_csv(coverages: Sequence[DateCoverage], output: Path) -> None:
+    """Write the per-date funnel to a CSV a spreadsheet can read."""
+    columns = [
+        "as_of",
+        "in_record",
+        "universe_members",
+        "universe_observed",
+        "universe_baseline",
+        "universe_undetermined",
+        "listed_on_date",
+        "sufficient_price_history",
+        "fundamentals_available",
+        "market_cap_available",
+        "score_reconstructable",
+        "signals_available",
+        "forward_returns_available",
+        "recorded_exits",
+        "terminal_outcomes_available",
+        "interrupted",
+        "fully_usable",
+        "SCORED",
+        "INSUFFICIENT_DATA",
+        "NOT_ELIGIBLE",
+        "UNSUPPORTED_SECTOR",
+        "ERROR",
+    ]
+    with output.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(columns)
+        for coverage in coverages:
+            writer.writerow(
+                [
+                    coverage.as_of,
+                    coverage.in_record,
+                    coverage.universe_members,
+                    coverage.universe_observed,
+                    coverage.universe_baseline,
+                    coverage.universe_undetermined,
+                    coverage.listed_on_date,
+                    coverage.sufficient_price_history,
+                    coverage.fundamentals_available,
+                    coverage.market_cap_available,
+                    coverage.score_reconstructable,
+                    coverage.signals_available,
+                    coverage.forward_returns_available,
+                    coverage.recorded_exits,
+                    coverage.terminal_outcomes_available,
+                    coverage.interrupted,
+                    coverage.fully_usable,
+                    *(coverage.by_status.get(name, 0) for name in columns[-5:]),
+                ]
+            )
 
 
 def _report_no_enrichment(settings: Settings) -> None:

@@ -58,6 +58,7 @@ nav:
       - CompounderScore: reference/compounder-score.md
       - Market signals: reference/market-signals.md
       - Point-in-time metrics: reference/point-in-time.md
+      - Backtest readiness: reference/backtest-readiness.md
       - Project brief: reference/project-intro.md
       - Phase 1 brief: reference/project-phases/phase1.md
       - Phase 2 brief: reference/project-phases/phase2.md

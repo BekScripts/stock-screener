@@ -213,7 +213,33 @@ def build_research_provider(settings: Settings) -> ResearchProvider:
     return provider
 
 
+def build_observation_source(settings: Settings) -> SecEdgarFundamentals:
+    """Return the EDGAR adapter, typed concretely for its by-CIK reads.
+
+    The configured fundamentals provider satisfies `FundamentalsProvider` and
+    nothing more, and every one of its lookups is keyed by ticker. A delisted
+    filer is precisely the case where a ticker resolves to nothing — or worse,
+    to whoever inherited the symbol — so the historical ingestion reads by CIK,
+    which only this adapter offers.
+
+    Args:
+        settings: Application settings.
+
+    Returns:
+        The EDGAR adapter.
+
+    Raises:
+        ConfigurationError: If no contact string is configured.
+    """
+    return _build_edgar_adapter(settings)
+
+
 def _build_edgar(settings: Settings) -> FundamentalsProvider:
+    """Build the SEC EDGAR adapter behind the general provider protocol."""
+    return _build_edgar_adapter(settings)
+
+
+def _build_edgar_adapter(settings: Settings) -> SecEdgarFundamentals:
     """Build the SEC EDGAR adapter.
 
     Raises:

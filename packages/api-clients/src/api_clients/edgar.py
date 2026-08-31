@@ -60,6 +60,7 @@ from domain import (
     FilingObservation,
     FinancialPeriod,
     PeriodCadence,
+    StatementProfile,
     classify_cadence,
     classify_statement_profile,
     normalise_ticker,
@@ -691,7 +692,29 @@ class SecEdgarFundamentals:
         cik = self._cik_for(symbol)
         if cik is None:
             return []
+        return self.get_filing_observations_by_cik(cik)
 
+    def get_filing_observations_by_cik(self, cik: int) -> list[FilingObservation]:
+        """Return every reported fact behind a filer's statements, by CIK.
+
+        The CIK-addressed path, for a security the current ticker map cannot
+        resolve — every delisted issuer. A delisted ticker is absent from
+        `company_tickers.json`, or reused by a different filer, so a survivorship
+        study must reach EDGAR by the stable CIK instead. The fundamentals of an
+        acquired, bankrupt or wound-up filer remain in `companyfacts` under their
+        CIK for years after the security stops trading.
+
+        Args:
+            cik: The SEC filer identifier.
+
+        Returns:
+            Every observation found, in no particular order. Empty when the SEC
+            has no XBRL facts for the CIK — a pre-2009 filer, or one whose
+            statements are filed with another regulator.
+
+        Raises:
+            ProviderError: If a request failed or the payload was unusable.
+        """
         payload = self._company_facts(cik)
         all_facts = payload.get("facts", {})
         concepts = _detect_concept_set(all_facts)
@@ -715,6 +738,29 @@ class SecEdgarFundamentals:
             for tag in tags:
                 observations.extend(_observations_for_tag(book, namespace, tag))
         return observations
+
+    def get_statement_profile_by_cik(self, cik: int) -> StatementProfile:
+        """Classify a filer as a bank or a general company, by CIK.
+
+        Read from the *whole* facts document — every concept the filing tags, not
+        the handful the metric engine reads — because a bank is recognised by its
+        deposit-funding and loan-book concepts, which the statement chains do not
+        include. Reuses the frozen `classify_statement_profile`, so a delisted
+        bank is declined the score for the same reason a live one is.
+
+        Args:
+            cik: The SEC filer identifier.
+
+        Returns:
+            `FINANCIAL_INSTITUTION` for a filer whose concepts report deposit
+            funding with corroboration, otherwise `GENERAL`.
+
+        Raises:
+            ProviderError: If a request failed or the payload was unusable.
+        """
+        payload = self._company_facts(cik)
+        all_facts = payload.get("facts", {})
+        return classify_statement_profile(all_facts)
 
     def get_filing_acceptance(self, ticker: str) -> list[AcceptedFiling]:
         """Return when the SEC accepted each of this filer's submissions.

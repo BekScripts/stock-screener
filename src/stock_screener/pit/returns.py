@@ -29,15 +29,17 @@ from data_access import (
     BenchmarkPriceRepository,
     CompanyRepository,
     ForwardReturnRepository,
-    PriceHistoryRepository,
 )
 from domain import FORWARD_HORIZONS, OutcomeStatus, forward_returns
+from stock_screener.pit.prices import RepositoryPriceSource
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
     from datetime import date
 
     from sqlalchemy.orm import Session
+
+    from stock_screener.pit.prices import PriceSource
 
 log = structlog.get_logger(__name__)
 
@@ -77,6 +79,7 @@ def measure_forward_returns(
     horizons: Sequence[int] = FORWARD_HORIZONS,
     tickers: Sequence[str] | None = None,
     limit: int | None = None,
+    prices: PriceSource | None = None,
 ) -> ReturnMeasurementResult:
     """Measure and store forward returns from one observation date.
 
@@ -87,6 +90,10 @@ def measure_forward_returns(
         horizons: Session counts to measure. Defaults to `FORWARD_HORIZONS`.
         tickers: Restrict to these companies. None means every stored company.
         limit: Cap on how many companies to measure, for a rehearsal run.
+        prices: Where to read each company's bars from. Defaults to a query per
+            company. A backfill measuring many observation dates passes a cache
+            holding the price record, which returns the same bars without
+            re-reading the table on every date.
 
     Returns:
         What was measured and what was stored.
@@ -106,7 +113,7 @@ def measure_forward_returns(
 
     repository = ForwardReturnRepository(session)
     already = repository.measured_horizons(observation_date)
-    prices = PriceHistoryRepository(session)
+    price_source = prices or RepositoryPriceSource(session)
 
     rows: list[dict[str, Any]] = []
     counts: dict[str, int] = {}
@@ -115,7 +122,7 @@ def measure_forward_returns(
         if not outstanding:
             continue
 
-        bars = prices.list_for_company(company.id)
+        bars = price_source.bars_until(company.id)
         if not bars:
             continue
         opens = {bar.date: bar.open for bar in bars if bar.open is not None}

@@ -26,7 +26,6 @@ from data_access import (
     PitCaptureRunRepository,
     PitFeatureSnapshotRepository,
     PitScoreSnapshotRepository,
-    PriceHistoryRepository,
     ScoreSnapshotRepository,
     UniverseEventRepository,
     to_price_bar,
@@ -38,6 +37,7 @@ from domain import (
     compute_market_features,
     is_rank_eligible,
 )
+from stock_screener.pit.prices import RepositoryPriceSource
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -47,6 +47,7 @@ if TYPE_CHECKING:
     from data_access import BenchmarkPrice, Company, PriceHistory, ScoreSnapshot
     from domain import MarketFeatures, PriceBar
     from stock_screener.config import Settings
+    from stock_screener.pit.prices import PriceSource
 
 log = structlog.get_logger(__name__)
 
@@ -258,6 +259,7 @@ def capture_day(
     *,
     snapshot_date: date | None = None,
     score_version: str = CURRENT_SCORE_VERSION,
+    prices: PriceSource | None = None,
 ) -> CaptureResult:
     """Record what the system knows today, immutably.
 
@@ -271,6 +273,10 @@ def capture_day(
         snapshot_date: The day to describe. Defaults to today in UTC, matching
             the convention `score_market` uses for `score_date`.
         score_version: The scoring rules to capture.
+        prices: Where to read each company's bars from. Defaults to a query per
+            company. A backfill describing many sessions passes a cache holding
+            the price record, which returns the same bars under the same
+            `as_of` bound without re-reading the table on every day.
 
     Returns:
         What was written, or a result marked `already_captured` when the day was
@@ -330,7 +336,7 @@ def capture_day(
             score_date=str(source_score_date),
         )
 
-    prices = PriceHistoryRepository(session)
+    price_source = prices or RepositoryPriceSource(session)
     benchmark_symbol = settings.benchmark_symbol
     benchmark = _bars(BenchmarkPriceRepository(session).list_bars(benchmark_symbol, until=as_of))
     if not benchmark:
@@ -343,7 +349,7 @@ def capture_day(
 
     feature_rows: list[dict[str, Any]] = []
     for company in companies:
-        bars = _bars(prices.list_for_company(company.id, until=as_of))
+        bars = price_source.bars_until(company.id, as_of)
         features = compute_market_features(bars, benchmark_bars=benchmark)
         if features is None:
             continue
