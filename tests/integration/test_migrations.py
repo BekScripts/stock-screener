@@ -8,6 +8,8 @@ them and finding nothing is what proves they still agree.
 
 from __future__ import annotations
 
+import sqlite3
+from argparse import Namespace
 from pathlib import Path
 
 import pytest
@@ -42,7 +44,18 @@ _TABLES = {
     "historical_observations",
     "historical_prices",
     "historical_corporate_actions",
+    # Phase 9A's identity layer: dated identifiers against a stable security id,
+    # and the fails-to-deliver evidence they are built from.
+    "security_identifiers",
+    "ftd_source_files",
+    "ftd_identity_observations",
+    # Phase 9C's membership layer: effective-dated verdicts against both
+    # identity kinds, so a delisted security can hold membership at all.
+    "universe_membership",
 }
+
+#: Phase 9D gave both point-in-time snapshot tables a dual identity; they are
+#: already in `_TABLES` above under their Phase 8B entries.
 
 # The autouse `isolated_env` fixture chdirs into a tmp_path, so both paths are
 # resolved from this file rather than from the working directory.
@@ -229,3 +242,157 @@ def test_migrating_a_populated_database_preserves_its_rows(tmp_path: Path) -> No
                 )
     finally:
         engine.dispose()
+
+
+@pytest.mark.integration
+@pytest.mark.slow
+def test_the_identity_migration_preserves_a_populated_historical_security(
+    tmp_path: Path,
+) -> None:
+    """0027 rebuilds `historical_securities`; its three children must survive.
+
+    Making `cik` nullable needs a table rebuild on SQLite — create, copy, drop,
+    rename — and `historical_securities` has three children declaring
+    `ON DELETE CASCADE`. Dropping a parent under enforced foreign keys is exactly
+    what `0017` did to `companies`, deleting about 1.6 million rows.
+
+    The migration disables enforcement for the rebuild and verifies the pragma
+    took effect, because `PRAGMA foreign_keys` is silently ignored inside an open
+    transaction and Alembic normally has one open. This test is the proof that
+    the whole arrangement works on the real upgrade path: a schema-only check
+    would pass against an emptied database.
+    """
+    url = f"sqlite:///{tmp_path / 'identity.db'}"
+    engine = create_engine_from_url(url)
+    try:
+        command.upgrade(_alembic_config(url), "0026")
+
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "INSERT INTO companies (id, ticker, name, is_active) VALUES (1, 'AAA', 'A', 1)"
+                )
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO historical_securities "
+                    "(id, cik, name, primary_ticker, status) "
+                    "VALUES (1, 42, 'Gone Inc', 'GONE', 'ACQUIRED')"
+                )
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO historical_prices "
+                    "(historical_security_id, date, open, high, low, close, volume) "
+                    "VALUES (1, '2020-01-02', 1, 2, 0.5, 1.5, 100)"
+                )
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO historical_observations (historical_security_id, "
+                    "observation_fingerprint, taxonomy, concept, value, unit, period_end, source) "
+                    "VALUES (1, 'fp', 'us-gaap', 'Revenues', 100, 'USD', '2019-12-31', 'test')"
+                )
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO historical_corporate_actions (historical_security_id, "
+                    "action_fingerprint, ticker, action_type, ex_date, source) "
+                    "VALUES (1, 'af', 'GONE', 'REVERSE_SPLIT', '2020-01-03', 'test')"
+                )
+            )
+            for horizon in (1, 5, 20, 60, 120):
+                connection.execute(
+                    text(
+                        "INSERT INTO forward_returns (company_id, observation_date, "
+                        "horizon_sessions, status, entry_date, entry_price, exit_date, "
+                        "exit_price, total_return) VALUES (1, '2024-06-28', :horizon, "
+                        "'REALISED', '2024-07-01', 10.0, '2024-07-02', 11.0, 0.1)"
+                    ),
+                    {"horizon": horizon},
+                )
+
+        command.upgrade(_alembic_config(url), "head")
+
+        with engine.begin() as connection:
+            children = {
+                "historical_securities": text("SELECT COUNT(*) FROM historical_securities"),
+                "historical_prices": text("SELECT COUNT(*) FROM historical_prices"),
+                "historical_observations": text("SELECT COUNT(*) FROM historical_observations"),
+                "historical_corporate_actions": text(
+                    "SELECT COUNT(*) FROM historical_corporate_actions"
+                ),
+            }
+            for table, statement in children.items():
+                assert connection.execute(statement).scalar() == 1, (
+                    f"{table} lost its rows when historical_securities was rebuilt"
+                )
+
+            # The CIK is nullable on the other side, and a security without one
+            # is now storable — the whole point of the revision.
+            nullable = [
+                row
+                for row in connection.execute(text("PRAGMA table_info(historical_securities)"))
+                if row[1] == "cik"
+            ]
+            assert nullable and nullable[0][3] == 0
+
+            # Every forward return keeps its company and its values, and gains a
+            # NULL historical identity. Not one row is migrated.
+            rows = list(
+                connection.execute(
+                    text(
+                        "SELECT company_id, historical_security_id, status, entry_price, "
+                        "exit_price, total_return FROM forward_returns ORDER BY horizon_sessions"
+                    )
+                )
+            )
+            assert len(rows) == 5
+            assert {row[0] for row in rows} == {1}
+            assert {row[1] for row in rows} == {None}
+            assert {row[2] for row in rows} == {"REALISED"}
+            assert {row[3] for row in rows} == {10.0}
+            assert {row[5] for row in rows} == {0.1}
+    finally:
+        engine.dispose()
+
+
+class TestAConfigUrlCannotSilentlyRedirectAMigration:
+    """The guard in `migrations/env.py`, asserted.
+
+    Setting `sqlalchemy.url` on an Alembic `Config` reads like it targets that
+    database. It does not — `env.py` resolves the URL from application settings —
+    so the silent version of this ran four revisions against the production
+    database while the caller believed it was working on a staging copy. The
+    override must be `-x url=`, and a config URL must fail loudly.
+    """
+
+    def test_setting_sqlalchemy_url_raises_instead_of_migrating_the_configured_database(
+        self, tmp_path: Path
+    ) -> None:
+        config = Config(str(_PROJECT_ROOT / "alembic.ini"))
+        config.set_main_option("script_location", str(_PROJECT_ROOT / "migrations"))
+        config.set_main_option("sqlalchemy.url", f"sqlite:///{tmp_path / 'decoy.db'}")
+
+        with pytest.raises(RuntimeError, match="ignored here"):
+            command.upgrade(config, "head")
+
+    def test_the_x_url_override_is_the_supported_way_to_target_another_database(
+        self, tmp_path: Path
+    ) -> None:
+        target = tmp_path / "explicit.db"
+        config = Config(str(_PROJECT_ROOT / "alembic.ini"))
+        config.set_main_option("script_location", str(_PROJECT_ROOT / "migrations"))
+        config.cmd_opts = Namespace(x=[f"url=sqlite:///{target}"])
+
+        command.upgrade(config, "head")
+
+        # `sqlite3.connect` as a context manager commits; it does not close.
+        # A leaked connection surfaces later as an unraisable exception in
+        # whichever test the collection happens to reach next.
+        connection = sqlite3.connect(target)
+        try:
+            version = connection.execute("select version_num from alembic_version").fetchone()
+        finally:
+            connection.close()
+        assert version is not None

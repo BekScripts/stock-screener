@@ -23,6 +23,7 @@ from data_access import (
     OBSERVATION_OBSERVED,
     BenchmarkPriceRepository,
     CompanyRepository,
+    HistoricalSecurityRepository,
     PitCaptureRunRepository,
     PitFeatureSnapshotRepository,
     PitScoreSnapshotRepository,
@@ -37,7 +38,7 @@ from domain import (
     compute_market_features,
     is_rank_eligible,
 )
-from stock_screener.pit.prices import RepositoryPriceSource
+from stock_screener.pit.prices import HistoricalPriceSource, RepositoryPriceSource
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -168,20 +169,29 @@ def _score_row(
 
 def _feature_row(
     features: MarketFeatures,
-    company: Company,
     *,
+    company_id: int | None,
+    historical_security_id: int | None,
+    ticker: str,
     run_id: int,
     snapshot_date: date,
     captured_at: datetime,
     benchmark_symbol: str | None,
 ) -> dict[str, Any]:
-    """Return the column mapping for one captured feature set."""
+    """Return the column mapping for one captured feature set.
+
+    Takes the identity explicitly rather than a `Company`, because a delisted
+    security has no company row and must be able to carry a feature set of its
+    own. Exactly one of the two ids is set; the repository and the database both
+    refuse anything else.
+    """
     values = features.model_dump()
     values.pop("as_of")
     return {
         "run_id": run_id,
-        "company_id": company.id,
-        "ticker": company.ticker,
+        "company_id": company_id,
+        "historical_security_id": historical_security_id,
+        "ticker": ticker,
         "snapshot_date": snapshot_date,
         "captured_at": captured_at,
         "feature_version": FEATURE_VERSION,
@@ -356,7 +366,9 @@ def capture_day(
         feature_rows.append(
             _feature_row(
                 features,
-                company,
+                company_id=company.id,
+                historical_security_id=None,
+                ticker=company.ticker,
                 run_id=run.id,
                 snapshot_date=as_of,
                 captured_at=captured_at,
@@ -419,4 +431,142 @@ def record_capture_failure(
         detail=detail,
         score_version=score_version,
         feature_version=FEATURE_VERSION,
+    )
+
+
+@dataclass(frozen=True)
+class HistoricalFeatureResult:
+    """What one historical-security feature pass wrote.
+
+    Attributes:
+        snapshot_date: The day described.
+        securities: Historical securities examined.
+        priced: How many had bars on or before the date.
+        features: Feature rows written.
+        already_captured: True when the day already held features for these
+            securities and nothing was written.
+    """
+
+    snapshot_date: date
+    securities: int = 0
+    priced: int = 0
+    features: int = 0
+    already_captured: bool = False
+
+    def summary(self) -> str:
+        """One line for the CLI."""
+        if self.already_captured:
+            return f"{self.snapshot_date}: historical features already captured"
+        return (
+            f"{self.snapshot_date}: {self.securities} historical securities "
+            f"({self.priced} priced), {self.features} features written"
+        )
+
+
+def capture_historical_features(
+    session: Session,
+    settings: Settings,
+    *,
+    snapshot_date: date,
+    security_ids: Sequence[int] | None = None,
+) -> HistoricalFeatureResult:
+    """Compute and store market features for securities that left the market.
+
+    The company path with one substitution: the bars come from
+    `historical_prices` under a `historical_security_id`, and the row written
+    carries that identity instead of a `company_id`. The feature computation is
+    the frozen `compute_market_features`, over the same benchmark series, under
+    the same `as_of` bound — nothing about `MARKET_FEATURES_V1` changes.
+
+    **This is what closes the survivorship hole at the last step.** Before it, a
+    delisted security could hold membership, fundamentals, a score and an
+    outcome, and still carry no market signal — so any strategy filtering on a
+    signal dropped the entire delisted population without failing. Features are
+    the input signals are derived from, so giving a historical security a feature
+    row is what lets it reach a signal at all.
+
+    **The run is shared, not invented.** The row points at the capture run that
+    already describes this date, so a historical feature and a company feature
+    from the same day trace to the same run. Where no run exists for the date the
+    pass declines rather than manufacturing one: a feature with no capture behind
+    it would be a point-in-time row with no provenance.
+
+    Args:
+        session: Open database session. The caller commits.
+        settings: Supplies the benchmark symbol.
+        snapshot_date: The day to describe.
+        security_ids: Restrict to these securities. None means every stored one.
+
+    Returns:
+        What was written.
+    """
+    as_of = snapshot_date
+    captured_at = datetime.now(UTC)
+
+    run = PitCaptureRunRepository(session).completed_run(as_of)
+    if run is None:
+        log.warning(
+            "no completed capture run for this date, so historical features have no "
+            "run to belong to; nothing written",
+            snapshot_date=str(as_of),
+        )
+        return HistoricalFeatureResult(snapshot_date=as_of)
+
+    securities = HistoricalSecurityRepository(session).list_all()
+    if security_ids is not None:
+        wanted = set(security_ids)
+        securities = [security for security in securities if security.id in wanted]
+
+    stored = PitFeatureSnapshotRepository(session)
+    already = {
+        row.historical_security_id
+        for row in stored.for_date(as_of, feature_version=FEATURE_VERSION)
+        if row.historical_security_id is not None
+    }
+    pending = [security for security in securities if security.id not in already]
+    if not pending:
+        return HistoricalFeatureResult(
+            snapshot_date=as_of, securities=len(securities), already_captured=True
+        )
+
+    benchmark_symbol = settings.benchmark_symbol
+    benchmark = _bars(BenchmarkPriceRepository(session).list_bars(benchmark_symbol, until=as_of))
+    prices = HistoricalPriceSource(session)
+
+    rows: list[dict[str, Any]] = []
+    priced = 0
+    for security in pending:
+        bars = prices.bars_until(security.id, as_of)
+        if not bars:
+            continue
+        priced += 1
+        features = compute_market_features(bars, benchmark_bars=benchmark)
+        if features is None:
+            continue
+        rows.append(
+            _feature_row(
+                features,
+                company_id=None,
+                historical_security_id=security.id,
+                ticker=security.primary_ticker,
+                run_id=run.id,
+                snapshot_date=as_of,
+                captured_at=captured_at,
+                benchmark_symbol=benchmark_symbol if benchmark else None,
+            )
+        )
+
+    written = stored.add_all(rows)
+    log.info(
+        "historical features captured",
+        snapshot_date=str(as_of),
+        securities=len(pending),
+        priced=priced,
+        features=written,
+    )
+    return HistoricalFeatureResult(
+        snapshot_date=as_of,
+        securities=len(securities),
+        priced=priced,
+        features=written,
     )

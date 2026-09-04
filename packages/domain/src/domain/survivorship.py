@@ -410,3 +410,140 @@ def assess_universe_readiness(universe: UniverseAsOf) -> UniverseReadiness:
         observed_share=observed_share,
         gaps=tuple(gaps),
     )
+
+
+class TerminalStatus(StrEnum):
+    """Whether what a holder finally received is known, unknown, or not yet due.
+
+    The distinction a survivorship-aware study cannot do without. A security that
+    left the market has a final outcome whether or not this project can state it,
+    and a study that cannot tell "settled at $95" from "settled at something
+    nobody published" will quietly treat the second as the first — or as zero,
+    which is worse.
+    """
+
+    SETTLED = "SETTLED"
+    """A source states what a holder received per share. The outcome is a
+    measurement."""
+
+    EXTINGUISHED = "EXTINGUISHED"
+    """A source reports the equity was wound up worthless. Zero is what was
+    *reported*, not what was inferred from a falling price — the two are
+    distinguished by which record said so, never by how low the last print was."""
+
+    UNKNOWN = "UNKNOWN"
+    """The security left and no source establishes what a holder received. The
+    honest default, and the one a study must be able to see. A receivership is
+    normally here: no corporate-action feed files one."""
+
+    ONGOING = "ONGOING"
+    """The security had not left the market as of the question. Nothing terminal
+    to report, which is different from a terminal value nobody published."""
+
+
+@dataclass(frozen=True)
+class TerminalOutcome:
+    """What a holder was finally left with, or a statement that nobody knows.
+
+    Attributes:
+        status: Whether the final consideration is stated, reported as nothing,
+            unknown, or not yet due.
+        reason: Why the security left, as `classify_delisting` derives it.
+        effective_date: The date it left, when one is recorded.
+        value_per_share: What a holder received per share. **None whenever
+            `status` is not `SETTLED` or `EXTINGUISHED`** — never a zero standing
+            in for an unknown, and never a last traded price standing in for a
+            settlement.
+        source: What established the value, for the audit trail.
+        total_return: `value / entry - 1`, computed only from a stated value and
+            a real entry price. None otherwise.
+    """
+
+    status: TerminalStatus
+    reason: DelistingReason
+    effective_date: date | None = None
+    value_per_share: float | None = None
+    source: str | None = None
+    total_return: float | None = None
+
+    @property
+    def is_measurable(self) -> bool:
+        """Whether a holder's outcome can be computed from what is recorded."""
+        return self.status in (TerminalStatus.SETTLED, TerminalStatus.EXTINGUISHED)
+
+
+def terminal_outcome(
+    reason: DelistingReason,
+    *,
+    effective_date: date | None = None,
+    reported_value_per_share: float | None = None,
+    value_source: str | None = None,
+    entry_price: float | None = None,
+    has_left_market: bool = True,
+) -> TerminalOutcome:
+    """Determine what a holder finally received, or refuse to.
+
+    Three rules, and the refusals are the point of the function:
+
+    - a **stated** consideration is `SETTLED`, whatever the fate. A cash merger
+      at $95 is a measurement.
+    - a reported **worthless removal** is `EXTINGUISHED` at 0.0. Zero here is a
+      reported fact — the wind-up was filed — and is recorded with the source
+      that filed it. It is never reached from a price.
+    - everything else is `UNKNOWN`. A receivership no feed files, an acquisition
+      whose consideration nobody published, a plain delisting where the shares
+      may have kept value the tape stopped recording: all `UNKNOWN`, with
+      `value_per_share` None.
+
+    **A falling price is never evidence of a terminal value.** This function is
+    given no prices except the entry, and that only to divide by, so there is no
+    path by which a security that traded down to a cent can be recorded as having
+    settled at a cent — or at zero.
+
+    Args:
+        reason: Why the security left, from `classify_delisting`.
+        effective_date: The date it left, when recorded.
+        reported_value_per_share: Consideration per share a source states. None
+            where none does. A caller must not pass a last traded price here.
+        value_source: What stated it, for the audit trail.
+        entry_price: The price a holder is assumed to have paid, for the return.
+            None leaves `total_return` None.
+        has_left_market: False when the security is still trading, which makes
+            the outcome `ONGOING` regardless of everything else.
+
+    Returns:
+        The outcome, carrying None wherever the record establishes nothing.
+    """
+    if not has_left_market:
+        return TerminalOutcome(status=TerminalStatus.ONGOING, reason=reason)
+
+    if reported_value_per_share is not None:
+        value = reported_value_per_share
+        status = TerminalStatus.SETTLED
+        source = value_source
+    elif reason is DelistingReason.BANKRUPT:
+        # A reported wind-up. The extinguished equity is the filed fact, so 0.0
+        # is a measurement — and it is labelled with the mechanism that reported
+        # it so a reader can tell it from a stated cash consideration of zero.
+        value = 0.0
+        status = TerminalStatus.EXTINGUISHED
+        source = value_source or "REPORTED_WORTHLESS_REMOVAL"
+    else:
+        return TerminalOutcome(
+            status=TerminalStatus.UNKNOWN,
+            reason=reason,
+            effective_date=effective_date,
+            source=value_source,
+        )
+
+    total = None
+    if entry_price is not None and entry_price > 0:
+        total = value / entry_price - 1.0
+    return TerminalOutcome(
+        status=status,
+        reason=reason,
+        effective_date=effective_date,
+        value_per_share=value,
+        source=source,
+        total_return=total,
+    )

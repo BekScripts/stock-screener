@@ -36,6 +36,7 @@ from domain import (
     PriceBar,
 )
 from stock_screener.backtest import (
+    reconstruct_membership_record,
     reconstruct_score,
     reconstruct_universe,
     security_readiness,
@@ -433,12 +434,18 @@ class TestSecurityReadiness:
         _benchmark(session, CALENDAR)
         _baseline_event(session, company_id, "AAA", CALENDAR[0])
         _observe(session, company_id, "Revenues", 100_000_000.0, FILING)
+        # Membership is now resolved from the Phase 9C record rather than from
+        # the company-keyed event log, so the canonical record has to exist for
+        # the harness to place anything. This is the production sequence.
+        reconstruct_membership_record(session)
 
         readiness = security_readiness(session, settings_for(), AS_OF, "AAA")
 
         assert readiness.company_id == company_id
         assert readiness.in_universe is True
-        assert readiness.membership_kind == "BASELINE"
+        # Every MEMBER verdict the current evidence supports is INFERRED, because
+        # exchange and security type are undated everywhere in this system.
+        assert readiness.membership_kind == "INFERRED"
         assert readiness.fundamentals_known is True
         assert readiness.forward_outcomes  # measured over the horizons
         assert readiness.score_status is not None

@@ -84,8 +84,10 @@ class HistoricalReconstruction:
     Attributes:
         as_of: The decision date reconstructed. Nothing filed or traded after it
             contributed.
-        historical_security_id: The stored security's primary key.
-        cik: Its stable SEC identity.
+        historical_security_id: The stored security's primary key — the identity.
+        cik: Its SEC filer number, where the record establishes one. None for a
+            security recovered from identifier evidence alone, which is the
+            majority of delisted symbols; see `domain.identity`.
         ticker: The trading symbol as of the record.
         score: The score, carrying the status that explains an absent number.
         metrics: The point-in-time metrics behind it, or None when nothing had
@@ -101,7 +103,7 @@ class HistoricalReconstruction:
 
     as_of: date
     historical_security_id: int
-    cik: int
+    cik: int | None
     ticker: str
     score: CompanyScore
     metrics: CompanyMetrics | None

@@ -26,7 +26,7 @@ import typer
 
 from api_clients import ProviderInvalidRequestError
 from data_access import build_session_factory, create_engine_from_url, session_scope
-from domain import DelistingReason
+from domain import DelistingReason, TerminalStatus
 from research import build_system_prompt, render_brief
 from stock_screener.backtest import (
     Cadence,
@@ -34,13 +34,21 @@ from stock_screener.backtest import (
     DateCoverage,
     DateResult,
     HistoricalIngestResult,
+    OutcomeRow,
+    PriceBackfillResult,
+    backfill_historical_prices,
     backfill_returns,
     backfill_signals,
     date_coverage,
     ingest_cohort,
     market_sessions,
+    members_as_of,
+    outcome_coverage,
+    outcome_rows,
+    reconstruct_membership_record,
     research_window,
     sample,
+    survivorship_audit,
 )
 from stock_screener.config import Settings, get_settings
 from stock_screener.deep_research import (
@@ -53,6 +61,21 @@ from stock_screener.deep_research import (
     prepare_company,
     run_deep_research,
 )
+from stock_screener.identity import (
+    ContaminationReport,
+    FtdFileResult,
+    SymbolResolution,
+    attach_identities,
+    build_identity_audit,
+    detect_contaminated_companies,
+    ingest_ftd_history,
+    resolve_delisted_symbols,
+)
+from stock_screener.listing import (
+    attribute_observations,
+    build_listing_audit,
+    ingest_files,
+)
 from stock_screener.logging import configure_logging
 from stock_screener.pit import (
     capture_day,
@@ -61,13 +84,16 @@ from stock_screener.pit import (
     ingest_filing_acceptance,
     ingest_filing_observations,
     measure_forward_returns,
+    measure_historical_forward_returns,
     record_capture_failure,
 )
 from stock_screener.providers import (
     ConfigurationError,
     build_deep_research_provider,
     build_external_research_provider,
+    build_ftd_source,
     build_fundamentals_provider,
+    build_historical_price_source,
     build_market_data_provider,
     build_observation_source,
     build_profile_provider,
@@ -1043,6 +1069,392 @@ def explain_command(
     typer.echo(format_explanation(detail))
 
 
+identity_app = typer.Typer(
+    name="identity",
+    help=(
+        "Security identity: read the SEC fails-to-deliver record, resolve delisted "
+        "symbols to stable security ids, and report what cannot be resolved."
+    ),
+    no_args_is_help=True,
+)
+app.add_typer(identity_app)
+
+
+@identity_app.command("ingest-ftd")
+def identity_ingest_ftd_command(
+    limit: Annotated[
+        int | None,
+        typer.Option("--limit", "-n", min=1, help="Read only the first N archives."),
+    ] = None,
+    refresh: Annotated[
+        bool,
+        typer.Option("--refresh", help="Re-read archives an earlier run already recorded."),
+    ] = False,
+) -> None:
+    """Read the SEC fails-to-deliver history into the identity-evidence tables.
+
+    433 archives from 2004 onward, about 600 MB, cached under `FTD_CACHE_DIR` so
+    a second run reads from disk rather than from a free public server. Resumable
+    and idempotent: archives already recorded are skipped, and re-reading one
+    widens no window and changes no total.
+
+    Nothing is resolved here. This writes down what the files say; `resolve`
+    decides what it means.
+    """
+    settings = _bootstrap()
+    source = build_ftd_source(settings)
+    archives = source.list_archives()
+    if limit is not None:
+        archives = archives[:limit]
+    typer.echo(f"identity ingest-ftd: {len(archives)} archives")
+
+    def progress(result: FtdFileResult, index: int, total: int) -> None:
+        if result.already_read and index % 50:
+            return
+        typer.echo(f"  [{index}/{total}] {result.summary()}")
+
+    with _database(settings) as factory:
+        report = ingest_ftd_history(
+            factory, source, archives=archives, refresh=refresh, on_progress=progress
+        )
+    source.close()
+
+    typer.echo(report.summary())
+    for failure in report.failed[:10]:
+        typer.echo(f"  {failure.summary()}")
+
+
+@identity_app.command("resolve")
+def identity_resolve_command(
+    limit: Annotated[
+        int | None,
+        typer.Option("--limit", "-n", min=1, help="Resolve only the first N delisted symbols."),
+    ] = None,
+) -> None:
+    """Resolve delisted symbols to stable security ids from the FTD evidence.
+
+    One delisting at a time — a symbol *with* its date, because a bare symbol is
+    unanswerable. Where the evidence fits two issuers, or none, that is recorded
+    and nothing is created: a guessed identity is worse than an absent one,
+    because a study cannot see it.
+
+    Writes historical securities and their dated identifier intervals. It never
+    writes to `companies`.
+    """
+    settings = _bootstrap()
+
+    def progress(resolution: SymbolResolution, index: int, total: int) -> None:
+        if index % 250 and index != total:
+            return
+        typer.echo(f"  [{index}/{total}] {resolution.ticker} {resolution.outcome}")
+
+    with _database(settings) as factory:
+        report = resolve_delisted_symbols(factory, limit=limit, on_progress=progress)
+
+    typer.echo(report.summary())
+    for resolution in report.ambiguous[:10]:
+        typer.echo(f"  ambiguous {resolution.ticker}: {resolution.detail}")
+
+
+@identity_app.command("contamination")
+def identity_contamination_command(
+    output: OutputOption = None,
+) -> None:
+    """Report live company rows whose ticker two issuers have held.
+
+    Reads only. Nothing is merged, split or repaired — deciding which of two
+    issuers a price bar belongs to is a data operation, and this is a detection
+    one. The report is what lets a study exclude the rows it cannot trust.
+    """
+    settings = _bootstrap()
+    with _database(settings) as factory, session_scope(factory) as session:
+        report = detect_contaminated_companies(session)
+
+    typer.echo(report.summary())
+    for row in report.contaminated[:25]:
+        typer.echo(f"  {row.ticker} (company {row.company_id}, {row.status}): {row.detail}")
+    if output is not None:
+        _write_contamination_csv(report, output)
+        typer.echo(f"  wrote {output}")
+
+
+@identity_app.command("attach")
+def identity_attach_command(
+    limit: Annotated[
+        int | None,
+        typer.Option("--limit", "-n", min=1, help="Attach at most N securities."),
+    ] = None,
+) -> None:
+    """Give stored historical securities their dated identifier intervals.
+
+    The companion to `resolve`, for securities that already exist but carry no
+    identity. `resolve` walks the delisting registry, so a security whose exit no
+    corporate-action feed files was never reached — which is every receivership.
+    This anchors on the security's own last trading date instead.
+    """
+    settings = _bootstrap()
+
+    def progress(resolution: SymbolResolution, index: int, total: int) -> None:
+        if index % 100 and index != total:
+            return
+        typer.echo(f"  [{index}/{total}] {resolution.ticker} {resolution.outcome}")
+
+    with _database(settings) as factory:
+        report = attach_identities(factory, limit=limit, on_progress=progress)
+
+    typer.echo(report.summary())
+
+
+@app.command("backfill-historical-prices")
+def backfill_historical_prices_command(
+    limit: CompanyLimitOption = None,
+    refresh: Annotated[
+        bool,
+        typer.Option("--refresh", help="Re-fetch securities that already hold bars."),
+    ] = False,
+) -> None:
+    """Fetch prices and splits for delisted securities that have none.
+
+    No CIK is required. A security whose fundamentals are unrecoverable still has
+    prices, corporate actions and therefore outcomes, and dropping it for want of
+    a filer number would put the survivorship bias straight back.
+
+    The fetch window is bounded to each security's own trading era, which is what
+    makes a ticker-keyed request safe for a symbol that was later reissued.
+    """
+    settings = _bootstrap()
+    market = build_historical_price_source(settings)
+
+    def progress(result: PriceBackfillResult, index: int, total: int) -> None:
+        typer.echo(f"  [{index}/{total}] {result.summary()}")
+
+    with _database(settings) as factory:
+        report = backfill_historical_prices(
+            factory, market, only_unpriced=not refresh, limit=limit, on_progress=progress
+        )
+
+    typer.echo(report.summary())
+    for failure in report.failed[:10]:
+        typer.echo(f"  {failure.summary()}")
+
+
+@app.command("measure-historical-returns")
+def measure_historical_returns_command(
+    observation_date: Annotated[
+        datetime,
+        typer.Option("--date", "-d", formats=["%Y-%m-%d"], help="The decision date."),
+    ],
+    limit: CompanyLimitOption = None,
+) -> None:
+    """Measure forward returns for securities that left the market.
+
+    The same `domain.forward_returns` the company path uses, over
+    `historical_prices`, written to the same `forward_returns` table. A delisted
+    security's outcome is an ordinary row there, so an ordinary query over a
+    decision date returns it without being asked to.
+    """
+    settings = _bootstrap()
+    with _database(settings) as factory, session_scope(factory) as session:
+        result = measure_historical_forward_returns(
+            session,
+            observation_date.date(),
+            benchmark=settings.benchmark_symbol,
+            limit=limit,
+        )
+    typer.echo(result.summary())
+
+
+@app.command("reconstruct-membership")
+def reconstruct_membership_command() -> None:
+    """Rebuild every security's universe-membership intervals from dated evidence.
+
+    Membership is a listing fact, recorded as effective-dated intervals against
+    both identity kinds. It is not eligibility — the thresholds are still applied
+    per date by the frozen screen — and it is not price presence, which proves a
+    security traded and nothing about whether it belonged to the universe.
+
+    Every `MEMBER` verdict this can currently produce is `INFERRED`, because
+    exchange, security type and sector are undated everywhere in this system. The
+    rows say so, per row.
+    """
+    settings = _bootstrap()
+    with _database(settings) as factory, session_scope(factory) as session:
+        result = reconstruct_membership_record(session)
+    typer.echo(result.summary())
+
+
+@app.command("universe-as-of")
+def universe_as_of_command(
+    observation_date: Annotated[
+        datetime,
+        typer.Option("--date", "-d", formats=["%Y-%m-%d"], help="The decision date."),
+    ],
+) -> None:
+    """Show the securities a backtest could have chosen from on a date.
+
+    One read of `universe_membership`, both identity kinds, no flag. Securities
+    the record cannot place are reported as unknown rather than omitted — a
+    universe that hides the size of its own uncertainty is the most useful lie a
+    survivorship-biased dataset tells.
+    """
+    settings = _bootstrap()
+    with _database(settings) as factory, session_scope(factory) as session:
+        universe = members_as_of(session, observation_date.date())
+    typer.echo(universe.summary())
+
+
+@app.command("survivorship-audit")
+def survivorship_audit_command(
+    observation_date: Annotated[
+        datetime,
+        typer.Option("--date", "-d", formats=["%Y-%m-%d"], help="The decision date."),
+    ],
+    horizon: Annotated[
+        int,
+        typer.Option("--horizon", "-h", min=1, help="Sessions measured."),
+    ] = 20,
+) -> None:
+    """Report how survivorship-aware the outcome record actually is.
+
+    The distinction it exists to protect: an architecture that *can* carry a
+    delisted security's outcome is not a dataset that *does*. The first is a
+    property of the schema; the second is a percentage, and reporting the first
+    while implying the second is how a censored dataset gets called complete.
+    """
+    settings = _bootstrap()
+    with _database(settings) as factory, session_scope(factory) as session:
+        audit = survivorship_audit(
+            session, observation_date=observation_date.date(), horizon_sessions=horizon
+        )
+    for line in audit.lines():
+        typer.echo(line)
+
+
+@app.command("outcomes")
+def outcomes_command(
+    observation_date: Annotated[
+        datetime,
+        typer.Option("--date", "-d", formats=["%Y-%m-%d"], help="The decision date."),
+    ],
+    horizon: Annotated[
+        int,
+        typer.Option("--horizon", "-h", min=1, help="Sessions measured."),
+    ] = 20,
+    output: OutputOption = None,
+) -> None:
+    """Show one decision date's outcomes: survivors and delisted names together.
+
+    One read of `forward_returns`. There is no flag to include delisted
+    securities and no union to remember, which is the point — the failure mode of
+    every alternative is a query that silently returns survivors only.
+    """
+    settings = _bootstrap()
+    with _database(settings) as factory, session_scope(factory) as session:
+        coverage = outcome_coverage(session, observation_date.date(), horizon_sessions=horizon)
+        rows = outcome_rows(session, observation_date.date(), horizon_sessions=horizon)
+
+    typer.echo(coverage.summary())
+    for row in rows[:25]:
+        terminal = ""
+        if row.terminal is not None and row.terminal.status is not TerminalStatus.ONGOING:
+            value = (
+                "UNKNOWN"
+                if row.terminal.value_per_share is None
+                else (f"{row.terminal.value_per_share:.4g}")
+            )
+            terminal = f"  terminal {row.terminal.status}={value}"
+        typer.echo(
+            f"  {row.identity_kind[:4]} {row.ticker:<8} {row.status:<11} "
+            f"{_percent(row.total_return)}{terminal}"
+        )
+    if output is not None:
+        _write_outcomes_csv(rows, output)
+        typer.echo(f"  wrote {output}")
+
+
+@identity_app.command("audit")
+def identity_audit_command() -> None:
+    """Report the state of the identity layer, every figure read from the tables.
+
+    Includes the number that has to be zero: forward returns attached to a
+    historical security. Phase 9A gives the schema the shape to hold them and
+    migrates none, because migrating one needs its identity proven first.
+    """
+    settings = _bootstrap()
+    with _database(settings) as factory, session_scope(factory) as session:
+        audit = build_identity_audit(session)
+    for line in audit.lines():
+        typer.echo(line)
+
+
+listing_app = typer.Typer(
+    name="listing",
+    help=(
+        "Historical listing evidence: import Nasdaq's public monthly market-share "
+        "files, attribute them to securities, and report what remains unknown."
+    ),
+    no_args_is_help=True,
+)
+app.add_typer(listing_app)
+
+
+@listing_app.command("ingest")
+def listing_ingest_command(
+    directory: Annotated[
+        Path,
+        typer.Argument(help="Directory of downloaded .xlsx market-share files."),
+    ],
+) -> None:
+    """Import monthly market-share files, validating each one's tape identity.
+
+    A file whose contents do not carry the tape its month predicts is
+    quarantined rather than imported — the check that stops five years of NYSE
+    Arca ETFs being recorded as NYSE listings. Re-running is a no-op.
+    """
+    settings = _bootstrap()
+    payloads = {path.name: path.read_bytes() for path in sorted(directory.glob("*.xlsx"))}
+    if not payloads:
+        typer.echo(f"no .xlsx files in {directory}")
+        raise typer.Exit(code=1)
+    with _database(settings) as factory, session_scope(factory) as session:
+        report = ingest_files(session, payloads)
+    typer.echo(report.summary())
+    for result in report.quarantined[:10]:
+        typer.echo(f"  quarantined {result.file_name}: {result.reason}")
+
+
+@listing_app.command("attribute")
+def listing_attribute_command() -> None:
+    """Attach observations to securities, using the Phase 9J identity rules.
+
+    A symbol two issuers held is recorded as reused rather than attributed to
+    whichever occupant sorts first.
+    """
+    settings = _bootstrap()
+    with _database(settings) as factory, session_scope(factory) as session:
+        report = attribute_observations(session)
+    typer.echo(report.summary())
+
+
+@listing_app.command("audit")
+def listing_audit_command(
+    scope_from: Annotated[
+        datetime,
+        typer.Option(formats=["%Y-%m-%d"], help="First month in scope for the delisted cohort."),
+    ] = datetime(2022, 1, 1, tzinfo=UTC),
+) -> None:
+    """Report what the listing evidence covers, and what it cannot see.
+
+    The censored count is the point: NYSE American appears in no importable
+    file, so its members are neither confirmed nor excluded.
+    """
+    settings = _bootstrap()
+    with _database(settings) as factory, session_scope(factory) as session:
+        audit = build_listing_audit(session, scope_from=scope_from.date())
+    for line in audit.lines():
+        typer.echo(line)
+
+
 research_app = typer.Typer(
     name="research",
     help="Inspect what an AI research run would do. No model is called.",
@@ -1523,6 +1935,97 @@ def _read_cohort(path: Path) -> list[CohortEntry]:
             )
         )
     return entries
+
+
+def _write_outcomes_csv(rows: Sequence[OutcomeRow], output: Path) -> None:
+    """Write one decision date's mixed outcomes to a CSV a spreadsheet can read."""
+    columns = [
+        "identity_kind",
+        "identity_id",
+        "ticker",
+        "ticker_is_dated",
+        "horizon_sessions",
+        "status",
+        "entry_date",
+        "entry_price",
+        "exit_date",
+        "exit_price",
+        "total_return",
+        "last_seen_date",
+        "last_seen_price",
+        "terminal_status",
+        "terminal_value_per_share",
+        "terminal_source",
+    ]
+    with output.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(columns)
+        for row in rows:
+            terminal = row.terminal
+            writer.writerow(
+                [
+                    row.identity_kind,
+                    row.identity_id,
+                    row.ticker,
+                    row.ticker_is_dated,
+                    row.horizon_sessions,
+                    row.status,
+                    row.entry_date,
+                    row.entry_price,
+                    row.exit_date,
+                    row.exit_price,
+                    row.total_return,
+                    row.last_seen_date,
+                    row.last_seen_price,
+                    None if terminal is None else terminal.status,
+                    None if terminal is None else terminal.value_per_share,
+                    None if terminal is None else terminal.source,
+                ]
+            )
+
+
+def _write_contamination_csv(report: ContaminationReport, output: Path) -> None:
+    """Write the contaminated live rows to a CSV a spreadsheet can read.
+
+    One row per contaminating handover, so a study can exclude exactly these
+    `company_id`s — or exclude only the dates on one side of a boundary —
+    without re-deriving the scan.
+    """
+    columns = [
+        "company_id",
+        "ticker",
+        "name",
+        "status",
+        "issuers",
+        "from_issuer",
+        "to_issuer",
+        "gap_start",
+        "gap_end",
+        "gap_days",
+        "bars_before",
+        "bars_after",
+    ]
+    with output.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(columns)
+        for row in report.contaminated:
+            for handover in row.handovers:
+                writer.writerow(
+                    [
+                        row.company_id,
+                        row.ticker,
+                        row.name,
+                        row.status,
+                        " | ".join(row.issuers),
+                        handover.from_issuer,
+                        handover.to_issuer,
+                        handover.gap_start,
+                        handover.gap_end,
+                        handover.gap_days,
+                        handover.bars_before,
+                        handover.bars_after,
+                    ]
+                )
 
 
 def _write_coverage_csv(coverages: Sequence[DateCoverage], output: Path) -> None:

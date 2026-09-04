@@ -59,6 +59,27 @@ if TYPE_CHECKING:
 #: not, exactly as with `score_version`. See ADR-0011.
 MARKET_SIGNALS_V1 = "MARKET_SIGNALS_V1"
 
+#: The same definitions under a corrected **peer policy**, and nothing else.
+#:
+#: Every threshold, classification rule and percentile method is byte-identical
+#: to `MARKET_SIGNALS_V1`. The single difference is which securities constitute
+#: the cross-section a percentile is measured against:
+#:
+#: - **V1** ranks whatever feature rows the caller supplies. In practice that was
+#:   the live roster for company rows and every stored feature row for historical
+#:   ones — the first survivorship-biased, the second contaminated by securities
+#:   that had stopped trading years earlier.
+#: - **V2** ranks against `members_as_of(D)` intersected with the securities that
+#:   actually had market data on `D`. See `domain.peer_policy`.
+#:
+#: Only `percentiles` can differ between the two; the Phase 9E audit measured
+#: zero classification changes over 244,181 rows, and
+#: `test_v1_and_v2_agree_on_every_peer_independent_field` holds it.
+MARKET_SIGNALS_V2 = "MARKET_SIGNALS_V2"
+
+#: Still V1. V2 exists beside it for research and comparison; promoting it to the
+#: version the daily pass writes is a separate, deliberate decision and is not
+#: taken here.
 CURRENT_SIGNAL_VERSION = MARKET_SIGNALS_V1
 
 #: Sessions in a trading year, matching `domain.features`.

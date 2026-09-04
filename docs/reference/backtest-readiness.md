@@ -236,8 +236,8 @@ day.
 | Gap | Why it is a time/data gap |
 | --- | --- |
 | **Universe membership does not reach back at all.** Every company's membership record begins on the day capture first ran, so `universe_members_as_of` returns *undetermined* — not baseline — for every earlier date. The historical universe is empty, and no amount of backfilling changes that, because the only honest source for a past roster is an observation made at the time. | The record forbids inventing pre-baseline history. Only forward observation fills it, one day at a time from the first capture onward. |
-| **A delisted ticker cannot be resolved to a filer.** EDGAR's current `company_tickers.json` maps 177 of 5,448 delisted symbols, and almost all 177 are symbols since reissued to a *different* filer. Without a CIK there is no identity, and without an identity a delisted name cannot be ingested. | A source limitation. The SEC publishes no historical ticker-to-CIK map. Form 25/25-NSE delisting notices name the issuer and recover a minority of them. |
-| **Delisted securities have no stored price history** unless reconstructed into `historical_securities`, so their forward returns are `INTERRUPTED` rather than measured from a recovered path. | The provider serves the bars; the project does not store them for names without a company row. Closing this needs a data operation, not a code change. |
+| **A delisted ticker cannot be resolved to a filer.** EDGAR's current `company_tickers.json` maps 177 of 5,448 delisted symbols, and almost all 177 are symbols since reissued to a *different* filer. | *Partly addressed by Phase 9A*, which stopped requiring a filer. The identity is now an internal `security_id` with dated CUSIP and ticker intervals hanging off it, and a CIK is stored where known rather than demanded — see [Security identity](security-identity.md). The SEC still publishes no historical ticker-to-CIK map, so the *CIK* remains unrecoverable for most names; what changed is that it is no longer needed to record one. |
+| ~~**Delisted securities have no stored price history**~~ | **Closed by Phase 9B.** 2,569 historical securities now hold 1.47M bars and 655,095 forward-return measurements, and they come back from the same `forward_returns` query as survivors — no union, no flag. 58.0% of the window's exits now have measurable outcomes, against 0.6% before. See [Security identity](security-identity.md). The remaining gap is the free feed's reach: it begins ~2020-07, so 581 of 2,745 backfilled securities returned no bars. |
 | **Receivership is uncovered by the action feed.** | A source limitation. `RECEIVERSHIP` exists to be asserted from evidence, but no feed supplies it. |
 
 ## The measured state of the record
@@ -283,6 +283,13 @@ CIK for only **12.5%** of delisted tickers.
 longer than 120 sessions; 34 have a delisting recorded inside it. `companies`
 row 2147 is the proven case — Bed Bath & Beyond's collapse and an unrelated
 company from 2025-07-14, under one ticker and one `company_id`.
+
+Phase 9A gives that finding a name and a detector. `identity contamination`
+reports every live row whose ticker the fails-to-deliver record shows two CUSIP
+issuers holding, so a study can exclude them. It does **not** split them:
+re-attributing a row's prices, filings and scores between two issuers is a data
+operation and needs its own authorisation. See
+[Security identity](security-identity.md).
 
 ## Regression coverage
 

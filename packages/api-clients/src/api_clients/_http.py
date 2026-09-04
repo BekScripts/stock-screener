@@ -244,6 +244,61 @@ def request_text(
     raise last_error
 
 
+def request_bytes(
+    client: httpx.Client,
+    method: str,
+    url: str,
+    *,
+    provider: str,
+    limiter: RateLimiter | None = None,
+    retry: RetryPolicy | None = None,
+) -> bytes:
+    """Perform one request and return its body undecoded.
+
+    The same policy as `request_text`, for endpoints that serve binary: the SEC
+    publishes its fails-to-deliver history as zip archives, and decoding one as
+    text would corrupt it before it could be opened.
+
+    Args:
+        client: The HTTP client to use. Headers and base URL come from it.
+        method: HTTP verb.
+        url: Absolute or client-relative URL.
+        provider: Name used in error messages.
+        limiter: Applied before every attempt, including retries.
+        retry: Retry policy. Defaults to three attempts with one-second backoff.
+
+    Returns:
+        The response body, as received.
+
+    Raises:
+        ProviderAuthError: If the credentials were rejected.
+        ProviderRateLimitError: If rate limited on the final attempt.
+        ProviderRequestError: If the request failed on the final attempt.
+    """
+    policy = retry or RetryPolicy()
+    last_error: ProviderError = ProviderRequestError(f"{provider} request was never attempted")
+
+    for attempt in range(1, policy.attempts + 1):
+        if limiter is not None:
+            limiter.wait()
+
+        try:
+            response = client.request(method, url)
+        except httpx.HTTPError as exc:
+            last_error = ProviderRequestError(f"{provider} request failed: {type(exc).__name__}")
+        else:
+            if response.status_code < httpx.codes.BAD_REQUEST:
+                return response.content
+            if not _is_retryable(response.status_code):
+                _raise_for_status(response, provider)
+            last_error = _status_error(response.status_code, provider)
+
+        if attempt < policy.attempts:
+            policy.pause(attempt)
+
+    raise last_error
+
+
 def _status_error(status_code: int, provider: str) -> ProviderError:
     """Build the error to raise if a retryable status is still failing at the end."""
     if status_code == _TOO_MANY_REQUESTS:

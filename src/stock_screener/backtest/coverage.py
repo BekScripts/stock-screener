@@ -48,8 +48,8 @@ from data_access import (
     PriceHistory,
 )
 from domain import CURRENT_SIGNAL_VERSION, OutcomeStatus, ScoringStatus
+from stock_screener.backtest.membership import members_as_of
 from stock_screener.backtest.scores import benchmark_returns_as_of, reconstruct_score
-from stock_screener.backtest.universe import reconstruct_universe
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
@@ -304,7 +304,7 @@ def date_coverage(session: Session, settings: Settings, as_of: date) -> DateCove
         universe reported rather than assumed.
     """
     companies = CompanyRepository(session).list_all()
-    universe = reconstruct_universe(session, as_of)
+    universe = members_as_of(session, as_of)
     listed = _listed_on(
         session, as_of, settings.benchmark_symbol, tolerance=LISTED_TOLERANCE_SESSIONS
     )
@@ -357,9 +357,15 @@ def date_coverage(session: Session, settings: Settings, as_of: date) -> DateCove
         as_of=as_of,
         in_record=len(companies),
         universe_members=len(universe.members),
-        universe_observed=len(universe.observed),
-        universe_baseline=len(universe.members) - len(universe.observed),
-        universe_undetermined=len(universe.undetermined),
+        # `observed` now means a membership verdict whose every input is dated,
+        # and `baseline` the ones resting on an attribute carried back. The
+        # counts keep their names because the funnel's question is unchanged —
+        # how much of this universe can the record actually vouch for — but the
+        # answer now comes from the Phase 9C membership record rather than from
+        # a company-keyed event log that places nobody before 2026-08-26.
+        universe_observed=universe.observed_members,
+        universe_baseline=universe.inferred_members,
+        universe_undetermined=len(universe.unknown),
         listed_on_date=len(listed),
         sufficient_price_history=len(deep_enough),
         fundamentals_available=len(with_metrics),

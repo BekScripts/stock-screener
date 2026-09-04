@@ -76,12 +76,22 @@ from api_clients.research import (
     estimate_cost_usd,
     parse_draft,
 )
+from api_clients.sec_ftd import (
+    FTD_INDEX_URL,
+    FtdArchive,
+    FtdFileContent,
+    FtdRow,
+    SecFailsToDeliver,
+    parse_ftd_archive,
+    parse_ftd_member,
+)
 from api_clients.websearch import MockExternalResearch, TavilySearch
 
 __all__ = [
     "DEFAULT_MAX_OUTPUT_TOKENS",
     "DEFAULT_RESEARCH_MODEL",
     "DEFAULT_TIMEOUT_SECONDS",
+    "FTD_INDEX_URL",
     "MAX_SECTION_CHARS",
     "MIN_SECTION_CHARS",
     "AlpacaMarketData",
@@ -96,6 +106,9 @@ __all__ = [
     "ExternalResearchProvider",
     "ExtractedSection",
     "FmpFundamentals",
+    "FtdArchive",
+    "FtdFileContent",
+    "FtdRow",
     "FundamentalsProvider",
     "FxProvider",
     "MarketDataProvider",
@@ -118,6 +131,7 @@ __all__ = [
     "ResearchProvider",
     "RetryPolicy",
     "SecEdgarFundamentals",
+    "SecFailsToDeliver",
     "TavilySearch",
     "clean_filing_text",
     "estimate_cost_usd",
@@ -125,6 +139,8 @@ __all__ = [
     "facts_document_from_observations",
     "load_fixture_providers",
     "parse_draft",
+    "parse_ftd_archive",
+    "parse_ftd_member",
     "periods_from_facts_document",
     "periods_from_observations",
 ]

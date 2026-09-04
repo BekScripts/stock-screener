@@ -28,7 +28,12 @@ from typing import TYPE_CHECKING, Protocol
 import structlog
 from sqlalchemy import select
 
-from data_access import PriceHistory, PriceHistoryRepository, to_price_bar
+from data_access import (
+    HistoricalPriceRepository,
+    PriceHistory,
+    PriceHistoryRepository,
+    to_price_bar,
+)
 from domain import PriceBar
 
 if TYPE_CHECKING:
@@ -177,3 +182,43 @@ class CachedPriceSource:
             return rows
         cut = bisect.bisect_right(self._dates[company_id], as_of)
         return rows[:cut] if cut else ()
+
+
+class HistoricalPriceSource:
+    """Where an outcome pass reads a *delisted* security's bars from.
+
+    The mirror of `RepositoryPriceSource` for a security with no `companies`
+    row. Deliberately a separate class rather than a second mode on the first:
+    the two read different tables under different identities, and a single
+    reader taking "an id" would be one refactor away from being handed the wrong
+    kind of id with no type to stop it.
+
+    The bars are on the same basis as the company path's — the provider serves
+    them split- and distribution-adjusted, and `historical_prices` stores what it
+    served — so an outcome measured here is measured by exactly the arithmetic
+    that measures a surviving company's.
+
+    Args:
+        session: The session to read in. Not owned.
+    """
+
+    def __init__(self, session: Session) -> None:
+        self._repository = HistoricalPriceRepository(session)
+
+    def bars_until(
+        self, historical_security_id: int, as_of: date | None = None
+    ) -> Sequence[PriceBar]:
+        """Return one historical security's bars on or before a date, oldest first.
+
+        Args:
+            historical_security_id: The owning security's primary key — never a
+                `company_id`, and never a ticker.
+            as_of: The last session that may be seen. None means every stored
+                bar, which is what a forward-return measurement needs.
+
+        Returns:
+            The bars, in date order. Empty when the security has none, which is
+            the ordinary state for a name whose prices were never fetched.
+        """
+        rows = self._repository.list_for_security(historical_security_id, until=as_of)
+        return [to_price_bar(row) for row in rows]

@@ -17,11 +17,12 @@ from __future__ import annotations
 
 import hashlib
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 import structlog
+from sqlalchemy import select
 
 from api_clients.errors import ProviderError
 from data_access import (
@@ -29,8 +30,10 @@ from data_access import (
     HistoricalObservationRepository,
     HistoricalPriceRepository,
     HistoricalSecurityRepository,
+    SecurityIdentifierRepository,
     session_scope,
 )
+from data_access.models import HistoricalPrice
 from domain import (
     CorporateActionKind,
     DelistingReason,
@@ -44,6 +47,7 @@ if TYPE_CHECKING:
 
     from sqlalchemy.orm import Session, sessionmaker
 
+    from data_access.models import HistoricalSecurity
     from domain import CorporateActionRecord, DelistingRecord, FilingObservation, PriceBar
 
 log = structlog.get_logger(__name__)
@@ -81,6 +85,27 @@ class HistoricalMarketData(Protocol):
 
     def list_delistings(self, start: date, end: date) -> list[DelistingRecord]:
         """Return every security that left the market in a window."""
+        ...
+
+
+@runtime_checkable
+class HistoricalPriceData(Protocol):
+    """The market-data reads a *price-only* backfill needs.
+
+    Narrower than `HistoricalMarketData` on purpose. A price backfill never
+    enumerates delistings and never reads fundamentals, so requiring a provider
+    that can would exclude adapters that serve exactly what this needs — and
+    would misdescribe the dependency.
+    """
+
+    def get_daily_prices(self, ticker: str, start: date, end: date) -> list[PriceBar]:
+        """Return daily bars for a symbol over a window."""
+        ...
+
+    def get_corporate_actions(
+        self, symbols: Sequence[str], start: date, end: date
+    ) -> list[CorporateActionRecord]:
+        """Return corporate actions for symbols over a window."""
         ...
 
 
@@ -514,3 +539,267 @@ def ingest_historical_security(
     )
     log.info("historical security ingested", summary=result.summary())
     return result
+
+
+#: How far back a price backfill will reach when a security's identifier record
+#: begins earlier than that. The free feed does not serve much beyond it, and a
+#: decade is more than any metric window this project computes.
+MAX_PRICE_LOOKBACK_YEARS = 10
+
+#: How many days past a security's last trading session the fetch window extends,
+#: to catch a final print that settles a day or two after the effective date.
+#: Deliberately small: the window is what stops a *later* occupant of a reused
+#: symbol from being fetched into this security's price series.
+PRICE_WINDOW_TAIL_DAYS = 5
+
+
+@dataclass(frozen=True)
+class PriceBackfillResult:
+    """What one security's price backfill recorded.
+
+    Attributes:
+        security_id: The historical security.
+        ticker: The symbol fetched under.
+        window: The date range requested, which bounds what may be stored.
+        bars_stored: Price bars written.
+        actions_stored: Split actions written.
+        first_bar: Earliest session returned, or None.
+        last_bar: Latest session returned, or None.
+        gaps: Named things the free record could not establish.
+        error: Why the fetch failed, or None.
+    """
+
+    security_id: int
+    ticker: str
+    window: tuple[date, date]
+    bars_stored: int = 0
+    actions_stored: int = 0
+    first_bar: date | None = None
+    last_bar: date | None = None
+    gaps: tuple[str, ...] = ()
+    error: str | None = None
+
+    def summary(self) -> str:
+        """One line for a progress display."""
+        if self.error is not None:
+            return f"{self.ticker} ({self.security_id}): FAILED — {self.error}"
+        span = f" {self.first_bar}..{self.last_bar}" if self.first_bar else ""
+        gaps = f" [{', '.join(self.gaps)}]" if self.gaps else ""
+        return (
+            f"{self.ticker} ({self.security_id}): {self.bars_stored} bars, "
+            f"{self.actions_stored} splits{span}{gaps}"
+        )
+
+
+@dataclass(frozen=True)
+class PriceBackfillReport:
+    """What a whole price backfill did.
+
+    Attributes:
+        results: One entry per security, in the order processed.
+    """
+
+    results: tuple[PriceBackfillResult, ...] = field(default_factory=tuple)
+
+    @property
+    def priced(self) -> int:
+        """Securities that gained at least one bar."""
+        return sum(1 for result in self.results if result.bars_stored > 0)
+
+    @property
+    def unpriced(self) -> int:
+        """Securities the free feed served nothing for. A gap, not a failure."""
+        return sum(1 for r in self.results if r.error is None and r.bars_stored == 0)
+
+    @property
+    def failed(self) -> tuple[PriceBackfillResult, ...]:
+        """Securities whose fetch raised."""
+        return tuple(result for result in self.results if result.error is not None)
+
+    @property
+    def bars(self) -> int:
+        """Bars written across the run."""
+        return sum(result.bars_stored for result in self.results)
+
+    def summary(self) -> str:
+        """One line describing the run."""
+        return (
+            f"backfill-historical-prices: {len(self.results)} securities — "
+            f"{self.priced} priced ({self.bars:,} bars), {self.unpriced} with no free history, "
+            f"{len(self.failed)} failed"
+        )
+
+
+def _price_window(
+    session: Session, security: HistoricalSecurity, *, lookback_years: int
+) -> tuple[date, date] | None:
+    """Return the date range a security's prices may be fetched over.
+
+    **The window is the identity protection.** Prices are fetched from a
+    ticker-keyed feed, and a reused symbol will happily serve a later occupant's
+    bars for a request that runs past this security's era — which would splice
+    two companies into one price series, the exact defect the identity layer
+    exists to prevent. Bounding the request to the security's own trading window
+    is what makes a ticker-keyed fetch safe for a name whose ticker was reissued.
+
+    The end is the security's last trading session plus a few days for a final
+    print; the start is the earliest date its identifier record covers, floored
+    at `lookback_years` before the end.
+
+    Args:
+        session: An open session.
+        security: The security to fetch for.
+        lookback_years: How far back the window may reach.
+
+    Returns:
+        The window, or None when the security records no last trading date and
+        so has no era to bound the request to.
+    """
+    if security.last_trading_date is None:
+        return None
+    end = security.last_trading_date + timedelta(days=PRICE_WINDOW_TAIL_DAYS)
+    floor = end - timedelta(days=365 * lookback_years)
+    intervals = SecurityIdentifierRepository(session).for_security(security.id)
+    earliest = min((interval.valid_from for interval in intervals), default=None)
+    start = max(earliest, floor) if earliest is not None else floor
+    return (start, end)
+
+
+def backfill_historical_security_prices(
+    session: Session,
+    market: HistoricalPriceData,
+    security: HistoricalSecurity,
+    *,
+    lookback_years: int = MAX_PRICE_LOOKBACK_YEARS,
+) -> PriceBackfillResult:
+    """Fetch and store one delisted security's bars and splits, by ticker.
+
+    **No CIK is required and none is read.** This is the path that keeps a
+    CIK-unresolved security in the record: its fundamentals are unrecoverable and
+    it will never be scored, but its prices, its corporate actions and therefore
+    its outcomes are all reachable from the symbol it traded under and the window
+    it traded in. Discarding it for want of a filer number would put the
+    survivorship bias straight back.
+
+    Args:
+        session: An open session.
+        market: The market-data provider.
+        security: The security to fetch for.
+        lookback_years: How far back the window may reach.
+
+    Returns:
+        What was stored, or the gap that stopped it.
+    """
+    window = _price_window(session, security, lookback_years=lookback_years)
+    if window is None:
+        return PriceBackfillResult(
+            security_id=security.id,
+            ticker=security.primary_ticker,
+            window=(date.min, date.min),
+            gaps=("NO_TRADING_WINDOW",),
+        )
+
+    symbol = normalise_ticker(security.primary_ticker) or security.primary_ticker
+    start, end = window
+    try:
+        bars = market.get_daily_prices(symbol, start, end)
+        raw_actions = market.get_corporate_actions([symbol], start, end)
+    except ProviderError as exc:
+        return PriceBackfillResult(
+            security_id=security.id,
+            ticker=symbol,
+            window=window,
+            error=f"{type(exc).__name__}: {exc}",
+        )
+
+    gaps: list[str] = []
+    if not bars:
+        gaps.append("NO_FREE_PRICE_HISTORY")
+
+    stored = HistoricalPriceRepository(session).upsert_bars(security.id, bars)
+    splits = [action for action in raw_actions if action.kind in _SPLIT_KINDS]
+    actions_stored = HistoricalCorporateActionRepository(session).add_all(
+        security.id,
+        [
+            {
+                "action_fingerprint": _action_fingerprint(security.id, action),
+                "ticker": symbol,
+                "action_type": action.kind.value,
+                "ex_date": action.ex_date,
+                "split_factor": action.split_factor,
+                "cash_amount": action.cash_amount,
+                "currency": action.currency,
+                "record_date": action.record_date,
+                "payable_date": action.payable_date,
+                "source": action.source,
+                "source_id": action.source_id,
+            }
+            for action in splits
+        ],
+    )
+    return PriceBackfillResult(
+        security_id=security.id,
+        ticker=symbol,
+        window=window,
+        bars_stored=stored,
+        actions_stored=actions_stored,
+        first_bar=bars[0].date if bars else None,
+        last_bar=bars[-1].date if bars else None,
+        gaps=tuple(gaps),
+    )
+
+
+def backfill_historical_prices(
+    factory: sessionmaker[Session],
+    market: HistoricalPriceData,
+    *,
+    security_ids: Sequence[int] | None = None,
+    only_unpriced: bool = True,
+    limit: int | None = None,
+    on_progress: Callable[[PriceBackfillResult, int, int], None] | None = None,
+) -> PriceBackfillReport:
+    """Fetch prices for historical securities that have none.
+
+    One transaction per security, so a run killed halfway leaves every completed
+    security's bars stored and the one in flight absent.
+
+    Args:
+        factory: How to open a session.
+        market: The market-data provider.
+        security_ids: Restrict to these securities. None means every stored one.
+        only_unpriced: Skip securities that already hold bars. On by default:
+            re-fetching a security whose prices are already stored spends a
+            provider's quota to learn nothing.
+        limit: Process at most this many.
+        on_progress: Called with each result, its index and the total.
+
+    Returns:
+        What the run did, per security.
+    """
+    with session_scope(factory) as session:
+        securities = HistoricalSecurityRepository(session).list_all()
+        if security_ids is not None:
+            wanted = set(security_ids)
+            securities = [security for security in securities if security.id in wanted]
+        priced: set[int] = (
+            set(session.scalars(select(HistoricalPrice.historical_security_id).distinct()))
+            if only_unpriced
+            else set()
+        )
+        pending = [security.id for security in securities if security.id not in priced]
+    if limit is not None:
+        pending = pending[:limit]
+
+    results: list[PriceBackfillResult] = []
+    total = len(pending)
+    for index, security_id in enumerate(pending, start=1):
+        with session_scope(factory) as session:
+            security = HistoricalSecurityRepository(session).get(security_id)
+            if security is None:  # pragma: no cover — just read
+                continue
+            result = backfill_historical_security_prices(session, market, security)
+        results.append(result)
+        if on_progress is not None:
+            on_progress(result, index, total)
+
+    return PriceBackfillReport(results=tuple(results))

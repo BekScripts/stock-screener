@@ -91,6 +91,14 @@ class Settings(BaseSettings):
             "requests without one. Required when the provider involves EDGAR."
         ),
     )
+    ftd_cache_dir: str = Field(
+        default=".cache/sec-ftd",
+        description=(
+            "Directory the SEC fails-to-deliver archives are cached in. The full "
+            "history is roughly 600 MB across 433 files, so a re-run reads them "
+            "from disk rather than downloading them from a free public server again."
+        ),
+    )
     fixture_path: str = Field(
         default="fixtures/sample_universe.json",
         description="Fixture file the mock providers read when selected.",

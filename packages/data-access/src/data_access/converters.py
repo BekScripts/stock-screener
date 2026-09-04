@@ -20,6 +20,13 @@ from domain import (
     Filing,
     FilingObservation,
     FinancialPeriod,
+    IdentifierInterval,
+    IdentityConfidence,
+    LineageKind,
+    MembershipConfidence,
+    MembershipInterval,
+    MembershipReason,
+    MembershipState,
     PeriodCadence,
     PriceBar,
     StatementProfile,
@@ -37,6 +44,8 @@ if TYPE_CHECKING:
         HistoricalObservation,
         HistoricalPrice,
         PriceHistory,
+        SecurityIdentifier,
+        UniverseMembershipRecord,
     )
 
 
@@ -209,4 +218,58 @@ def to_corporate_action(
         payable_date=action.payable_date,
         source=action.source,
         source_id=action.source_id,
+    )
+
+
+def to_identifier_interval(row: SecurityIdentifier) -> IdentifierInterval:
+    """Convert a stored identifier interval into its domain shape.
+
+    The projection that lets `domain.resolve_by_ticker` and its siblings be run
+    over stored rows without the domain knowing what a table is. It matters that
+    the resolution rules have exactly one implementation: a second one written
+    over SQL would be free to drift, and the thing it would drift on is which
+    company a symbol names.
+
+    Args:
+        row: A `security_identifiers` row.
+
+    Returns:
+        The equivalent `IdentifierInterval`.
+    """
+    return IdentifierInterval(
+        security_id=row.historical_security_id,
+        cusip=row.cusip,
+        ticker=row.ticker,
+        venue=row.venue,
+        valid_from=row.valid_from,
+        valid_to=row.valid_to,
+        source=row.source,
+        confidence=IdentityConfidence(row.confidence),
+        lineage=LineageKind(row.lineage),
+    )
+
+
+def to_membership_interval(row: UniverseMembershipRecord) -> MembershipInterval:
+    """Convert a stored membership row into its domain shape.
+
+    The projection that lets `domain.membership_as_of` run over stored rows
+    without the domain knowing what a table is. As with identity intervals, it
+    matters that the membership rules have exactly one implementation: a second
+    one written in SQL would be free to drift, and the thing it would drift on is
+    which securities a backtest is allowed to see.
+
+    Args:
+        row: A `universe_membership` row.
+
+    Returns:
+        The equivalent `MembershipInterval`.
+    """
+    return MembershipInterval(
+        state=MembershipState(row.state),
+        confidence=MembershipConfidence(row.confidence),
+        reason=MembershipReason(row.reason),
+        valid_from=row.valid_from,
+        valid_to=row.valid_to,
+        inferred_inputs=tuple(row.inferred_inputs.split(",")) if row.inferred_inputs else (),
+        detail=row.detail or "",
     )

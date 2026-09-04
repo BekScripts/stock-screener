@@ -22,7 +22,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import and_, case, distinct, func, or_, select, update
+from sqlalchemy import and_, case, delete, distinct, func, or_, select, update
 from sqlalchemy import insert as sa_insert
 from sqlalchemy.dialects.postgresql import insert as postgres_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
@@ -37,6 +37,8 @@ from data_access.models import (
     FilingRecord,
     FinancialSnapshot,
     ForwardReturnRecord,
+    FtdIdentityObservation,
+    FtdSourceFile,
     FundamentalObservation,
     FxRate,
     HistoricalCorporateAction,
@@ -50,9 +52,11 @@ from data_access.models import (
     PitSignalSnapshot,
     PriceHistory,
     ScoreSnapshot,
+    SecurityIdentifier,
     StoredDeepResearchReport,
     StoredResearchReport,
     UniverseEvent,
+    UniverseMembershipRecord,
     WatchlistEntry,
     _utcnow,
 )
@@ -166,6 +170,22 @@ class UnsupportedDialectError(RuntimeError):
 def _chunks(items: Sequence[Any], size: int) -> list[Sequence[Any]]:
     """Split a sequence into chunks of at most `size`."""
     return [items[index : index + size] for index in range(0, len(items), size)]
+
+
+def _forward_return_key(row: Mapping[str, Any]) -> tuple[str, int, date, int]:
+    """Build the de-duplication key for a forward-return row.
+
+    The identity kind leads the tuple so a company's measurement and a historical
+    security's can never collide, even where the two tables happen to have
+    assigned the same primary key.
+    """
+    company = row.get("company_id")
+    kind, identity = (
+        ("company", company)
+        if company is not None
+        else ("historical", row["historical_security_id"])
+    )
+    return (kind, identity, row["observation_date"], row["horizon_sessions"])
 
 
 def _insert_for(session: Session) -> Any:
@@ -2136,6 +2156,79 @@ class PitScoreSnapshotRepository:
         return self._session.scalar(select(func.count()).select_from(PitScoreSnapshot)) or 0
 
 
+def _pit_identity_guard(rows: Sequence[Mapping[str, Any]], *, what: str) -> None:
+    """Refuse a batch where any row names both identities or neither.
+
+    The database enforces this too, but failing here names the offending row and
+    the caller rather than surfacing a check-constraint violation from inside a
+    five-hundred-row insert.
+
+    Args:
+        rows: The column mappings about to be written.
+        what: What is being written, for the message.
+
+    Raises:
+        ValueError: If any row does not name exactly one identity.
+    """
+    for row in rows:
+        company = row.get("company_id")
+        historical = row.get("historical_security_id")
+        if (company is None) == (historical is None):
+            message = (
+                f"a {what} must name exactly one of company_id or "
+                f"historical_security_id; got company_id={company!r}, "
+                f"historical_security_id={historical!r}"
+            )
+            raise ValueError(message)
+
+
+def _pit_stored_identities(
+    session: Session,
+    model: Any,
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    version_column: Any,
+    version: str,
+    snapshot_date: date,
+) -> set[tuple[str, int]]:
+    """Return the identities already stored for a snapshot date and version.
+
+    Keyed by `(kind, id)` rather than by a bare integer, because `companies.id`
+    42 and `historical_securities.id` 42 are different securities and a shared
+    key would let either mask the other's row.
+    """
+    companies = {row["company_id"] for row in rows if row.get("company_id") is not None}
+    securities = {
+        row["historical_security_id"]
+        for row in rows
+        if row.get("historical_security_id") is not None
+    }
+    stored: set[tuple[str, int]] = set()
+    if companies:
+        stored |= {
+            ("company", identity)
+            for identity in session.scalars(
+                select(model.company_id).where(
+                    model.snapshot_date == snapshot_date,
+                    version_column == version,
+                    model.company_id.in_(companies),
+                )
+            )
+        }
+    if securities:
+        stored |= {
+            ("historical", identity)
+            for identity in session.scalars(
+                select(model.historical_security_id).where(
+                    model.snapshot_date == snapshot_date,
+                    version_column == version,
+                    model.historical_security_id.in_(securities),
+                )
+            )
+        }
+    return stored
+
+
 class PitFeatureSnapshotRepository:
     """Reads and writes `pit_feature_snapshots`. Insert-only, like its sibling."""
 
@@ -2147,8 +2240,9 @@ class PitFeatureSnapshotRepository:
         """Insert feature snapshots, refusing to overwrite an existing one.
 
         Args:
-            rows: Column mappings, each carrying at least `company_id`,
-                `snapshot_date` and `feature_version`.
+            rows: Column mappings, each carrying `snapshot_date`,
+                `feature_version` and exactly one of `company_id` or
+                `historical_security_id`.
 
         Returns:
             How many rows were inserted.
@@ -2159,16 +2253,16 @@ class PitFeatureSnapshotRepository:
         if not rows:
             return 0
 
+        _pit_identity_guard(rows, what="feature snapshot")
         snapshot_date = rows[0]["snapshot_date"]
         version = rows[0]["feature_version"]
-        existing = set(
-            self._session.scalars(
-                select(PitFeatureSnapshot.company_id).where(
-                    PitFeatureSnapshot.snapshot_date == snapshot_date,
-                    PitFeatureSnapshot.feature_version == version,
-                    PitFeatureSnapshot.company_id.in_([row["company_id"] for row in rows]),
-                )
-            )
+        existing = _pit_stored_identities(
+            self._session,
+            PitFeatureSnapshot,
+            rows,
+            version_column=PitFeatureSnapshot.feature_version,
+            version=version,
+            snapshot_date=snapshot_date,
         )
         if existing:
             raise ImmutableSnapshotError(
@@ -2744,6 +2838,51 @@ class DelistingRepository:
             found.setdefault(row.ticker, row)
         return found
 
+    def for_ticker(self, ticker: str) -> list[Delisting]:
+        """Return every delisting recorded for a symbol, earliest first.
+
+        All of them, unlike `by_ticker`, because a symbol can carry more than one
+        exit and picking one requires knowing which security is being asked
+        about. VMware has three rows — two stock-merger legs and the cash
+        election that states $142.50 — and only a caller holding the security's
+        identity intervals can say which of them settled it.
+
+        Args:
+            ticker: The symbol, of any case.
+
+        Returns:
+            Every matching row, by effective date.
+        """
+        return list(
+            self._session.scalars(
+                select(Delisting)
+                .where(Delisting.ticker == ticker.strip().upper())
+                .order_by(Delisting.effective_date, Delisting.id)
+            )
+        )
+
+    def get(self, delisting_id: int) -> Delisting | None:
+        """Return one delisting by primary key, or None."""
+        return self._session.get(Delisting, delisting_id)
+
+    def earliest_per_ticker(self) -> list[Delisting]:
+        """Return the earliest delisting for every ticker in the registry.
+
+        The whole-registry form of `by_ticker`, and earliest for the same reason:
+        a symbol that was reissued and delisted twice has two exits, and the
+        first belongs to the first occupant.
+
+        Returns:
+            One row per ticker, ordered by effective date then ticker.
+        """
+        found: dict[str, Delisting] = {}
+        rows = self._session.scalars(
+            select(Delisting).order_by(Delisting.effective_date, Delisting.id)
+        )
+        for row in rows:
+            found.setdefault(row.ticker.upper(), row)
+        return sorted(found.values(), key=lambda row: (row.effective_date, row.ticker))
+
     def count(self) -> int:
         """Return how many delistings are stored."""
         return self._session.scalar(select(func.count()).select_from(Delisting)) or 0
@@ -2766,34 +2905,44 @@ class ForwardReturnRepository:
     def add_all(self, rows: Sequence[Mapping[str, Any]]) -> int:
         """Append measurements, skipping any horizon already recorded.
 
+        Rows may carry either identity — `company_id` for a live company or
+        `historical_security_id` for a security that left the market — and the
+        de-duplication is per identity kind, exactly as the two partial unique
+        indexes are. A company's measurement and a historical security's cannot
+        collide with one another, because they are measurements of different
+        securities that happen to share a date.
+
         Args:
-            rows: Column mappings carrying `company_id`, `observation_date` and
-                `horizon_sessions`.
+            rows: Column mappings carrying `observation_date`,
+                `horizon_sessions` and exactly one of `company_id` or
+                `historical_security_id`.
 
         Returns:
             How many rows were newly inserted.
+
+        Raises:
+            ValueError: If a row names both identities or neither. The database
+                would refuse it, and failing here names the offending row.
         """
         if not rows:
             return 0
 
-        companies = {row["company_id"] for row in rows}
-        dates = {row["observation_date"] for row in rows}
-        seen = {
-            (company_id, observation_date, horizon)
-            for company_id, observation_date, horizon in self._session.execute(
-                select(
-                    ForwardReturnRecord.company_id,
-                    ForwardReturnRecord.observation_date,
-                    ForwardReturnRecord.horizon_sessions,
-                ).where(
-                    ForwardReturnRecord.company_id.in_(companies),
-                    ForwardReturnRecord.observation_date.in_(dates),
+        for row in rows:
+            company = row.get("company_id")
+            historical = row.get("historical_security_id")
+            if (company is None) == (historical is None):
+                message = (
+                    "a forward return must name exactly one of company_id or "
+                    f"historical_security_id; got company_id={company!r}, "
+                    f"historical_security_id={historical!r}"
                 )
-            )
-        }
+                raise ValueError(message)
+
+        dates = {row["observation_date"] for row in rows}
+        seen = self._recorded_keys(rows, dates)
         fresh: list[Mapping[str, Any]] = []
         for row in rows:
-            key = (row["company_id"], row["observation_date"], row["horizon_sessions"])
+            key = _forward_return_key(row)
             if key in seen:
                 continue
             seen.add(key)
@@ -2805,11 +2954,56 @@ class ForwardReturnRepository:
             self._session.execute(sa_insert(ForwardReturnRecord), list(chunk))
         return len(fresh)
 
+    def _recorded_keys(
+        self, rows: Sequence[Mapping[str, Any]], dates: set[date]
+    ) -> set[tuple[str, int, date, int]]:
+        """Return the identity keys already stored for the identities in `rows`."""
+        companies = {row["company_id"] for row in rows if row.get("company_id") is not None}
+        securities = {
+            row["historical_security_id"]
+            for row in rows
+            if row.get("historical_security_id") is not None
+        }
+        seen: set[tuple[str, int, date, int]] = set()
+        if companies:
+            seen |= {
+                ("company", company_id, observation_date, horizon)
+                for company_id, observation_date, horizon in self._session.execute(
+                    select(
+                        ForwardReturnRecord.company_id,
+                        ForwardReturnRecord.observation_date,
+                        ForwardReturnRecord.horizon_sessions,
+                    ).where(
+                        ForwardReturnRecord.company_id.in_(companies),
+                        ForwardReturnRecord.observation_date.in_(dates),
+                    )
+                )
+            }
+        if securities:
+            seen |= {
+                ("historical", security_id, observation_date, horizon)
+                for security_id, observation_date, horizon in self._session.execute(
+                    select(
+                        ForwardReturnRecord.historical_security_id,
+                        ForwardReturnRecord.observation_date,
+                        ForwardReturnRecord.horizon_sessions,
+                    ).where(
+                        ForwardReturnRecord.historical_security_id.in_(securities),
+                        ForwardReturnRecord.observation_date.in_(dates),
+                    )
+                )
+            }
+        return seen
+
     def measured_horizons(self, observation_date: date) -> set[tuple[int, int]]:
         """Return the `(company_id, horizon)` pairs already measured for a date.
 
         Lets a re-run skip work rather than compute it and discard it, which
         matters when a horizon is measured over five thousand companies.
+
+        Company-backed rows only. A historical security's measurements are asked
+        for through `measured_historical_horizons`, because the two identity
+        spaces number independently and a single set would collide them.
 
         Args:
             observation_date: The date to look up.
@@ -2821,10 +3015,86 @@ class ForwardReturnRepository:
             (company_id, horizon)
             for company_id, horizon in self._session.execute(
                 select(ForwardReturnRecord.company_id, ForwardReturnRecord.horizon_sessions).where(
-                    ForwardReturnRecord.observation_date == observation_date
+                    ForwardReturnRecord.observation_date == observation_date,
+                    ForwardReturnRecord.company_id.is_not(None),
                 )
             )
         }
+
+    def measured_historical_horizons(self, observation_date: date) -> set[tuple[int, int]]:
+        """Return the `(historical_security_id, horizon)` pairs already measured.
+
+        The mirror of `measured_horizons` for securities that left the market.
+        Separate rather than shared: `companies.id` 42 and
+        `historical_securities.id` 42 are different securities, and one set
+        keyed on a bare integer would let either skip the other's work.
+
+        Args:
+            observation_date: The date to look up.
+
+        Returns:
+            The pairs already stored.
+        """
+        return {
+            (security_id, horizon)
+            for security_id, horizon in self._session.execute(
+                select(
+                    ForwardReturnRecord.historical_security_id,
+                    ForwardReturnRecord.horizon_sessions,
+                ).where(
+                    ForwardReturnRecord.observation_date == observation_date,
+                    ForwardReturnRecord.historical_security_id.is_not(None),
+                )
+            )
+        }
+
+    def for_observation_date(
+        self, observation_date: date, *, horizon_sessions: int | None = None
+    ) -> list[ForwardReturnRecord]:
+        """Return every measurement for a decision date, both identity kinds.
+
+        **The query a survivorship-aware study runs**, and the reason Option C
+        was chosen over a second table. There is no `include_delisted` flag and
+        no `UNION` for a caller to remember: a delisted security's outcome is a
+        row here like any other, and a filter that excluded it would have to be
+        written deliberately rather than omitted accidentally.
+
+        Args:
+            observation_date: The decision date.
+            horizon_sessions: Restrict to one horizon. None returns all of them.
+
+        Returns:
+            The rows, ordered by identity kind then id, so a result is stable.
+        """
+        statement = select(ForwardReturnRecord).where(
+            ForwardReturnRecord.observation_date == observation_date
+        )
+        if horizon_sessions is not None:
+            statement = statement.where(ForwardReturnRecord.horizon_sessions == horizon_sessions)
+        return list(
+            self._session.scalars(
+                statement.order_by(
+                    ForwardReturnRecord.company_id.is_(None),
+                    ForwardReturnRecord.company_id,
+                    ForwardReturnRecord.historical_security_id,
+                    ForwardReturnRecord.horizon_sessions,
+                )
+            )
+        )
+
+    def counts_by_identity(self) -> tuple[int, int]:
+        """Return how many measurements each identity kind holds.
+
+        Returns:
+            `(company_backed, historical_security_backed)`.
+        """
+        row = self._session.execute(
+            select(
+                func.count().filter(ForwardReturnRecord.company_id.is_not(None)),
+                func.count().filter(ForwardReturnRecord.historical_security_id.is_not(None)),
+            ).select_from(ForwardReturnRecord)
+        ).one()
+        return (int(row[0] or 0), int(row[1] or 0))
 
     def counts_by_date(self, observation_dates: Sequence[date]) -> dict[date, int]:
         """Return how many securities each of several decision dates measured.
@@ -2872,8 +3142,9 @@ class PitSignalSnapshotRepository:
         """Insert signal snapshots, refusing to overwrite an existing one.
 
         Args:
-            rows: Column mappings, each carrying at least `company_id`,
-                `snapshot_date` and `signal_version`.
+            rows: Column mappings, each carrying `snapshot_date`,
+                `signal_version` and exactly one of `company_id` or
+                `historical_security_id`.
 
         Returns:
             How many rows were inserted.
@@ -2885,16 +3156,16 @@ class PitSignalSnapshotRepository:
         if not rows:
             return 0
 
+        _pit_identity_guard(rows, what="signal snapshot")
         snapshot_date = rows[0]["snapshot_date"]
         version = rows[0]["signal_version"]
-        existing = set(
-            self._session.scalars(
-                select(PitSignalSnapshot.company_id).where(
-                    PitSignalSnapshot.snapshot_date == snapshot_date,
-                    PitSignalSnapshot.signal_version == version,
-                    PitSignalSnapshot.company_id.in_([row["company_id"] for row in rows]),
-                )
-            )
+        existing = _pit_stored_identities(
+            self._session,
+            PitSignalSnapshot,
+            rows,
+            version_column=PitSignalSnapshot.signal_version,
+            version=version,
+            snapshot_date=snapshot_date,
         )
         if existing:
             raise ImmutableSnapshotError(
@@ -3058,9 +3329,14 @@ class FilingAcceptanceRepository:
 class HistoricalSecurityRepository:
     """Reads and writes `historical_securities`, the delisted-name registry.
 
-    Identity is the CIK. `upsert` finds a security by its CIK and updates it, or
-    inserts a new one — a ticker is never used to identify a row, so a reused
-    ticker cannot overwrite the security that held it first.
+    Identity is the row's own `id`. The CIK is a handle onto it and is unique
+    where it exists, so `upsert` still finds a security by CIK and updates it
+    rather than inserting a twin — but a security with no CIK is now storable,
+    through `create`, because the free record establishes one for a minority of
+    delisted symbols and a registry that demanded one could not hold the rest.
+
+    A ticker is never used to identify a row in either path. That is what stops a
+    reused ticker from overwriting the security that held it first.
     """
 
     def __init__(self, session: Session) -> None:
@@ -3071,7 +3347,7 @@ class HistoricalSecurityRepository:
         """Create or update the historical security with this CIK.
 
         Args:
-            cik: The SEC filer identifier — the row's identity.
+            cik: The SEC filer identifier — the handle this row is found by.
             **fields: Column values to set (name, primary_ticker, status, and
                 the optional dates, terminal value and currencies).
 
@@ -3088,6 +3364,25 @@ class HistoricalSecurityRepository:
             setattr(existing, key, value)
         self._session.flush()
         return existing
+
+    def create(self, **fields: Any) -> HistoricalSecurity:
+        """Insert a historical security, with or without a CIK.
+
+        Always inserts. There is deliberately no key to match on: without a CIK
+        the only candidate would be the ticker, and matching on a ticker is how
+        two issuers become one row. A caller that wants to find an existing
+        security resolves it through `security_identifiers` first, with a date.
+
+        Args:
+            **fields: Column values. `cik` may be omitted or None.
+
+        Returns:
+            The stored row, with its `id` assigned.
+        """
+        security = HistoricalSecurity(**fields)
+        self._session.add(security)
+        self._session.flush()
+        return security
 
     def get(self, security_id: int) -> HistoricalSecurity | None:
         """Return a historical security by primary key, or None."""
@@ -3329,3 +3624,474 @@ class HistoricalCorporateActionRepository:
         return (
             self._session.scalar(select(func.count()).select_from(HistoricalCorporateAction)) or 0
         )
+
+
+class SecurityIdentifierRepository:
+    """Reads and writes `security_identifiers`, the dated identity layer.
+
+    Two operations carry the design. `add` appends an interval; `resolve` answers
+    which security an identifier named **on a date**, and there is deliberately no
+    overload that omits the date. A symbol without one is not a question this
+    table can answer — `BBBY` in 2022 and `BBBY` in 2025 name different companies
+    — and a signature permitting the dateless form would let a caller ask the
+    unanswerable version by accident.
+
+    `resolve` returns every security whose interval covers the query rather than
+    picking one. The choosing is `domain.identity`'s, which returns `AMBIGUOUS`
+    where the record holds two, and nothing here quietly prefers the first row.
+    """
+
+    def __init__(self, session: Session) -> None:
+        """Bind the repository to a session."""
+        self._session = session
+
+    def add(self, **fields: Any) -> SecurityIdentifier:
+        """Append one identifier interval.
+
+        Args:
+            **fields: Column values. `historical_security_id`, `valid_from`,
+                `source`, `confidence` and `lineage` are required, and at least
+                one of `cusip` or `ticker`.
+
+        Returns:
+            The stored row.
+        """
+        interval = SecurityIdentifier(**fields)
+        self._session.add(interval)
+        self._session.flush()
+        return interval
+
+    def add_all(self, rows: Sequence[Mapping[str, Any]]) -> int:
+        """Append many intervals, skipping any already stored.
+
+        The skip is on the table's own uniqueness — one security, one CUSIP, one
+        ticker, one venue, one start date — so a re-run over the same evidence
+        writes nothing rather than failing.
+
+        Args:
+            rows: Column mappings.
+
+        Returns:
+            How many were newly inserted.
+        """
+        if not rows:
+            return 0
+        securities = {row["historical_security_id"] for row in rows}
+        seen: set[tuple[int, str | None, str | None, str | None, date]] = set()
+        for chunk in _chunks(sorted(securities), _IN_CLAUSE_CHUNK):
+            seen |= {
+                (security_id, cusip, ticker, venue, valid_from)
+                for security_id, cusip, ticker, venue, valid_from in self._session.execute(
+                    select(
+                        SecurityIdentifier.historical_security_id,
+                        SecurityIdentifier.cusip,
+                        SecurityIdentifier.ticker,
+                        SecurityIdentifier.venue,
+                        SecurityIdentifier.valid_from,
+                    ).where(SecurityIdentifier.historical_security_id.in_(list(chunk)))
+                )
+            }
+        fresh: list[Mapping[str, Any]] = []
+        for row in rows:
+            key = (
+                row["historical_security_id"],
+                row.get("cusip"),
+                row.get("ticker"),
+                row.get("venue"),
+                row["valid_from"],
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            fresh.append(row)
+        if not fresh:
+            return 0
+        for chunk in _chunks(fresh, _INSERT_CHUNK_ROWS):
+            self._session.execute(sa_insert(SecurityIdentifier), list(chunk))
+        return len(fresh)
+
+    def close_interval(self, identifier_id: int, valid_to: date) -> None:
+        """Set an open interval's last valid day.
+
+        The only mutation this table permits. An interval is never deleted,
+        because the record of what a symbol meant last year is the point of
+        keeping it.
+
+        Args:
+            identifier_id: The interval to close.
+            valid_to: Its inclusive last day.
+        """
+        self._session.execute(
+            update(SecurityIdentifier)
+            .where(SecurityIdentifier.id == identifier_id)
+            .values(valid_to=valid_to)
+        )
+
+    def _covering(self, column: Any, value: str, as_of: date) -> list[SecurityIdentifier]:
+        """Return the intervals on one column that cover a value on a date."""
+        return list(
+            self._session.scalars(
+                select(SecurityIdentifier).where(
+                    func.upper(column) == value.strip().upper(),
+                    SecurityIdentifier.valid_from <= as_of,
+                    or_(
+                        SecurityIdentifier.valid_to.is_(None),
+                        SecurityIdentifier.valid_to >= as_of,
+                    ),
+                )
+            )
+        )
+
+    def resolve_ticker(self, ticker: str, as_of: date) -> list[SecurityIdentifier]:
+        """Return every interval claiming a ticker on a date.
+
+        Args:
+            ticker: The symbol, of any case.
+            as_of: The date it is being read on.
+
+        Returns:
+            The covering intervals — none, one, or several where the record
+            contradicts itself. The caller decides, through `domain.identity`.
+        """
+        return self._covering(SecurityIdentifier.ticker, ticker, as_of)
+
+    def resolve_cusip(self, cusip: str, as_of: date) -> list[SecurityIdentifier]:
+        """Return every interval claiming a CUSIP on a date.
+
+        Args:
+            cusip: The identifier, of any case.
+            as_of: The date it is being read on.
+
+        Returns:
+            The covering intervals.
+        """
+        return self._covering(SecurityIdentifier.cusip, cusip, as_of)
+
+    def for_security(self, historical_security_id: int) -> list[SecurityIdentifier]:
+        """Return one security's intervals, earliest first."""
+        return list(
+            self._session.scalars(
+                select(SecurityIdentifier)
+                .where(SecurityIdentifier.historical_security_id == historical_security_id)
+                .order_by(SecurityIdentifier.valid_from, SecurityIdentifier.id)
+            )
+        )
+
+    def list_all(self) -> list[SecurityIdentifier]:
+        """Return every interval, by security then start date."""
+        return list(
+            self._session.scalars(
+                select(SecurityIdentifier).order_by(
+                    SecurityIdentifier.historical_security_id, SecurityIdentifier.valid_from
+                )
+            )
+        )
+
+    def count(self) -> int:
+        """Return how many intervals are stored."""
+        return self._session.scalar(select(func.count()).select_from(SecurityIdentifier)) or 0
+
+
+class FtdSourceFileRepository:
+    """Reads and writes `ftd_source_files`, the provenance of the FTD ingest."""
+
+    def __init__(self, session: Session) -> None:
+        """Bind the repository to a session."""
+        self._session = session
+
+    def upsert(self, file_name: str, **fields: Any) -> FtdSourceFile:
+        """Record a file as read, replacing an earlier reading of it.
+
+        Replacing rather than appending, because the row describes the current
+        state of one named file. A second reading with a different digest means
+        the SEC republished it, and the newer digest is the one a later parse
+        would reproduce.
+
+        Args:
+            file_name: The archive's name — its identity.
+            **fields: url, sha256, byte_size, row_count, skipped_lines and the
+                settlement-date bounds.
+
+        Returns:
+            The stored row.
+        """
+        existing = self._session.scalar(
+            select(FtdSourceFile).where(FtdSourceFile.file_name == file_name)
+        )
+        if existing is None:
+            record = FtdSourceFile(file_name=file_name, **fields)
+            self._session.add(record)
+            self._session.flush()
+            return record
+        for key, value in fields.items():
+            setattr(existing, key, value)
+        self._session.flush()
+        return existing
+
+    def processed_names(self) -> set[str]:
+        """Return the names of every archive already read.
+
+        What makes the ingest resumable: 600 MB of history takes a while, and a
+        re-run should read only what is new.
+        """
+        return set(self._session.scalars(select(FtdSourceFile.file_name)))
+
+    def digest_for(self, file_name: str) -> str | None:
+        """Return the stored SHA-256 of one archive, or None if unread."""
+        return self._session.scalar(
+            select(FtdSourceFile.sha256).where(FtdSourceFile.file_name == file_name)
+        )
+
+    def list_all(self) -> list[FtdSourceFile]:
+        """Return every recorded file, by name."""
+        return list(self._session.scalars(select(FtdSourceFile).order_by(FtdSourceFile.file_name)))
+
+    def summary(self) -> tuple[int, int, date | None, date | None]:
+        """Return files read, rows behind them, and the settlement dates spanned.
+
+        Returns:
+            `(file_count, row_count, first_settlement, last_settlement)`.
+        """
+        row = self._session.execute(
+            select(
+                func.count(),
+                func.coalesce(func.sum(FtdSourceFile.row_count), 0),
+                func.min(FtdSourceFile.first_settlement_date),
+                func.max(FtdSourceFile.last_settlement_date),
+            ).select_from(FtdSourceFile)
+        ).one()
+        return (int(row[0]), int(row[1]), row[2], row[3])
+
+
+class FtdIdentityObservationRepository:
+    """Reads and writes `ftd_identity_observations`, the identity evidence.
+
+    Upserts on the identity triple, widening the settlement window and adding to
+    the count. That is what lets 433 archives be folded in one at a time without
+    holding twenty million rows in memory: each file merges into the aggregate
+    and is let go.
+    """
+
+    def __init__(self, session: Session) -> None:
+        """Bind the repository to a session."""
+        self._session = session
+
+    def merge_all(self, rows: Sequence[Mapping[str, Any]]) -> int:
+        """Merge identity triples, widening windows and accumulating counts.
+
+        Args:
+            rows: Mappings carrying `cusip`, `issuer_base`, `symbol`,
+                `issuer_name`, the settlement bounds, `observation_count`,
+                `cusip_valid`, the source file names and `evidence_hash`.
+
+        Returns:
+            How many rows were written — inserted or updated.
+
+        Raises:
+            RuntimeError: If the session's dialect supports no upsert. Both
+                supported backends do; the guard makes a third one's arrival
+                loud rather than silent.
+        """
+        if not rows:
+            return 0
+        insert = _insert_for(self._session)
+        if insert is None:
+            message = "no upsert available for this dialect"
+            raise RuntimeError(message)
+        written = 0
+        for chunk in _chunks(rows, _INSERT_CHUNK_ROWS):
+            statement = insert(FtdIdentityObservation).values(list(chunk))
+            self._session.execute(
+                statement.on_conflict_do_update(
+                    index_elements=["cusip", "symbol", "issuer_name"],
+                    set_={
+                        "first_settlement_date": func.min(
+                            FtdIdentityObservation.first_settlement_date,
+                            statement.excluded.first_settlement_date,
+                        ),
+                        "last_settlement_date": func.max(
+                            FtdIdentityObservation.last_settlement_date,
+                            statement.excluded.last_settlement_date,
+                        ),
+                        "observation_count": FtdIdentityObservation.observation_count
+                        + statement.excluded.observation_count,
+                        "last_source_file": statement.excluded.last_source_file,
+                    },
+                )
+            )
+            written += len(chunk)
+        return written
+
+    def for_symbol(self, symbol: str) -> list[FtdIdentityObservation]:
+        """Return every identity triple carrying a symbol, earliest first."""
+        return list(
+            self._session.scalars(
+                select(FtdIdentityObservation)
+                .where(FtdIdentityObservation.symbol == symbol.strip().upper())
+                .order_by(FtdIdentityObservation.first_settlement_date)
+            )
+        )
+
+    def for_symbols(self, symbols: Sequence[str]) -> dict[str, list[FtdIdentityObservation]]:
+        """Return identity triples for many symbols at once, grouped by symbol.
+
+        One query per chunk rather than one per symbol: resolving five thousand
+        delisted names one at a time is five thousand round trips over a table
+        that fits in a handful.
+
+        Args:
+            symbols: The symbols to look up, of any case.
+
+        Returns:
+            Symbol to its triples. A symbol with no evidence is absent, which a
+            caller must read as "unproven", never as "did not exist".
+        """
+        wanted = sorted({symbol.strip().upper() for symbol in symbols if symbol.strip()})
+        grouped: dict[str, list[FtdIdentityObservation]] = {}
+        for chunk in _chunks(wanted, _IN_CLAUSE_CHUNK):
+            for row in self._session.scalars(
+                select(FtdIdentityObservation)
+                .where(FtdIdentityObservation.symbol.in_(list(chunk)))
+                .order_by(FtdIdentityObservation.first_settlement_date)
+            ):
+                grouped.setdefault(row.symbol, []).append(row)
+        return grouped
+
+    def distinct_counts(self) -> tuple[int, int, int, int]:
+        """Return rows, distinct CUSIPs, distinct symbols and distinct issuer names."""
+        row = self._session.execute(
+            select(
+                func.count(),
+                func.count(distinct(FtdIdentityObservation.cusip)),
+                func.count(distinct(FtdIdentityObservation.symbol)),
+                func.count(distinct(FtdIdentityObservation.issuer_name)),
+            ).select_from(FtdIdentityObservation)
+        ).one()
+        return (int(row[0]), int(row[1]), int(row[2]), int(row[3]))
+
+    def count(self) -> int:
+        """Return how many identity triples are stored."""
+        return self._session.scalar(select(func.count()).select_from(FtdIdentityObservation)) or 0
+
+
+class UniverseMembershipRepository:
+    """Reads and writes `universe_membership`, the dated membership record.
+
+    The read that matters is `members_as_of`, and its shape is the Phase 9C
+    deliverable: one query, both identity kinds, no flag. A caller wanting only
+    survivors has to say so; a caller who says nothing gets the delisted names
+    too, which is the opposite of the default every survivorship-biased dataset
+    has.
+    """
+
+    def __init__(self, session: Session) -> None:
+        """Bind the repository to a session."""
+        self._session = session
+
+    def replace_for(
+        self,
+        rows: Sequence[Mapping[str, Any]],
+        *,
+        company_ids: Sequence[int] = (),
+        historical_security_ids: Sequence[int] = (),
+    ) -> int:
+        """Replace the stored intervals for the named securities.
+
+        Replace rather than append, because an interval set is a *derivation*
+        over the whole evidence base rather than an observation: re-running with
+        better evidence must be able to correct a boundary, and appending would
+        leave two contradictory intervals covering one date. The observation log
+        that must never be rewritten is `universe_events`, and this is not it.
+
+        Args:
+            rows: Column mappings to insert.
+            company_ids: Company identities whose existing intervals go first.
+            historical_security_ids: Historical identities, likewise.
+
+        Returns:
+            How many rows were written.
+        """
+        if company_ids:
+            for chunk in _chunks(list(company_ids), _IN_CLAUSE_CHUNK):
+                self._session.execute(
+                    delete(UniverseMembershipRecord).where(
+                        UniverseMembershipRecord.company_id.in_(list(chunk))
+                    )
+                )
+        if historical_security_ids:
+            for chunk in _chunks(list(historical_security_ids), _IN_CLAUSE_CHUNK):
+                self._session.execute(
+                    delete(UniverseMembershipRecord).where(
+                        UniverseMembershipRecord.historical_security_id.in_(list(chunk))
+                    )
+                )
+        if not rows:
+            return 0
+        for chunk in _chunks(rows, _INSERT_CHUNK_ROWS):
+            self._session.execute(sa_insert(UniverseMembershipRecord), list(chunk))
+        return len(rows)
+
+    def covering(self, as_of: date) -> list[UniverseMembershipRecord]:
+        """Return every interval whose range covers a date, both identity kinds.
+
+        Args:
+            as_of: The decision date.
+
+        Returns:
+            The covering intervals. A security with none is not represented here
+            at all, and a caller must read that as `UNKNOWN` rather than as a
+            negative — which is why `members_as_of` in the application layer
+            reports the unrepresented securities explicitly.
+        """
+        return list(
+            self._session.scalars(
+                select(UniverseMembershipRecord)
+                .where(
+                    UniverseMembershipRecord.valid_from <= as_of,
+                    or_(
+                        UniverseMembershipRecord.valid_to.is_(None),
+                        UniverseMembershipRecord.valid_to >= as_of,
+                    ),
+                )
+                .order_by(
+                    UniverseMembershipRecord.company_id.is_(None),
+                    UniverseMembershipRecord.company_id,
+                    UniverseMembershipRecord.historical_security_id,
+                )
+            )
+        )
+
+    def for_company(self, company_id: int) -> list[UniverseMembershipRecord]:
+        """Return one company's intervals, earliest first."""
+        return list(
+            self._session.scalars(
+                select(UniverseMembershipRecord)
+                .where(UniverseMembershipRecord.company_id == company_id)
+                .order_by(UniverseMembershipRecord.valid_from)
+            )
+        )
+
+    def for_historical_security(self, security_id: int) -> list[UniverseMembershipRecord]:
+        """Return one historical security's intervals, earliest first."""
+        return list(
+            self._session.scalars(
+                select(UniverseMembershipRecord)
+                .where(UniverseMembershipRecord.historical_security_id == security_id)
+                .order_by(UniverseMembershipRecord.valid_from)
+            )
+        )
+
+    def counts_by_state(self) -> dict[tuple[str, str], int]:
+        """Return interval counts by `(state, confidence)`."""
+        rows = self._session.execute(
+            select(
+                UniverseMembershipRecord.state,
+                UniverseMembershipRecord.confidence,
+                func.count(),
+            ).group_by(UniverseMembershipRecord.state, UniverseMembershipRecord.confidence)
+        )
+        return {(state, confidence): int(count) for state, confidence, count in rows}
+
+    def count(self) -> int:
+        """Return how many intervals are stored."""
+        return self._session.scalar(select(func.count()).select_from(UniverseMembershipRecord)) or 0

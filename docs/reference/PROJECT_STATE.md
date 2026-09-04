@@ -58,6 +58,9 @@ Phase 5; Phases 6 and 7 are layers over it, not revisions of it.
 | 8H | Backtest-readiness harness — survivorship, universe-as-of, score reconstruction | **complete, under review** |
 | 8I | Historical securities — delisted names reconstructable from free EDGAR + Alpaca | **complete, under review** |
 | 8J | Research dataset — backfilled signals and outcomes, coverage audit, identity guard | **complete, under review** |
+| 9A | Identity foundation — stable `security_id`, dated identifiers, SEC fails-to-deliver evidence | **complete, under review** |
+| 9B | Historical-security outcome integration — delisted names in the same outcome query | **complete, under review** |
+| 9C | Historical point-in-time universe membership — dated intervals, three states | **complete, under review** |
 
 **Phases 8B, 8C, 8F, 8G, 8H, 8I and 8J are implemented and awaiting review.**
 
@@ -433,11 +436,12 @@ additive, neither uses `batch_alter_table`.
 
 ### Phase 8I — historical securities
 
-- **Identity is the CIK, never the ticker.** A ticker change (FB→META) keeps one
-  CIK, a reused ticker (BBBY today) is a different CIK, and an acquisition gives
-  acquiree and acquirer separate CIKs — so keying on CIK is what makes a ticker
-  change one security, a reuse two, and a merger two histories rather than one.
-  `primary_ticker` is a price-retrieval attribute that can change, never the key.
+- **Identity is the CIK, never the ticker.** *Superseded by Phase 9A*, which
+  found the availability wall: the free record establishes a CIK for about an
+  eighth of delisted symbols, so `cik NOT NULL` made the table unable to hold the
+  names it exists to hold. The identity is now `historical_securities.id`; the CIK
+  remains stored and unique where it exists. The reasoning that a ticker is not an
+  identity is unchanged and is what Phase 9A generalises.
 - **A historical security is never a `companies` row.** `companies` is the
   current investable universe; the historical layer is separate tables with no
   foreign key to it, so the two sets cannot contaminate one another and a
@@ -456,6 +460,122 @@ additive, neither uses `batch_alter_table`.
   equity value (in no feed) are recorded as gaps and left NULL — never a guessed
   zero. A receivership takes its status only from asserted evidence, never the
   action feed.
+
+### Phase 9A — security identity
+
+- **The identity is an opaque internal id, and every external handle is a dated
+  interval against it.** A ticker is a lease, a CUSIP is a dated identifier of an
+  *issue* remade by a reverse split, and a CIK exists for a minority of delisted
+  names. None of the three may be the key: keying on a ticker splices two
+  companies into one history, keying on a CUSIP splits one company's history in
+  two, and requiring a CIK stores neither.
+- **CUSIP is never promoted to the primary key.** It is stored as a dated
+  identifier — `(security_id, cusip, ticker, venue, valid_from, valid_to, source,
+  confidence)` — and a reverse split closes one interval and opens another
+  against the *same* `security_id`.
+- **The CUSIP issuer base is a rule, not a heuristic.** The standard reserves
+  characters 1–6 for the issuer, so two issues sharing them are one company's and
+  two that differ are two companies'. No lineage is ever drawn across that
+  boundary, which is what keeps `BBBY`'s two occupants apart.
+- **The issuer holding a symbol on a date is the latest to have taken it up by
+  then** — the same rule `universe_members_as_of` uses for membership. *Corrected
+  in Phase 9B.* The original test asked whether a span had begun by the date and
+  stopped being seen shortly after it, which bounds a span's end from above and
+  never from below, so any long-dead earlier occupant also qualified: `ATVI` came
+  back ambiguous between Activision Inc (last seen 2008) and Activision Blizzard,
+  and `TWTR` between Tweeter Home Entertainment (2007) and Twitter. Resolution
+  went from 2,410 to **3,144** symbols and ambiguity from 680 to **14**.
+- **A positive fails-to-deliver match is evidence; an absence is not.** A
+  security appears in the SEC's file only when a delivery failed, and before
+  2008-09-16 only above a reporting threshold. `domain.EvidenceVerdict` has
+  exactly two members, `PRESENT` and `UNPROVEN`, and **no `ABSENT`** — so no code
+  path can record the opposite conclusion even by accident.
+- **Nothing is fabricated.** No CUSIP, CIK, ticker or issuer mapping is invented,
+  and no interval endpoint is interpolated: every `valid_from` and `valid_to` is a
+  settlement date the record actually carries. Evidence that fits two issuers
+  produces `AMBIGUOUS` and creates nothing.
+- **Evidence is stored apart from conclusions.** `ftd_identity_observations`
+  holds evidence for symbols that resolved to nothing, which is exactly what an
+  audit of what is missing is made of. An interval presupposes an identity;
+  evidence presupposes none.
+- **The two identity spaces stay separate.** Nothing in the identity layer writes
+  to `companies`. Contaminated live rows are **detected and reported, never merged
+  or split** — re-attributing a row's prices, filings and scores between two
+  issuers is a data operation requiring its own authorisation. No `cusip` column
+  was added to `companies`: there is no authoritative free source for a live
+  company's CUSIP, and deriving one from the fails record means joining on the
+  ticker, which is the contamination being detected.
+- **A forward return names exactly one identity.** `company_id` or
+  `historical_security_id`, enforced by a check constraint, with uniqueness held
+  by two partial unique indexes — one per identity kind. A single constraint over
+  a nullable pair would enforce nothing, SQL holding every NULL distinct from
+  every other. **No existing measurement was migrated**; attaching a delisted
+  name's outcomes needs its identity proven first.
+- **No score, signal, threshold or ranking rule moved.** `COMPOUNDER_V1_2` and
+  Market Signals V1 are byte-unchanged and their parity tests are untouched.
+
+### Phase 9B — historical-security outcomes
+
+- **A delisted security's outcome is a row, not a dataset.** `forward_returns`
+  carries `company_id` **or** `historical_security_id`, so an ordinary query over
+  a decision date returns both kinds. There is no `include_delisted` flag and no
+  `UNION` for a caller to remember — which matters because the failure mode of
+  every alternative is silent: a forgotten union does not raise, it returns a
+  tidy survivor-only answer.
+- **The measurement is the company path with one substitution.** The same
+  `domain.forward_returns`, the same benchmark calendar, the same four statuses,
+  the same table; only the bars come from `historical_prices`. The calendar stays
+  the benchmark's, so a security that stopped trading is `INTERRUPTED` rather
+  than appearing to reach its horizon on time.
+- **Phase 9B adds no schema.** No migration, table, column, index or constraint —
+  `0026` and `0027` were already sufficient. Terminal outcomes are **derived on
+  read** for the same reason `classify_delisting` is: a stored second copy could
+  only disagree with the columns it was derived from.
+- **A ticker-keyed price fetch is bounded to the security's own era.** Prices come
+  from a symbol-keyed feed, which is where the identity model could be undone by
+  its own plumbing. Every request spans `[earliest identifier interval, last
+  trading date + 5 days]`, so a reissued symbol cannot pull a later occupant's
+  bars into this security's series.
+- **A terminal event is matched by identity, never by symbol.** A security's exit
+  is the delisting falling inside one of *its* identifier intervals. VMware has
+  three rows under `VMW`; only the intervals say which is this security's, and the
+  one stating a consideration is preferred over the ones that do not.
+- **A price is never evidence of a terminal value.** `domain.terminal_outcome` is
+  handed reported considerations and no price series, so a collapsing tape cannot
+  become a settlement. Bed Bath traded to $0.0743 and its terminal value is
+  `UNKNOWN`; every receivership is `UNKNOWN`, because no feed files one.
+- **Price availability and score availability are separate.** A CIK-unresolved
+  security has no EDGAR fundamentals and is `INSUFFICIENT_DATA`, and keeps its
+  prices, its identity and its outcomes regardless. `CompounderScore V1.2` was
+  not widened to reach it, and is byte-unchanged.
+
+### Phase 9C — historical universe membership
+
+- **Identity, membership and eligibility are three concepts, not one boolean.**
+  Identity is `security_identifiers`; membership is a slow-moving listing fact
+  stored as dated intervals in `universe_membership`; eligibility is the frozen
+  threshold screen applied per date. Collapsing any two is how a universe becomes
+  today's roster wearing a date.
+- **No `MEMBER` verdict can currently be `OBSERVED`, and the schema says so per
+  row.** Exchange, security type and sector are undated everywhere in this
+  system — every stored exchange carries the day capture first ran. A member
+  verdict therefore carries an attribute backwards, `confidence` records that it
+  did, and `inferred_inputs` names which. `ListingAttributes.fully_dated` is the
+  single gate on promotion, and becoming observed requires a dated venue source
+  rather than a change of opinion.
+- **Price presence is never membership.** Price and settlement evidence bound an
+  interval; the membership claim rests on the listing attributes. A security with
+  a full price series and no recorded venue is `UNKNOWN`.
+- **`UNKNOWN` is a first-class state and is always reported.** Every security
+  lands in exactly one of members, non-members or unknown — a universe that loses
+  securities between its groups hides its own size, which the first
+  reconstruction did for 1,530 of 8,919 securities before it was caught.
+- **The record's own reach is not evidence about the market.** `NOT_YET_IN_RECORD`
+  is only asserted when a security's first dated trace is strictly after the
+  observation record's floor; at the floor the period stays `UNKNOWN`.
+- **Membership is dual-identity, like outcomes.** `company_id` or
+  `historical_security_id`, exactly one, so `members_as_of(D)` returns delisted
+  securities without an `include_delisted` flag.
 
 ### Phase 7 — international
 
@@ -479,6 +599,31 @@ additive, neither uses `batch_alter_table`.
   describes the company, and is excluded from current rankings.**
 
 ---
+
+### Phase 9K.1 — free listing evidence
+
+`listing_observations` records where a security traded, month by month, from
+Nasdaq's public *Market Share by Symbol* files. Four rules govern it.
+
+- **The `Listed*` family changed meaning and the code must know it.** Tape B
+  (Arca, NYSE American, regional) through 2021-12; Tape A (NYSE) from 2022-01,
+  with 2021-07 an exception inside the earlier era. `domain.tape_for` predicts a
+  tape from the month, `domain.classify_tape` reads one from the file's own
+  contents, and only a file where the two agree is imported. The rest are
+  `QUARANTINED` rows carrying both tapes and the reason.
+- **Absence is never non-membership.** `ListingEvidenceState` has no
+  `NOT_LISTED` member, so no caller can write one. A security that did not trade
+  in a month is simply missing, and 34.6% of observed symbols have a hole inside
+  their own run.
+- **Monthly is never daily.** `month_state` may return `MARKET_SHARE_OBSERVED`;
+  `daily_state` never does, because the file attests to a month and a security
+  that left on the 5th appears in it exactly as one that traded all month.
+- **NYSE American is censored, and counted.** It appears in no importable file.
+  247 live companies are stored on it; the audit reports them rather than
+  treating them as absent.
+
+Scope is **2022-01 onward** — the first month Nasdaq and NYSE are both covered.
+Nothing before it is imported.
 
 ## Architecture
 
@@ -672,7 +817,7 @@ The map in `src/stock_screener/jobs.py` is the entire allowlist.
 
 ## Database migrations
 
-Head is **`0026`**. One revision per schema change; the chain is linear.
+Head is **`0030`**. One revision per schema change; the chain is linear.
 
 | Rev | Adds |
 | --- | --- |
@@ -696,6 +841,10 @@ Head is **`0026`**. One revision per schema change; the chain is linear.
 | `0018` | `period_start` and `cadence`; existing rows backfilled `QUARTERLY` |
 | `0019` | `statement_profile`, `consolidated_avg_volume`, `volume_source` |
 | `0020` | score freshness; NULL reads as `CURRENT` |
+| `0028` | `universe_membership` — effective-dated membership verdicts against both identity kinds, with the confidence behind each. Additive; no existing table touched |
+| `0029` | `pit_feature_snapshots` and `pit_signal_snapshots` gain dual identity |
+| `0030` | `listing_source_files`, `listing_observations` — free monthly venue evidence |
+| `0027` | `security_identifiers`, `ftd_source_files`, `ftd_identity_observations` — the identity layer. Relaxes `historical_securities.cik` to nullable and opens `forward_returns` to a second identity with a check constraint and two partial unique indexes. Rebuilds two tables; see the safety note below |
 | `0026` | `historical_securities` and its `historical_observations`, `historical_prices`, `historical_corporate_actions` children — delisted names keyed by CIK, separate from `companies`. Additive, no `batch_alter_table` |
 | `0025` | `delistings` — the securities that left the market, keyed by ticker because they have no company row |
 | `0024` | `forward_returns` — what a security did at 1/5/20/60/120 sessions from an observation date |
@@ -715,9 +864,13 @@ Phase 8B's append-only layer, beside them: `pit_capture_runs` ·
 
 Phase 8C adds one more: `pit_signal_snapshots`.
 
-Phase 8I adds the historical-security layer, keyed by CIK and separate from every
-table above: `historical_securities` · `historical_observations` ·
-`historical_prices` · `historical_corporate_actions`.
+Phase 8I adds the historical-security layer, separate from every table above:
+`historical_securities` · `historical_observations` · `historical_prices` ·
+`historical_corporate_actions`.
+
+Phase 9A adds the identity layer over it: `security_identifiers` (dated CUSIP,
+ticker and venue intervals against a stable `security_id`) and the evidence they
+are built from — `ftd_identity_observations` and `ftd_source_files`.
 
 ### The migration safety rule
 
@@ -732,9 +885,29 @@ that and deleted about 1.6 million rows from the primary database. That is why
 `tests/integration/test_migrations.py::test_migrating_a_populated_database_preserves_its_rows`
 exists.
 
+**`0027` rebuilds two tables, and one of them is a parent.** Making
+`historical_securities.cik` nullable needs a SQLite table rebuild, and that table
+has three children declaring `ON DELETE CASCADE`. The revision disables foreign-key
+enforcement for the rebuild — which SQLite's own documentation prescribes — and the
+subtlety that makes it dangerous is that `PRAGMA foreign_keys` is **silently
+ignored inside a transaction**, which Alembic normally has open. The naive version
+appears to work, does nothing, and cascades. `_disable_foreign_keys` commits at the
+driver level first and then *verifies* the pragma took effect, raising rather than
+proceeding if it did not: a migration that cannot make itself safe must fail loudly.
+`tests/integration/test_migrations.py::test_the_identity_migration_preserves_a_populated_historical_security`
+is the proof on the real upgrade path. The `forward_returns` rebuild needs no such
+care — nothing has a foreign key *to* it, so dropping it cascades to nothing.
+
 ---
 
 ## Known limitations
+
+**Historical listing evidence is monthly and partly censored.** Free sources give
+Nasdaq and NYSE from 2022-01 at month resolution only; NYSE American is not
+covered at any date, and no free daily listing source exists. A 2022+ universe
+built on it is survivorship-aware at monthly resolution and censored below that.
+See `docs/reference/listing-evidence.md`.
+
 
 Documented rather than fixed. Each is a deliberate stop, not a backlog item.
 
@@ -751,6 +924,15 @@ Documented rather than fixed. Each is a deliberate stop, not a backlog item.
 | **Pre-2009 XBRL** (historical layer) | XBRL was not mandatory before 2009, so a filer that delisted earlier (Lehman) has no machine-readable fundamentals. Recorded, not reconstructed. |
 | **Pre-~2021 free price history** (historical layer) | Alpaca's free IEX feed does not reach back past roughly 2021 (AAPL 2016, Sprint 2020, Sears 2018 all return no bars), so an older delisting is `NO_FREE_PRICE_HISTORY` and cannot be given a point-in-time market cap. |
 | **Receivership terminal value** | No corporate-action feed files a receivership, so a failed bank's terminal equity value is UNKNOWN unless asserted from evidence outside the feed — never a guessed 0 or -100%. |
+| **Fails-to-deliver silence** (identity layer) | A security whose deliveries never failed is absent from the SEC's record entirely, so its identity is unrecoverable from that source. Produces `UNRESOLVED`, and `EvidenceVerdict` has no `ABSENT` member, so no code path can turn it into a claim of non-existence. |
+| **Pre-2008-09-16 threshold censoring** (identity layer) | Before that date the fails file carried only failures above a reporting minimum, so an absence over an earlier window is uninformative for a second, independent reason. Flagged as `threshold_censored`, not corrected. |
+| **No corporate action in the fails record** (identity layer) | A CUSIP change within one issuer cannot be attributed to a reverse split, a re-incorporation or a class re-designation. Recorded as `CUSIP_CHANGE` at `INFERRED` confidence; `REVERSE_SPLIT` is only ever `ASSERTED` from evidence outside the feed. |
+| **No venue on an FTD-derived interval** (identity layer) | The file carries no exchange, so `security_identifiers.venue` is NULL. "Not established", never a default. |
+| ~~**No historical universe membership**~~ | **Addressed by Phase 9C**, which added a dual-identity `universe_membership` layer. 51 month-ends now reconstruct with a median of 4,953 members, 199 of them delisted. What remains is that no member verdict can be `OBSERVED` — see below. |
+| **No `OBSERVED` membership is achievable** (membership layer) | Exchange, security type and sector are undated everywhere in this system, so every one of the 6,049 member intervals is `INFERRED` and names the attributes it carried back. Closing this needs a dated listing source — SEC Form 8-A/25 filings carry one — which is a separate ingestion, not a code change. |
+| **A contaminated live row carries one continuous membership** (membership layer) | Where a `companies` row holds two issuers' history, its membership interval spans both: the layer separates the two *identities* correctly but cannot un-mix a row that is itself two companies. 1,486 live rows carry more than one CUSIP issuer under their ticker; 1,458 hold a single open `MEMBER` interval. Repairing this means splitting prices, filings and scores across two issuers, which is a separately-authorised data operation. |
+| **Free price history begins ~2020-07** (outcome layer) | Alpaca's free IEX feed serves nothing earlier, so a security that delisted before then has an identity and a terminal event but no measurable outcome. 581 of 2,745 backfilled securities returned no bars at all. |
+| **All-stock mergers state no consideration** (outcome layer) | PXD's exit into XOM records an exchange ratio and no cash, so its terminal value is `UNKNOWN`. Computing one would need the acquirer's price on the effective date, which is a second security's history and a deliberate later step. |
 
 ---
 
@@ -829,6 +1011,24 @@ learn.
 | `packages/deep-research/tests/test_brief.py` | fingerprints are reproducible across reassembly and refetch |
 | `tests/integration/test_pit_capture.py::test_a_completed_day_cannot_be_changed_by_a_later_score` | hindsight cannot rewrite the record — the property the whole phase rests on |
 | `tests/integration/test_pit_capture.py::test_a_partial_run_leaves_no_day_behind` | a crashed capture leaves no half-day marked good |
+| `tests/integration/test_migrations.py::test_the_identity_migration_preserves_a_populated_historical_security` | `0027` rebuilds a parent with three cascading children and deletes none of them |
+| `packages/domain/tests/test_identity.py::TestATickerReuseIsADifferentSecurity` | two issuers under one symbol are never spliced into one history |
+| `packages/domain/tests/test_identity.py::TestAReverseSplitPreservesTheSecurity` | a new CUSIP is a new interval, never a new security — and the retired one stops answering |
+| `packages/domain/tests/test_identity.py::TestEvidenceAndItsAbsence` | `EvidenceVerdict` has no `ABSENT`: silence in the fails record can never become a claim |
+| `tests/integration/test_security_identity.py::TestHistoricalSecuritiesStayOutOfTheLiveUniverse` | resolving a delisted symbol writes no `companies` row |
+| `tests/integration/test_security_identity.py::TestForwardReturnsCarryExactlyOneIdentity` | a measurement names one identity, never both and never neither |
+| `tests/integration/test_security_identity.py::TestDuplicateMeasurementsAreRefusedPerIdentityKind` | the partial unique indexes bite for each identity kind independently |
+| `tests/integration/test_historical_outcomes.py::TestASecurityWithNoCompanyRow::test_a_historical_security_outlives_the_deletion_of_its_company_row` | the survivorship test — the live row is deleted and the outcome is unchanged |
+| `tests/integration/test_historical_outcomes.py::TestTheMixedUniverseQuery` | survivors and delisted names come back from one query, no union and no flag |
+| `tests/integration/test_historical_outcomes.py::TestIdentityIsNeverTheTicker` | two occupants of one symbol keep separate prices, outcomes and terminal events |
+| `tests/integration/test_historical_outcomes.py::TestTerminalOutcomes::test_a_collapsing_price_never_becomes_a_terminal_value` | a falling tape is never read as a settlement |
+| `tests/integration/test_historical_outcomes.py::TestTheScoreBoundary` | outcome availability and score availability stay separate concepts |
+| `tests/integration/test_historical_outcomes.py::TestNoLookAhead` | a later interval, action or delisting cannot reach the decision-date state |
+| `tests/integration/test_universe_membership.py::TestSurvivorsAndExits::test_membership_survives_the_deletion_of_every_company_row` | historical membership outlives the emptying of `companies` |
+| `tests/integration/test_universe_membership.py::TestPricePresenceIsNotMembership` | Rule B — a priced security with no venue is `UNKNOWN`, never a member |
+| `tests/integration/test_universe_membership.py::TestInferenceIsNeverDressedAsObservation` | no member verdict is ever written as observed, and each names what it carried |
+| `tests/integration/test_universe_membership.py::TestFutureInformationCannotLeakBackward` | a 2024 listing is not a 2022 member; a future exit cannot rewrite the past |
+| `tests/integration/test_universe_membership.py::TestIdentityIsNeverTheTicker` | ticker reuse gives two independent membership histories |
 | `tests/integration/test_pit_capture.py::test_the_first_capture_records_a_baseline_not_a_dated_event` | no membership date is ever fabricated |
 | `tests/integration/test_filing_observations.py::test_a_restatement_appends_and_the_original_survives` | a revision never destroys the figure it replaced |
 | `tests/integration/test_filing_observations.py::test_period_end_is_never_used_as_availability` | the classic look-ahead trap stays shut |
@@ -937,10 +1137,10 @@ Not a backlog. These exclusions are deliberate.
 | | |
 | --- | --- |
 | Commit | `f9948be` — feat(pit): add point-in-time market cap, forward returns and delistings |
-| Branch | `feat/phase-8d-pit-metric-engine` (8F–8G committed, 8H–8I uncommitted) |
-| Migration head | `0026` — `historical_securities` and its three children (8I) |
-| Score version | `COMPOUNDER_V1_2` (unchanged by anything in Phase 8, including 8H–8I) |
+| Branch | `feat/phase-9a-identity-foundation` (8F–8J committed; 9A and 9B uncommitted) |
+| Migration head | `0028` — the membership layer (9C). Phase 9B added none. |
+| Score version | `COMPOUNDER_V1_2` (unchanged by anything in Phase 8, 9A, 9B or 9C) |
 | Feature version | `MARKET_FEATURES_V1` |
 | Signal version | `MARKET_SIGNALS_V1` |
-| Primary database | untouched by 8A–8I; all work ran against staging copies |
-| Checkpoint date | 2026-08-30 |
+| Primary database | untouched by 8A–8J and 9A–9C; all work ran against staging copies |
+| Checkpoint date | 2026-09-01 |

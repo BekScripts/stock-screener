@@ -13,8 +13,19 @@ at all, so a signal for a past date cannot drift when they change.
 """
 
 from stock_screener.signals.derivation import (
+    TRADING_EVIDENCE,
     SignalDerivationResult,
+    derive_historical_market_signals,
     derive_market_signals,
+    derive_market_signals_v2,
+    explain_peer_membership,
 )
 
-__all__ = ["SignalDerivationResult", "derive_market_signals"]
+__all__ = [
+    "TRADING_EVIDENCE",
+    "SignalDerivationResult",
+    "derive_historical_market_signals",
+    "derive_market_signals",
+    "derive_market_signals_v2",
+    "explain_peer_membership",
+]

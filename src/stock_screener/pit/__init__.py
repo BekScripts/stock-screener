@@ -74,6 +74,7 @@ from stock_screener.pit.capture import (
     FEATURE_VERSION,
     CaptureResult,
     capture_day,
+    capture_historical_features,
     record_capture_failure,
 )
 from stock_screener.pit.decision_time import (
@@ -96,6 +97,7 @@ from stock_screener.pit.observations import ingest_filing_observations
 from stock_screener.pit.returns import (
     ReturnMeasurementResult,
     measure_forward_returns,
+    measure_historical_forward_returns,
 )
 
 __all__ = [
@@ -113,12 +115,14 @@ __all__ = [
     "ReturnMeasurementResult",
     "build_metrics_as_of",
     "capture_day",
+    "capture_historical_features",
     "decision_instant",
     "discover_delistings",
     "ingest_corporate_actions",
     "ingest_filing_acceptance",
     "ingest_filing_observations",
     "measure_forward_returns",
+    "measure_historical_forward_returns",
     "periods_as_of",
     "record_capture_failure",
 ]

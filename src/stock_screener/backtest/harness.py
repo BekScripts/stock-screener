@@ -47,15 +47,16 @@ from domain import (
     classify_delisting,
     forward_returns,
 )
+from stock_screener.backtest.membership import COMPANY, members_as_of
 from stock_screener.backtest.scores import ReconstructedScore, reconstruct_score
-from stock_screener.backtest.universe import reconstruct_universe
 
 if TYPE_CHECKING:
     from datetime import date
 
     from sqlalchemy.orm import Session
 
-    from domain import FxConversion, UniverseAsOf
+    from domain import FxConversion
+    from stock_screener.backtest.membership import UniverseAsOfMembership
     from stock_screener.config import Settings
 
 log = structlog.get_logger(__name__)
@@ -238,7 +239,7 @@ def security_readiness(
     as_of: date,
     ticker: str,
     *,
-    universe: UniverseAsOf | None = None,
+    universe: UniverseAsOfMembership | None = None,
     fx: FxConversion | None = None,
 ) -> SecurityReadiness:
     """Answer the seven readiness questions for one security on one date.
@@ -256,7 +257,7 @@ def security_readiness(
         The gathered answer, with a `gaps` list naming every unanswerable part.
     """
     symbol = ticker.upper()
-    resolved_universe = universe or reconstruct_universe(session, as_of)
+    resolved_universe = universe or members_as_of(session, as_of)
     company = CompanyRepository(session).get_by_ticker(symbol)
     last_bar = (
         PriceHistoryRepository(session).latest_date(company.id) if company is not None else None
@@ -290,9 +291,23 @@ def security_readiness(
             gaps=tuple(gaps),
         )
 
-    membership = next((m for m in resolved_universe.members if m.company_id == company.id), None)
+    # Canonical membership, from the Phase 9C record rather than the legacy
+    # company-keyed event log. The two disagree materially: on 2023-06-30 the
+    # event log places nobody at all, because every one of its rows is a baseline
+    # dated the day capture first ran, while the membership record places 4,901
+    # securities — 253 of them names that no longer exist in `companies`. A
+    # readiness answer built on the first is not a conservative version of the
+    # second; it is a different question with an empty answer.
+    membership = next(
+        (
+            verdict
+            for kind, identity, verdict in resolved_universe.members
+            if kind == COMPANY and identity == company.id
+        ),
+        None,
+    )
     in_universe = membership is not None
-    if company.id in resolved_universe.undetermined:
+    if (COMPANY, company.id) in set(resolved_universe.unknown):
         gaps.append("UNIVERSE_MEMBERSHIP_UNDETERMINED")
 
     reconstructed: ReconstructedScore | None = reconstruct_score(
@@ -324,7 +339,7 @@ def security_readiness(
         ticker=symbol,
         company_id=company.id,
         in_universe=in_universe,
-        membership_kind=(membership.kind.value if membership else None),
+        membership_kind=(str(membership.confidence) if membership else None),
         fundamentals_known=has_metrics,
         periods_used=reconstructed.periods_used if reconstructed else 0,
         market_cap=market_cap,
