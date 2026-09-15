@@ -396,10 +396,10 @@ cache outside both planes.
 
 ## B2.6 backend selection and the B2 configuration boundary
 
-B2.6 adds the decision of *which* backend holds the artifact plane, and the
-settings a Backblaze backend will need. It adds no backend: `b2` is
-configurable and validated, and constructing it raises `NotImplementedError`
-naming B2.7. No SDK is installed and nothing contacts Backblaze.
+B2.6 added the decision of *which* backend holds the artifact plane, and the
+settings a Backblaze backend needs. B2.7 then filled the seam with
+`B2EvidenceStorage` — see [B2.7](#b27-the-backblaze-backend). Nothing here
+contacts Backblaze.
 
 ### Selection is explicit and fails closed
 
@@ -434,7 +434,9 @@ backends directly.
 `StorageConfigurationError` is a `providers.ConfigurationError`, so the CLI
 reports it as one line with exit code 2. It is deliberately not a
 `StorageUnavailableError`: that type means a backend that was configured and
-then could not answer; this one is raised before any backend exists.
+then could not answer; this one is raised before any backend exists. For
+`b2`, `open_evidence_storage` returns a `B2EvidenceStorage` bound to the
+bucket, offline.
 
 ### What `b2` requires, and how it is checked
 
@@ -496,15 +498,14 @@ Three options were weighed for the backend that B2.7 will build.
 | native `b2sdk` | large-file upload API; per-upload SHA-1 verification | a vendor-specific auth and API model; verifies SHA-1 where this project's contract is SHA-256; heavier than the S3 path for the four operations needed; no shared test convention |
 | in-house SigV4 over `httpx` | no new dependency; one HTTP stack; `httpx.MockTransport` testing matching every other provider; `RetryPolicy` reuse | signing must be written and maintained; multipart would be ours to build; a signing bug surfaces as an opaque 403 |
 
-**`boto3` on the S3-compatible API is the recommendation.** The deciding
-points are the standard S3 semantics for exactly the six contract operations,
-and a property that falls out of SigV4 for free: a signed PUT carries
-`x-amz-content-sha256` and the server rejects a body that does not hash to
-it, so an upload is verified end to end against *our* digest, not the
-vendor's. Nothing is installed in B2.6; B2.7 adds it with `uv add`. The
-in-house client remains the fallback if the dependency footprint proves
-unacceptable — the corpus has no object near the 5 GB single-PUT limit, so
-multipart is not what would decide it.
+**`boto3` on the S3-compatible API is the recommendation**, and B2.7 took
+it. The deciding points were the standard S3 semantics for exactly the six
+contract operations, and a property that falls out of SigV4 for free: a
+signed PUT carries `x-amz-content-sha256` and the server rejects a body that
+does not hash to it. That is a transport property; the persisted digest of
+record is still computed here and verified by a HEAD — see B2.7. The corpus
+has no object near the 5 GB single-PUT limit, so multipart was not what
+decided it and is not implemented.
 
 Two constraints on that backend, stated now so B2.7 inherits them:
 
@@ -547,6 +548,136 @@ The artifact prefixes are the local layout's, byte for byte, because they are
 the manifest's `path` keys. A manifest record does not name a bucket, an
 endpoint or a backend, and will not: `Entry.path` is the same string whichever
 backend stored the bytes.
+
+## B2.7 the Backblaze backend
+
+`B2EvidenceStorage` (`sec_evidence/b2.py`) implements the six-operation
+contract over one B2 bucket through the S3-compatible API, using `boto3`. It
+passes the same contract suite as the local and memory backends, and the
+full reconciliation matrix produces identical counters over all three. It
+has **not** been validated against a live bucket: every test runs over a
+stateful fake client or a `botocore` stub, and no request has left the
+machine. Live validation is B2.8, on a dedicated prefix, with explicit
+authorization.
+
+### Which call answers which operation
+
+| Contract | S3 call | Absent | Everything else |
+| --- | --- | --- | --- |
+| `exists` | `HeadObject` | 404 → `False` | `StorageUnavailableError` — including 403 |
+| `stat` | `HeadObject` | 404 → `ArtifactNotFoundError` | `StorageUnavailableError` |
+| `read_bytes` | `GetObject`, body read whole, then closed | `NoSuchKey` → `ArtifactNotFoundError` | `StorageUnavailableError`, a short body included |
+| `write_bytes` | `PutObject` then `HeadObject` | — | `EvidenceWriteError` |
+| `digest` | `GetObject`, SHA-256 streamed over the body | `NoSuchKey` → `ArtifactNotFoundError` | `StorageUnavailableError` |
+| `list_prefix` | `ListObjectsV2`, paginated | empty | `StorageUnavailableError` |
+
+Nothing deletes, nothing lists buckets, nothing copies. The `S3Operations`
+protocol in `b2.py` names exactly the four client calls the backend makes,
+and a fake that lacks `delete_object` satisfies it — so "never deletes" is
+checked by the type system as well as by a test that records every call.
+
+The object key is the logical artifact key, unprefixed:
+`filings/0000320193/000032019324000123/aapl-20240928.htm` in a bucket is
+the same string it is in a directory, and a manifest written against one
+reads unchanged against the other.
+
+### The write trust model
+
+```text
+sha256 = SHA-256(data)                      computed here, before anything is sent
+PUT  key  body=data  ContentLength=len  Metadata={sha256}
+HEAD key  →  require ContentLength == len(data) and Metadata[sha256] == sha256
+StoredArtifact(key, len(data), sha256)     returned only after both hold
+```
+
+A failed PUT, a failed HEAD, an object that vanished between the two, a
+length that differs or a metadata digest that differs each raise
+`EvidenceWriteError` and return nothing — so the harvester appends no
+manifest record. `test_storage_neutral.py::TestHarvestTrustOrderingAgainstB2`
+proves that for a failed upload, a truncated upload and a failed
+verification HEAD: the manifest stays empty in all three.
+
+Three things are deliberately not what they might look like:
+
+- **ETag is not SHA-256** and is never read.
+- **The `sha256` metadata is a verification aid, not the digest of record.**
+  It is what the writer claimed at upload time; `digest()` never returns it.
+  The manifest SHA remains authoritative, and it is the SHA of the bytes the
+  harvester was handed.
+- **`x-amz-content-sha256` is not evidence.** SigV4 signs a body hash and
+  the server rejects a body that does not match it, which is a useful
+  transport property; it is not persisted and is not what the manifest
+  records.
+
+`digest(key)` downloads the object and hashes it. That doubles the bytes
+moved for a cache-hit check against a bucket, and it is the right trade in
+this phase: a metadata claim that has stopped being true is exactly what a
+digest check exists to catch. A verified-metadata shortcut can be
+considered once live validation has shown how the bucket behaves.
+
+### Uploads are single PUTs
+
+`PutObject` carries at most 5 GiB. No SEC evidence artifact approaches it —
+the largest filing documents are tens of megabytes — so multipart upload is
+not implemented, and a payload past `SINGLE_PUT_LIMIT` is refused before any
+request rather than handed to a code path that does not exist. If the limit
+is ever met, multipart comes with its own SHA-256 computed over the whole
+payload here, never a multipart ETag.
+
+### The client, explicitly
+
+| Setting | Value | Why |
+| --- | --- | --- |
+| credentials | from `B2Configuration`, passed to `boto3.session.Session` | never `~/.aws`, never `AWS_*`; a test sets those and shows they lose |
+| region | derived from the endpoint host | an endpoint the region cannot be derived from is refused at construction, offline |
+| signing | `s3v4` | what B2 accepts |
+| addressing | path-style | deterministic URLs; no dependency on a bucket-name subdomain resolving |
+| retries | `standard`, 3 retries (4 requests) | backoff with jitter on throttles, 5xx and connection faults; then `StorageUnavailableError`. No retry loop on top |
+| connect timeout | 10 s | a bucket that does not answer a handshake in ten seconds is down |
+| read timeout | 60 s | a minute of silence on a tens-of-megabytes object is a fault, not a large file |
+| checksums | `when_required` | the SDK's newer default attaches a CRC to every PUT, which not every S3-compatible store accepts; this backend verifies its own SHA-256 |
+| user agent | `compounder-radar-sec-evidence` | identification only |
+
+Constructing the client is offline. `evidence status` still constructs no
+backend at all and reports `configured (offline check only; no live probe was
+made)`; `open_evidence_layout` constructs one and has spent no request when
+it returns.
+
+### Listing
+
+`ListObjectsV2` with the SDK paginator, requesting `prefix/` so the server
+narrows to the segment; every returned key is then checked to start with
+that prefix anyway, so `filings/1` cannot list `filings/10/…` however the
+server behaves. Keys are collected across all pages into a set and yielded
+sorted: pages arriving out of order or repeating a key produce the same
+output. Keys that are not canonical artifact keys — a dot-prefixed segment
+(a backend's own temporary), a doubled separator — are not surfaced.
+
+### Errors carry no secret
+
+An error message names the operation, the key and the response code — never
+the server's message text, which for a signature failure can echo the
+canonical request. The backend holds the bucket and endpoint and no
+credential; `repr` shows those two. Tests assert a sentinel application key
+absent from `repr`, from every mapped exception and its cause, and from
+captured logs.
+
+### Application key, verified against the calls made
+
+| Capability | Used by | Needed |
+| --- | --- | --- |
+| `readFiles` | `HeadObject`, `GetObject` | yes |
+| `writeFiles` | `PutObject` | yes |
+| `listFiles` | `ListObjectsV2` | yes |
+| `deleteFiles` | nothing | **no** |
+| `listBuckets` | nothing — the bucket is named in configuration | no |
+
+### Dependencies
+
+`boto3>=1.43.94` (runtime; resolves `botocore 1.43.94`, `s3transfer 0.19.2`,
+`jmespath 1.1.0`) and `boto3-stubs[s3]` in the `lint` group for mypy
+(`botocore-stubs`, `mypy-boto3-s3`, `types-s3transfer`). No `b2sdk`, no
+`aiobotocore`, no `s3fs`.
 
 ## Future staging databases
 

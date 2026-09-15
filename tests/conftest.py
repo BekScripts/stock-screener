@@ -12,10 +12,13 @@ cheaper than the package plumbing that would silence it.
 from __future__ import annotations
 
 import hashlib
+import io
 from datetime import date, timedelta
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import pytest
+from botocore.exceptions import ClientError
+from botocore.response import StreamingBody
 
 from api_clients import MockFundamentals, MockMarketData
 from data_access import (
@@ -60,7 +63,7 @@ from stock_screener.sec_evidence import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Iterator, Mapping
     from pathlib import Path
 
     from sqlalchemy.orm import Session
@@ -303,6 +306,133 @@ def memory_storage() -> type[MemoryEvidenceStorage]:
 def _memory_storage_satisfies_the_contract(storage: MemoryEvidenceStorage) -> EvidenceStorage:
     """Static proof, checked by mypy, that the fake is structurally a backend."""
     return storage
+
+
+def s3_error(code: str, status: int, operation: str) -> ClientError:
+    """A `ClientError` shaped the way botocore raises one for an S3 response."""
+    response: dict[str, Any] = {
+        "Error": {"Code": code, "Message": code},
+        "ResponseMetadata": {"HTTPStatusCode": status},
+    }
+    return ClientError(response, operation)  # type: ignore[arg-type]  # stubs want every metadata key
+
+
+class FakeS3Client:
+    """A stateful stand-in for the S3 client `B2EvidenceStorage` drives.
+
+    A dict of objects behind the four calls the backend makes — `head_object`,
+    `get_object`, `put_object`, `get_paginator("list_objects_v2")` — answering
+    with the same shapes botocore returns: a `StreamingBody` for a GET, a
+    `ClientError` carrying `404` for a HEAD of nothing and `NoSuchKey` for a
+    GET of nothing, pages with `Contents` and continuation. What it lacks is
+    the point: no network, no credentials, no bucket.
+
+    Three testing hooks. `failing` maps an operation name to the exception
+    it should raise, so a test can show a 403, a 5xx or a connection fault
+    stays loud. `calls` records every operation with its key, so a test can
+    show an unsafe key issued no request and no delete was ever issued.
+    `page_size` and `reverse_pages` make listing paginate and arrive out of
+    order, so a test can show the backend sorts and deduplicates rather than
+    trusting the server.
+
+    Reached through the `fake_s3` fixture rather than imported — see `Make`.
+    """
+
+    def __init__(
+        self,
+        *,
+        page_size: int = 1000,
+        reverse_pages: bool = False,
+        failing: dict[str, BaseException] | None = None,
+    ) -> None:
+        self.objects: dict[str, tuple[bytes, dict[str, str]]] = {}
+        self.calls: list[tuple[str, str]] = []
+        self.buckets_seen: set[str] = set()
+        self.failing = failing or {}
+        self.page_size = page_size
+        self.reverse_pages = reverse_pages
+        #: Set by a test to make the bucket "hold" different metadata or
+        #: bytes than were uploaded — a corrupted or truncated upload.
+        self.tamper_after_put: dict[str, tuple[bytes, dict[str, str]]] = {}
+
+    def _call(self, operation: str, key: str, bucket: str) -> None:
+        self.calls.append((operation, key))
+        self.buckets_seen.add(bucket)
+        if operation in self.failing:
+            raise self.failing[operation]
+
+    def head_object(self, *, Bucket: str, Key: str) -> dict[str, Any]:  # noqa: N803 - SDK spelling
+        """HEAD: size and metadata, or a bare 404."""
+        self._call("head_object", Key, Bucket)
+        if Key not in self.objects:
+            raise s3_error("404", 404, "HeadObject")
+        data, metadata = self.objects[Key]
+        return {"ContentLength": len(data), "Metadata": dict(metadata), "ETag": '"not-a-sha"'}
+
+    def get_object(self, *, Bucket: str, Key: str) -> dict[str, Any]:  # noqa: N803 - SDK spelling
+        """GET: a streaming body, or NoSuchKey."""
+        self._call("get_object", Key, Bucket)
+        if Key not in self.objects:
+            raise s3_error("NoSuchKey", 404, "GetObject")
+        data, _ = self.objects[Key]
+        return {"Body": StreamingBody(io.BytesIO(data), len(data)), "ContentLength": len(data)}
+
+    def put_object(
+        self,
+        *,
+        Bucket: str,  # noqa: N803 - SDK spelling
+        Key: str,  # noqa: N803 - SDK spelling
+        Body: bytes,  # noqa: N803 - SDK spelling
+        ContentLength: int,  # noqa: N803 - SDK spelling
+        Metadata: Mapping[str, str],  # noqa: N803 - SDK spelling
+    ) -> dict[str, Any]:
+        """PUT: store bytes and metadata; ETag is deliberately not a digest."""
+        self._call("put_object", Key, Bucket)
+        assert len(Body) == ContentLength
+        self.objects[Key] = (bytes(Body), dict(Metadata))
+        if Key in self.tamper_after_put:
+            self.objects[Key] = self.tamper_after_put[Key]
+        return {"ETag": '"not-a-sha"'}
+
+    def delete_object(self, *, Bucket: str, Key: str) -> dict[str, Any]:  # noqa: N803 - SDK spelling
+        """Never called by the backend; recorded so a test can prove it."""
+        self._call("delete_object", Key, Bucket)
+        raise AssertionError("the evidence backend must never delete")
+
+    def get_paginator(self, operation_name: str) -> FakeS3Paginator:
+        """Only `list_objects_v2` is paged, as in the real client."""
+        assert operation_name == "list_objects_v2"
+        return FakeS3Paginator(self)
+
+
+class FakeS3Paginator:
+    """`list_objects_v2` pages over the fake's objects, sized and ordered by the test."""
+
+    def __init__(self, client: FakeS3Client) -> None:
+        self._client = client
+
+    def paginate(self, *, Bucket: str, Prefix: str) -> Iterator[dict[str, Any]]:  # noqa: N803 - SDK spelling
+        client = self._client
+        client._call("list_objects_v2", Prefix, Bucket)
+        keys = sorted(k for k in client.objects if k.startswith(Prefix))
+        if client.reverse_pages:
+            keys = list(reversed(keys))
+        if not keys:
+            yield {"KeyCount": 0, "IsTruncated": False}
+            return
+        for start in range(0, len(keys), client.page_size):
+            page = keys[start : start + client.page_size]
+            yield {
+                "Contents": [{"Key": k, "Size": len(client.objects[k][0])} for k in page],
+                "KeyCount": len(page),
+                "IsTruncated": start + client.page_size < len(keys),
+            }
+
+
+@pytest.fixture
+def fake_s3() -> type[FakeS3Client]:
+    """Return the in-memory S3 client used to test `B2EvidenceStorage` offline."""
+    return FakeS3Client
 
 
 @pytest.fixture

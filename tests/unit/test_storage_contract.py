@@ -1,13 +1,13 @@
 """The storage contract every backend must honour.
 
 These tests are written against `EvidenceStorage` and nothing else. A backend
-passes them or it is not a backend. Two implementations run today —
-`LocalEvidenceStorage`, the production one, and the dict-backed
-`MemoryEvidenceStorage` from `conftest`, which exists to prove nothing here
-secretly needs a filesystem. When an object-store backend arrives it is added
-to the `storage` fixture and inherits every test unchanged. That is the point
-of having a contract: the guarantees are stated once, in a place a new
-implementation cannot avoid.
+passes them or it is not a backend. Three implementations run: the local
+directory backend, the dict-backed `MemoryEvidenceStorage` from `conftest`
+(which exists to prove nothing here secretly needs a filesystem), and
+`B2EvidenceStorage` over the stateful `FakeS3Client` from `conftest` (which
+proves the bucket backend keeps every promise the directory one does, with no
+network anywhere). That is the point of having a contract: the guarantees are
+stated once, in a place a new implementation cannot avoid.
 
 Two things are deliberately absent. Nothing here reads a `Path`, because a
 backend that needed one would not be storage-neutral. And nothing here appends
@@ -20,9 +20,12 @@ import hashlib
 from typing import TYPE_CHECKING
 
 import pytest
+from pydantic import SecretStr
 
 from stock_screener.sec_evidence import (
     ArtifactNotFoundError,
+    B2Configuration,
+    B2EvidenceStorage,
     LocalEvidenceStorage,
     UnsafeStorageKeyError,
 )
@@ -31,7 +34,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable
     from pathlib import Path
 
-    from conftest import MemoryEvidenceStorage
+    from conftest import FakeS3Client, MemoryEvidenceStorage
     from stock_screener.sec_evidence import EvidenceStorage
 
 pytestmark = pytest.mark.integration
@@ -39,16 +42,26 @@ pytestmark = pytest.mark.integration
 KEY = "filings/0000320193/000032019324000123/aapl-20240928.htm"
 
 
-@pytest.fixture(params=["local", "memory"])
+B2_CONFIG = B2Configuration(
+    endpoint_url="https://s3.us-west-004.backblazeb2.com",
+    bucket="contract-test-bucket",
+    key_id=SecretStr("contract-key-id"),
+    application_key=SecretStr("contract-application-key"),
+)
+
+
+@pytest.fixture(params=["local", "memory", "b2"])
 def storage(
     request: pytest.FixtureRequest,
     tmp_path: Path,
     memory_storage: type[MemoryEvidenceStorage],
+    fake_s3: type[FakeS3Client],
 ) -> EvidenceStorage:
     """One backend per parameter. Add the next implementation here, nowhere else."""
     factories: dict[str, Callable[[], EvidenceStorage]] = {
         "local": lambda: LocalEvidenceStorage(tmp_path),
         "memory": memory_storage,
+        "b2": lambda: B2EvidenceStorage(B2_CONFIG, client=fake_s3()),
     }
     return factories[request.param]()
 

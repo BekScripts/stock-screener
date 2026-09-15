@@ -33,13 +33,14 @@ The application key and key ID are `SecretStr` on the way in, stay wrapped in
 `repr`, or status output. Errors name the *setting* that is missing or
 malformed, never the value it holds.
 
-## Nothing here is a backend
+## One construction point
 
-`open_evidence_storage` returns `LocalEvidenceStorage` for `local`. For `b2`
-it raises `NotImplementedError` naming the phase that will build the backend:
-the seam exists so that B2.7 can fill it without touching a caller, and it is
-deliberately not filled with a stand-in that could be mistaken for the real
-thing.
+`open_evidence_storage` returns `LocalEvidenceStorage` for `local` and
+`B2EvidenceStorage` for `b2`, built from the validated configuration.
+Constructing either is offline: the B2 client is bound to its endpoint and
+credentials without contacting anything, so a command that opens the layout
+has not yet spent a request, and `evidence status` never constructs a backend
+at all.
 """
 
 from __future__ import annotations
@@ -54,6 +55,7 @@ import structlog
 
 from stock_screener.evidence import resolve_sec_evidence_dir
 from stock_screener.providers import ConfigurationError
+from stock_screener.sec_evidence.b2 import B2EvidenceStorage
 from stock_screener.sec_evidence.control import open_control_root
 from stock_screener.sec_evidence.storage import open_evidence_root
 
@@ -96,7 +98,7 @@ class StorageBackend(StrEnum):
     """A directory at `SEC_EVIDENCE_DIR`, through `LocalEvidenceStorage`."""
 
     B2 = "b2"
-    """A Backblaze B2 bucket, through a backend that B2.7 will build."""
+    """A Backblaze B2 bucket, through `B2EvidenceStorage`."""
 
 
 class StorageConfigurationError(ConfigurationError):
@@ -291,24 +293,20 @@ def open_evidence_storage(settings: Settings) -> EvidenceStorage:
         settings: Application settings.
 
     Returns:
-        `LocalEvidenceStorage` anchored at the verified `SEC_EVIDENCE_DIR`.
+        `LocalEvidenceStorage` anchored at the verified `SEC_EVIDENCE_DIR`, or
+        `B2EvidenceStorage` bound to the configured bucket. Neither contacts
+        anything on construction.
 
     Raises:
-        StorageConfigurationError: If `b2` is selected and misconfigured. This
-            is checked *before* the `NotImplementedError` below, so a
-            misconfiguration is reported as what it is.
-        NotImplementedError: If `b2` is selected and configured — the backend
-            arrives in B2.7. No local stand-in is returned in its place.
+        StorageConfigurationError: If `b2` is selected and misconfigured.
+            Nothing falls back to local storage in that case.
+        StorageUnavailableError: If the B2 endpoint yields no signing region.
         EvidenceUnavailableError: If `local` is selected and the root is
             unusable.
     """
     backend = validate_storage_configuration(settings)
     if backend is StorageBackend.B2:
-        message = (
-            "SEC_STORAGE_BACKEND=b2 is configured but the Backblaze backend is not "
-            "implemented yet (B2.7). Nothing falls back to local storage."
-        )
-        raise NotImplementedError(message)
+        return B2EvidenceStorage(b2_configuration(settings))
     return open_evidence_root(settings).storage
 
 
@@ -330,7 +328,6 @@ def open_evidence_layout(settings: Settings) -> EvidenceLayout:
         StorageConfigurationError: If the selected backend is misconfigured.
         ControlPlaneUnavailableError: If the control root is missing, or unset
             with no local root to fall back to.
-        NotImplementedError: If `b2` is selected — until B2.7.
         EvidenceUnavailableError: If `local` is selected and the root is
             unusable.
     """
@@ -387,5 +384,5 @@ def describe_storage(settings: Settings) -> list[tuple[str, str]]:
         lines.append(("b2 state", f"INVALID — {exc}"))
         return lines
     lines.extend(config.describe().items())
-    lines.append(("b2 state", "configured (offline check only; backend arrives in B2.7)"))
+    lines.append(("b2 state", "configured (offline check only; no live probe was made)"))
     return lines

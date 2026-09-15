@@ -35,6 +35,7 @@ from stock_screener.evidence import EvidenceUnavailableError
 from stock_screener.providers import ConfigurationError
 from stock_screener.sec_evidence import (
     B2Configuration,
+    B2EvidenceStorage,
     ControlPlaneUnavailableError,
     LocalEvidenceStorage,
     StorageBackend,
@@ -126,8 +127,10 @@ class TestBackendSelectionIsExplicit:
         settings = b2_settings(control_dir, sec_evidence_dir=str(artifact_root))
 
         assert validate_storage_configuration(settings) is StorageBackend.B2
-        with pytest.raises(NotImplementedError, match="Nothing falls back to local"):
-            open_evidence_storage(settings)
+        storage = open_evidence_storage(settings)
+
+        assert isinstance(storage, B2EvidenceStorage)
+        assert storage.bucket == BUCKET
         assert list(artifact_root.iterdir()) == [], "the local root was not even touched"
 
 
@@ -292,13 +295,18 @@ class TestB2NeverFallsBackToLocal:
         assert list(artifact_root.iterdir()) == []
         assert not (control_dir / "manifests").exists(), "nothing was opened before the refusal"
 
-    def test_a_configured_b2_run_reaches_the_seam_and_stops_there(self, control_dir: Path) -> None:
-        """Valid configuration, control root present: the only thing missing is B2.7."""
+    def test_a_configured_b2_run_opens_the_control_root_and_builds_the_backend_offline(
+        self, control_dir: Path
+    ) -> None:
+        """Valid configuration, control root present: a bucket backend, no request made."""
         settings = b2_settings(control_dir)
 
-        with pytest.raises(NotImplementedError, match=r"B2\.7"):
-            open_evidence_layout(settings)
+        layout = open_evidence_layout(settings)
 
+        assert layout.backend is StorageBackend.B2
+        assert isinstance(layout.storage, B2EvidenceStorage)
+        assert layout.control.path == control_dir
+        assert not layout.control.colocated
         assert (control_dir / "manifests").is_dir(), "the control root was opened first"
 
     def test_a_storage_configuration_error_is_a_configuration_error(self) -> None:

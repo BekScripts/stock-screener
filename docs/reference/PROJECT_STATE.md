@@ -36,15 +36,17 @@ appears without the run or the test that produced it.
 
 ## Current phase
 
-**B2.6 — Backblaze B2 configuration and credentials boundary** is the current
-checkpoint on `feat/phase-b2-storage-abstraction`. B2.5 (`071c1cd`) separated
-the control plane; B2.6 adds `SEC_STORAGE_BACKEND` (`local` | `b2`), the
-`B2_*` settings, offline validation of them, and one construction point —
-`open_evidence_layout` — from which every evidence command receives an
-`EvidenceStorage`. **No B2 backend exists yet**: selecting `b2` with a complete
-configuration reaches the seam and raises `NotImplementedError` naming B2.7.
-No SDK is installed, nothing has contacted Backblaze, no corpus has been
-migrated, and Plan A3 remains paused. See
+**B2.7 — `B2EvidenceStorage`** is the current checkpoint on
+`feat/phase-b2-storage-abstraction`. B2.5 (`071c1cd`) separated the control
+plane; B2.6 (`a49cd8d`) added `SEC_STORAGE_BACKEND` and the `B2_*` settings;
+B2.7 implements the Backblaze backend over the S3-compatible API with `boto3`,
+against the unchanged six-operation `EvidenceStorage` contract. It passes the
+same contract suite as the local and memory backends and the same
+reconciliation matrix, entirely over a stateful fake client and `botocore`
+stubs. **It has not been validated against a live bucket**: no request has
+left the machine, no corpus has been migrated, no production write has
+occurred, and Plan A3 remains paused. See
+[B2.7](storage-layout.md#b27-the-backblaze-backend),
 [B2.6](storage-layout.md#b26-backend-selection-and-the-b2-configuration-boundary),
 [B2.5](storage-layout.md#b25-control-plane) and
 [B2.2–B2.4](storage-layout.md#b22b24-storage-contract-checkpoint) in the
@@ -288,6 +290,28 @@ data alone. `compounder_radar.db` has received none of it.
 - **One construction point.** `open_evidence_layout` builds the backend;
   downstream code takes `EvidenceStorage`. The contract gains no B2 method,
   and ETag is never SHA-256.
+
+### B2.7 the Backblaze backend
+
+- **A bucket write is trusted only after a HEAD agrees.** `write_bytes`
+  computes SHA-256 here, uploads it as `sha256` metadata, then requires the
+  remote length and metadata digest to equal what was sent before returning a
+  receipt. Any failure or mismatch is `EvidenceWriteError` and the manifest
+  learns nothing.
+- **`digest()` hashes the bytes it downloads.** Never the metadata claim,
+  never the ETag; `x-amz-content-sha256` is transport, not evidence.
+- **404 is the only "absent".** 403, throttling past the SDK's retries, 5xx,
+  connection and read faults and a short body are `StorageUnavailableError`,
+  from every operation including `exists`.
+- **The object key is the logical key**, unprefixed, so manifests are portable
+  between a directory and a bucket.
+- **Nothing deletes, nothing lists buckets.** The `S3Operations` protocol
+  names the four calls made; the application key needs `readFiles`,
+  `writeFiles` and `listFiles` only.
+- **The client is explicit.** Credentials from configuration, region from the
+  endpoint, SigV4, path-style, 3 retries, 10 s connect / 60 s read, no
+  ambient `AWS_*`. Single PUTs; multipart is refused, not improvised.
+- **No live validation has been performed.** Every B2.7 test is offline.
 
 These are load-bearing. Each is enforced by structure or by a test, not by
 convention, and none may be relaxed without an explicit instruction.
@@ -1406,6 +1430,27 @@ Documented rather than fixed. Each is a deliberate stop, not a backlog item.
 
 Measured runs, kept because they are the evidence behind decisions above.
 
+### B2.7 backend implementation — 2026-09-15
+
+- Shared contract: `test_storage_contract.py` now runs 57 cases × 3 backends
+  (**171 passed**); `B2EvidenceStorage` over `FakeS3Client` passes every one
+  the local and memory backends pass, unchanged.
+- `tests/unit/test_storage_b2.py`: **105 passed**, offline — exists/stat/
+  read/digest/write/list matrices (404 vs 403 vs 5xx vs 429 vs connection and
+  read timeouts vs short body), unsafe keys issuing zero calls for all six
+  operations, PUT+HEAD verification with length, metadata and vanished-object
+  mismatches, digest from bytes over a lying metadata claim, pagination with
+  out-of-order and repeating pages, a sloppy server's segment leak filtered,
+  no delete ever issued, secrets absent from `repr`/exceptions/causes/logs,
+  and `botocore.stub.Stubber` wire checks of the PUT parameters and the real
+  SDK's 404/403/NoSuchKey.
+- `test_storage_neutral.py`: the reconciliation matrix now runs over B2 too
+  (**105 passed** across memory/local/b2) plus the provenance gate against
+  B2: failed upload, truncated upload and failed verification HEAD each leave
+  the manifest empty; replay is a cache hit by GET+SHA; a tampered object is
+  refetched; extraction reads bucket bytes.
+- 0 network requests in any test; no credential other than sentinels.
+
 ### B2.6 configuration boundary — 2026-09-15
 
 - `tests/integration/test_storage_configuration.py`: **51 passed**, offline.
@@ -1515,7 +1560,10 @@ checkpoints, the separated-root lifecycle, both failure-domain halves, the
 legacy colocated layout, and backend-neutral preflight. Existing SEC evidence
 regression suites remain gates. B2.6 adds `test_storage_configuration.py`:
 explicit backend selection, no local fallback from `b2`, offline B2 validation,
-and credential non-leakage across `repr`, errors, logs and status output.
+and credential non-leakage across `repr`, errors, logs and status output. B2.7
+adds `test_storage_b2.py` and the `b2` parameter of the contract and
+reconciliation suites: the bucket backend must keep every promise the
+directory backend keeps, offline.
 
 These must keep passing. Each one encodes a decision that cost something to
 learn.
@@ -1605,13 +1653,12 @@ under **80%**. It is what CI runs; run it rather than the individual tools.
 
 ## Next phase
 
-**B2.7 — implement `B2EvidenceStorage` against the existing `EvidenceStorage`
-contract** follows this checkpoint, using the S3-compatible API through `boto3`
-(the reasoning is in the storage layout reference). It has not been started:
-no SDK is installed and `open_evidence_storage` raises `NotImplementedError`
-for `b2`. Relocating the BEK corpus's control files into a `SEC_CONTROL_DIR`,
-mirroring control metadata remotely, evidence migration and Plan A3 remain
-outside this checkpoint's authorization.
+**B2.8 — live B2 canary validation on a dedicated test prefix** follows this
+checkpoint: the first request that leaves the machine, against a bucket and
+key created for it, under explicit authorization. It has not been started.
+Relocating the BEK corpus's control files into a `SEC_CONTROL_DIR`, mirroring
+control metadata remotely, evidence migration and Plan A3 remain outside this
+checkpoint's authorization.
 
 Two pieces of work are *identified* but not authorised, and neither is to be
 started without being asked:
@@ -1652,10 +1699,10 @@ Not a backlog. These exclusions are deliberate.
 
 **Do not touch:**
 
-- B2.4, B2.5 and B2.6 leave `COMPOUNDER_V1_2`, `MARKET_SIGNALS_V1`,
+- B2.4 through B2.7 leave `COMPOUNDER_V1_2`, `MARKET_SIGNALS_V1`,
   `ResearchUniverseMonth`, PIT identity semantics, Plan A3, forward returns,
   price history and database schema frozen. No BEK access, no credentials
-  created, no corpus migration, no SDK additions.
+  created, no corpus migration. B2.7 adds `boto3` as the one cloud SDK.
 - any scoring file, without a new `score_version` and a doc change in the same
   commit
 - a Phase 3 enum or class — `deep-research` imports them, never extends them
@@ -1678,7 +1725,7 @@ Not a backlog. These exclusions are deliberate.
 
 | | |
 | --- | --- |
-| Commit | The B2.6 commit containing this checkpoint, `feat: add Backblaze B2 storage configuration`; parent `071c1cd` (B2.5, `refactor: separate SEC evidence control plane`) |
+| Commit | The B2.7 commit containing this checkpoint, `feat: implement Backblaze B2 evidence storage`; parent `a49cd8d` (B2.6, `feat: add Backblaze B2 storage configuration`) |
 | Branch | `feat/phase-b2-storage-abstraction` |
 | Migration head | `0031` — the research-universe layer (9K.7). Nothing since 9K.11 added one. |
 | Score version | `COMPOUNDER_V1_2` (unchanged by anything in Phase 8, 9A, 9B or 9C) |

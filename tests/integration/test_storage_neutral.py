@@ -24,10 +24,14 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 import pytest
+from botocore.exceptions import EndpointConnectionError
+from pydantic import SecretStr
 
 from api_clients.sec_documents import FetchedDocument
 from stock_screener.sec_evidence import (
     ARTIFACT_PREFIXES,
+    B2Configuration,
+    B2EvidenceStorage,
     Budget,
     Entry,
     LocalEvidenceStorage,
@@ -53,7 +57,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable
     from pathlib import Path
 
-    from conftest import MemoryEvidenceStorage
+    from conftest import FakeS3Client, MemoryEvidenceStorage
     from stock_screener.sec_evidence import EvidenceStorage
 
 pytestmark = pytest.mark.integration
@@ -154,16 +158,31 @@ def derived(tmp_path: Path) -> Path:
     return tmp_path / "derived" / "index.db"
 
 
-@pytest.fixture(params=["memory", "local"])
+B2_CONFIG = B2Configuration(
+    endpoint_url="https://s3.us-west-004.backblazeb2.com",
+    bucket="neutral-test-bucket",
+    key_id=SecretStr("neutral-key-id"),
+    application_key=SecretStr("neutral-application-key"),
+)
+
+
+@pytest.fixture(params=["memory", "local", "b2"])
 def backend(
     request: pytest.FixtureRequest,
     tmp_path: Path,
     memory_storage: type[MemoryEvidenceStorage],
+    fake_s3: type[FakeS3Client],
 ) -> EvidenceStorage:
-    """Both backends, so every scenario is also an equivalence check."""
+    """Every backend, so every scenario is also an equivalence check.
+
+    The bucket backend runs over the stateful fake client: the audit's
+    counters must come out identical whether the artifacts sit in a dict, a
+    directory or a bucket, and no scenario here touches a network.
+    """
     factories: dict[str, Callable[[], EvidenceStorage]] = {
         "memory": memory_storage,
         "local": lambda: LocalEvidenceStorage(_artifact_root(tmp_path)),
+        "b2": lambda: B2EvidenceStorage(B2_CONFIG, client=fake_s3()),
     }
     return factories[request.param]()
 
@@ -840,3 +859,131 @@ class TestBackendFailuresStayLoud:
 
         with pytest.raises(StorageUnavailableError, match="read_bytes"):
             filing_targets(storage, resolutions, filings_per_security=5)
+
+
+class TestHarvestTrustOrderingAgainstB2:
+    """The provenance gate, against the bucket backend.
+
+    A manifest entry is appended only after the backend has vouched for the
+    bytes. Against B2 "vouched" means the PUT succeeded *and* the HEAD that
+    follows reported the same length and digest. If either step fails, the
+    manifest must not learn about the artifact — a record that says
+    DOWNLOADED for bytes the bucket does not hold is exactly the corruption
+    the whole evidence layer exists to prevent.
+    """
+
+    def test_a_successful_upload_is_recorded_with_the_digest_of_the_bytes_sent(
+        self, fake_s3: type[FakeS3Client], manifest: Manifest
+    ) -> None:
+        client = fake_s3()
+        storage = B2EvidenceStorage(B2_CONFIG, client=client)
+
+        report = harvest_artifacts([FILING], storage, manifest, Source(COVER), budget=budget())
+
+        assert report.by_outcome == {"DOWNLOADED": 1}
+        (entry,) = manifest.entries()
+        assert entry.path == FILING_KEY
+        assert entry.sha256 == hashlib.sha256(COVER).hexdigest()
+        assert entry.bytes == len(COVER)
+        assert client.calls == [
+            ("head_object", FILING_KEY),
+            ("put_object", FILING_KEY),
+            ("head_object", FILING_KEY),
+        ] or client.calls == [("put_object", FILING_KEY), ("head_object", FILING_KEY)]
+
+    def test_a_failed_upload_appends_nothing(
+        self, fake_s3: type[FakeS3Client], manifest: Manifest
+    ) -> None:
+        client = fake_s3(failing={"put_object": EndpointConnectionError(endpoint_url="https://x")})
+        storage = B2EvidenceStorage(B2_CONFIG, client=client)
+
+        with pytest.raises(StorageUnavailableError):
+            harvest_artifacts([FILING], storage, manifest, Source(COVER), budget=budget())
+
+        assert list(manifest.entries()) == []
+        assert FILING_KEY not in client.objects
+
+    def test_an_upload_whose_verification_fails_appends_nothing(
+        self, fake_s3: type[FakeS3Client], manifest: Manifest
+    ) -> None:
+        """The PUT returned 200; the bucket holds a truncated object. No record."""
+        client = fake_s3()
+        client.tamper_after_put[FILING_KEY] = (
+            COVER[:10],
+            {"sha256": hashlib.sha256(COVER).hexdigest()},
+        )
+        storage = B2EvidenceStorage(B2_CONFIG, client=client)
+
+        with pytest.raises(StorageUnavailableError, match="did not verify"):
+            harvest_artifacts([FILING], storage, manifest, Source(COVER), budget=budget())
+
+        assert list(manifest.entries()) == []
+
+    def test_an_upload_whose_verification_head_fails_appends_nothing(
+        self, fake_s3: type[FakeS3Client], manifest: Manifest
+    ) -> None:
+        client = fake_s3()
+        original_head = client.head_object
+        seen = {"puts": 0}
+
+        def head_after_put(**kwargs: object) -> dict[str, object]:
+            if seen["puts"]:
+                raise EndpointConnectionError(endpoint_url="https://x")
+            return original_head(**kwargs)  # type: ignore[arg-type]
+
+        original_put = client.put_object
+
+        def counting_put(**kwargs: object) -> dict[str, object]:
+            seen["puts"] += 1
+            return original_put(**kwargs)  # type: ignore[arg-type]
+
+        client.head_object = head_after_put  # type: ignore[method-assign]
+        client.put_object = counting_put  # type: ignore[method-assign]
+        storage = B2EvidenceStorage(B2_CONFIG, client=client)
+
+        with pytest.raises(StorageUnavailableError, match="could not be verified"):
+            harvest_artifacts([FILING], storage, manifest, Source(COVER), budget=budget())
+
+        assert list(manifest.entries()) == []
+
+    def test_replay_against_the_bucket_is_a_cache_hit_decided_by_the_bytes(
+        self, fake_s3: type[FakeS3Client], manifest: Manifest
+    ) -> None:
+        client = fake_s3()
+        storage = B2EvidenceStorage(B2_CONFIG, client=client)
+        source = Source(COVER)
+        harvest_artifacts([FILING], storage, manifest, source, budget=budget())
+
+        replay = harvest_artifacts([FILING], storage, manifest, source, budget=budget())
+
+        assert replay.by_outcome == {"CACHE_HIT": 1}
+        assert source.calls == 1
+        assert client.calls[-1] == ("get_object", FILING_KEY), (
+            "the digest came from a GET, not a HEAD"
+        )
+
+    def test_a_tampered_bucket_object_is_refetched(
+        self, fake_s3: type[FakeS3Client], manifest: Manifest
+    ) -> None:
+        client = fake_s3()
+        storage = B2EvidenceStorage(B2_CONFIG, client=client)
+        source = Source(COVER)
+        harvest_artifacts([FILING], storage, manifest, source, budget=budget())
+        client.objects[FILING_KEY] = (b"tampered", client.objects[FILING_KEY][1])
+
+        replay = harvest_artifacts([FILING], storage, manifest, source, budget=budget())
+
+        assert replay.by_outcome == {"INVALID_CACHE": 1}
+        assert source.calls == 2
+        assert client.objects[FILING_KEY][0] == COVER, "repaired from the source"
+
+    def test_extraction_reads_bucket_bytes(
+        self, fake_s3: type[FakeS3Client], manifest: Manifest, derived: Path
+    ) -> None:
+        storage = B2EvidenceStorage(B2_CONFIG, client=fake_s3())
+        harvest_artifacts([FILING], storage, manifest, Source(COVER), budget=budget())
+
+        report = build_index(storage, manifest, derived)
+
+        assert report.filings_parsed == 1
+        assert report.security_rows == 1

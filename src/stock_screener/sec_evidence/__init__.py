@@ -18,6 +18,7 @@ from stock_screener.sec_evidence.audit import (
     reconcile_subset,
     verify_digests_of,
 )
+from stock_screener.sec_evidence.b2 import B2EvidenceStorage
 from stock_screener.sec_evidence.backend import (
     ArtifactNotFoundError,
     ArtifactStat,
@@ -203,6 +204,7 @@ __all__ = [
     "ArtifactNotFoundError",
     "ArtifactStat",
     "B2Configuration",
+    "B2EvidenceStorage",
     "BindingError",
     "Budget",
     "Candidate",
