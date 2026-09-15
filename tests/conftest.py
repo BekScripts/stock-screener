@@ -11,6 +11,7 @@ cheaper than the package plumbing that would silence it.
 
 from __future__ import annotations
 
+import hashlib
 from datetime import date, timedelta
 from typing import TYPE_CHECKING
 
@@ -49,12 +50,22 @@ from domain import (
     VolumeBasis,
 )
 from stock_screener.config import Settings, get_settings
+from stock_screener.sec_evidence import (
+    ArtifactNotFoundError,
+    ArtifactStat,
+    EvidenceWriteError,
+    StorageUnavailableError,
+    StoredArtifact,
+    validate_key,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
     from pathlib import Path
 
     from sqlalchemy.orm import Session
+
+    from stock_screener.sec_evidence import EvidenceStorage
 
 #: Every variable `Settings` reads. A field added to `Settings` without a line
 #: here leaks the developer's real environment into the tests, and the failure
@@ -202,6 +213,89 @@ class Make:
 def make() -> type[Make]:
     """Return the builders for synthetic price and fundamental history."""
     return Make
+
+
+class MemoryEvidenceStorage:
+    """An `EvidenceStorage` that is a dict. No filesystem, no `Path`, no root.
+
+    The point of this class is what it lacks. Any evidence-layer function
+    that works against it provably needs nothing from a local directory,
+    which is the seam a remote backend will later be plugged into. It is
+    deliberately tiny — a mapping, key validation, and two testing hooks:
+    `failing` names operations that raise `StorageUnavailableError`, so a
+    test can show a backend fault stays loud; `listed` records every prefix
+    handed to `list_prefix`, so a test can show a scoped audit stayed scoped.
+
+    Reached through the `memory_storage` fixture rather than imported — see
+    `Make` for why.
+    """
+
+    def __init__(self, failing: frozenset[str] = frozenset()) -> None:
+        self._objects: dict[str, bytes] = {}
+        self.failing = failing
+        self.listed: list[str] = []
+
+    def _check(self, operation: str) -> None:
+        if operation in self.failing:
+            raise StorageUnavailableError(f"memory backend: {operation} is unavailable")
+
+    def exists(self, key: str) -> bool:
+        """Whether the key was written."""
+        validate_key(key)
+        self._check("exists")
+        return key in self._objects
+
+    def stat(self, key: str) -> ArtifactStat:
+        """Size of what was written under the key."""
+        validate_key(key)
+        self._check("stat")
+        if key not in self._objects:
+            raise ArtifactNotFoundError(key)
+        return ArtifactStat(key=key, bytes=len(self._objects[key]))
+
+    def read_bytes(self, key: str) -> bytes:
+        """The bytes written under the key."""
+        validate_key(key)
+        self._check("read_bytes")
+        if key not in self._objects:
+            raise ArtifactNotFoundError(key)
+        return self._objects[key]
+
+    def write_bytes(self, key: str, data: bytes) -> StoredArtifact:
+        """Keep the bytes under the key. Never touches a manifest."""
+        validate_key(key)
+        if "write_bytes" in self.failing:
+            raise EvidenceWriteError("memory backend: write_bytes did not complete")
+        self._objects[key] = bytes(data)
+        return StoredArtifact(key=key, bytes=len(data), sha256=hashlib.sha256(data).hexdigest())
+
+    def digest(self, key: str) -> str:
+        """SHA-256 of the bytes written under the key."""
+        validate_key(key)
+        self._check("digest")
+        return hashlib.sha256(self.read_bytes(key)).hexdigest()
+
+    def list_prefix(self, prefix: str) -> Iterator[str]:
+        """Every key strictly beneath the prefix, sorted; `""` lists everything."""
+        if prefix:
+            validate_key(prefix.removesuffix("/"))
+        self._check("list_prefix")
+        self.listed.append(prefix)
+        prefix = prefix.removesuffix("/")
+        yield from sorted(
+            key for key in self._objects if not prefix or key.startswith(prefix + "/")
+        )
+
+
+@pytest.fixture
+def memory_storage() -> type[MemoryEvidenceStorage]:
+    """Return the in-memory `EvidenceStorage` used to prove backend neutrality."""
+    return MemoryEvidenceStorage
+
+
+def _memory_storage_satisfies_the_contract(storage: MemoryEvidenceStorage) -> EvidenceStorage:
+    """Static proof, checked by mypy, that the fake is structurally a backend."""
+    return storage
 
 
 @pytest.fixture

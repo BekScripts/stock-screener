@@ -47,13 +47,14 @@ import structlog
 
 from api_clients import filings_from_submissions, parse_cover_page
 from domain import classify_security
+from stock_screener.sec_evidence.backend import ArtifactNotFoundError, validate_artifact_key
 
 if TYPE_CHECKING:
     from collections.abc import Iterator, Mapping, Sequence
     from pathlib import Path
 
+    from stock_screener.sec_evidence.backend import EvidenceStorage
     from stock_screener.sec_evidence.manifest import Entry, Manifest
-    from stock_screener.sec_evidence.storage import EvidenceRoot
 
 log = structlog.get_logger(__name__)
 
@@ -484,7 +485,7 @@ class ExtractionReport:
 
 
 def build_index(
-    root: EvidenceRoot,
+    storage: EvidenceStorage,
     manifest: Manifest,
     destination: Path,
     *,
@@ -500,9 +501,10 @@ def build_index(
     date merely because of the order this loop happened to run in.
 
     Args:
-        root: The verified evidence root.
-        manifest: Its provenance log. Only artifacts it vouches for are read.
-        destination: Where the derived index goes.
+        storage: Where the artifacts live. Nothing here needs a filesystem.
+        manifest: The provenance log. Only artifacts it vouches for are read.
+        destination: Where the derived index goes — a control-plane file, so
+            it is a path rather than a key.
         limit: Stop after this many filings, for a sample run.
 
     Returns:
@@ -527,7 +529,7 @@ def build_index(
         db.execute("DELETE FROM catalogue_stats")
 
         for entry in catalogues:
-            payload = _read(root, entry)
+            payload = _read(storage, entry)
             if payload is None:
                 missing += 1
                 continue
@@ -564,7 +566,7 @@ def build_index(
             if limit is not None and seen >= limit:
                 break
             seen += 1
-            payload = _read(root, entry)
+            payload = _read(storage, entry)
             if payload is None:
                 missing += 1
                 continue
@@ -654,12 +656,22 @@ def build_index(
     return report
 
 
-def _read(root: EvidenceRoot, entry: Entry) -> bytes | None:
-    """Read a trusted artifact's bytes, or None when the file is gone."""
-    path = root.path / (entry.path or "")
+def _read(storage: EvidenceStorage, entry: Entry) -> bytes | None:
+    """Read a trusted artifact's bytes, or None when it is gone.
+
+    The parser's only contact with storage. Everything downstream takes `str`
+    or `bytes` and never learns where they came from — which is what lets the
+    same extraction run over a local directory today and an object store later.
+
+    Only definite absence is missing. Unsafe keys are integrity violations and
+    propagate, as do unavailable storage and I/O failures. This intentionally
+    corrects the pre-B2 broad OSError catch: an unreachable corpus must never
+    silently remove PIT evidence by being counted as missing.
+    """
+    key = validate_artifact_key(entry.path or "")
     try:
-        return path.read_bytes()
-    except OSError:
+        return storage.read_bytes(key)
+    except ArtifactNotFoundError:
         return None
 
 

@@ -36,6 +36,13 @@ appears without the run or the test that produced it.
 
 ## Current phase
 
+**B2.2–B2.4 — SEC evidence storage abstraction and semantics finalization** is
+the current refactor checkpoint on `feat/phase-b2-storage-abstraction`. The
+existing local artifact lifecycle now runs through `EvidenceStorage`; control
+files stay local. See [Storage layout](storage-layout.md#b22b24-storage-contract-checkpoint)
+for exception, parser, counter and boundary policies. The pre-refactor rollback
+point is `pre-b2-ssd-state` (`13d586b10dfc077325b2729602a30b74d01a8af0`).
+
 **Phases 1 through 7 are complete. All of them are frozen.** The MVP finished at
 Phase 5; Phases 6 and 7 are layers over it, not revisions of it.
 
@@ -212,6 +219,17 @@ data alone. `compounder_radar.db` has received none of it.
 ---
 
 ## Frozen decisions
+
+### B2 evidence storage boundary
+
+- Artifacts under `filings/`, `submissions/` and `fulltext/` use `EvidenceStorage`.
+  Manifest JSONL and all other control-plane files remain local in B2.4.
+- Definite absence is distinct from unavailable storage. Parser I/O failures
+  now propagate intentionally, protecting PIT evidence from silent omission.
+- Unsafe manifest keys are path violations only, never normal missing artifacts.
+  Subset audits list touched artifact prefixes against the whole trusted set.
+- **ETag is never evidence SHA-256**, including for any future backend.
+- No object-store backend or evidence migration is part of this checkpoint.
 
 These are load-bearing. Each is enforced by structure or by a test, not by
 convention, and none may be relaxed without an explicit instruction.
@@ -1280,6 +1298,13 @@ care — nothing has a foreign key *to* it, so dropping it cascades to nothing.
 
 ## Known limitations
 
+**B2 control-plane placement is transitional.** `EvidenceRoot`, manifest paths,
+checkpoint and derived-index helpers, and local volume preflight remain coupled
+to the configured local root. No control-plane files moved. Backend temporaries
+are hidden from artifact listing (`temporary_files` remains zero). The local
+backend does not pin mount identity against concurrent replacement. See the
+[responsibility review](storage-layout.md#transitional-evidenceroot-responsibilities).
+
 **Historical listing evidence is monthly and partly censored.** Free sources give
 Nasdaq and NYSE from 2022-01 at month resolution only; NYSE American is not
 covered at any date, and no free daily listing source exists. A 2022+ universe
@@ -1318,6 +1343,19 @@ Documented rather than fixed. Each is a deliberate stop, not a backlog item.
 ## Completed experiments
 
 Measured runs, kept because they are the evidence behind decisions above.
+
+### B2.4 refactor verification — 2026-09-14
+
+- Final focused storage/evidence pass: **417 passed**, exit 0. Suites:
+  `test_storage_contract`, `test_storage_local`, `test_storage_neutral`,
+  `test_storage_equivalence`, and `test_sec_evidence_{storage,harvest,offline,expand,sweep}`.
+- Pre-commit `make check`: **3,234 passed, 0 failures, 88.22% coverage**, exit 0;
+  lint, formatting and strict mypy also passed. `make docs-build` passed.
+- Runtime filesystem audit: **0 unjustified artifact leaks**, classified in
+  [Storage layout](storage-layout.md#filesystem-search-audit).
+- Read-only database SHA-256 checks matched the supplied baseline:
+  - `compounder_radar.db`: `02a6660b81d96a948a1a5b8729290e301cbb9ab26155e5f07c3cf0b6beef7540`
+  - `stage9k.db`: `20a77d24a4084caa49af723d488a1c9319562b32a34969b28780adfe898486e4`
 
 ### Phase 7F rollout — validated Stage C, against a copy
 
@@ -1369,6 +1407,12 @@ requests for the 762-company cohort from **762 to 353**.
 ---
 
 ## Regression requirements
+
+The B2 checkpoint adds `test_storage_contract.py`, `test_storage_local.py`,
+`test_storage_equivalence.py` and `test_storage_neutral.py`: local/memory backend
+equivalence, strict absence-versus-unavailability, unsafe-key refusal, parser
+failure propagation, opaque ETags, reconciliation counters, and batch-local
+sibling orphan detection. Existing SEC evidence regression suites remain gates.
 
 These must keep passing. Each one encodes a decision that cost something to
 learn.
@@ -1458,8 +1502,9 @@ under **80%**. It is what CI runs; run it rather than the individual tools.
 
 ## Next phase
 
-**None is planned or started.** The MVP is finished and every layer over it is
-frozen.
+**B2.5 — RELOCATE AND HARDEN LOCAL CONTROL PLANE** follows this refactor
+checkpoint. It has not been started here. Backblaze B2 implementation, evidence
+migration and Plan A3 remain outside this checkpoint's authorization.
 
 Two pieces of work are *identified* but not authorised, and neither is to be
 started without being asked:
@@ -1500,6 +1545,9 @@ Not a backlog. These exclusions are deliberate.
 
 **Do not touch:**
 
+- B2.4 leaves `COMPOUNDER_V1_2`, `MARKET_SIGNALS_V1`, `ResearchUniverseMonth`,
+  PIT identity semantics, Plan A3, forward returns, price history and database
+  schema frozen. No BEK access, credentials, corpus migration or SDK additions.
 - any scoring file, without a new `score_version` and a doc change in the same
   commit
 - a Phase 3 enum or class — `deep-research` imports them, never extends them
@@ -1522,11 +1570,11 @@ Not a backlog. These exclusions are deliberate.
 
 | | |
 | --- | --- |
-| Commit | `f9948be` — feat(pit): add point-in-time market cap, forward returns and delistings |
-| Branch | `feat/phase-9a-identity-foundation` (8F–8J committed; 9A and 9B uncommitted) |
+| Commit | The B2.2–B2.4 commit containing this checkpoint, `refactor: decouple SEC evidence artifacts from local storage`; parent `13d586b` |
+| Branch | `feat/phase-b2-storage-abstraction` |
 | Migration head | `0031` — the research-universe layer (9K.7). Nothing since 9K.11 added one. |
 | Score version | `COMPOUNDER_V1_2` (unchanged by anything in Phase 8, 9A, 9B or 9C) |
 | Feature version | `MARKET_FEATURES_V1` |
 | Signal version | `MARKET_SIGNALS_V1` |
 | Primary database | untouched by 8A–8J and 9A–9L.5; all work ran against staging copies |
-| Checkpoint date | 2026-09-07 |
+| Checkpoint date | 2026-09-14 |

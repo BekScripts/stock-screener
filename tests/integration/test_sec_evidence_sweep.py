@@ -24,6 +24,7 @@ from stock_screener.sec_evidence import (
     Manifest,
     Outcome,
     Selection,
+    StorageUnavailableError,
     SweepError,
     checkpoint_path,
     free_bytes,
@@ -42,6 +43,8 @@ from stock_screener.sec_evidence import (
 )
 
 if TYPE_CHECKING:
+    from os import stat_result
+
     from stock_screener.sec_evidence import EvidenceRoot
 
 pytestmark = pytest.mark.integration
@@ -363,17 +366,17 @@ class TestReconciliationFindsWhatItShould:
     ) -> None:
         """A volume that cannot serve real evidence is exactly when to stop."""
         store(root, 320193)
-        original = Path.is_file
+        original = Path.stat
 
-        def explode(self: Path) -> bool:
+        def explode(self: Path, *, follow_symlinks: bool = True) -> stat_result:
             if self.name == "CIK0000320193.json":
                 message = "Stale NFS file handle"
                 raise OSError(70, message)
-            return original(self)
+            return original(self, follow_symlinks=follow_symlinks)
 
-        monkeypatch.setattr(Path, "is_file", explode)
+        monkeypatch.setattr(Path, "stat", explode)
 
-        with pytest.raises(OSError, match="Stale"):
+        with pytest.raises(StorageUnavailableError, match="Stale NFS file handle"):
             reconcile(root, Manifest(root.manifests / EVIDENCE_MANIFEST))
 
     def test_skipping_digests_still_finds_missing_files(self, root: EvidenceRoot) -> None:

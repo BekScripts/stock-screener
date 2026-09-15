@@ -21,21 +21,20 @@ something had gone wrong.
 
 from __future__ import annotations
 
-import hashlib
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 import structlog
 
-from stock_screener.sec_evidence.manifest import EVIDENCE_MANIFEST, Outcome
-from stock_screener.sec_evidence.storage import CHECKPOINTS, DERIVED, DIAGNOSTICS
+from stock_screener.sec_evidence.backend import UnsafeStorageKeyError, validate_artifact_key
+from stock_screener.sec_evidence.manifest import Outcome
+from stock_screener.sec_evidence.storage import ARTIFACT_PREFIXES
 
 if TYPE_CHECKING:
     from collections.abc import Collection, Sequence
-    from pathlib import Path
 
+    from stock_screener.sec_evidence.backend import EvidenceStorage
     from stock_screener.sec_evidence.manifest import Entry, Manifest
-    from stock_screener.sec_evidence.storage import EvidenceRoot
 
 log = structlog.get_logger(__name__)
 
@@ -57,8 +56,10 @@ class Reconciliation:
         orphan_records: Trusted records whose file is missing.
         hash_mismatches: Files whose digest no longer matches the record.
         byte_mismatches: Files whose size no longer matches the record.
-        path_violations: Artifacts stored where their URL does not describe.
-        temporary_files: Leftovers from an interrupted write.
+        path_violations: Unsafe manifest keys or keys inconsistent with their URL.
+            An unsafe key is counted here only, without an absence lookup.
+        temporary_files: Compatibility field, always zero. Backend temporaries
+            are excluded from the artifact listing.
         zero_byte: Trusted artifacts with no content.
         duplicate_urls: Trusted URLs recorded more than once.
         digests_verified: Whether digests were recomputed from disk.
@@ -114,16 +115,23 @@ class Reconciliation:
 
 
 def reconcile(
-    root: EvidenceRoot, manifest: Manifest, *, verify_digests: bool = True
+    storage: EvidenceStorage, manifest: Manifest, *, verify_digests: bool = True
 ) -> Reconciliation:
-    """Compare what the manifest claims against what the filesystem holds.
+    """Compare what the manifest claims against what storage holds.
+
+    The whole-namespace check. Every trusted record is verified against the
+    backend, and every artifact key the backend lists is checked for a record.
+    That second half is O(corpus) by nature and is why this runs at scheduled
+    milestones and the terminal gate rather than after every batch —
+    `reconcile_subset` is the per-batch form.
 
     Args:
-        root: The verified evidence root.
-        manifest: Its provenance log.
-        verify_digests: Recompute every trusted artifact's SHA-256 from disk.
-            Leaving this on is the point of the check; it is a parameter only so
-            a caller measuring something else can skip the read.
+        storage: Where the artifacts live. An `EvidenceRoot` satisfies this;
+            so does any other backend.
+        manifest: The provenance log.
+        verify_digests: Recompute every trusted artifact's SHA-256 from
+            storage. Leaving this on is the point of the check; it is a
+            parameter only so a caller measuring something else can skip it.
 
     Returns:
         The counts, and up to a few example URLs per failure category.
@@ -146,63 +154,50 @@ def reconcile(
     byte_mismatches = 0
     path_violations = 0
     zero_byte = 0
-    claimed: set[Path] = set()
+    claimed: set[str] = set()
 
     for entry in trusted:
-        path = root.path / (entry.path or "")
-        claimed.add(path)
-        if not path.is_file():
+        key = entry.path or ""
+        claimed.add(key)
+        # A key the backend would refuse is a provenance fault in its own
+        # right: the record names something outside the namespace, and the
+        # audit will not go looking there. Pre-B2 could only notice this for
+        # a file that happened to exist at the escaped location.
+        if not _key_is_safe(key):
+            path_violations += 1
+            note("path_violations", entry.url)
+            continue
+        # Every per-artifact question — is it there, how big, does it still
+        # hash — is asked of the storage contract and nothing else.
+        if not storage.exists(key):
             orphan_records += 1
             note("orphan_records", entry.url)
             continue
-        if not path.resolve().is_relative_to(root.path.resolve()):
-            path_violations += 1
-            note("path_violations", entry.url)
         if not _path_matches_url(entry):
             path_violations += 1
             note("path_violations", entry.url)
-        size = path.stat().st_size
+        size = storage.stat(key).bytes
         if size == 0:
             zero_byte += 1
             note("zero_byte", entry.url)
         if entry.bytes is not None and size != entry.bytes:
             byte_mismatches += 1
             note("byte_mismatches", entry.url)
-        if verify_digests and hashlib.sha256(path.read_bytes()).hexdigest() != entry.sha256:
+        if verify_digests and storage.digest(key) != entry.sha256:
             hash_mismatches += 1
             note("hash_mismatches", entry.url)
 
-    # The checkpoints directory is a sweep's own bookkeeping, not evidence. It
-    # lives under the root so a chunk's state travels with what it describes,
-    # which means the scan has to skip it explicitly — otherwise the first sweep
-    # writes a checkpoint and the next reconciliation calls it an orphan.
-    checkpoints = root.path / CHECKPOINTS
-    derived = root.path / DERIVED
-    diagnostics = root.path / DIAGNOSTICS
-    # **Name first, filesystem second.** macOS writes an AppleDouble `._` sidecar
-    # beside every file on exFAT, and one being created while this walk runs can
-    # raise `[Errno 70] Stale NFS file handle` from `is_file()`. A sidecar is not
-    # evidence and is never inspected, so touching it at all was pure risk — it
-    # aborted a multi-hour sweep mid-reconciliation. Excluding by name before any
-    # stat also removes ~7,000 pointless stat calls from the scan.
-    #
-    # A stale handle on a *real* artifact is a different matter and still
-    # propagates: that would be evidence the volume cannot be read, which is
-    # exactly when a sweep should stop.
-    on_disk = [
-        path
-        for path in root.path.rglob("*")
-        if not path.name.startswith("._")
-        and path.name != EVIDENCE_MANIFEST
-        and not path.is_relative_to(checkpoints)
-        and not path.is_relative_to(derived)
-        and not path.is_relative_to(diagnostics)
-        and path.is_file()
-    ]
-    orphans = [path for path in on_disk if path not in claimed]
-    for path in orphans[:3]:
-        note("orphan_files", str(path.relative_to(root.path)))
-    temporary = [path for path in on_disk if path.name.startswith(".")]
+    # Orphans: artifact keys the backend lists that no trusted record claims.
+    # Enumeration covers exactly the artifact prefixes — manifests, checkpoints,
+    # derived output and diagnostics are not under them and so are never
+    # candidates. Whatever a backend has to hide to make its listing honest
+    # (a macOS sidecar, an in-flight temporary) is the backend's business and
+    # does not appear here.
+    listed = _artifact_keys(storage)
+    orphans = [key for key in listed if key not in claimed]
+    for key in orphans[:3]:
+        note("orphan_files", key)
+    logical_bytes = sum(storage.stat(key).bytes for key in listed)
 
     result = Reconciliation(
         manifest_records=records,
@@ -211,14 +206,14 @@ def reconcile(
         filings=sum(1 for entry in trusted if entry.request_kind == "FILING"),
         failed=sum(1 for entry in latest.values() if entry.outcome is Outcome.FAILED),
         skipped=sum(1 for entry in latest.values() if entry.outcome is Outcome.SKIPPED),
-        files_on_disk=len(on_disk),
-        logical_bytes=sum(path.stat().st_size for path in on_disk),
+        files_on_disk=len(listed),
+        logical_bytes=logical_bytes,
         orphan_files=len(orphans),
         orphan_records=orphan_records,
         hash_mismatches=hash_mismatches,
         byte_mismatches=byte_mismatches,
         path_violations=path_violations,
-        temporary_files=len(temporary),
+        temporary_files=0,
         zero_byte=zero_byte,
         duplicate_urls=len(trusted) - len({entry.url for entry in trusted}),
         digests_verified=verify_digests,
@@ -229,13 +224,13 @@ def reconcile(
 
 
 def reconcile_subset(
-    root: EvidenceRoot,
+    storage: EvidenceStorage,
     manifest: Manifest,
     urls: Collection[str],
     *,
     verify_digests: bool = True,
 ) -> Reconciliation:
-    """Reconcile a named set of artifacts and the directories that hold them.
+    """Reconcile a named set of artifacts and the prefixes that hold them.
 
     `reconcile` walks the entire corpus. That is the right check to run at
     intervals and the wrong one to run after every batch of a long sweep: the
@@ -248,21 +243,22 @@ def reconcile_subset(
     existence, path-versus-URL, size, zero length, and digest. Nothing about the
     per-artifact guarantee is weakened; only the *scope* is.
 
-    Orphan detection is scoped to the directories the named artifacts live in,
-    and compares them against the **whole** trusted set rather than just this
-    subset — so a file written by an earlier batch into the same directory is
+    Orphan detection is scoped to the key prefixes the named artifacts live
+    under — one filing's accession prefix, one submissions directory — and
+    compares what the backend lists there against the **whole** trusted set
+    rather than just this subset — so a file written by an earlier batch into the same directory is
     correctly recognised as claimed, and only genuinely unvouched-for bytes are
     reported. A stray file elsewhere in the corpus is invisible here by design,
     and is what the scheduled full walk exists to find.
 
     Args:
-        root: The verified evidence root.
-        manifest: Its provenance log.
+        storage: Where the artifacts live.
+        manifest: The provenance log.
         urls: The artifacts to check — typically everything one batch wrote.
-        verify_digests: Recompute SHA-256 from disk for each named artifact.
+        verify_digests: Recompute SHA-256 from storage for each named artifact.
 
     Returns:
-        The counts, scoped. `files_on_disk` counts only the scanned directories.
+        The counts, scoped. `files_on_disk` counts only the listed prefixes.
     """
     wanted = set(urls)
     latest = manifest.latest_by_url()
@@ -271,7 +267,7 @@ def reconcile_subset(
         records += 1
 
     trusted_all = [entry for entry in latest.values() if entry.is_stored]
-    claimed = {root.path / (entry.path or "") for entry in trusted_all}
+    claimed = {entry.path or "" for entry in trusted_all}
     subset = [entry for entry in trusted_all if entry.url in wanted]
 
     examples: dict[str, list[str]] = {}
@@ -286,45 +282,45 @@ def reconcile_subset(
     byte_mismatches = 0
     path_violations = 0
     zero_byte = 0
-    directories: set[Path] = set()
+    prefixes: set[str] = set()
 
     for entry in subset:
-        path = root.path / (entry.path or "")
-        directories.add(path.parent)
-        if not path.is_file():
+        key = entry.path or ""
+        if not _key_is_safe(key):
+            path_violations += 1
+            note("path_violations", entry.url)
+            continue
+        prefixes.add(key.rpartition("/")[0])
+        if not storage.exists(key):
             orphan_records += 1
             note("orphan_records", entry.url)
             continue
-        if not path.resolve().is_relative_to(root.path.resolve()):
-            path_violations += 1
-            note("path_violations", entry.url)
         if not _path_matches_url(entry):
             path_violations += 1
             note("path_violations", entry.url)
-        size = path.stat().st_size
+        size = storage.stat(key).bytes
         if size == 0:
             zero_byte += 1
             note("zero_byte", entry.url)
         if entry.bytes is not None and size != entry.bytes:
             byte_mismatches += 1
             note("byte_mismatches", entry.url)
-        if verify_digests and hashlib.sha256(path.read_bytes()).hexdigest() != entry.sha256:
+        if verify_digests and storage.digest(key) != entry.sha256:
             hash_mismatches += 1
             note("hash_mismatches", entry.url)
 
-    # Name first, filesystem second — the AppleDouble rule from 9K.24 applies
-    # here too, and a sidecar is never evidence.
-    on_disk = [
-        path
-        for directory in directories
-        if directory.is_dir()
-        for path in directory.iterdir()
-        if not path.name.startswith("._") and path.name != EVIDENCE_MANIFEST and path.is_file()
-    ]
-    orphans = [path for path in on_disk if path not in claimed]
-    for path in orphans[:3]:
-        note("orphan_files", str(path.relative_to(root.path)))
-    temporary = [path for path in on_disk if path.name.startswith(".")]
+    # Scoped listing: only the prefixes this batch touched, never the whole
+    # namespace. That is the 9L.6R lesson: listing stays restricted to touched
+    # prefixes even though manifest replay still covers the corpus. A prefix
+    # outside the artifact plane has already been counted as a path violation.
+    listed: list[str] = []
+    for prefix in sorted(prefixes):
+        if prefix.split("/", 1)[0] in ARTIFACT_PREFIXES:
+            listed.extend(storage.list_prefix(prefix))
+    orphans = [key for key in listed if key not in claimed]
+    for key in orphans[:3]:
+        note("orphan_files", key)
+    logical_bytes = sum(storage.stat(key).bytes for key in listed)
 
     result = Reconciliation(
         manifest_records=records,
@@ -333,14 +329,14 @@ def reconcile_subset(
         filings=sum(1 for entry in subset if entry.request_kind == "FILING"),
         failed=sum(1 for entry in latest.values() if entry.outcome is Outcome.FAILED),
         skipped=sum(1 for entry in latest.values() if entry.outcome is Outcome.SKIPPED),
-        files_on_disk=len(on_disk),
-        logical_bytes=sum(path.stat().st_size for path in on_disk),
+        files_on_disk=len(listed),
+        logical_bytes=logical_bytes,
         orphan_files=len(orphans),
         orphan_records=orphan_records,
         hash_mismatches=hash_mismatches,
         byte_mismatches=byte_mismatches,
         path_violations=path_violations,
-        temporary_files=len(temporary),
+        temporary_files=0,
         zero_byte=zero_byte,
         duplicate_urls=len(subset) - len({entry.url for entry in subset}),
         digests_verified=verify_digests,
@@ -349,7 +345,7 @@ def reconcile_subset(
     log.info(
         "evidence reconciliation (subset)",
         artifacts=len(subset),
-        directories=len(directories),
+        prefixes=len(prefixes),
         summary=result.summary(),
     )
     return result
@@ -404,28 +400,33 @@ def prior_sample(
     return [prior[min(len(prior) - 1, int(i * step))] for i in range(target)]
 
 
-def verify_digests_of(root: EvidenceRoot, entries: Sequence[Entry]) -> dict[str, int]:
+def verify_digests_of(storage: EvidenceStorage, entries: Sequence[Entry]) -> dict[str, int]:
     """Recompute SHA-256 for specific artifacts and report what disagreed.
 
     Args:
-        root: The verified evidence root.
+        storage: Where the artifacts live.
         entries: The artifacts to check.
 
     Returns:
         `{checked, hash_mismatches, byte_mismatches, missing}`.
+
+    Raises:
+        UnsafeStorageKeyError: If a record names an invalid artifact key. This
+            digest-only summary has no path counter, so integrity errors propagate.
+        StorageUnavailableError: If storage cannot reliably verify an artifact.
     """
     checked = mismatches = sizes = missing = 0
     for entry in entries:
-        path = root.path / (entry.path or "")
-        if not path.is_file():
+        key = entry.path or ""
+        validate_artifact_key(key)
+        if not storage.exists(key):
             missing += 1
             continue
         checked += 1
-        payload = path.read_bytes()
-        if hashlib.sha256(payload).hexdigest() != entry.sha256:
+        if storage.digest(key) != entry.sha256:
             mismatches += 1
             log.warning("digest mismatch", url=entry.url)
-        if entry.bytes is not None and len(payload) != entry.bytes:
+        if entry.bytes is not None and storage.stat(key).bytes != entry.bytes:
             sizes += 1
     return {
         "checked": checked,
@@ -433,6 +434,32 @@ def verify_digests_of(root: EvidenceRoot, entries: Sequence[Entry]) -> dict[str,
         "byte_mismatches": sizes,
         "missing": missing,
     }
+
+
+def _artifact_keys(storage: EvidenceStorage) -> list[str]:
+    """Every key under the artifact prefixes, in listing order.
+
+    A listing failure propagates. Turning it into an empty list would report
+    "no orphans" for a namespace that could not be read — the one answer a
+    reconciliation must never give.
+    """
+    keys: list[str] = []
+    for prefix in ARTIFACT_PREFIXES:
+        keys.extend(storage.list_prefix(prefix))
+    return keys
+
+
+def _key_is_safe(key: str) -> bool:
+    """Whether a manifest path is a key the backend would accept.
+
+    An unsafe record is a path violation only, never an orphan record. It is
+    not looked up, because absence cannot be established for an invalid key.
+    """
+    try:
+        validate_artifact_key(key)
+    except UnsafeStorageKeyError:
+        return False
+    return True
 
 
 def _path_matches_url(entry: Entry) -> bool:

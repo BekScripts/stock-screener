@@ -35,15 +35,15 @@ from typing import TYPE_CHECKING, Any, Protocol
 import structlog
 
 from api_clients import filings_from_submissions, submissions_url
+from stock_screener.sec_evidence.backend import ArtifactNotFoundError
 from stock_screener.sec_evidence.harvest import Target
-from stock_screener.sec_evidence.storage import RequestKind
+from stock_screener.sec_evidence.storage import RequestKind, submissions_key
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
-    from pathlib import Path
 
+    from stock_screener.sec_evidence.backend import EvidenceStorage
     from stock_screener.sec_evidence.sample import Selection
-    from stock_screener.sec_evidence.storage import EvidenceRoot
 
 log = structlog.get_logger(__name__)
 
@@ -130,19 +130,19 @@ def submissions_targets(resolutions: Sequence[Resolution]) -> list[Target]:
 
 
 def filing_targets(
-    root: EvidenceRoot,
+    storage: EvidenceStorage,
     resolutions: Sequence[Resolution],
     *,
     filings_per_security: int = DEFAULT_FILINGS_PER_SECURITY,
 ) -> list[Target]:
     """Expand stored submissions indexes into bounded filing-document targets.
 
-    Reads the submissions artifacts already on disk — expansion issues no
+    Reads the submissions artifacts already in storage — expansion issues no
     request, so a security whose index has not been harvested yet simply
     contributes nothing rather than triggering a fetch as a side effect.
 
     Args:
-        root: The verified evidence root.
+        storage: Where the submissions artifacts live.
         resolutions: Securities with their filer numbers.
         filings_per_security: Cap per security, applied while building.
 
@@ -159,10 +159,7 @@ def filing_targets(
         cik = resolution.cik
         if cik is None:
             continue
-        stored = root.submissions_path(cik)
-        if not stored.is_file():
-            continue
-        payload = _payload(stored)
+        payload = _payload(storage, submissions_key(cik))
         if payload is None:
             continue
         for filing in filings_from_submissions(payload, cik)[:filings_per_security]:
@@ -188,15 +185,22 @@ def filing_targets(
     return targets
 
 
-def _payload(path: Path) -> dict[str, Any] | None:
-    """Parse a stored submissions document, or None when it is not usable.
+def _payload(storage: EvidenceStorage, key: str) -> dict[str, Any] | None:
+    """Parse a stored submissions document, or None when there is none to use.
 
-    A stored artifact that will not parse is a finding, not a crash: it is
-    reported and skipped, so one damaged index cannot end an expansion pass.
+    An index that was never harvested is the ordinary case and contributes
+    nothing. A stored artifact that will not parse is a finding, not a crash:
+    it is reported and skipped, so one damaged index cannot end an expansion
+    pass. A backend that fails while reading is neither of those, and its
+    error propagates.
     """
     try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
-        log.warning("stored submissions document is unreadable", path=str(path), error=str(exc))
+        raw_bytes = storage.read_bytes(key)
+    except ArtifactNotFoundError:
+        return None
+    try:
+        raw = json.loads(raw_bytes.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        log.warning("stored submissions document is unreadable", key=key, error=str(exc))
         return None
     return raw if isinstance(raw, dict) else None

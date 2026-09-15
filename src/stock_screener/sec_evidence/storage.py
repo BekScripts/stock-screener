@@ -43,7 +43,14 @@ import structlog
 from stock_screener.evidence import resolve_sec_evidence_dir
 
 if TYPE_CHECKING:
+    from collections.abc import Iterator
+
     from stock_screener.config import Settings
+    from stock_screener.sec_evidence.backend import (
+        ArtifactStat,
+        LocalEvidenceStorage,
+        StoredArtifact,
+    )
 
 log = structlog.get_logger(__name__)
 
@@ -54,6 +61,12 @@ FULLTEXT = "fulltext"
 MANIFESTS = "manifests"
 
 SUBDIRECTORIES = (FILINGS, SUBMISSIONS, FULLTEXT, MANIFESTS)
+
+#: The prefixes that hold source evidence — the *artifact plane*. Reconciliation
+#: enumerates exactly these and nothing else, which is how manifests,
+#: checkpoints, derived output and diagnostics stay out of the orphan count by
+#: construction rather than by exclusion list.
+ARTIFACT_PREFIXES = (FILINGS, SUBMISSIONS, FULLTEXT)
 
 #: Where a sweep records its own progress. Deliberately **not** in
 #: `SUBDIRECTORIES`: it sits under the evidence root so a chunk's state travels
@@ -128,33 +141,99 @@ class EvidenceRoot:
         """Where manifests live."""
         return self.path / MANIFESTS
 
+    # ------------------------------------------------------------------
+    # An EvidenceRoot IS an EvidenceStorage.
+    #
+    # Structurally, not by inheritance: it exposes the six contract operations
+    # by delegating to the local backend anchored at its path. That is what lets
+    # every artifact-plane function take `storage: EvidenceStorage` and still
+    # accept a root from the many callers that hold one — while a test can hand
+    # the same function a memory backend and prove nothing below the seam ever
+    # needed a directory. The root keeps its control-plane duties (where the
+    # manifest and checkpoints live) alongside; those are not storage-contract
+    # concerns and are addressed in a later phase.
+    # ------------------------------------------------------------------
+
+    @property
+    def storage(self) -> LocalEvidenceStorage:
+        """The concrete local backend for this root, for callers that need it."""
+        from stock_screener.sec_evidence.backend import LocalEvidenceStorage
+
+        return LocalEvidenceStorage(self.path)
+
+    def exists(self, key: str) -> bool:
+        """See `EvidenceStorage.exists`."""
+        return self.storage.exists(key)
+
+    def stat(self, key: str) -> ArtifactStat:
+        """See `EvidenceStorage.stat`."""
+        return self.storage.stat(key)
+
+    def read_bytes(self, key: str) -> bytes:
+        """See `EvidenceStorage.read_bytes`."""
+        return self.storage.read_bytes(key)
+
+    def write_bytes(self, key: str, data: bytes) -> StoredArtifact:
+        """See `EvidenceStorage.write_bytes`."""
+        return self.storage.write_bytes(key, data)
+
+    def digest(self, key: str) -> str:
+        """See `EvidenceStorage.digest`."""
+        return self.storage.digest(key)
+
+    def list_prefix(self, prefix: str) -> Iterator[str]:
+        """See `EvidenceStorage.list_prefix`."""
+        return self.storage.list_prefix(prefix)
+
     def filing_path(self, cik: int, accession: str, document: str) -> Path:
-        """Return where one filing document belongs.
+        """Return where one filing document belongs on this local root.
 
-        Args:
-            cik: The filer number, unpadded.
-            accession: The accession number, dashed or not.
-            document: The file name within the filing.
-
-        Returns:
-            The absolute destination path.
+        Prefer `filing_key` where a key will do. This resolves it to a path for
+        callers that still need one.
 
         Raises:
             ValueError: If the document name would escape the filing directory.
         """
-        return self.filings / f"{cik:010d}" / accession.replace("-", "") / _safe(document)
+        return self.path / filing_key(cik, accession, document)
 
     def submissions_path(self, cik: int) -> Path:
-        """Return where one filer's submissions index belongs."""
-        return self.submissions / f"CIK{cik:010d}.json"
+        """Return where one filer's submissions index belongs on this local root."""
+        return self.path / submissions_key(cik)
 
     def fulltext_path(self, query: str) -> Path:
-        """Return where one full-text response belongs.
+        """Return where one full-text response belongs on this local root."""
+        return self.path / fulltext_key(query)
 
-        The query is digested rather than spelled out: it can carry slashes,
-        quotes and arbitrary length, none of which survive a file name.
-        """
-        return self.fulltext / f"{hashlib.sha256(query.encode()).hexdigest()}.json"
+
+def filing_key(cik: int, accession: str, document: str) -> str:
+    """The storage key for one filing document, independent of any backend.
+
+    Args:
+        cik: The filer number, unpadded.
+        accession: The accession number, dashed or not.
+        document: The file name within the filing.
+
+    Returns:
+        `filings/<cik 10-digit>/<accession without dashes>/<document>`.
+
+    Raises:
+        ValueError: If the document name would escape the filing directory.
+    """
+    return f"{FILINGS}/{cik:010d}/{accession.replace('-', '')}/{_safe(document)}"
+
+
+def submissions_key(cik: int) -> str:
+    """The storage key for one filer's submissions index."""
+    return f"{SUBMISSIONS}/CIK{cik:010d}.json"
+
+
+def fulltext_key(query: str) -> str:
+    """The storage key for one full-text response.
+
+    The query is digested rather than spelled out: it can carry slashes,
+    quotes and arbitrary length, none of which survive as a key segment.
+    """
+    return f"{FULLTEXT}/{hashlib.sha256(query.encode()).hexdigest()}.json"
 
 
 def open_evidence_root(settings: Settings) -> EvidenceRoot:
@@ -244,8 +323,16 @@ def digest_of(path: Path) -> str | None:
     return digest.hexdigest()
 
 
-class EvidenceWriteError(RuntimeError):
-    """A stored artifact could not be written where it was supposed to go."""
+class StorageUnavailableError(RuntimeError):
+    """Storage cannot reliably answer or complete an operation.
+
+    Includes an unavailable root, I/O failure, or a future backend's auth,
+    network or service failure. Never interpreted as an absent artifact.
+    """
+
+
+class EvidenceWriteError(StorageUnavailableError):
+    """An artifact write did not complete successfully; no provenance is earned."""
 
 
 def _safe(name: str) -> str:

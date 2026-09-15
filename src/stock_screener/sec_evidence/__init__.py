@@ -18,6 +18,15 @@ from stock_screener.sec_evidence.audit import (
     reconcile_subset,
     verify_digests_of,
 )
+from stock_screener.sec_evidence.backend import (
+    ArtifactNotFoundError,
+    ArtifactStat,
+    EvidenceStorage,
+    LocalEvidenceStorage,
+    StoredArtifact,
+    UnsafeStorageKeyError,
+    validate_key,
+)
 from stock_screener.sec_evidence.binding import (
     PRODUCTION_IDENTITIES,
     BindingError,
@@ -62,6 +71,7 @@ from stock_screener.sec_evidence.harvest import (
     HarvestReport,
     Target,
     harvest,
+    harvest_artifacts,
 )
 from stock_screener.sec_evidence.join import Join, JoinCache, JoinState, join_symbol
 from stock_screener.sec_evidence.manifest import (
@@ -110,6 +120,7 @@ from stock_screener.sec_evidence.sample import (
     select_universe,
 )
 from stock_screener.sec_evidence.storage import (
+    ARTIFACT_PREFIXES,
     CHECKPOINTS,
     DERIVED,
     DIAGNOSTICS,
@@ -117,9 +128,13 @@ from stock_screener.sec_evidence.storage import (
     EvidenceRoot,
     EvidenceWriteError,
     RequestKind,
+    StorageUnavailableError,
     digest_of,
+    filing_key,
+    fulltext_key,
     open_evidence_root,
     store_atomically,
+    submissions_key,
 )
 from stock_screener.sec_evidence.sweep import (
     DEFAULT_MIN_FREE_BYTES,
@@ -136,6 +151,7 @@ from stock_screener.sec_evidence.sweep import (
 )
 
 __all__ = [
+    "ARTIFACT_PREFIXES",
     "CARRY_FORWARD_DAYS",
     "CHECKPOINTS",
     "DEFAULT_FILINGS_PER_SECURITY",
@@ -153,6 +169,8 @@ __all__ = [
     "UNLIMITED",
     "WINDOW_END",
     "WINDOW_START",
+    "ArtifactNotFoundError",
+    "ArtifactStat",
     "BindingError",
     "Budget",
     "Candidate",
@@ -165,6 +183,7 @@ __all__ = [
     "DocumentSource",
     "Entry",
     "EvidenceRoot",
+    "EvidenceStorage",
     "EvidenceWriteError",
     "Exchange",
     "ExtractionReport",
@@ -178,6 +197,7 @@ __all__ = [
     "Join",
     "JoinCache",
     "JoinState",
+    "LocalEvidenceStorage",
     "Manifest",
     "ManifestState",
     "Outcome",
@@ -193,8 +213,11 @@ __all__ = [
     "SecurityRow",
     "Selection",
     "SourceBinding",
+    "StorageUnavailableError",
+    "StoredArtifact",
     "SweepError",
     "Target",
+    "UnsafeStorageKeyError",
     "bind_source",
     "build_index",
     "build_reachability",
@@ -205,11 +228,14 @@ __all__ = [
     "evidence_date_for",
     "extract_catalogue",
     "extract_filing",
+    "filing_key",
     "filing_targets",
     "fingerprint_corpus",
     "free_bytes",
+    "fulltext_key",
     "guard_selection",
     "harvest",
+    "harvest_artifacts",
     "join_symbol",
     "load_checkpoint",
     "load_fingerprint",
@@ -237,8 +263,10 @@ __all__ = [
     "select_universe",
     "selection_digest",
     "store_atomically",
+    "submissions_key",
     "submissions_targets",
     "supported_months",
+    "validate_key",
     "verify_digests_of",
     "write_plan",
 ]

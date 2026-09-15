@@ -44,6 +44,7 @@ from typing import TYPE_CHECKING, Protocol
 import structlog
 
 from api_clients.errors import ProviderBudgetError, ProviderError
+from stock_screener.sec_evidence.backend import ArtifactNotFoundError
 from stock_screener.sec_evidence.manifest import (
     EVIDENCE_MANIFEST,
     Entry,
@@ -51,13 +52,18 @@ from stock_screener.sec_evidence.manifest import (
     ManifestState,
     Outcome,
 )
-from stock_screener.sec_evidence.storage import RequestKind, digest_of, store_atomically
+from stock_screener.sec_evidence.storage import (
+    RequestKind,
+    filing_key,
+    fulltext_key,
+    submissions_key,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
-    from pathlib import Path
 
     from api_clients.sec_documents import FetchedDocument
+    from stock_screener.sec_evidence.backend import EvidenceStorage
     from stock_screener.sec_evidence.storage import EvidenceRoot
 
 log = structlog.get_logger(__name__)
@@ -208,11 +214,58 @@ def harvest(
     budget: Budget | None = None,
     dry_run: bool = False,
 ) -> HarvestReport:
-    """Obtain each target, skipping what is already provably held.
+    """Obtain each target into a local evidence root.
+
+    The root supplies both halves of what a harvest needs — the artifact store
+    and the manifest that vouches for it — so this is the convenient form.
+    `harvest_artifacts` is the one that does the work, and takes those two
+    halves separately; any backend that satisfies `EvidenceStorage` can be
+    handed to it with a manifest kept wherever the control plane lives.
 
     Args:
         targets: What to fetch, in order.
         root: A verified evidence root.
+        documents: The SEC client. May be None only for a dry run.
+        budget: Spending limits. Unlimited when omitted.
+        dry_run: Plan only — no request is issued and nothing is written, the
+            manifest included.
+
+    Returns:
+        What happened.
+
+    Raises:
+        ValueError: If a real run is asked for without a client.
+    """
+    return harvest_artifacts(
+        targets,
+        root,
+        Manifest(root.manifests / EVIDENCE_MANIFEST),
+        documents,
+        budget=budget,
+        dry_run=dry_run,
+    )
+
+
+def harvest_artifacts(
+    targets: Sequence[Target],
+    storage: EvidenceStorage,
+    manifest: Manifest,
+    documents: DocumentSource | None,
+    *,
+    budget: Budget | None = None,
+    dry_run: bool = False,
+) -> HarvestReport:
+    """Obtain each target, skipping what is already provably held.
+
+    Artifact bytes go to `storage`; provenance goes to `manifest`. They are
+    separate arguments because they are separate responsibilities — a backend
+    never appends the manifest, and the manifest never decides where bytes
+    live. Nothing in here holds a filesystem path.
+
+    Args:
+        targets: What to fetch, in order.
+        storage: Where artifact bytes are stored and verified.
+        manifest: The provenance log that makes an artifact trusted.
         documents: The SEC client. May be None only for a dry run.
         budget: Spending limits. Unlimited when omitted.
         dry_run: Plan only — no request is issued and nothing is written, the
@@ -229,14 +282,13 @@ def harvest(
         raise ValueError(message)
 
     limits = budget or Budget()
-    manifest = Manifest(root.manifests / EVIDENCE_MANIFEST)
     state = manifest.replay()
     known = state.latest
     report = HarvestReport()
 
     for target in targets:
-        destination = _destination(root, target)
-        outcome = _classify(target, destination, known)
+        key = _key_for(target)
+        outcome = _classify(target, key, storage, known)
 
         if dry_run:
             report.record(Outcome.CACHE_HIT if outcome is Outcome.CACHE_HIT else Outcome.SKIPPED)
@@ -254,7 +306,7 @@ def harvest(
         if documents is None:  # pragma: no cover — guarded at entry
             message = "a harvest that is not a dry run needs a SEC client"
             raise ValueError(message)
-        entry = _fetch_one(target, destination, root, documents, limits, manifest, state)
+        entry = _fetch_one(target, key, storage, documents, limits, manifest, state)
         # A re-fetch caused by a corrupt cache is reported as `INVALID_CACHE`
         # rather than `DOWNLOADED`: the bytes were downloaded either way, and
         # what the operator needs to see is that something on disk was wrong.
@@ -276,8 +328,8 @@ def harvest(
 
 def _fetch_one(
     target: Target,
-    destination: Path,
-    root: EvidenceRoot,
+    key: str,
+    storage: EvidenceStorage,
     documents: DocumentSource,
     limits: Budget,
     manifest: Manifest,
@@ -364,16 +416,18 @@ def _fetch_one(
         _persist(manifest, state, entry)
         return entry
 
-    written = store_atomically(destination, fetched.body, root=root.path)
-    limits.spend(stored=written)
+    # Trust ordering, unchanged: the bytes are stored and vouched for by the
+    # backend first; only then is the manifest entry built and appended.
+    stored = storage.write_bytes(key, fetched.body)
+    limits.spend(stored=stored.bytes)
     entry = Entry(
         url=target.url,
         outcome=Outcome.DOWNLOADED,
         status=fetched.status,
         sha256=fetched.sha256,
-        bytes=written,
+        bytes=stored.bytes,
         retrieved_at=fetched.retrieved_at.isoformat(),
-        path=str(destination.relative_to(root.path)),
+        path=stored.key,
         request_kind=str(target.kind),
         content_type=fetched.content_type,
         etag=fetched.etag,
@@ -406,20 +460,23 @@ def _ensure_counted(limits: Budget, before: int) -> None:
         limits.record()
 
 
-def _classify(target: Target, destination: Path, known: dict[str, Entry]) -> Outcome:
+def _classify(
+    target: Target, key: str, storage: EvidenceStorage, known: dict[str, Entry]
+) -> Outcome:
     """Decide whether a target is already held, by checking the bytes.
 
     Returns `CACHE_HIT` only when the manifest claims the artifact is stored and
-    the file on disk still hashes to the recorded digest.
+    the backend still hashes the stored bytes to the recorded digest.
     """
     entry = known.get(target.url)
     if entry is None or not entry.is_stored or entry.sha256 is None:
         return Outcome.DOWNLOADED
-    actual = digest_of(destination)
-    if actual is None:
+    try:
+        actual = storage.digest(key)
+    except ArtifactNotFoundError:
         # The manifest says it is here and it is not. Something removed it, or
-        # the volume the manifest describes is not the one mounted now.
-        log.warning("manifest names a file that is not there", url=target.url)
+        # the store the manifest describes is not the one reachable now.
+        log.warning("manifest names an artifact that is not there", url=target.url)
         return Outcome.INVALID_CACHE
     if actual != entry.sha256:
         log.warning("stored artifact does not match its digest", url=target.url)
@@ -427,23 +484,23 @@ def _classify(target: Target, destination: Path, known: dict[str, Entry]) -> Out
     return Outcome.CACHE_HIT
 
 
-def _destination(root: EvidenceRoot, target: Target) -> Path:
-    """Return where one target's bytes belong.
+def _key_for(target: Target) -> str:
+    """The storage key one target's bytes belong under.
 
-    Raises:
-        ValueError: If the target lacks what its kind needs to be placed.
+    Derived from the target alone — no root, no backend — so the same target
+    yields the same key wherever the artifact ends up living.
     """
     if target.kind is RequestKind.SUBMISSIONS:
         if target.cik is None:
             message = "a submissions target needs a CIK"
             raise ValueError(message)
-        return root.submissions_path(target.cik)
+        return submissions_key(target.cik)
     if target.kind is RequestKind.FULLTEXT:
         if target.query is None:
             message = "a full-text target needs a query"
             raise ValueError(message)
-        return root.fulltext_path(target.query)
+        return fulltext_key(target.query)
     if target.cik is None or target.accession is None or target.document is None:
         message = "a filing target needs a CIK, an accession and a document name"
         raise ValueError(message)
-    return root.filing_path(target.cik, target.accession, target.document)
+    return filing_key(target.cik, target.accession, target.document)
