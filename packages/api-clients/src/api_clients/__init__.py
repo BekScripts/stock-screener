@@ -15,7 +15,7 @@ so the rest of the system can be tested — and a vendor replaced — without kn
 which one is in use.
 """
 
-from api_clients._http import RateLimiter, RetryPolicy
+from api_clients._http import RateLimiter, RequestMeter, RetryPolicy
 from api_clients.alpaca import AlpacaMarketData
 from api_clients.base import (
     ExternalResearchProvider,
@@ -33,11 +33,13 @@ from api_clients.deep_research import (
 from api_clients.edgar import (
     SecEdgarFundamentals,
     facts_document_from_observations,
+    filings_from_submissions,
     periods_from_facts_document,
     periods_from_observations,
 )
 from api_clients.errors import (
     ProviderAuthError,
+    ProviderBudgetError,
     ProviderConfigurationError,
     ProviderDataError,
     ProviderError,
@@ -76,6 +78,13 @@ from api_clients.research import (
     estimate_cost_usd,
     parse_draft,
 )
+from api_clients.sec_cover import CoverPage, parse_cover_page
+from api_clients.sec_documents import (
+    FetchedDocument,
+    SecDocuments,
+    document_url,
+    submissions_url,
+)
 from api_clients.sec_ftd import (
     FTD_INDEX_URL,
     FtdArchive,
@@ -100,11 +109,13 @@ __all__ = [
     "BroadFxRates",
     "CompositeFundamentals",
     "CompositeFxRates",
+    "CoverPage",
     "DeepResearchCompletion",
     "DeepResearchProvider",
     "EcbFxRates",
     "ExternalResearchProvider",
     "ExtractedSection",
+    "FetchedDocument",
     "FmpFundamentals",
     "FtdArchive",
     "FtdFileContent",
@@ -119,6 +130,7 @@ __all__ = [
     "MockMarketData",
     "MockResearch",
     "ProviderAuthError",
+    "ProviderBudgetError",
     "ProviderConfigurationError",
     "ProviderDataError",
     "ProviderError",
@@ -127,22 +139,28 @@ __all__ = [
     "ProviderRateLimitError",
     "ProviderRequestError",
     "RateLimiter",
+    "RequestMeter",
     "ResearchCompletion",
     "ResearchProvider",
     "RetryPolicy",
+    "SecDocuments",
     "SecEdgarFundamentals",
     "SecFailsToDeliver",
     "TavilySearch",
     "clean_filing_text",
+    "document_url",
     "estimate_cost_usd",
     "extract_sections",
     "facts_document_from_observations",
+    "filings_from_submissions",
     "load_fixture_providers",
+    "parse_cover_page",
     "parse_draft",
     "parse_ftd_archive",
     "parse_ftd_member",
     "periods_from_facts_document",
     "periods_from_observations",
+    "submissions_url",
 ]
 
 __version__ = "0.1.0"

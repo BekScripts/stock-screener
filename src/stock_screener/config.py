@@ -99,6 +99,20 @@ class Settings(BaseSettings):
             "from disk rather than downloading them from a free public server again."
         ),
     )
+    sec_evidence_dir: str | None = Field(
+        default=None,
+        description=(
+            "Root of the SEC evidence corpus — filings, submissions, full-text "
+            "responses and their provenance manifests. **Deliberately has no "
+            "default.** The corpus runs to hundreds of gigabytes and belongs on "
+            "external storage; a default pointing at the working tree would let a "
+            "harvest quietly fill the boot disk, and a default pointing at a "
+            "volume that is not mounted would let one silently start writing a "
+            "fresh empty cache beside the real one. Unset means 'not configured', "
+            "which `resolve_sec_evidence_dir` reports as an error rather than "
+            "papering over. See `docs/reference/storage-layout.md`."
+        ),
+    )
     fixture_path: str = Field(
         default="fixtures/sample_universe.json",
         description="Fixture file the mock providers read when selected.",

@@ -76,6 +76,16 @@ class ProviderInvalidRequestError(ProviderError):
     """
 
 
+class ProviderBudgetError(ProviderError):
+    """A request was refused because the caller's HTTP budget is spent.
+
+    Distinct from a transport failure on purpose: nothing went wrong with the
+    network, the caller simply told the client how many attempts it was allowed
+    and that number has been reached. A harvest treats it as a clean stop rather
+    than a failed artifact.
+    """
+
+
 class ProviderDataError(ProviderError):
     """The response arrived but could not be normalised.
 

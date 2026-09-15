@@ -61,6 +61,7 @@ nav:
       - Backtest readiness: reference/backtest-readiness.md
       - Security identity: reference/security-identity.md
       - Listing evidence: reference/listing-evidence.md
+      - Storage layout: reference/storage-layout.md
       - Project brief: reference/project-intro.md
       - Phase 1 brief: reference/project-phases/phase1.md
       - Phase 2 brief: reference/project-phases/phase2.md

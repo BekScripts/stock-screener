@@ -16,7 +16,8 @@ from __future__ import annotations
 
 import csv
 import json
-from contextlib import contextmanager
+import sqlite3
+from contextlib import closing, contextmanager
 from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated
@@ -24,7 +25,7 @@ from typing import TYPE_CHECKING, Annotated
 import structlog
 import typer
 
-from api_clients import ProviderInvalidRequestError
+from api_clients import ProviderInvalidRequestError, SecDocuments
 from data_access import build_session_factory, create_engine_from_url, session_scope
 from domain import DelistingReason, TerminalStatus
 from research import build_system_prompt, render_brief
@@ -61,6 +62,7 @@ from stock_screener.deep_research import (
     prepare_company,
     run_deep_research,
 )
+from stock_screener.evidence import EvidenceState, inspect_sec_evidence_dir
 from stock_screener.identity import (
     ContaminationReport,
     FtdFileResult,
@@ -134,6 +136,43 @@ from stock_screener.scoring import (
     score_market,
     top_opportunities,
     write_rankings_csv,
+)
+from stock_screener.sec_evidence import (
+    DEFAULT_MIN_FREE_BYTES,
+    EVIDENCE_MANIFEST,
+    SUBDIRECTORIES,
+    Budget,
+    Checkpoint,
+    ChunkStage,
+    EvidenceRoot,
+    HarvestReport,
+    Manifest,
+    Selection,
+    SweepError,
+    checkpoint_path,
+    derived_root,
+    filing_targets,
+    free_bytes,
+    guard_selection,
+    harvest,
+    load_checkpoint,
+    new_urls_since,
+    open_evidence_root,
+    preflight,
+    prior_sample,
+    reconcile,
+    resolve_ciks,
+    save_checkpoint,
+    select_universe,
+    selection_digest,
+    submissions_targets,
+    verify_digests_of,
+)
+from stock_screener.sec_evidence.targets import (
+    TargetManifestError,
+    held_from_manifest,
+    load_manifest,
+    resolve_documents,
 )
 from stock_screener.signals import derive_market_signals
 
@@ -1453,6 +1492,497 @@ def listing_audit_command(
         audit = build_listing_audit(session, scope_from=scope_from.date())
     for line in audit.lines():
         typer.echo(line)
+
+
+evidence_app = typer.Typer(
+    name="evidence",
+    help=(
+        "The SEC evidence corpus: inspect the configured root, plan a controlled "
+        "batch, and harvest documents onto external storage within a budget."
+    ),
+    no_args_is_help=True,
+)
+app.add_typer(evidence_app)
+
+
+@evidence_app.command("status")
+def evidence_status_command() -> None:
+    """Report where SEC evidence would be written, and whether it is reachable.
+
+    Prints the state rather than raising, so an unmounted drive is diagnosable
+    without reading a traceback.
+    """
+    settings = _bootstrap()
+    state, path = inspect_sec_evidence_dir(settings)
+    typer.echo(f"evidence root : {path if path is not None else '(unset)'}")
+    typer.echo(f"state         : {state}")
+    if state is not EvidenceState.UNCONFIGURED and path is not None:
+        for name in SUBDIRECTORIES:
+            child = path / name
+            typer.echo(f"  {name:<12} {'present' if child.is_dir() else 'absent'}")
+    if state in {
+        EvidenceState.UNCONFIGURED,
+        EvidenceState.UNAVAILABLE,
+        EvidenceState.NOT_A_DIRECTORY,
+    }:
+        raise typer.Exit(code=1)
+
+
+@evidence_app.command("sample")
+def evidence_sample_command(
+    limit: Annotated[int, typer.Option(help="How many securities to print.")] = 100,
+    offset: Annotated[
+        int,
+        typer.Option(min=0, help="Securities to skip. With --limit this is one chunk."),
+    ] = 0,
+    production: Annotated[
+        bool,
+        typer.Option(
+            "--production/--sample",
+            help=(
+                "Paginate the whole security record, or the frozen 100-security "
+                "validation batch. --limit means what it says only on --production."
+            ),
+        ),
+    ] = False,
+) -> None:
+    """Print the deterministic controlled batch.
+
+    Reads the database and nothing else — no network, no writes. The same
+    database yields the same batch every time, which is what makes a measured
+    harvest reproducible.
+    """
+    settings = _bootstrap()
+    with _database(settings) as factory, session_scope(factory) as session:
+        selections = select_universe(session, production=production, offset=offset, limit=limit)
+    for selection in selections:
+        cik = selection.cik if selection.cik is not None else "-"
+        typer.echo(f"{selection.bucket:<22} {selection.symbol:<8} cik={cik:<12} {selection.name}")
+    typer.echo(f"{len(selections)} securities")
+
+
+@evidence_app.command("harvest")
+def evidence_harvest_command(
+    limit: Annotated[int, typer.Option(help="Most securities to read.")] = 100,
+    max_requests: Annotated[
+        int, typer.Option(help="Network requests allowed. 0 is unlimited.")
+    ] = 500,
+    max_bytes: Annotated[int, typer.Option(help="Bytes allowed to store. 0 is unlimited.")] = 10
+    * 1024**3,
+    dry_run: Annotated[
+        bool, typer.Option("--dry-run", help="Plan only: no requests, no writes.")
+    ] = False,
+    resume: Annotated[
+        bool, typer.Option("--resume", help="Reuse artifacts the manifest verifies.")
+    ] = True,
+    filings_per_security: Annotated[
+        int,
+        typer.Option(
+            help=(
+                "Expand each stored submissions index into at most this many filing "
+                "documents. 0 fetches catalogues only, which is the default because "
+                "expansion multiplies a run's size."
+            )
+        ),
+    ] = 0,
+    resolve: Annotated[
+        bool,
+        typer.Option(
+            "--resolve/--no-resolve",
+            help="Look up missing CIKs in the SEC ticker file. Costs one request.",
+        ),
+    ] = False,
+    offset: Annotated[
+        int,
+        typer.Option(min=0, help="Securities to skip. With --limit this is one chunk."),
+    ] = 0,
+    production: Annotated[
+        bool,
+        typer.Option(
+            "--production/--sample",
+            help=(
+                "Paginate the whole security record, or the frozen 100-security "
+                "validation batch. --limit means what it says only on --production."
+            ),
+        ),
+    ] = False,
+) -> None:
+    """Fetch SEC evidence for the controlled batch, within a hard budget.
+
+    Resumable by construction: an artifact whose stored bytes still hash to the
+    digest the manifest recorded is not fetched again, so a run stopped by its
+    budget continues where it left off rather than starting over.
+
+    A dry run issues no request and writes nothing at all, the manifest
+    included, so it is safe against an evidence root you are unsure about.
+    """
+    settings = _bootstrap()
+    root = open_evidence_root(settings)
+    typer.echo(f"evidence root : {root.path}")
+
+    with _database(settings) as factory, session_scope(factory) as session:
+        selections = select_universe(session, production=production, offset=offset, limit=limit)
+
+    typer.echo(
+        f"population    : {'production universe' if production else 'controlled sample'}"
+        f" | offset {offset} | limit {limit}"
+    )
+
+    # One budget for the whole run, created before anything reaches the network.
+    # Resolution reads the SEC ticker file, which is an HTTP request the harvest
+    # causes, so it meters into the same ceiling as every document. It is opt-in
+    # and never happens during a dry run.
+    budget = Budget(max_requests=max_requests, max_bytes=max_bytes)
+    resolver = build_observation_source(settings, meter=budget) if resolve and not dry_run else None
+    try:
+        resolutions = resolve_ciks(selections, resolver)
+    finally:
+        if resolver is not None:
+            resolver.close()
+    stored = sum(1 for r in resolutions if r.source == "STORED")
+    looked_up = sum(1 for r in resolutions if r.source == "EDGAR")
+    unresolved = sum(1 for r in resolutions if not r.resolved)
+    typer.echo(
+        f"securities    : {len(selections)} — {stored} stored CIK, "
+        f"{looked_up} resolved via EDGAR, {unresolved} unresolved"
+    )
+
+    targets = submissions_targets(resolutions)
+    expanded = filing_targets(root, resolutions, filings_per_security=filings_per_security)
+    targets += expanded
+    typer.echo(
+        f"targets       : {len(targets)} ({len(targets) - len(expanded)} submissions, "
+        f"{len(expanded)} filing documents, cap {filings_per_security}/security)"
+    )
+
+    if not resume:
+        typer.echo("resume        : disabled — every target will be re-fetched")
+
+    documents = None if dry_run else _sec_documents(settings, budget)
+    try:
+        report = harvest(targets, root, documents, budget=budget, dry_run=dry_run)
+    finally:
+        if documents is not None:
+            documents.close()
+
+    typer.echo(report.summary())
+    typer.echo(
+        f"remaining     : {budget.requests_remaining} requests, {budget.bytes_remaining} bytes"
+    )
+    for url, reason in report.failures[:10]:
+        typer.echo(f"  failed {url}: {reason}")
+
+
+@evidence_app.command("harvest-manifest")
+def evidence_harvest_manifest_command(
+    target_manifest: Annotated[Path, typer.Option(help="Frozen JSONL target manifest to execute.")],
+    expect_sha256: Annotated[
+        str | None, typer.Option(help="Digest the manifest must have.")
+    ] = None,
+    expect_rows: Annotated[int | None, typer.Option(help="Rows the manifest must hold.")] = None,
+    max_requests: Annotated[int, typer.Option(help="HTTP attempts allowed.")] = 3000,
+    max_bytes: Annotated[int, typer.Option(help="Bytes allowed.")] = 2 * 1024**3,
+    min_free_bytes: Annotated[
+        int, typer.Option(help="Free space the run refuses to eat into.")
+    ] = DEFAULT_MIN_FREE_BYTES,
+    replay: Annotated[
+        bool,
+        typer.Option(
+            "--replay",
+            help="Permit already-held targets, to prove a manifest replay costs nothing.",
+        ),
+    ] = False,
+    dry_run: Annotated[
+        bool, typer.Option("--dry-run", help="Verify and plan only. No requests, no writes.")
+    ] = False,
+) -> None:
+    """Fetch exactly the filings a frozen target manifest names.
+
+    The production harvest discovers filings: resolve a CIK, fetch a submissions
+    catalogue, take the six most recent. This does none of that. Phase 9L.2
+    already decided which filings to fetch, so re-deriving them would spend
+    requests to risk selecting something else.
+
+    **Nothing is resolved over the network.** Document names come from the
+    submissions catalogues already on disk, so replaying a manifest whose targets
+    are all held issues zero HTTP requests.
+    """
+    settings = _bootstrap()
+    root = open_evidence_root(settings)
+    index = derived_root(root) / "sec_evidence_index.db"
+    if not index.is_file():
+        typer.echo(f"STOPPED: no derived index at {index}; run the offline extraction first")
+        raise typer.Exit(code=1)
+
+    try:
+        targets, audit = load_manifest(
+            target_manifest, expect_sha256=expect_sha256, expect_rows=expect_rows
+        )
+    except TargetManifestError as exc:
+        typer.echo(f"STOPPED: {exc}")
+        raise typer.Exit(code=1) from exc
+
+    typer.echo(f"manifest      : {target_manifest}")
+    typer.echo(f"manifest sha  : {audit.digest}")
+    typer.echo(f"targets       : {audit.rows} ({audit.unique_keys} unique, {audit.filers} filers)")
+    typer.echo(f"forms         : {audit.forms}")
+    typer.echo(f"years         : {audit.years}")
+
+    with closing(sqlite3.connect(index)) as catalogue:
+        # The live manifest, not the derived index: the index can predate the
+        # most recent harvest, and planning against it would re-request filings
+        # already on disk.
+        held = held_from_manifest(Manifest(root.manifests / EVIDENCE_MANIFEST))
+        overlap = sorted({t.key for t in targets} & held)
+        resolved, unresolved = resolve_documents(targets, catalogue)
+
+    if overlap and not replay:
+        # Never silently drop and replace: a validation population that changed
+        # is no longer validating the plan that was frozen. `--replay` is the
+        # deliberate exception — proving a completed manifest costs nothing to
+        # re-run requires passing it targets that are already held.
+        typer.echo(f"STOPPED: {len(overlap)} target(s) are already trusted, e.g. {overlap[:3]}")
+        typer.echo("         pass --replay to re-run a completed manifest deliberately")
+        raise typer.Exit(code=1)
+    if overlap:
+        typer.echo(f"already held  : {len(overlap)} — replay requested, expecting zero requests")
+    else:
+        typer.echo("already held  : 0 — target set is disjoint from the corpus")
+    typer.echo(f"resolved      : {len(resolved)} documents, {len(unresolved)} unresolved")
+    if unresolved:
+        typer.echo(f"  unresolved e.g. {[t.key for t in unresolved][:3]}")
+
+    try:
+        preflight(root, min_free_bytes=min_free_bytes, verify_digests=False)
+    except SweepError as exc:
+        typer.echo(f"STOPPED: {exc}")
+        raise typer.Exit(code=1) from exc
+    typer.echo(f"ssd free      : {free_bytes(root) / 1024**3:.1f} GiB")
+
+    if dry_run:
+        typer.echo("dry run — manifest verified, no request issued and nothing written")
+        return
+
+    budget = Budget(max_requests=max_requests, max_bytes=max_bytes)
+    documents = _sec_documents(settings, budget)
+    try:
+        report = harvest(resolved, root, documents, budget=budget)
+    finally:
+        documents.close()
+
+    typer.echo(report.summary())
+    typer.echo(
+        f"remaining     : {budget.requests_remaining} requests, {budget.bytes_remaining} bytes"
+    )
+    for url, reason in report.failures[:10]:
+        typer.echo(f"  failed {url}: {reason}")
+
+
+@evidence_app.command("sweep")
+def evidence_sweep_command(
+    offset: Annotated[int, typer.Option(min=0, help="Where the chunk starts.")] = 0,
+    limit: Annotated[int, typer.Option(min=1, help="Identities in the chunk.")] = 250,
+    filings_per_security: Annotated[int, typer.Option(help="Filing cap per security.")] = 6,
+    max_requests: Annotated[int, typer.Option(help="HTTP attempts allowed per pass.")] = 5300,
+    max_bytes: Annotated[int, typer.Option(help="Bytes allowed per pass.")] = 8 * 1024**3,
+    min_free_bytes: Annotated[
+        int, typer.Option(help="Free space the chunk refuses to eat into.")
+    ] = DEFAULT_MIN_FREE_BYTES,
+    full_verify: Annotated[
+        bool,
+        typer.Option(
+            "--full-verify",
+            help="Rehash the entire corpus, not only what is new plus a sample.",
+        ),
+    ] = False,
+    dry_run: Annotated[
+        bool, typer.Option("--dry-run", help="Preflight and plan only. No requests, no writes.")
+    ] = False,
+) -> None:
+    """Run one chunk of the production universe through every safety gate.
+
+    Both passes, then a convergence check, then reconciliation — and a chunk is
+    recorded complete only when all of them hold. A command exiting zero is not
+    the same as a finished chunk: the first pass stores catalogues and the second
+    turns them into documents, so a single run always leaves work behind.
+
+    **One chunk per invocation, on purpose.** This never advances to the next
+    offset. Whether the remaining chunks run unattended is a separate decision
+    from whether one chunk is safe, and this command does not make it.
+    """
+    settings = _bootstrap()
+    root = open_evidence_root(settings)
+    marker = checkpoint_path(root, offset, limit)
+
+    with _database(settings) as factory, session_scope(factory) as session:
+        selections = select_universe(session, production=True, offset=offset, limit=limit)
+    digest = selection_digest(selections)
+    existing = load_checkpoint(marker)
+
+    typer.echo(f"chunk         : offset {offset}, limit {limit}")
+    typer.echo(f"selected      : {len(selections)} identities")
+    typer.echo(f"selection sha : {digest}")
+    if existing is not None:
+        typer.echo(f"checkpoint    : {existing.stage} (started {existing.started_at})")
+
+    try:
+        guard_selection(existing, digest, offset)
+        # Structural only. Recomputing every digest costs ~50 s at 2,300
+        # artifacts and would reach a quarter-hour at full corpus size — three
+        # times per chunk, more than the harvest itself. This still catches an
+        # orphan, a missing file, a size mismatch, a stray temporary and a path
+        # that contradicts its URL; digests are verified in full once the chunk
+        # is otherwise done, below.
+        preflight(root, min_free_bytes=min_free_bytes, verify_digests=False)
+    except SweepError as exc:
+        typer.echo(f"STOPPED: {exc}")
+        raise typer.Exit(code=1) from exc
+
+    before = free_bytes(root)
+    typer.echo(f"ssd free      : {before / 1024**3:.1f} GiB")
+
+    if dry_run:
+        typer.echo("dry run — preflight passed, no requests issued and nothing written")
+        return
+
+    manifest = Manifest(root.manifests / EVIDENCE_MANIFEST)
+    checkpoint = existing or Checkpoint(
+        offset=offset, limit=limit, selection_digest=digest, selected=len(selections)
+    )
+    checkpoint.free_before = before
+    if not checkpoint.records_before:
+        # Where the log stood before this chunk touched it. Recorded once and
+        # never recomputed, so a resumed chunk still verifies everything its
+        # first attempt wrote rather than only what the resumption added.
+        checkpoint.records_before = sum(1 for _ in manifest.entries())
+    save_checkpoint(marker, checkpoint)
+
+    for name, stage in (("pass1", ChunkStage.PASS1_DONE), ("pass2", ChunkStage.PASS2_DONE)):
+        typer.echo(f"--- {name} ---")
+        report = _sweep_pass(
+            settings, root, selections, filings_per_security, max_requests, max_bytes
+        )
+        typer.echo(f"  {report.summary()}")
+        checkpoint.requests[name] = report.requests_made
+        checkpoint.bytes_stored[name] = report.bytes_written
+        checkpoint.stage = stage
+        save_checkpoint(marker, checkpoint)
+        state = reconcile(root, manifest, verify_digests=False)
+        if not state.clean:
+            checkpoint.stage = ChunkStage.FAILED
+            checkpoint.notes.append(f"{name} reconciliation failed: {state.problems}")
+            save_checkpoint(marker, checkpoint)
+            typer.echo(f"STOPPED: reconciliation failed after {name}: {state.problems}")
+            raise typer.Exit(code=1)
+
+    typer.echo("--- convergence ---")
+    final = _sweep_pass(settings, root, selections, filings_per_security, max_requests, max_bytes)
+    converged = final.bytes_written == 0
+    typer.echo(f"  {final.summary()}")
+    checkpoint.stage = ChunkStage.CONVERGED if converged else ChunkStage.FAILED
+    if not converged:
+        checkpoint.notes.append("convergence pass still produced new evidence")
+        save_checkpoint(marker, checkpoint)
+        typer.echo("STOPPED: the chunk did not converge — more than two passes are needed")
+        raise typer.Exit(code=1)
+
+    typer.echo("--- verification ---")
+    verified = reconcile(root, manifest, verify_digests=full_verify)
+    typer.echo(f"  {verified.summary()}")
+    if not verified.clean:
+        checkpoint.stage = ChunkStage.FAILED
+        checkpoint.notes.append(f"verification failed: {verified.problems}")
+        save_checkpoint(marker, checkpoint)
+        typer.echo(f"STOPPED: verification failed: {verified.problems}")
+        raise typer.Exit(code=1)
+    checkpoint.accounting = {
+        "trusted": verified.trusted,
+        "submissions": verified.submissions,
+        "filings": verified.filings,
+        "manifest_records": verified.manifest_records,
+    }
+
+    # Structural reconciliation above covers the whole corpus every chunk. What
+    # it does not do is re-read the bytes, and rehashing 9,000 artifacts already
+    # costs 25 minutes and grows with every chunk — 28 more of those is longer
+    # than the fetching. So the digests are checked in two tiers instead:
+    # everything this chunk wrote, and a reproducible slice of everything older.
+    if full_verify:
+        checkpoint.verification = {"full_corpus": verified.trusted}
+    else:
+        fresh_urls = new_urls_since(manifest, checkpoint.records_before)
+        latest = manifest.latest_by_url()
+        trusted = [entry for entry in latest.values() if entry.is_stored]
+        fresh = [entry for entry in trusted if entry.url in fresh_urls]
+        sample = prior_sample(trusted, exclude=fresh_urls)
+        results = {
+            "new": verify_digests_of(root, fresh),
+            "sample": verify_digests_of(root, sample),
+        }
+        for tier, result in results.items():
+            typer.echo(f"  {tier}: " + ", ".join(f"{k}={v}" for k, v in sorted(result.items())))
+        failures = {
+            f"{tier}.{k}": v
+            for tier, result in results.items()
+            for k, v in result.items()
+            if k != "checked" and v
+        }
+        if failures:
+            checkpoint.stage = ChunkStage.FAILED
+            checkpoint.notes.append(f"digest verification failed: {failures}")
+            save_checkpoint(marker, checkpoint)
+            typer.echo(f"STOPPED: digest verification failed: {failures}")
+            raise typer.Exit(code=1)
+        checkpoint.verification = {
+            "new_hashed": results["new"]["checked"],
+            "prior_sampled": results["sample"]["checked"],
+            "prior_population": len(trusted) - len(fresh_urls),
+        }
+        typer.echo(
+            "  sample rule   : sorted by (sha256, url), even stride, "
+            f"max(500, 5%) = {len(sample)} of {len(trusted) - len(fresh_urls)}"
+        )
+
+    checkpoint.free_after = free_bytes(root)
+    checkpoint.completed_at = datetime.now(UTC).isoformat()
+    checkpoint.stage = ChunkStage.COMPLETE
+    save_checkpoint(marker, checkpoint)
+    typer.echo(f"CHUNK COMPLETE — checkpoint {marker}")
+
+
+def _sweep_pass(
+    settings: Settings,
+    root: EvidenceRoot,
+    selections: Sequence[Selection],
+    filings_per_security: int,
+    max_requests: int,
+    max_bytes: int,
+) -> HarvestReport:
+    """One harvest pass over an already-selected chunk."""
+    budget = Budget(max_requests=max_requests, max_bytes=max_bytes)
+    resolver = build_observation_source(settings, meter=budget)
+    try:
+        resolutions = resolve_ciks(selections, resolver)
+    finally:
+        resolver.close()
+    targets = submissions_targets(resolutions)
+    targets += filing_targets(root, resolutions, filings_per_security=filings_per_security)
+    documents = _sec_documents(settings, budget)
+    try:
+        # A sweep pass always fetches; the command's own --dry-run returns before
+        # reaching here. `resume` governs cache trust inside `harvest`, which is
+        # its default behaviour, so there is nothing to pass through.
+        return harvest(targets, root, documents, budget=budget)
+    finally:
+        documents.close()
+
+
+def _sec_documents(settings: Settings, budget: Budget) -> SecDocuments:
+    """Build the SEC document client, metered by the run's budget."""
+    if not settings.sec_user_agent.strip():
+        typer.echo("SEC_USER_AGENT is required: name the application and a real contact address.")
+        raise typer.Exit(code=1)
+    return SecDocuments(settings.sec_user_agent, meter=budget)
 
 
 research_app = typer.Typer(

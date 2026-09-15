@@ -37,10 +37,13 @@ from __future__ import annotations
 
 import hashlib
 import io
+import os
 import re
+import tempfile
 import zipfile
 from dataclasses import dataclass
 from datetime import date
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import httpx
@@ -51,7 +54,6 @@ from api_clients.errors import ProviderDataError
 
 if TYPE_CHECKING:
     from collections.abc import Iterator, Sequence
-    from pathlib import Path
 
 log = structlog.get_logger(__name__)
 
@@ -365,8 +367,7 @@ class SecFailsToDeliver:
             retry=self._retry,
         )
         if cached is not None:
-            cached.parent.mkdir(parents=True, exist_ok=True)
-            cached.write_bytes(payload)
+            _store(cached, payload)
         return parse_ftd_archive(archive.name, archive.url, payload)
 
     def iter_history(
@@ -392,3 +393,55 @@ class SecFailsToDeliver:
     def close(self) -> None:
         """Close the underlying HTTP client."""
         self._client.close()
+
+
+def _store(destination: Path, payload: bytes) -> None:
+    """Cache one archive, atomically, without inventing the volume it lives on.
+
+    Two failures this exists to prevent, both silent.
+
+    **A missing volume must not become a directory.** `mkdir(parents=True)` on
+    `/Volumes/BEK/stock-screener-data/ftd` while that drive is unmounted happily
+    creates the whole chain *on the boot disk*, and the cache then fills the
+    machine the external drive was chosen to spare. So the cache directory is
+    created only when its parent already exists; anything further up must be
+    real, and an unmounted drive raises instead.
+
+    **A truncated file must not look cached.** `fetch` accepts any existing file
+    over one byte, so a write interrupted midway is indistinguishable from a
+    complete archive on the next run. The payload goes to a temporary file in
+    the destination directory, is flushed to disk, and is renamed into place.
+    `Path.replace` is atomic within a filesystem, so a reader sees the whole
+    archive or no archive — and the temporary file is made *in* that directory
+    so the rename never crosses one.
+
+    Args:
+        destination: Where the archive belongs.
+        payload: Its bytes, complete.
+
+    Raises:
+        ProviderDataError: If the cache location's parent does not exist, which
+            on an external drive means it is not mounted.
+    """
+    directory = destination.parent
+    if not directory.exists():
+        if not directory.parent.exists():
+            message = (
+                f"the fails-to-deliver cache directory {directory} cannot be created: "
+                f"{directory.parent} does not exist. On an external drive this means it "
+                "is not mounted; creating the path would cache onto the boot disk instead."
+            )
+            raise ProviderDataError(message)
+        directory.mkdir(parents=True, exist_ok=True)
+
+    handle, temporary_name = tempfile.mkstemp(dir=directory, prefix=f".{destination.name}.")
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(handle, "wb") as stream:
+            stream.write(payload)
+            stream.flush()
+            os.fsync(stream.fileno())
+        temporary.replace(destination)
+    except BaseException:
+        temporary.unlink(missing_ok=True)
+        raise

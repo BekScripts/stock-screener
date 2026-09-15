@@ -32,6 +32,7 @@ from api_clients import (
     MockResearch,
     ProviderConfigurationError,
     RateLimiter,
+    RequestMeter,
     ResearchProvider,
     RetryPolicy,
     SecEdgarFundamentals,
@@ -242,7 +243,9 @@ def build_research_provider(settings: Settings) -> ResearchProvider:
     return provider
 
 
-def build_observation_source(settings: Settings) -> SecEdgarFundamentals:
+def build_observation_source(
+    settings: Settings, *, meter: RequestMeter | None = None
+) -> SecEdgarFundamentals:
     """Return the EDGAR adapter, typed concretely for its by-CIK reads.
 
     The configured fundamentals provider satisfies `FundamentalsProvider` and
@@ -253,6 +256,9 @@ def build_observation_source(settings: Settings) -> SecEdgarFundamentals:
 
     Args:
         settings: Application settings.
+        meter: Counts and caps the adapter's actual HTTP attempts. An evidence
+            harvest passes its budget here so the ticker-map fetch this adapter
+            makes counts against the same ceiling as everything else it causes.
 
     Returns:
         The EDGAR adapter.
@@ -260,7 +266,7 @@ def build_observation_source(settings: Settings) -> SecEdgarFundamentals:
     Raises:
         ConfigurationError: If no contact string is configured.
     """
-    return _build_edgar_adapter(settings)
+    return _build_edgar_adapter(settings, meter=meter)
 
 
 def build_ftd_source(settings: Settings) -> SecFailsToDeliver:
@@ -295,7 +301,9 @@ def _build_edgar(settings: Settings) -> FundamentalsProvider:
     return _build_edgar_adapter(settings)
 
 
-def _build_edgar_adapter(settings: Settings) -> SecEdgarFundamentals:
+def _build_edgar_adapter(
+    settings: Settings, *, meter: RequestMeter | None = None
+) -> SecEdgarFundamentals:
     """Build the SEC EDGAR adapter.
 
     Raises:
@@ -315,6 +323,7 @@ def _build_edgar_adapter(settings: Settings) -> SecEdgarFundamentals:
         user_agent=settings.sec_user_agent,
         timeout_seconds=settings.provider_timeout_seconds,
         retry=_retry_policy(settings),
+        meter=meter,
     )
 
 

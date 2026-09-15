@@ -112,6 +112,7 @@ def build_universe(
     """
     session.execute(delete(ResearchUniverseMonth))
 
+    predecessors = _predecessor_exits(session)
     observations: dict[tuple[str, int], list[ListingObservation]] = {}
     symbols: dict[tuple[str, int], str] = {}
     unattributed = 0
@@ -147,7 +148,7 @@ def build_universe(
         if not venues_by_month:
             continue
         first_month, last_month = min(venues_by_month), max(venues_by_month)
-        span = [(first_month, last_month)]
+        span = _runs_for(kind, symbols[key], first_month, last_month, predecessors)
 
         for month in _months_between(first_month, last_month):
             seen_venues = sorted(venues_by_month.get(month, ()), key=str)
@@ -203,6 +204,58 @@ def build_universe(
     )
     log.info("research universe build", summary=report.summary())
     return report
+
+
+def _predecessor_exits(session: Session) -> dict[str, date]:
+    """The last month each symbol was attributed to an *earlier* occupant.
+
+    Taken from the attribution pass's own output rather than from
+    `historical_securities.last_trading_date`, which is the last settlement the
+    free record happened to show and sits days from the present for 127 of the
+    138 symbols carrying both a live row and a delisted row. A month actually
+    assigned to a delisted security is evidence of a handover; a stored exit date
+    is not.
+    """
+    exits: dict[str, date] = {}
+    rows = session.execute(
+        select(ListingObservation.symbol, ListingObservation.observation_month).where(
+            ListingObservation.historical_security_id.isnot(None)
+        )
+    ).all()
+    for symbol, month in rows:
+        key = symbol.upper()
+        known = exits.get(key)
+        start = month_start(month)
+        if known is None or start > known:
+            exits[key] = start
+    return exits
+
+
+def _runs_for(
+    kind: str,
+    symbol: str,
+    first_month: date,
+    last_month: date,
+    predecessors: Mapping[str, date],
+) -> list[tuple[date, date]]:
+    """The occupancy runs `class_for_observation` reasons over for one identity.
+
+    A single run is not enough for a live company that inherited its symbol.
+    `occupancy_of` places a date *before* the first run with the first occupant,
+    so a lone span makes every filing that predates it look like this identity's
+    own — and Bed Bath & Beyond's 2022 cover page would classify Beyond, Inc.'s
+    2025 months, the mirror image of the defect attribution just closed.
+
+    Naming the predecessor's tenure as a run of its own restores the boundary:
+    the old filing lands in run 0, the month in run 1, and the occupancy test
+    refuses it. Where nothing preceded this identity, one run is correct.
+    """
+    exit_month = predecessors.get(symbol.upper())
+    if kind != RESOLVED_COMPANY or exit_month is None or exit_month >= first_month:
+        return [(first_month, last_month)]
+    # The predecessor's run needs only an end; `occupancy_of` hands everything
+    # earlier to the first run anyway, which is exactly where those filings go.
+    return [(exit_month.replace(year=1, month=1), exit_month), (first_month, last_month)]
 
 
 def _months_between(first: date, last: date) -> list[date]:

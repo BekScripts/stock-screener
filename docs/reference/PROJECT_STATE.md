@@ -625,6 +625,384 @@ Nasdaq's public *Market Share by Symbol* files. Four rules govern it.
 Scope is **2022-01 onward** — the first month Nasdaq and NYSE are both covered.
 Nothing before it is imported.
 
+### Phase 9L.5 — the repaired planner, validated on fresh data
+
+A representative 1,008-filing batch was harvested and measured against a
+prediction frozen before any of it was downloaded. **actual / yield-adjusted
+expected = 0.979** — inside the 0.90–1.10 gate, against v1's 0.412 on the same
+kind of test.
+
+Acquisition was clean in a single pass: 1,008/1,008 downloaded, 1,010 requests
+(two 503s retried), no recovery pass needed, and a replay of the same manifest
+issued **0 HTTP requests**. The corpus grew by exactly +1,008 trusted filings to
+40,163 / 34,392, every integrity category zero, 1,008 new artifacts rehashed and
+1,957 prior artifacts sampled, all clean.
+
+What the batch was built to test, it tested. The dominant single-identity
+stratum — 95% of Plan A3 — landed at **1.004**. The rank deciles are flat
+(D1–D3 0.950, D4–D7 1.002, **D8–D10 0.985**), so calibration does not decay in
+the low-ranked targets that make up the tail of the plan; years run 0.950–1.000
+with no temporal bias; live 0.982 against delisted 0.903. **Zero future leakage,
+zero incorrect cross-class joins, zero CIK-sharing over-credit.**
+
+Two things needed care rather than acceptance.
+
+- **The multi-CIK stratum reads 0.640 as frozen and 0.876 once corrected.** The
+  frozen gap set predates batch 1's parse, and batch 1 over-represented
+  multi-class filers 19x — so it had already closed 55 of the 203 months this
+  batch was credited with. No download supplies a month twice. Both figures are
+  reported; the corrected one meets the ≥0.80 guide, and the residual decomposes
+  to already-covered 51, no-cover-row 24, subset-naming 9, with nothing
+  unexplained. The traces confirm the repair holds where it matters:
+  `HEI`/`HEI.A`, `GTN`/`GTN.A`, `KELYA`/`KELYB`, `SENEA`/`SENEB`, `MKC`/`MKC.V`
+  and `UHAL`/`UHAL.B` are all genuine dual common classes, each credited *and*
+  delivered.
+- **The held-set source was wrong and is now the manifest.** `held_keys` read the
+  derived index, a snapshot that lags the corpus; that is what let 9L.4 plan 800
+  filings already on disk. `held_from_manifest` replaces it in the CLI, and a
+  `--replay` flag makes re-running a completed manifest a deliberate act rather
+  than something the overlap guard has to permit by accident.
+
+Plan A3 is unchanged and now 1,008 targets closer: **60,933 remaining**, verified
+by `(CIK, accession)` set arithmetic rather than subtraction, 6.53 GiB,
+calibrated expectation 152,076 months. The final 1,941 targets beyond the 60k
+knee buy 1,941 safe months for 1.28 GiB — 0.15% of free space — so they are
+kept.
+
+### Phase 9L.4 — separating issuer reach from security coverage
+
+The planner is repaired structurally rather than statistically, and revalidated
+against two independent samples with no network access.
+
+The confusion was between two questions that share a filing but not an answer:
+*can we obtain this?* (`(CIK, accession)`, issuer level) and *what may it
+support?* (`(identity, month-end)`, security level). `sec_evidence/reachability.py`
+answers only the second, from evidence that already exists.
+
+The rule is not "distrust multi-identity issuers" — that would be a second wrong
+answer of the same shape, since `LSXMA`/`LSXMB`/`LSXMK` are three genuine Liberty
+tracking classes. A filing is credited with exactly the identities the record
+already shows carrying common stock; where several identities share an issuer and
+none is yet known to be the common one, the credit is **zero**, not a share. Of
+264 multi-security CIKs: 191 resolve to exactly one common identity, 58 carry
+more than one real common class, 15 remain unassigned. 312 identities the old CIK
+rule would have credited are now excluded, and `AIZ`/`AIZN` credits one and
+excludes one.
+
+Both revalidations pass on their large samples. Against the 800-document batch:
+raw ceiling 2,891, expectation 2,679, actual 2,544 — **0.950**, with the
+multi-class stratum at **0.947** where v1 scored 0.397. Against an independent
+3,000-document holdout drawn from the pre-existing corpus (SHA `91b9ef4b…`),
+simulated by removing those observations from planner-visible evidence:
+**0.940** overall and **0.951** single-identity.
+
+Two things the measurement forced.
+
+- **The raw prediction is a ceiling, and the expectation needs a measured rate.**
+  The residual decomposes with nothing unexplained: 81.7% is filings carrying no
+  usable common-stock cover row, 12.4% joins that are not `EXACT`, and only
+  **5.8%** the remaining subset-naming effect. So the expectation multiplies the
+  ceiling by a measured usable-common-row rate per form (8-K 92.2%, 10-Q 90.8%,
+  10-K 85.8%, 20-F 57.9%) — computed with the holdout excluded, and materially
+  lower than the 9L.1 any-symbol yields it replaces.
+- **The candidate pool must exclude what is already held, from the live
+  manifest.** The derived index predates the 9L.3 harvest, which makes it the
+  right snapshot for *evidence* (no leakage into its own prediction) and the
+  wrong one for *acquisition*. A batch-2 overlap assertion caught v3 planning 800
+  filings already on disk.
+
+`expansion_plan_v3` — 61,941 targets, 6.6 GiB, 165,553 safe months, 152,381
+expected, 70.6% `UNKNOWN` reduction. The repaired gap model moves 6,717 months
+out of solvable into `G3_IDENTITY_AMBIGUOUS` (8,016) and
+`G5_MULTI_CLASS_UNASSIGNED` (702); the floor rises to 76,029 (29.4%). A knee now
+exists: 60,000 targets reach 98.8% of the gap for 5.4 GiB. 8-K remains
+overwhelming at 68,897 months/GiB against 10-Q's 1,429.
+
+Plan status: **v1 superseded** (CIK-sharing over-credit), **v2 provisional** — a
+structural recomputation from observed reach, not a haircut, but not the
+class-aware model either, and its rows carry a `plan_version` of `v1` from a
+stamping defect — **v3 the structurally repaired candidate**, not authoritative
+until a representative network sample validates it.
+
+### Phase 9L.3 — the planner was wrong, and the validation caught it
+
+The 800-target validation batch was acquired, verified and measured. Acquisition
+is sound; **the planner's coverage arithmetic was not**, and the batch existed
+precisely to find that out before 61,984 filings were fetched on a false premise.
+
+Acquisition passed cleanly. All 800 targets reached a terminal state, the corpus
+grew by exactly +800 trusted artifacts and +63,954,126 bytes, every error
+category reconciled to zero, and a third replay of the same manifest issued
+**0 HTTP requests** — exact-manifest convergence. Storage came in at 0.0596 GiB
+against 0.08 estimated, with the 8-K mean within 3% of the 9L.1 prior.
+
+The defect: the planner credited a filing with covering **every identity sharing
+its CIK**. Those secondary identities are baby bonds, preferred stock and
+depositary shares. CIK 1042046 (`AFG`, `AFGB`, `AFGC`, `AFGD`, `AFGE`) yields 16
+common-stock rows and 64 `NOTE_OR_DEBT`; CIK 7323 yields no common-stock row at
+all. Measured: 2,238 identities assumed reachable, **784 actually reached**.
+
+The split is decisive. Targets on single-identity CIKs realised **98.3%** of
+prediction; targets on multi-identity CIKs realised **37.8%**. The identity layer
+was never at fault — it correctly refused 1,821 non-common rows and made 842 safe
+common-stock joins, with **zero future leakage** and correct dated-occupant
+attribution for `LSXMA`/`LSXMB`/`LSXMK` and `PARA`/`PARAA`.
+
+Two rules follow.
+
+- **A filing covers an identity only where that CIK's cover pages actually yield
+  a common-stock row that joins to it.** Never inferred from CIK sharing. The
+  corrected model predicts 2,891 for the batch against 2,544 observed — 1.14x,
+  where the original predicted 6,402 — 2.52x.
+- **A stratified validation sample is not a representative one.** The batch was
+  built to over-weight multi-class filers and does so by **19.3x** (92.6% of its
+  targets versus 4.8% of the candidate pool). Its 39.7% realisation is a
+  worst-case stress result, and reading it as the plan-wide expectation would be
+  as wrong as the defect it exposed. Across the whole pool the correction costs
+  5.1%, not 60%.
+
+`expansion_plan_v2` (61,007 targets, 6.2 GiB, 163,413 calibrated months, 70.5%
+`UNKNOWN` reduction) is proposed alongside v1, which is left untouched.
+
+### Phase 9L.2 — the selective expansion plan
+
+"Expand selectively" now has a number. **61,984 filings and 6.4 GiB close 100% of
+the solvable gap**, against 269,538 filings and ~150 GiB for the naive
+fetch-the-whole-window approach — 77% fewer documents and 96% less storage for
+identical coverage. Nothing was downloaded.
+
+The gap was classified before anything was planned, because the distinction
+between gaps filings can close and gaps they cannot is the whole decision. Of
+258,463 `UNKNOWN` month-verdicts: **172,270 (66.7%) are solvable**, 36,661
+(14.2%) have no resolvable CIK, 30,070 (11.6%) have a CIK but no catalogue filing
+that could cover them, 606 (0.2%) are identity-ambiguous, and 18,856 (7.3%) are
+already covered. The floor is therefore **67,337 `UNKNOWN` (26.1%)** — a 73.9%
+reduction is the ceiling, and no budget moves it.
+
+Three findings shaped the plan.
+
+- **8-K carries the phase.** Alone it reaches 98.0% of the solvable gap for 2.4
+  GiB across 60,701 filings. 10-Q reaches 70% for 81.3 GiB; 10-K 27% for 40.2
+  GiB. The 8-K population is genuinely useful rather than merely numerous: 42 KB
+  mean, 96.4% observed cover yield, and event-driven timing that spreads through
+  the year where periodic reports cluster.
+- **Coverage-first greedy run to exhaustion *is* the interval cover.** Plan A and
+  the minimum-temporal-cover plan return the same 61,984 filings, because each
+  selection re-scores against what is already covered and a filing whose months
+  are wholly taken contributes zero. They are reported as one result, not two.
+- **The co-registrant duplicate is real and now explained.** 9L.1's "32,601 vs
+  32,584" was an artifact of matching on accession alone: 17 accessions are held
+  under more than one CIK — Entergy and Southern Company utility families filing
+  one document for several registrants — giving 29 surplus artifacts, all with a
+  single distinct SHA-256. Matching on `(cik, accession)` reconciles exactly, and
+  that pair is the planner's filing identity.
+
+The shared-CIK limitation was quantified rather than fixed: 264 CIKs are claimed
+by more than one tracked identity, covering 620 identities, 69 of which keep
+`cik=NULL`, across 20,428 month rows and 19,201 `UNKNOWN`. Almost all are
+preferred and baby-bond tickers (`RILYG`, `AFGB`, `SOJC`, `MGRB`) — non-common
+securities a common-stock universe excludes anyway — with `AIZ`/`AIZN` at CIK
+1267238 the worked case. **Recommendation for a later phase: model CIK as
+issuer-level evidence in its own relation rather than as a unique column on
+`historical_securities`.** No migration was run.
+
+Catalogue completeness was checked offline: of 2,604 referenced history files,
+2,415 end before 2022 and only **189 could overlap the window**, so the 269,538
+candidate set is essentially complete for the period being reconstructed.
+
+Plan artifacts live under `derived/` — `expansion_plan_v1.{csv,jsonl,sha256}` and
+`validation_batch_1.jsonl` — and are excluded from reconciliation: trusted ==
+files_on_disk == 38,355, 0 orphans, and the corpus fingerprint is unchanged.
+
+### Phase 9L.1 — what the corpus can actually support
+
+The corpus was read offline and measured against the monthly universe. **Six
+filings per security is not enough, and the reason is time, not volume.**
+
+Extraction succeeded completely: 32,584 of 32,584 filings parsed, no failures and
+no missing files, yielding 43,163 registered-class rows in 1,086 s. 30,093 of
+those rows are common stock, 12,274 something else, and 796 the evidence cannot
+place. Classification is overwhelmingly title-led (39,760 `TITLE_ONLY`, 2,532
+`TITLE_AND_MEMBER`, 147 `CONFLICTING`), exactly as the 9K.2 policy intends.
+
+The binding constraint is *when* the filings are from. A harvest capped at the
+six most recent filings per security produced a corpus that is 98.2% dated 2022
+or later and 81.9% dated 2026, spanning a median of **100 days** per filer. The
+research universe spans 55 months. Six recent filings cannot describe it, and the
+measured result is that this corpus closes only **8.0%** of the universe's
+258,463 `UNKNOWN` month-verdicts at the current 90-day carry-forward.
+
+Three rules were established here.
+
+- **A source database is named, never inherited.** `bind_source` takes an
+  explicit path, opens it `mode=ro`, and refuses unless the universe it holds
+  matches the expected count and digest. This is the 9K.25 near-miss made
+  impossible: the wrong database produced a fully green run over a population
+  3,150 identities smaller, and nothing in the output said so.
+- **A filing is a point, not an interval.** Everything that turns dated cover
+  facts into monthly coverage is inference, so direct and carried figures are
+  never pooled. Carry-forward is forward-only; measured across 0/30/60/90/120/180
+  days it buys 0 / 61.5 / 107.1 / 147.2 / 186.0 / 263.3 percent more
+  security-months over the exact-date floor. **90 days is retained** — it is the
+  point where the curve is still steep without a filing speaking for two quarters
+  it cannot see.
+- **Derived output is not evidence.** The 229 MB index lives under `derived/`,
+  excluded from reconciliation exactly as `checkpoints/` is, and is rebuildable
+  from the manifest and the stored bytes. The corpus fingerprint was identical
+  before and after the whole analysis.
+
+What expansion would buy is now measured rather than guessed. Every qualifying
+filing inside the universe's own window is 292,866 documents, of which 269,521
+are not held; at measured per-form sizes that is **≈150 GiB** (8-Ks dominate the
+count at 42 KB mean, while 10-Qs and 10-Ks carry the bytes). Fetching them would
+raise the reachable `UNKNOWN` share from 8.0% to **76.7%**.
+
+It cannot reach 100%, and the residue is a different problem: **37,949 monthly
+rows (14.1%) belong to identities with no resolvable CIK**, and 978 of the 1,252
+historical securities in the universe have no CIK at all. No quantity of SEC
+filings answers those — that gap is a historical ticker→CIK limitation of the
+free record, not a harvesting shortfall.
+
+Two structural limits were also recorded. `historical_securities` carries
+`UniqueConstraint("cik")`, so a multi-class filer cannot store both classes under
+one CIK; the second keeps `cik=None` and loses its filer handle. And 2,053 of
+5,771 submissions catalogues reference 2,604 further history files that were
+never fetched, so even the *metadata* of the deep past is incomplete.
+
+Retaining whole documents is justified rather than assumed: on a deterministic
+400-document sample, 98.5% carry at least one material-event signal — 56.2%
+earnings, 53.8% an explicit 8-K item, 49.5% acquisition language, 12.0% listing
+or delisting events.
+
+### Phase 9K.25 — the production SEC evidence corpus
+
+The corpus is complete. All 8,919 production identities have been harvested
+across 36 chunks of 250 (the last holds 169), and the terminal state is **38,355
+trusted artifacts** — 5,771 submissions catalogues and 32,584 filing documents —
+over 38,540 manifest records and 37,695,067,178 logical bytes. Every artifact's
+SHA-256 was recomputed from disk at the end and matched what the manifest
+recorded.
+
+29,479 HTTP requests were issued in this phase for 3 non-200 responses, all
+`503 Service Unavailable` and all recovered by the retry policy: each of the
+three URLs ends `DOWNLOADED status=200` in the manifest with real bytes and a
+digest. No target finished `FAILED` or `SKIPPED`. Every one of the 28 chunks
+converged on its third pass with zero new bytes, so two fetching passes were
+always sufficient.
+
+Two rules were added here.
+
+- **Verification is tiered, and the tiers are reproducible.** Rehashing the whole
+  corpus after every chunk reached 1,523 s at 8,963 artifacts and grows with the
+  corpus, so 28 more of those would have cost more hours than the fetching did.
+  Instead every chunk gets a full structural reconciliation and a full SHA of
+  everything it wrote, plus a sample of the older corpus taken by a fixed rule —
+  **sorted by `(sha256, url)`, even stride, `max(500, 5%)`**. The ordering comes
+  from the artifacts' own digests, never from process state or the clock, so
+  anyone can reproduce exactly which artifacts were checked. Five full-corpus
+  rehashes at offsets 3000, 4250, 5500, 6750 and 8000 and a sixth at the end
+  confirmed the tiers: no artifact the sampling passed was later found to have
+  drifted.
+- **The sweep's database is named explicitly, and read-only.** `.env` points
+  `DATABASE_URL` at `compounder_radar.db`, but the production universe lives in
+  `stage9k.db`; a sweep run without the override selects a *different* 5,769
+  identities and every chunk still passes its gates. The completed checkpoints
+  are what settle it — each stores the SHA-256 of its frozen identity list, and
+  all six from 9K.23–9K.24 reproduce from `stage9k.db` and from nothing else.
+  The sweep now opens it `mode=ro&uri=true` so it cannot be written at all.
+
+Of the 6,919 identities in this phase, 4,763 (68.8%) resolved to a CIK and were
+requestable — 4,475 through the EDGAR ticker map and 288 already stored — and
+2,156 did not. An unresolved identity is recorded as such and never guessed at.
+
+The primary database is untouched: `compounder_radar.db` is byte-identical
+(`02a6660b…`, 249,155,584 bytes) with an unchanged mtime and no WAL or journal
+sidecar, as is `stage9k.db` (`20a77d24…`), whose WAL is empty and predates the
+sweep.
+
+### Phase 9K.13 — the SEC evidence writer
+
+Phase 9K.12 found that the SEC harvest had no code: `SEC_EVIDENCE_DIR` was
+referenced only by the setting that declares it and the resolver that verifies
+it. `src/stock_screener/sec_evidence/` is that subsystem — storage, manifest,
+harvest and sample — plus `api_clients.SecDocuments`, which fetches one document
+and returns the response facts a stored artifact needs to be auditable.
+
+Four rules govern it.
+
+- **The root is verified, never created.** `open_evidence_root` requires the
+  configured directory to already exist and only then creates the four known
+  subdirectories beneath it. An unmounted drive raises.
+- **Writes are anchored to that root.** An earlier draft created missing parents
+  by walking up to the nearest directory that exists, which protects nothing:
+  `/Volumes` always exists, so an unmounted `BEK` would have had the whole
+  evidence tree built underneath it on the boot disk. Directories are now only
+  created *below* a root just confirmed present, and a destination outside it is
+  refused.
+- **An artifact is whole or absent.** Temporary file in the destination
+  directory, flush, `fsync`, atomic rename. A partial download never becomes a
+  file the next run trusts.
+- **Cache reuse is proved, not assumed.** An artifact is reused only when the
+  manifest records it as stored *and* the bytes still hash to the recorded
+  digest. Anything else is `INVALID_CACHE` and re-fetched, and a file with no
+  manifest entry is re-fetched too — adopting it would invent provenance.
+
+Outcomes are `DOWNLOADED`, `CACHE_HIT`, `INVALID_CACHE`, `FAILED`, `SKIPPED`.
+Budgets (`max_requests`, `max_bytes`) are checked before each request and end a
+run with `SKIPPED` entries, which is what makes the next run a continuation. The
+CLI is `stock-screener evidence status | sample | harvest`, and a dry run issues
+no request and writes nothing, the manifest included.
+
+**No harvest was run.** No network request was made in this phase.
+
+### Phase 9K.11 — point-in-time occupant attribution
+
+Attributing a monthly observation asked "is this symbol in `companies`?" first and
+stopped there if it was, which reads today's roster as a description of every
+month the symbol ever had. `BBBY` was the measured case: all 29 observed months —
+Bed Bath & Beyond's 17 on Nasdaq through 2023-05 and Beyond, Inc.'s 12 on NYSE
+from 2025-08 — were credited to the live company. One occupant where the record
+plainly holds two, and survivorship bias written directly into the universe.
+
+Three rules now govern it.
+
+- **The first question is whether the symbol changed hands, not who holds it.**
+  `classify_symbol` answers it from the published fails-to-deliver record. Where
+  one issuer ever held a symbol, the live row and any stored delisted row are the
+  same business and the live one answers, exactly as before.
+- **`last_trading_date` is not the boundary, though it reads like one.** Of the
+  138 symbols carrying both a live row and a delisted row, **127** have a last
+  trading date within days of the present, because the free record's last trading
+  date is the last settlement its files happened to show. Leggett & Platt is not
+  its own dead predecessor. Trusting that field would have moved 127 symbols off
+  the live roster wholesale.
+- **The live roster is reachable only from the most recent span.** Inside a
+  sequence, `holder_spans` names the month's occupant and `security_identifiers`
+  says which stored security carried that issuer's CUSIP. A month between two
+  occupants' evidence is `REUSED` — recorded as a change of hands whose holder
+  cannot be named — never handed to whoever holds the letters now.
+
+The same defect had a mirror image in the class join: `build_universe` passed one
+occupancy span, and `occupancy_of` places a date before the first run with the
+first occupant, so a predecessor's cover page could still classify a successor's
+months. A live company that inherited its symbol now carries its predecessor's
+tenure as a run of its own, and the occupancy test refuses the old filing.
+
+Measured over the staging record (458,708 observations, 268,780 monthly verdicts):
+
+| | before | after |
+| --- | --- | --- |
+| `RESOLVED_COMPANY` | 233,480 | 226,469 |
+| `RESOLVED_HISTORICAL` | 33,458 | 45,492 |
+| `REUSED` | 11,629 | 35,102 |
+| `UNRESOLVED` | 180,136 | 151,530 |
+| `ELIGIBLE` monthly verdicts | 9,256 | 9,066 |
+| live securities ever `ELIGIBLE` | 1,714 | 1,659 |
+| delisted securities ever `ELIGIBLE` | 486 | 522 |
+
+301 `ELIGIBLE` rows moved off a live company. 55 live companies lost months they
+never traded in and 36 delisted securities gained months they did.
+
 ## Architecture
 
 ### Two deployables, one repository
@@ -927,6 +1305,7 @@ Documented rather than fixed. Each is a deliberate stop, not a backlog item.
 | **Fails-to-deliver silence** (identity layer) | A security whose deliveries never failed is absent from the SEC's record entirely, so its identity is unrecoverable from that source. Produces `UNRESOLVED`, and `EvidenceVerdict` has no `ABSENT` member, so no code path can turn it into a claim of non-existence. |
 | **Pre-2008-09-16 threshold censoring** (identity layer) | Before that date the fails file carried only failures above a reporting minimum, so an absence over an earlier window is uninformative for a second, independent reason. Flagged as `threshold_censored`, not corrected. |
 | **No corporate action in the fails record** (identity layer) | A CUSIP change within one issuer cannot be attributed to a reverse split, a re-incorporation or a class re-designation. Recorded as `CUSIP_CHANGE` at `INFERRED` confidence; `REVERSE_SPLIT` is only ever `ASSERTED` from evidence outside the feed. |
+| **A re-incorporation is indistinguishable from a change of hands** (listing layer) | Because of the row above, PIT attribution reads KKR & Co. L.P. becoming KKR & Co. Inc. as two occupants, exactly as it reads Randgold becoming Barrick. Of the 75 symbols whose `ELIGIBLE` months moved in Phase 9K.11, 32 carry plainly different issuer names (`GOLD`: Randgold → Barrick → GOLD.com; `PARA`: Premara → Paramount → Banzai; `WELL`: Capsalus → Welltower) and 43 share a name stem and are likely re-incorporations or class changes (`KKR`, `CCL`). The layer takes the conservative side and reports `REUSED` for both, costing 301 `ELIGIBLE` rows — 3.3% of 9,256. Separating them needs a corporate-action source the free record does not carry. |
 | **No venue on an FTD-derived interval** (identity layer) | The file carries no exchange, so `security_identifiers.venue` is NULL. "Not established", never a default. |
 | ~~**No historical universe membership**~~ | **Addressed by Phase 9C**, which added a dual-identity `universe_membership` layer. 51 month-ends now reconstruct with a median of 4,953 members, 199 of them delisted. What remains is that no member verdict can be `OBSERVED` — see below. |
 | **No `OBSERVED` membership is achievable** (membership layer) | Exchange, security type and sector are undated everywhere in this system, so every one of the 6,049 member intervals is `INFERRED` and names the attributes it carried back. Closing this needs a dated listing source — SEC Form 8-A/25 filings carry one — which is a separate ingestion, not a code change. |
@@ -1028,6 +1407,13 @@ learn.
 | `tests/integration/test_universe_membership.py::TestPricePresenceIsNotMembership` | Rule B — a priced security with no venue is `UNKNOWN`, never a member |
 | `tests/integration/test_universe_membership.py::TestInferenceIsNeverDressedAsObservation` | no member verdict is ever written as observed, and each names what it carried |
 | `tests/integration/test_universe_membership.py::TestFutureInformationCannotLeakBackward` | a 2024 listing is not a 2022 member; a future exit cannot rewrite the past |
+| `tests/integration/test_pit_attribution.py::TestBedBathAndBeyondAreTwoOccupants` | the live holder of a reused symbol never owns its predecessor's months, and the predecessor never owns the successor's |
+| `tests/integration/test_pit_attribution.py::TestALiveCompanyIsAClaimantNotADefault` | a stored exit date alone never moves a symbol off the live roster — the 127 same-business rows stay put |
+| `tests/integration/test_pit_attribution.py::TestAPredecessorsFilingNeverClassifiesItsSuccessor` | the mirror defect: an old cover page cannot classify a later occupant's months |
+| `tests/unit/test_sec_evidence_storage.py::TestTheRootIsNeverCreated` | an unmounted evidence root raises and leaves no directory on the boot disk |
+| `tests/unit/test_sec_evidence_storage.py::TestAnArtifactIsWholeOrAbsent` | an interrupted write leaves nothing, and a destination outside the root is refused |
+| `tests/integration/test_sec_evidence_harvest.py::TestAnArtifactIsNeverFetchedTwice` | a verified artifact is reused; a corrupt or unprovenanced one is re-fetched |
+| `tests/integration/test_sec_evidence_harvest.py::TestBudgetsStopTheRunCleanly` | request and byte limits stop the run and the next run resumes |
 | `tests/integration/test_universe_membership.py::TestIdentityIsNeverTheTicker` | ticker reuse gives two independent membership histories |
 | `tests/integration/test_pit_capture.py::test_the_first_capture_records_a_baseline_not_a_dated_event` | no membership date is ever fabricated |
 | `tests/integration/test_filing_observations.py::test_a_restatement_appends_and_the_original_survives` | a revision never destroys the figure it replaced |
@@ -1138,9 +1524,9 @@ Not a backlog. These exclusions are deliberate.
 | --- | --- |
 | Commit | `f9948be` — feat(pit): add point-in-time market cap, forward returns and delistings |
 | Branch | `feat/phase-9a-identity-foundation` (8F–8J committed; 9A and 9B uncommitted) |
-| Migration head | `0028` — the membership layer (9C). Phase 9B added none. |
+| Migration head | `0031` — the research-universe layer (9K.7). Nothing since 9K.11 added one. |
 | Score version | `COMPOUNDER_V1_2` (unchanged by anything in Phase 8, 9A, 9B or 9C) |
 | Feature version | `MARKET_FEATURES_V1` |
 | Signal version | `MARKET_SIGNALS_V1` |
-| Primary database | untouched by 8A–8J and 9A–9C; all work ran against staging copies |
-| Checkpoint date | 2026-09-01 |
+| Primary database | untouched by 8A–8J and 9A–9L.5; all work ran against staging copies |
+| Checkpoint date | 2026-09-07 |

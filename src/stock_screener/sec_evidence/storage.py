@@ -1,0 +1,265 @@
+"""Where a SEC artifact lives on disk, and how it gets there whole.
+
+Two rules shape every function here, and both exist because the corpus lives on
+an external drive.
+
+**The root is never created.** `SEC_EVIDENCE_DIR` names a directory on a volume
+that may not be mounted, and `mkdir(parents=True)` on an absent volume builds
+the whole chain on the boot disk instead — silently, with no error, filling the
+machine the external drive was chosen to spare. So the root must already exist;
+only the four known subdirectories beneath a *verified* root are created here.
+
+**An artifact is whole or it is absent.** Bytes go to a temporary file in the
+destination directory, are flushed and fsynced, and are renamed into place. A
+rename within one filesystem is atomic, so a reader sees the complete file or no
+file — never the half a crashed download left behind.
+
+## The layout
+
+    $SEC_EVIDENCE_DIR/
+    ├── filings/<cik-padded>/<accession-no-dashes>/<document>
+    ├── submissions/CIK<cik-padded>.json
+    ├── fulltext/<query-digest>.json
+    └── manifests/evidence.jsonl
+
+The CIK is zero-padded to ten digits and the accession has its dashes stripped,
+which is the SEC's own archive form — the path a person can read back to a URL.
+This convention is new in Phase 9K.13; nothing in the repository stored SEC
+documents on disk before it.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import os
+import tempfile
+from dataclasses import dataclass
+from enum import StrEnum
+from pathlib import Path
+from typing import TYPE_CHECKING
+
+import structlog
+
+from stock_screener.evidence import resolve_sec_evidence_dir
+
+if TYPE_CHECKING:
+    from stock_screener.config import Settings
+
+log = structlog.get_logger(__name__)
+
+#: The subdirectories a verified root carries.
+FILINGS = "filings"
+SUBMISSIONS = "submissions"
+FULLTEXT = "fulltext"
+MANIFESTS = "manifests"
+
+SUBDIRECTORIES = (FILINGS, SUBMISSIONS, FULLTEXT, MANIFESTS)
+
+#: Where a sweep records its own progress. Deliberately **not** in
+#: `SUBDIRECTORIES`: it sits under the evidence root so a chunk's state travels
+#: with the evidence it describes, but it holds orchestration bookkeeping rather
+#: than evidence, and the reconciliation must not count it as an artifact nobody
+#: vouches for.
+CHECKPOINTS = "checkpoints"
+
+#: Where offline analysis writes what it derives from the corpus — the evidence
+#: index, fingerprints, audit output. Excluded from `SUBDIRECTORIES` for exactly
+#: the reason `CHECKPOINTS` is: it lives under the root so an analysis travels
+#: with the corpus it describes, but nothing in it is evidence, and a
+#: reconciliation that counted it would report the analysis of the corpus as
+#: files nobody vouches for.
+#:
+#: Derived output is rebuildable from the manifest and the stored files. The
+#: corpus is the source of truth; this is a cache with a fingerprint attached.
+DERIVED = "derived"
+
+#: Where storage qualification writes its test files. Excluded from
+#: `SUBDIRECTORIES` for the same reason as `CHECKPOINTS` and `DERIVED`: a
+#: sustained-load test has to write real bytes to the real volume to mean
+#: anything, and those bytes are emphatically not evidence. Keeping them under
+#: the root — rather than somewhere the volume check does not cover — is what
+#: makes the test exercise the path the corpus actually uses.
+DIAGNOSTICS = "diagnostics"
+
+
+class RequestKind(StrEnum):
+    """What an artifact is, which decides where it is stored."""
+
+    FILING = "FILING"
+    """One document inside a filing, under `filings/`."""
+
+    SUBMISSIONS = "SUBMISSIONS"
+    """A filer's submissions index, under `submissions/`."""
+
+    FULLTEXT = "FULLTEXT"
+    """A full-text search response, under `fulltext/`."""
+
+
+@dataclass(frozen=True)
+class EvidenceRoot:
+    """A verified evidence root and the paths beneath it.
+
+    Only constructed by `open_evidence_root`, which is what makes "this exists
+    and is a directory" true for every instance rather than hoped for.
+
+    Attributes:
+        path: The verified root.
+    """
+
+    path: Path
+
+    @property
+    def filings(self) -> Path:
+        """Where filing documents live."""
+        return self.path / FILINGS
+
+    @property
+    def submissions(self) -> Path:
+        """Where submissions indexes live."""
+        return self.path / SUBMISSIONS
+
+    @property
+    def fulltext(self) -> Path:
+        """Where full-text responses live."""
+        return self.path / FULLTEXT
+
+    @property
+    def manifests(self) -> Path:
+        """Where manifests live."""
+        return self.path / MANIFESTS
+
+    def filing_path(self, cik: int, accession: str, document: str) -> Path:
+        """Return where one filing document belongs.
+
+        Args:
+            cik: The filer number, unpadded.
+            accession: The accession number, dashed or not.
+            document: The file name within the filing.
+
+        Returns:
+            The absolute destination path.
+
+        Raises:
+            ValueError: If the document name would escape the filing directory.
+        """
+        return self.filings / f"{cik:010d}" / accession.replace("-", "") / _safe(document)
+
+    def submissions_path(self, cik: int) -> Path:
+        """Return where one filer's submissions index belongs."""
+        return self.submissions / f"CIK{cik:010d}.json"
+
+    def fulltext_path(self, query: str) -> Path:
+        """Return where one full-text response belongs.
+
+        The query is digested rather than spelled out: it can carry slashes,
+        quotes and arbitrary length, none of which survive a file name.
+        """
+        return self.fulltext / f"{hashlib.sha256(query.encode()).hexdigest()}.json"
+
+
+def open_evidence_root(settings: Settings) -> EvidenceRoot:
+    """Verify the configured root and prepare its subdirectories.
+
+    The root itself must already exist — see the module docstring. Its four
+    known subdirectories are created, which is safe precisely because the root
+    being present proves the volume is mounted.
+
+    Args:
+        settings: Supplies `SEC_EVIDENCE_DIR`.
+
+    Returns:
+        The verified root.
+
+    Raises:
+        EvidenceUnavailableError: If the setting is unset, or the path is
+            missing or not a directory. An unmounted drive lands here.
+    """
+    root = resolve_sec_evidence_dir(settings, allow_empty=True)
+    for name in SUBDIRECTORIES:
+        (root / name).mkdir(exist_ok=True)
+    log.debug("evidence root ready", root=str(root))
+    return EvidenceRoot(path=root)
+
+
+def store_atomically(destination: Path, payload: bytes, *, root: Path) -> int:
+    """Write bytes to their final location, atomically, or not at all.
+
+    **Anchored to a verified root on purpose.** An earlier draft created any
+    missing parent by walking up to the nearest directory that exists, which is
+    no protection at all: `/Volumes` always exists, so an unmounted drive would
+    have had `/Volumes/BEK/stock-screener-data/sec/...` built underneath it on
+    the boot disk — the exact failure this module is for. Directories are
+    therefore only ever created *below* a root that has already been verified to
+    exist, and a destination outside that root is refused.
+
+    Args:
+        destination: Where the artifact belongs. Must be inside `root`.
+        payload: Its bytes, complete.
+        root: The verified evidence root, from `open_evidence_root`.
+
+    Returns:
+        How many bytes were written.
+
+    Raises:
+        EvidenceWriteError: If the root is no longer a directory — the drive was
+            unmounted mid-run — or the destination lies outside it.
+    """
+    if not root.is_dir():
+        message = (
+            f"the evidence root {root} is no longer a directory. On an external drive this "
+            "means the volume was unmounted; writing would put evidence on the boot disk."
+        )
+        raise EvidenceWriteError(message)
+    if not destination.is_relative_to(root):
+        message = f"{destination} is outside the evidence root {root}"
+        raise EvidenceWriteError(message)
+
+    directory = destination.parent
+    # Safe now, and only now: every level being created sits under a root that
+    # was just confirmed present, so no ancestor of it can be invented.
+    directory.mkdir(parents=True, exist_ok=True)
+
+    handle, temporary_name = tempfile.mkstemp(dir=directory, prefix=f".{destination.name}.")
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(handle, "wb") as stream:
+            stream.write(payload)
+            stream.flush()
+            os.fsync(stream.fileno())
+        temporary.replace(destination)
+    except BaseException:
+        temporary.unlink(missing_ok=True)
+        raise
+    return len(payload)
+
+
+def digest_of(path: Path) -> str | None:
+    """Return a stored file's SHA-256, or None when it is not there."""
+    if not path.is_file():
+        return None
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+class EvidenceWriteError(RuntimeError):
+    """A stored artifact could not be written where it was supposed to go."""
+
+
+def _safe(name: str) -> str:
+    """Return a document name that cannot escape its directory.
+
+    SEC document names come from a remote index. A name containing a separator
+    or `..` would place the artifact somewhere the layout does not describe, so
+    it is refused rather than sanitised — a quietly renamed file would no longer
+    be the document the manifest claims.
+
+    Raises:
+        ValueError: If the name is empty or contains a path component.
+    """
+    if not name or name in {".", ".."} or "/" in name or "\\" in name:
+        message = f"{name!r} is not a usable SEC document name"
+        raise ValueError(message)
+    return name

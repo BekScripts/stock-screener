@@ -12,12 +12,13 @@ real backoff logic in microseconds instead of actually waiting.
 from __future__ import annotations
 
 import time
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Protocol
 
 import httpx
 
 from api_clients.errors import (
     ProviderAuthError,
+    ProviderBudgetError,
     ProviderDataError,
     ProviderError,
     ProviderPlanError,
@@ -37,6 +38,28 @@ _AUTH_STATUSES = frozenset({401, 403})
 #: explanation ("limit must be between 0 and 5"), short enough that a body
 #: echoing the query string cannot spill a whole credential into a log.
 _ERROR_BODY_CHARS = 200
+
+
+class RequestMeter(Protocol):
+    """Counts and caps the HTTP attempts a caller is allowed to make.
+
+    Passed alongside the rate limiter and retry policy, and consulted in the
+    same place: immediately before an attempt reaches the network. That position
+    is the whole point — a budget expressed in *logical* operations silently
+    undercounts, because one operation can retry three times and a client can
+    fetch a lookup table nobody counted. Metering here makes "how many requests
+    may this run make" answerable in the only unit that matters.
+
+    Implementations must be cheap: `allow` is consulted once per attempt.
+    """
+
+    def allow(self) -> bool:
+        """Whether another HTTP attempt may be made."""
+        ...
+
+    def record(self) -> None:
+        """Record that one HTTP attempt is being made."""
+        ...
 
 
 class RateLimiter:
@@ -134,6 +157,7 @@ def request_json(
     url: str,
     *,
     provider: str,
+    meter: RequestMeter | None = None,
     params: Mapping[str, Any] | None = None,
     json: Mapping[str, Any] | None = None,
     limiter: RateLimiter | None = None,
@@ -150,6 +174,8 @@ def request_json(
         method: HTTP verb.
         url: Absolute or client-relative URL.
         provider: Name used in error messages.
+        meter: Counts and caps actual HTTP attempts, retries included. None
+            leaves the call unmetered.
         params: Query parameters.
         json: Request body, encoded as JSON. For vendors whose search endpoint
             is a POST — the same retry and error policy applies either way.
@@ -169,6 +195,12 @@ def request_json(
     last_error: ProviderError = ProviderRequestError(f"{provider} request was never attempted")
 
     for attempt in range(1, policy.attempts + 1):
+        if meter is not None:
+            if not meter.allow():
+                raise ProviderBudgetError(
+                    f"{provider} stopped before the request: the HTTP budget is spent"
+                )
+            meter.record()
         if limiter is not None:
             limiter.wait()
 
@@ -195,6 +227,7 @@ def request_text(
     url: str,
     *,
     provider: str,
+    meter: RequestMeter | None = None,
     limiter: RateLimiter | None = None,
     retry: RetryPolicy | None = None,
 ) -> str:
@@ -209,6 +242,8 @@ def request_text(
         method: HTTP verb.
         url: Absolute or client-relative URL.
         provider: Name used in error messages.
+        meter: Counts and caps actual HTTP attempts, retries included. None
+            leaves the call unmetered.
         limiter: Applied before every attempt, including retries.
         retry: Retry policy. Defaults to three attempts with one-second backoff.
 
@@ -224,6 +259,12 @@ def request_text(
     last_error: ProviderError = ProviderRequestError(f"{provider} request was never attempted")
 
     for attempt in range(1, policy.attempts + 1):
+        if meter is not None:
+            if not meter.allow():
+                raise ProviderBudgetError(
+                    f"{provider} stopped before the request: the HTTP budget is spent"
+                )
+            meter.record()
         if limiter is not None:
             limiter.wait()
 
@@ -250,6 +291,7 @@ def request_bytes(
     url: str,
     *,
     provider: str,
+    meter: RequestMeter | None = None,
     limiter: RateLimiter | None = None,
     retry: RetryPolicy | None = None,
 ) -> bytes:
@@ -264,6 +306,8 @@ def request_bytes(
         method: HTTP verb.
         url: Absolute or client-relative URL.
         provider: Name used in error messages.
+        meter: Counts and caps actual HTTP attempts, retries included. None
+            leaves the call unmetered.
         limiter: Applied before every attempt, including retries.
         retry: Retry policy. Defaults to three attempts with one-second backoff.
 
@@ -275,10 +319,58 @@ def request_bytes(
         ProviderRateLimitError: If rate limited on the final attempt.
         ProviderRequestError: If the request failed on the final attempt.
     """
+    return request_response(
+        client, method, url, provider=provider, meter=meter, limiter=limiter, retry=retry
+    ).content
+
+
+def request_response(
+    client: httpx.Client,
+    method: str,
+    url: str,
+    *,
+    provider: str,
+    meter: RequestMeter | None = None,
+    limiter: RateLimiter | None = None,
+    retry: RetryPolicy | None = None,
+) -> httpx.Response:
+    """Perform one request and return the whole response, headers included.
+
+    The same retry, rate-limit and status policy as `request_bytes`, which is
+    now a thin wrapper over this — one policy, not two. It exists because a body
+    alone cannot be given provenance: recording what produced a stored artifact
+    needs the status code that returned it and the `Content-Type`, `ETag` and
+    `Last-Modified` headers that describe it, and those are gone by the time
+    only `.content` has been handed back.
+
+    Args:
+        client: The HTTP client to use. Headers and base URL come from it.
+        method: HTTP verb.
+        url: Absolute or client-relative URL.
+        provider: Name used in error messages.
+        meter: Counts and caps actual HTTP attempts, retries included. None
+            leaves the call unmetered.
+        limiter: Applied before every attempt, including retries.
+        retry: Retry policy. Defaults to three attempts with one-second backoff.
+
+    Returns:
+        The successful response, unread fields intact.
+
+    Raises:
+        ProviderAuthError: If the credentials were rejected.
+        ProviderRateLimitError: If rate limited on the final attempt.
+        ProviderRequestError: If the request failed on the final attempt.
+    """
     policy = retry or RetryPolicy()
     last_error: ProviderError = ProviderRequestError(f"{provider} request was never attempted")
 
     for attempt in range(1, policy.attempts + 1):
+        if meter is not None:
+            if not meter.allow():
+                raise ProviderBudgetError(
+                    f"{provider} stopped before the request: the HTTP budget is spent"
+                )
+            meter.record()
         if limiter is not None:
             limiter.wait()
 
@@ -288,7 +380,7 @@ def request_bytes(
             last_error = ProviderRequestError(f"{provider} request failed: {type(exc).__name__}")
         else:
             if response.status_code < httpx.codes.BAD_REQUEST:
-                return response.content
+                return response
             if not _is_retryable(response.status_code):
                 _raise_for_status(response, provider)
             last_error = _status_error(response.status_code, provider)

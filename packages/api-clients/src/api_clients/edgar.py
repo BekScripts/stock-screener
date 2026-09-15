@@ -47,7 +47,13 @@ from typing import TYPE_CHECKING, Any, NamedTuple
 import httpx
 import structlog
 
-from api_clients._http import RateLimiter, RetryPolicy, request_json, request_text
+from api_clients._http import (
+    RateLimiter,
+    RequestMeter,
+    RetryPolicy,
+    request_json,
+    request_text,
+)
 from api_clients.errors import ProviderDataError, ProviderError
 from api_clients.filing_text import clean_filing_text, extract_sections
 from api_clients.filing_xbrl import merge_instance_facts, parse_filing_instance
@@ -549,6 +555,7 @@ class SecEdgarFundamentals:
         timeout_seconds: float = 60.0,
         limiter: RateLimiter | None = None,
         retry: RetryPolicy | None = None,
+        meter: RequestMeter | None = None,
         client: httpx.Client | None = None,
     ) -> None:
         if not user_agent.strip():
@@ -563,6 +570,7 @@ class SecEdgarFundamentals:
         )
         self._limiter = limiter or RateLimiter(DEFAULT_MIN_INTERVAL_SECONDS)
         self._retry = retry or RetryPolicy()
+        self._meter = meter
         self._cik_by_ticker: dict[str, int] | None = None
         self._facts_cache: tuple[str, dict[str, Any]] | None = None
         self._submissions_cache: tuple[str, dict[str, Any]] | None = None
@@ -813,6 +821,7 @@ class SecEdgarFundamentals:
             "GET",
             f"{self._data_base_url}/submissions/{name}",
             provider=PROVIDER_NAME,
+            meter=self._meter,
             limiter=self._limiter,
             retry=self._retry,
         )
@@ -965,6 +974,7 @@ class SecEdgarFundamentals:
             "GET",
             url,
             provider=PROVIDER_NAME,
+            meter=self._meter,
             limiter=self._limiter,
             retry=self._retry,
         )
@@ -981,6 +991,30 @@ class SecEdgarFundamentals:
             )
             for section in sections
         ]
+
+    def cik_for(self, ticker: str) -> int | None:
+        """Return the SEC filer number for a ticker, or None when unmapped.
+
+        The public face of the map this adapter already loads for its own
+        lookups, so an evidence harvest resolves identifiers through the same
+        source of truth the scanner uses rather than standing up a second one.
+
+        Normalisation is `normalise_ticker`'s and is deliberately not extended
+        here: the SEC writes class shares with a dash (`BRK-B`) while parts of
+        this project carry them with a dot (`BC.PRC`), and translating between
+        the two would be a guess about which security is meant. An unmapped
+        ticker stays unresolved.
+
+        Args:
+            ticker: The symbol to look up, in any case.
+
+        Returns:
+            The CIK, or None when the SEC's file does not carry the symbol.
+
+        Raises:
+            ProviderError: If the ticker file could not be read.
+        """
+        return self._cik_for(normalise_ticker(ticker))
 
     def _cik_for(self, symbol: str) -> int | None:
         """Return the SEC filer number for a ticker, loading the map once."""
@@ -999,6 +1033,7 @@ class SecEdgarFundamentals:
             "GET",
             f"{self._www_base_url}/files/company_tickers.json",
             provider=PROVIDER_NAME,
+            meter=self._meter,
             limiter=self._limiter,
             retry=self._retry,
         )
@@ -1048,6 +1083,7 @@ class SecEdgarFundamentals:
             "GET",
             f"{self._data_base_url}/submissions/CIK{key}.json",
             provider=PROVIDER_NAME,
+            meter=self._meter,
             limiter=self._limiter,
             retry=self._retry,
         )
@@ -1100,6 +1136,7 @@ class SecEdgarFundamentals:
                 "GET",
                 url,
                 provider=PROVIDER_NAME,
+                meter=self._meter,
                 limiter=self._limiter,
                 retry=self._retry,
             )
@@ -1161,6 +1198,7 @@ class SecEdgarFundamentals:
             "GET",
             f"{self._data_base_url}/api/xbrl/companyfacts/CIK{key}.json",
             provider=PROVIDER_NAME,
+            meter=self._meter,
             limiter=self._limiter,
             retry=self._retry,
         )
@@ -1169,6 +1207,38 @@ class SecEdgarFundamentals:
 
         self._facts_cache = (key, payload)
         return payload
+
+
+def filings_from_submissions(
+    payload: Mapping[str, Any], cik: int, *, keep_forms: frozenset[str] = FILING_FORMS
+) -> list[Filing]:
+    """Turn a stored submissions document into filing metadata.
+
+    The same parse `get_filings` performs, over a payload the caller already
+    holds rather than one this module fetches. That distinction is the whole
+    point for an evidence corpus: the submissions JSON is downloaded once,
+    stored with its provenance, and expanded from disk afterwards, so expansion
+    costs no request and re-reads exactly the bytes that were kept.
+
+    Args:
+        payload: A parsed `submissions/CIK##########.json` document.
+        cik: The filer the document describes, used to build document URLs.
+        keep_forms: Which forms to keep. The default drops the ownership
+            reports and prospectus supplements that dominate the index.
+
+    Returns:
+        The filings, newest first. Empty when the document carries no usable
+        recent index — a shape this refuses rather than guesses at.
+    """
+    filings_block = payload.get("filings")
+    if not isinstance(filings_block, dict):
+        return []
+    index = filings_block.get("recent")
+    if not isinstance(index, dict):
+        return []
+    filings = _filings_from_index(index, cik, keep_forms=keep_forms)
+    filings.sort(key=lambda filing: (filing.filed, filing.accession), reverse=True)
+    return filings
 
 
 def _filings_from_index(
