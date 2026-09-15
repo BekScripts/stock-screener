@@ -36,10 +36,14 @@ appears without the run or the test that produced it.
 
 ## Current phase
 
-**B2.2–B2.4 — SEC evidence storage abstraction and semantics finalization** is
-the current refactor checkpoint on `feat/phase-b2-storage-abstraction`. The
-existing local artifact lifecycle now runs through `EvidenceStorage`; control
-files stay local. See [Storage layout](storage-layout.md#b22b24-storage-contract-checkpoint)
+**B2.5 — relocate and harden the local control plane** is the current
+checkpoint on `feat/phase-b2-storage-abstraction`, on top of B2.2–B2.4's storage
+abstraction. The artifact lifecycle runs through `EvidenceStorage`; the control
+plane — manifest, checkpoints, plans, derived index — has a root of its own,
+`SEC_CONTROL_DIR`, so losing the artifact volume no longer loses the record of
+what it held. See [Storage layout](storage-layout.md#b25-control-plane) for the
+two planes, the resolution rules and the failure-domain tests, and
+[the B2.2–B2.4 section](storage-layout.md#b22b24-storage-contract-checkpoint)
 for exception, parser, counter and boundary policies. The pre-refactor rollback
 point is `pre-b2-ssd-state` (`13d586b10dfc077325b2729602a30b74d01a8af0`).
 
@@ -230,6 +234,33 @@ data alone. `compounder_radar.db` has received none of it.
   Subset audits list touched artifact prefixes against the whole trusted set.
 - **ETag is never evidence SHA-256**, including for any future backend.
 - No object-store backend or evidence migration is part of this checkpoint.
+
+### B2.5 control plane
+
+- **The control plane has its own root.** `SEC_CONTROL_DIR` names where the
+  manifest, checkpoints, plans, the reserved migration ledger and the derived
+  index live; `EvidenceControlRoot` is the only way to reach them and it holds
+  paths, never artifacts. Unset means the legacy colocated layout beneath
+  `SEC_EVIDENCE_DIR`, which every command reports as a shared failure domain.
+  The fallback is transitional.
+- **Neither root is ever created.** An unreachable control root raises
+  `ControlPlaneUnavailableError`; an unreachable artifact root raises
+  `StorageUnavailableError`. Nothing conjures a directory on the boot disk to
+  stand in for a volume that is not mounted.
+- **Unwritten is not gone.** A manifest or checkpoint whose directory is present
+  but which has not been written reads as empty or unattempted; one whose
+  directory is missing raises. A vanished control plane never presents as a
+  project that has done nothing.
+- **The manifest records which artifact, never where.** `Entry.path` is an
+  artifact-plane key; the same line is written whichever backend stored the
+  bytes, and no control-plane operation lists or reads the artifact namespace.
+- **Capacity is a local-backend question.** `EvidenceStorage` carries no
+  free-space operation; `LocalEvidenceStorage.free_bytes()` and the
+  `LocalCapacity` protocol do, and `preflight_corpus` asks only a backend that
+  can answer. The corpus reconciliation gate runs against every backend.
+- **`sec_evidence_index.db` is rebuildable, not evidence.** The manifest plus
+  the artifact corpus is the source of truth; the index and its fingerprint are
+  a local cache under `derived/` and are never mirrored.
 
 These are load-bearing. Each is enforced by structure or by a test, not by
 convention, and none may be relaxed without an explicit instruction.
@@ -1298,12 +1329,16 @@ care — nothing has a foreign key *to* it, so dropping it cascades to nothing.
 
 ## Known limitations
 
-**B2 control-plane placement is transitional.** `EvidenceRoot`, manifest paths,
-checkpoint and derived-index helpers, and local volume preflight remain coupled
-to the configured local root. No control-plane files moved. Backend temporaries
-are hidden from artifact listing (`temporary_files` remains zero). The local
-backend does not pin mount identity against concurrent replacement. See the
-[responsibility review](storage-layout.md#transitional-evidenceroot-responsibilities).
+**The legacy colocated layout is still supported, and is one failure domain.**
+Every corpus harvested before B2.5 — the BEK corpus included — keeps its
+manifest, checkpoints and derived index beneath `SEC_EVIDENCE_DIR`, and with
+`SEC_CONTROL_DIR` unset the code reads that layout unchanged. No control file
+was moved; relocating an existing corpus's control files is a deliberate
+operator step for a later phase, as is any remote mirror of them. `EvidenceRoot`
+and the `harvest()`/`preflight()` compatibility forms remain for that layout.
+Backend temporaries are hidden from artifact listing (`temporary_files` remains
+zero). The local backend does not pin mount identity against concurrent
+replacement. See [`EvidenceRoot` after B2.5](storage-layout.md#evidenceroot-after-b25).
 
 **Historical listing evidence is monthly and partly censored.** Free sources give
 Nasdaq and NYSE from 2022-01 at month resolution only; NYSE American is not
@@ -1343,6 +1378,25 @@ Documented rather than fixed. Each is a deliberate stop, not a backlog item.
 ## Completed experiments
 
 Measured runs, kept because they are the evidence behind decisions above.
+
+### B2.5 control-plane separation — 2026-09-15
+
+- `tests/integration/test_control_plane.py`: **35 passed**. Artifact root
+  removed with the control root intact — manifest entry, checkpoint (stage
+  `COMPLETE`), target manifest and fingerprint all read back; every artifact
+  operation raises `StorageUnavailableError` and the fake SEC client records no
+  further request. Control root removed with the artifacts intact —
+  `Manifest.entries`, `load_checkpoint`, `harvest_artifacts` and
+  `open_control_root` all raise `ControlPlaneUnavailableError`, no directory is
+  recreated, no request is spent.
+- The manifest line written under the separated layout equals the line the
+  colocated layout writes, `recorded_at` aside; neither root's path appears in
+  it.
+- A memory backend passes `preflight_corpus` with a one-petabyte reserve: no
+  universal disk-capacity requirement remains.
+- Every pre-B2.5 evidence suite passed unmodified: 613 tests across the storage,
+  harvest, offline, expand, sweep, CLI, targets, plan, dedup, reachability,
+  budget, manifest-scale and pagination files.
 
 ### B2.4 refactor verification — 2026-09-14
 
@@ -1412,7 +1466,11 @@ The B2 checkpoint adds `test_storage_contract.py`, `test_storage_local.py`,
 `test_storage_equivalence.py` and `test_storage_neutral.py`: local/memory backend
 equivalence, strict absence-versus-unavailability, unsafe-key refusal, parser
 failure propagation, opaque ETags, reconciliation counters, and batch-local
-sibling orphan detection. Existing SEC evidence regression suites remain gates.
+sibling orphan detection. B2.5 adds `test_control_plane.py`: control-root
+resolution without creation, unwritten-versus-gone for manifests and
+checkpoints, the separated-root lifecycle, both failure-domain halves, the
+legacy colocated layout, and backend-neutral preflight. Existing SEC evidence
+regression suites remain gates.
 
 These must keep passing. Each one encodes a decision that cost something to
 learn.
@@ -1502,8 +1560,10 @@ under **80%**. It is what CI runs; run it rather than the individual tools.
 
 ## Next phase
 
-**B2.5 — RELOCATE AND HARDEN LOCAL CONTROL PLANE** follows this refactor
-checkpoint. It has not been started here. Backblaze B2 implementation, evidence
+**B2.6** follows this checkpoint — either the Backblaze B2 configuration and
+credentials boundary, or the `B2EvidenceStorage` implementation, decided
+separately. Neither has been started. Relocating the BEK corpus's control files
+into a `SEC_CONTROL_DIR`, mirroring control metadata remotely, evidence
 migration and Plan A3 remain outside this checkpoint's authorization.
 
 Two pieces of work are *identified* but not authorised, and neither is to be
@@ -1545,9 +1605,10 @@ Not a backlog. These exclusions are deliberate.
 
 **Do not touch:**
 
-- B2.4 leaves `COMPOUNDER_V1_2`, `MARKET_SIGNALS_V1`, `ResearchUniverseMonth`,
-  PIT identity semantics, Plan A3, forward returns, price history and database
-  schema frozen. No BEK access, credentials, corpus migration or SDK additions.
+- B2.4 and B2.5 leave `COMPOUNDER_V1_2`, `MARKET_SIGNALS_V1`,
+  `ResearchUniverseMonth`, PIT identity semantics, Plan A3, forward returns,
+  price history and database schema frozen. No BEK access, credentials, corpus
+  migration or SDK additions.
 - any scoring file, without a new `score_version` and a doc change in the same
   commit
 - a Phase 3 enum or class — `deep-research` imports them, never extends them
@@ -1570,11 +1631,11 @@ Not a backlog. These exclusions are deliberate.
 
 | | |
 | --- | --- |
-| Commit | The B2.2–B2.4 commit containing this checkpoint, `refactor: decouple SEC evidence artifacts from local storage`; parent `13d586b` |
+| Commit | The B2.5 commit containing this checkpoint, `refactor: separate SEC evidence control plane`; parent `1b56b86` (B2.2–B2.4, `refactor: decouple SEC evidence artifacts from local storage`) |
 | Branch | `feat/phase-b2-storage-abstraction` |
 | Migration head | `0031` — the research-universe layer (9K.7). Nothing since 9K.11 added one. |
 | Score version | `COMPOUNDER_V1_2` (unchanged by anything in Phase 8, 9A, 9B or 9C) |
 | Feature version | `MARKET_FEATURES_V1` |
 | Signal version | `MARKET_SIGNALS_V1` |
 | Primary database | untouched by 8A–8J and 9A–9L.5; all work ran against staging copies |
-| Checkpoint date | 2026-09-14 |
+| Checkpoint date | 2026-09-15 |

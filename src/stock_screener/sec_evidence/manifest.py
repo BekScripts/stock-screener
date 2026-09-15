@@ -30,14 +30,21 @@ from typing import TYPE_CHECKING, Any
 
 import structlog
 
+from stock_screener.sec_evidence.control import EVIDENCE_MANIFEST, ControlPlaneUnavailableError
+
 if TYPE_CHECKING:
     from collections.abc import Iterator
     from pathlib import Path
 
 log = structlog.get_logger(__name__)
 
-#: The manifest every harvest appends to, beneath the root's `manifests/`.
-EVIDENCE_MANIFEST = "evidence.jsonl"
+__all__ = [
+    "EVIDENCE_MANIFEST",
+    "Entry",
+    "Manifest",
+    "ManifestState",
+    "Outcome",
+]
 
 
 class Outcome(StrEnum):
@@ -169,10 +176,22 @@ class ManifestState:
 class Manifest:
     """An append-only provenance log.
 
+    Control-plane data. The file holds artifact-plane keys in each record's
+    `path`, but the file itself lives wherever the control root puts it and
+    knows nothing about where those keys resolve.
+
+    Two absences are kept apart, because confusing them is how a project
+    silently starts over. A manifest whose directory exists but which has not
+    been written yet is first-time initialisation: it reads as empty and the
+    first append creates it. A manifest whose *directory* is gone is the
+    control plane having vanished — an unmounted volume, a mistyped root — and
+    reading it as empty would present a corpus of a hundred thousand vouched
+    artifacts as a corpus of none. That raises instead.
+
     Args:
         path: The `.jsonl` file. Its directory must already exist — the caller
-            gets one from a verified evidence root, so a missing directory here
-            means the volume vanished mid-run and must fail rather than be made.
+            gets one from a verified control root, so a missing directory here
+            means the root vanished and must fail rather than be made.
     """
 
     def __init__(self, path: Path) -> None:
@@ -183,12 +202,26 @@ class Manifest:
         """Where the log lives."""
         return self._path
 
+    def _require_directory(self) -> None:
+        """Refuse to read or write when the manifest's directory has gone."""
+        if not self._path.parent.is_dir():
+            message = (
+                f"the directory holding the evidence manifest is gone: {self._path.parent} "
+                "— the control root is unavailable, not empty"
+            )
+            raise ControlPlaneUnavailableError(message)
+
     def append(self, entry: Entry) -> None:
         """Add one entry, durably.
 
         Flushed and fsynced before returning, so an entry this call reported as
-        written survives losing power on the next one.
+        written survives losing power on the next one. Creates the file on
+        first use; never creates its directory.
+
+        Raises:
+            ControlPlaneUnavailableError: If the manifest's directory is gone.
         """
+        self._require_directory()
         with self._path.open("a", encoding="utf-8") as stream:
             stream.write(entry.as_line() + "\n")
             stream.flush()
@@ -199,8 +232,13 @@ class Manifest:
 
         A truncated final line is discarded with a warning rather than raising:
         it is the signature of a crash during append, and the entries before it
-        are intact and worth keeping.
+        are intact and worth keeping. A manifest not yet written yields nothing.
+
+        Raises:
+            ControlPlaneUnavailableError: If the manifest's directory is gone —
+                that is not an empty log, and is never reported as one.
         """
+        self._require_directory()
         if not self._path.is_file():
             return
         with self._path.open("r", encoding="utf-8") as stream:

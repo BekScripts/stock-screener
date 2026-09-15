@@ -30,15 +30,14 @@ from typing import TYPE_CHECKING
 
 import structlog
 
-from stock_screener.sec_evidence.manifest import EVIDENCE_MANIFEST, Manifest
+from stock_screener.sec_evidence.manifest import Manifest
 from stock_screener.sec_evidence.sample import production_universe
-from stock_screener.sec_evidence.storage import DERIVED
 from stock_screener.sec_evidence.sweep import selection_digest
 
 if TYPE_CHECKING:
     from sqlalchemy.orm import Session
 
-    from stock_screener.sec_evidence.storage import EvidenceRoot
+    from stock_screener.sec_evidence.control import EvidenceControlRoot
 
 log = structlog.get_logger(__name__)
 
@@ -47,7 +46,11 @@ log = structlog.get_logger(__name__)
 #: failure instead of a smaller run.
 PRODUCTION_IDENTITIES = 8919
 
-#: The fingerprint file written beneath `derived/`.
+#: The fingerprint file written beneath the control root's `derived/`. It
+#: describes the corpus a derived index was built from, and is classified with
+#: the index it describes: a run record, rebuildable from the manifest and
+#: cheap to recompute. Recovery needs the manifest, the checkpoints and the
+#: plans; it does not need this file.
 FINGERPRINT_FILE = "corpus-fingerprint.json"
 
 
@@ -231,23 +234,25 @@ class CorpusFingerprint:
         )
 
 
-def fingerprint_corpus(root: EvidenceRoot, manifest: Manifest | None = None) -> CorpusFingerprint:
+def fingerprint_corpus(
+    control: EvidenceControlRoot, manifest: Manifest | None = None
+) -> CorpusFingerprint:
     """Reduce the corpus to comparable digests, reading no artifact bytes.
 
     The artifacts' own recorded digests are what is hashed, not the files. The
-    manifest has already been reconciled against the bytes on disk — repeating
-    that here would cost twenty minutes to re-answer a question `reconcile`
-    answers directly.
+    manifest has already been reconciled against the bytes in storage —
+    repeating that here would cost twenty minutes to re-answer a question
+    `reconcile` answers directly. Nothing here touches the artifact plane.
 
     Args:
-        root: The verified evidence root.
-        manifest: Its provenance log, opened if not supplied.
+        control: The control root holding the provenance log.
+        manifest: The log, opened from the control root if not supplied.
 
     Returns:
         The fingerprint.
     """
-    log_file = root.manifests / EVIDENCE_MANIFEST
-    manifest = manifest or Manifest(log_file)
+    manifest = manifest or Manifest(control.manifest_path)
+    log_file = manifest.path
     records = 0
     for _ in manifest.entries():
         records += 1
@@ -274,29 +279,32 @@ def fingerprint_corpus(root: EvidenceRoot, manifest: Manifest | None = None) -> 
     return fingerprint
 
 
-def derived_root(root: EvidenceRoot) -> Path:
+def derived_root(control: EvidenceControlRoot) -> Path:
     """Return the derived-output directory, creating it beneath a verified root.
 
-    Anchored to a root that has already been confirmed present, so an unmounted
-    volume cannot cause a second empty analysis tree to appear on the boot disk.
+    Control plane, rebuildable half: the extraction index and its fingerprint
+    are recomputed from the manifest and the artifacts, so losing this
+    directory costs a rebuild and never evidence. Anchored to a root that has
+    already been confirmed present, so an unmounted volume cannot cause a
+    second empty analysis tree to appear on the boot disk.
     """
-    path = root.path / DERIVED
-    path.mkdir(parents=True, exist_ok=True)
+    path = control.derived
+    path.mkdir(exist_ok=True)
     return path
 
 
-def save_fingerprint(root: EvidenceRoot, fingerprint: CorpusFingerprint) -> Path:
-    """Write a fingerprint under `derived/`, atomically."""
-    path = derived_root(root) / FINGERPRINT_FILE
+def save_fingerprint(control: EvidenceControlRoot, fingerprint: CorpusFingerprint) -> Path:
+    """Write a fingerprint under the control root's `derived/`, atomically."""
+    path = derived_root(control) / FINGERPRINT_FILE
     temporary = path.with_suffix(".tmp")
     temporary.write_text(json.dumps(asdict(fingerprint), indent=2), encoding="utf-8")
     temporary.replace(path)
     return path
 
 
-def load_fingerprint(root: EvidenceRoot) -> CorpusFingerprint | None:
+def load_fingerprint(control: EvidenceControlRoot) -> CorpusFingerprint | None:
     """Read the stored fingerprint, or None when none has been written."""
-    path = derived_root(root) / FINGERPRINT_FILE
+    path = derived_root(control) / FINGERPRINT_FILE
     if not path.is_file():
         return None
     try:

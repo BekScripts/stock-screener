@@ -19,6 +19,10 @@ venv/
 
 # Tooling caches
 .cache/
+
+# A local SEC evidence control plane (SEC_CONTROL_DIR=.evidence): runtime
+# manifests, checkpoints, plans and the derived index. Never committed.
+.evidence/
 .pytest_cache/
 .ruff_cache/
 .mypy_cache/

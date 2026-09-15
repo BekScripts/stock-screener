@@ -45,6 +45,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import shutil
 import stat as stat_mode
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol
@@ -352,6 +353,26 @@ class LocalEvidenceStorage:
         except OSError as exc:
             raise StorageUnavailableError(f"cannot digest {key!r}: {exc}") from exc
         return digest.hexdigest()
+
+    def free_bytes(self) -> int:
+        """Free space on the volume holding the root. Local backend only.
+
+        Not part of `EvidenceStorage`: an object store has no free bytes worth
+        reporting, and a contract that demanded a number would get an invented
+        one. The sweep's preflight asks for this only from a backend that can
+        answer — see `sweep.LocalCapacity`.
+
+        Raises:
+            StorageUnavailableError: If the root is missing or cannot be
+                measured — the unmounted-volume case.
+        """
+        self._require_root()
+        try:
+            return shutil.disk_usage(self._root).free
+        except OSError as exc:
+            raise StorageUnavailableError(
+                f"cannot measure free space at {self._root}: {exc}"
+            ) from exc
 
     def list_prefix(self, prefix: str) -> Iterator[str]:
         """Every file key beneath a prefix, sorted, as keys rather than paths.

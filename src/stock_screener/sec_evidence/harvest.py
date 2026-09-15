@@ -46,7 +46,6 @@ import structlog
 from api_clients.errors import ProviderBudgetError, ProviderError
 from stock_screener.sec_evidence.backend import ArtifactNotFoundError
 from stock_screener.sec_evidence.manifest import (
-    EVIDENCE_MANIFEST,
     Entry,
     Manifest,
     ManifestState,
@@ -214,13 +213,14 @@ def harvest(
     budget: Budget | None = None,
     dry_run: bool = False,
 ) -> HarvestReport:
-    """Obtain each target into a local evidence root.
+    """Obtain each target into a legacy colocated evidence root.
 
     The root supplies both halves of what a harvest needs — the artifact store
-    and the manifest that vouches for it — so this is the convenient form.
-    `harvest_artifacts` is the one that does the work, and takes those two
-    halves separately; any backend that satisfies `EvidenceStorage` can be
-    handed to it with a manifest kept wherever the control plane lives.
+    and, beside it, the manifest that vouches for it. That is the pre-B2.5
+    layout and this wrapper exists for it. `harvest_artifacts` is the one that
+    does the work and takes the two halves separately; production wiring
+    hands it the artifact backend and a manifest opened from the control root,
+    so that losing the artifact volume cannot take the provenance with it.
 
     Args:
         targets: What to fetch, in order.
@@ -239,7 +239,7 @@ def harvest(
     return harvest_artifacts(
         targets,
         root,
-        Manifest(root.manifests / EVIDENCE_MANIFEST),
+        Manifest(root.manifest_path),
         documents,
         budget=budget,
         dry_run=dry_run,

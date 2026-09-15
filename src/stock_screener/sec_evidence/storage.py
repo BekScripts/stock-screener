@@ -7,7 +7,7 @@ an external drive.
 that may not be mounted, and `mkdir(parents=True)` on an absent volume builds
 the whole chain on the boot disk instead — silently, with no error, filling the
 machine the external drive was chosen to spare. So the root must already exist;
-only the four known subdirectories beneath a *verified* root are created here.
+only the known subdirectories beneath a *verified* root are created here.
 
 **An artifact is whole or it is absent.** Bytes go to a temporary file in the
 destination directory, are flushed and fsynced, and are renamed into place. A
@@ -15,6 +15,11 @@ rename within one filesystem is atomic, so a reader sees the complete file or no
 file — never the half a crashed download left behind.
 
 ## The layout
+
+This is the **legacy colocated layout** — artifacts and the control plane on
+one root. Since B2.5 the control plane (`manifests/`, `checkpoints/`,
+`derived/`, plans) can live under `SEC_CONTROL_DIR` on another device instead;
+see `stock_screener.sec_evidence.control`. The artifact half is unchanged.
 
     $SEC_EVIDENCE_DIR/
     ├── filings/<cik-padded>/<accession-no-dashes>/<document>
@@ -41,6 +46,7 @@ from typing import TYPE_CHECKING
 import structlog
 
 from stock_screener.evidence import resolve_sec_evidence_dir
+from stock_screener.sec_evidence.control import CONTROL_SUBDIRECTORIES, EvidenceControlRoot
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -54,44 +60,27 @@ if TYPE_CHECKING:
 
 log = structlog.get_logger(__name__)
 
-#: The subdirectories a verified root carries.
+#: The prefixes that hold source evidence — the *artifact plane*. This tuple is
+#: the definition of the artifact namespace: reconciliation enumerates exactly
+#: these and nothing else, which is how manifests, checkpoints, derived output
+#: and diagnostics stay out of the orphan count by construction rather than by
+#: exclusion list. Frozen in B2.4; no other artifact kind exists.
 FILINGS = "filings"
 SUBMISSIONS = "submissions"
 FULLTEXT = "fulltext"
-MANIFESTS = "manifests"
-
-SUBDIRECTORIES = (FILINGS, SUBMISSIONS, FULLTEXT, MANIFESTS)
-
-#: The prefixes that hold source evidence — the *artifact plane*. Reconciliation
-#: enumerates exactly these and nothing else, which is how manifests,
-#: checkpoints, derived output and diagnostics stay out of the orphan count by
-#: construction rather than by exclusion list.
 ARTIFACT_PREFIXES = (FILINGS, SUBMISSIONS, FULLTEXT)
 
-#: Where a sweep records its own progress. Deliberately **not** in
-#: `SUBDIRECTORIES`: it sits under the evidence root so a chunk's state travels
-#: with the evidence it describes, but it holds orchestration bookkeeping rather
-#: than evidence, and the reconciliation must not count it as an artifact nobody
-#: vouches for.
-CHECKPOINTS = "checkpoints"
+#: The subdirectories a verified *legacy* root carries: the three artifact
+#: prefixes plus the control-plane directories that the colocated layout kept
+#: beside them. A root configured through `SEC_CONTROL_DIR` carries only the
+#: control half — see `stock_screener.sec_evidence.control`.
+SUBDIRECTORIES = (FILINGS, SUBMISSIONS, FULLTEXT, *CONTROL_SUBDIRECTORIES)
 
-#: Where offline analysis writes what it derives from the corpus — the evidence
-#: index, fingerprints, audit output. Excluded from `SUBDIRECTORIES` for exactly
-#: the reason `CHECKPOINTS` is: it lives under the root so an analysis travels
-#: with the corpus it describes, but nothing in it is evidence, and a
-#: reconciliation that counted it would report the analysis of the corpus as
-#: files nobody vouches for.
-#:
-#: Derived output is rebuildable from the manifest and the stored files. The
-#: corpus is the source of truth; this is a cache with a fingerprint attached.
-DERIVED = "derived"
-
-#: Where storage qualification writes its test files. Excluded from
-#: `SUBDIRECTORIES` for the same reason as `CHECKPOINTS` and `DERIVED`: a
+#: Where storage qualification writes its test files. Not an artifact prefix: a
 #: sustained-load test has to write real bytes to the real volume to mean
 #: anything, and those bytes are emphatically not evidence. Keeping them under
-#: the root — rather than somewhere the volume check does not cover — is what
-#: makes the test exercise the path the corpus actually uses.
+#: the artifact root — rather than somewhere the volume check does not cover —
+#: is what makes the test exercise the path the corpus actually uses.
 DIAGNOSTICS = "diagnostics"
 
 
@@ -109,8 +98,22 @@ class RequestKind(StrEnum):
 
 
 @dataclass(frozen=True)
-class EvidenceRoot:
-    """A verified evidence root and the paths beneath it.
+class EvidenceRoot(EvidenceControlRoot):
+    """The legacy layout: one local directory that is both planes at once.
+
+    An `EvidenceRoot` *is* an `EvidenceControlRoot` — the manifest, the
+    checkpoints and the derived output sit beneath it — and it *is* an
+    `EvidenceStorage`, structurally, by delegating to the local backend
+    anchored at the same path. That is exactly the arrangement in which a
+    single failing drive took the corpus and its recovery metadata together,
+    and it survives here for one reason: every corpus harvested before B2.5 is
+    laid out this way, and nothing moves files automatically.
+
+    Production wiring opens a control root of its own through
+    `open_control_root` and hands artifact-plane functions this object (or its
+    `.storage`) and control-plane functions that one. Only when
+    `SEC_CONTROL_DIR` is unset does this object serve as both, and it says so
+    through `colocated`.
 
     Only constructed by `open_evidence_root`, which is what makes "this exists
     and is a directory" true for every instance rather than hoped for.
@@ -119,27 +122,25 @@ class EvidenceRoot:
         path: The verified root.
     """
 
-    path: Path
+    @property
+    def colocated(self) -> bool:
+        """True: this root holds the control plane beside the artifacts."""
+        return True
 
     @property
     def filings(self) -> Path:
-        """Where filing documents live."""
+        """Where filing documents live. Local layout only; prefer keys."""
         return self.path / FILINGS
 
     @property
     def submissions(self) -> Path:
-        """Where submissions indexes live."""
+        """Where submissions indexes live. Local layout only; prefer keys."""
         return self.path / SUBMISSIONS
 
     @property
     def fulltext(self) -> Path:
-        """Where full-text responses live."""
+        """Where full-text responses live. Local layout only; prefer keys."""
         return self.path / FULLTEXT
-
-    @property
-    def manifests(self) -> Path:
-        """Where manifests live."""
-        return self.path / MANIFESTS
 
     # ------------------------------------------------------------------
     # An EvidenceRoot IS an EvidenceStorage.
@@ -185,11 +186,16 @@ class EvidenceRoot:
         """See `EvidenceStorage.list_prefix`."""
         return self.storage.list_prefix(prefix)
 
+    def free_bytes(self) -> int:
+        """Free space on the volume holding this root. See `LocalEvidenceStorage`."""
+        return self.storage.free_bytes()
+
     def filing_path(self, cik: int, accession: str, document: str) -> Path:
         """Return where one filing document belongs on this local root.
 
-        Prefer `filing_key` where a key will do. This resolves it to a path for
-        callers that still need one.
+        Deprecated compatibility helper: no production code calls it, runtime
+        artifact flow uses `filing_key` through the storage contract, and it is
+        kept only for tests that inspect the legacy layout directly.
 
         Raises:
             ValueError: If the document name would escape the filing directory.
@@ -197,11 +203,17 @@ class EvidenceRoot:
         return self.path / filing_key(cik, accession, document)
 
     def submissions_path(self, cik: int) -> Path:
-        """Return where one filer's submissions index belongs on this local root."""
+        """Return where one filer's submissions index belongs on this local root.
+
+        Deprecated compatibility helper — see `filing_path`.
+        """
         return self.path / submissions_key(cik)
 
     def fulltext_path(self, query: str) -> Path:
-        """Return where one full-text response belongs on this local root."""
+        """Return where one full-text response belongs on this local root.
+
+        Deprecated compatibility helper — see `filing_path`.
+        """
         return self.path / fulltext_key(query)
 
 
@@ -237,11 +249,13 @@ def fulltext_key(query: str) -> str:
 
 
 def open_evidence_root(settings: Settings) -> EvidenceRoot:
-    """Verify the configured root and prepare its subdirectories.
+    """Verify the configured artifact root and prepare its subdirectories.
 
-    The root itself must already exist — see the module docstring. Its four
-    known subdirectories are created, which is safe precisely because the root
-    being present proves the volume is mounted.
+    The root itself must already exist — see the module docstring. Its known
+    subdirectories are created, which is safe precisely because the root being
+    present proves the volume is mounted. The control-plane directories among
+    them are for the legacy colocated layout; a root that will be paired with
+    a separate `SEC_CONTROL_DIR` simply leaves them empty.
 
     Args:
         settings: Supplies `SEC_EVIDENCE_DIR`.

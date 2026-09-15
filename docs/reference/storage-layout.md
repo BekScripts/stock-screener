@@ -25,9 +25,14 @@ defaulted to a local path would fill it.
 | --- | --- | --- |
 | `DATABASE_URL` | `sqlite:///./compounder_radar.db` | the database the application reads and writes |
 | `FTD_CACHE_DIR` | `.cache/sec-ftd` | SEC fails-to-deliver archives, ~600 MB over 433 files |
-| `SEC_EVIDENCE_DIR` | **none** | root of the SEC evidence corpus |
+| `SEC_EVIDENCE_DIR` | **none** | root of the SEC evidence corpus — the *artifact plane* |
+| `SEC_CONTROL_DIR` | **none** (legacy colocated layout) | root of the evidence *control plane* — manifest, checkpoints, plans, derived index |
 
-`SEC_EVIDENCE_DIR` having no default is the point, not an oversight.
+`SEC_EVIDENCE_DIR` having no default is the point, not an oversight. So is
+`SEC_CONTROL_DIR` having no default of its own: unset means the control plane
+sits beneath the artifact root, which is how every corpus before B2.5 was laid
+out, and that arrangement is reported as a shared failure domain rather than
+silently accepted. See [Control plane](#b25-control-plane) below.
 
 ## Why the evidence root fails loudly
 
@@ -71,7 +76,10 @@ Two rules follow, and both are enforced by tests rather than convention:
     └── superseded/    compressed databases, with MANIFEST.tsv
 ```
 
-`SEC_EVIDENCE_DIR` points at `<volume>/stock-screener-data/sec`.
+`SEC_EVIDENCE_DIR` points at `<volume>/stock-screener-data/sec`. That is the
+**legacy colocated layout**: `manifests/`, `checkpoints/` and `derived/` sit
+beside the artifacts on the same volume. Since B2.5 the control plane can — and
+for any new corpus should — live elsewhere; see below.
 
 ### Paths beneath the evidence root
 
@@ -264,6 +272,125 @@ HARDEN LOCAL CONTROL PLANE**, not work performed by this checkpoint.
 Regression suites: `test_storage_contract.py`, `test_storage_local.py`,
 `test_storage_equivalence.py`, `test_storage_neutral.py`, plus the existing
 `test_sec_evidence_*` tests.
+
+## B2.5 control plane
+
+The SSD loss in Phase 9L.6 was two losses in one. The 19,350 harvested filings
+were the recoverable half — the SEC still serves them. The manifest that said
+which URL produced each file, the checkpoints that said which 17 batches were
+complete, and the frozen plan that said what remained were the irreplaceable
+half, and they sat on the same drive. B2.5 separates them.
+
+### The two planes
+
+| Plane | Holds | Root | Access |
+| --- | --- | --- | --- |
+| **Artifact** | `filings/`, `submissions/`, `fulltext/` | `SEC_EVIDENCE_DIR` today; an object store later | `EvidenceStorage` and logical keys, nothing else |
+| **Control** | `manifests/evidence.jsonl`, `checkpoints/`, `plans/`, `migration/` (reserved), `derived/` | `SEC_CONTROL_DIR` | local filesystem, through `EvidenceControlRoot` |
+
+The manifest is control-plane data whose `path` field is an artifact-plane
+key. It records *which* artifact, never *where*: the same manifest line is
+written whether the artifact landed on a local directory or, later, in a
+bucket, and the control plane never lists, reads or writes an artifact to do
+its job. `test_no_control_plane_operation_lists_the_artifact_namespace` holds
+that.
+
+### Critical versus rebuildable
+
+Not everything under the control root is equally precious.
+
+| Subtree | Classification | Lose it and… |
+| --- | --- | --- |
+| `manifests/` | **critical** | the corpus has no provenance; every byte must be refetched to be vouched for |
+| `checkpoints/` | **critical** | a sweep cannot prove which batches completed |
+| `plans/` | **critical** | the frozen target set (Plan A3 and its remainder) is gone |
+| `migration/` | **critical**, reserved | a future artifact migration cannot say what it moved |
+| `derived/` — `sec_evidence_index.db`, `corpus-fingerprint.json` | **rebuildable** | run the offline extraction again; nothing is lost |
+
+`sec_evidence_index.db` is a reproducible derived artifact and not source
+evidence: the manifest plus the artifact corpus is the source of truth, and the
+index is recomputed from them. It stays a local cache under `derived/` and is
+never uploaded or mirrored. The fingerprint describes the corpus an index was
+built from and is classified with the index.
+
+### Resolving the control root
+
+`SEC_CONTROL_DIR` is inspected the way `SEC_EVIDENCE_DIR` is, and for the same
+reason: a control root that could be conjured on the boot disk when the
+configured one was unreachable would be a second, empty source of truth.
+
+| State | Means | Result |
+| --- | --- | --- |
+| `UNCONFIGURED` | unset | the **legacy colocated layout** — control plane beneath the artifact root, reported as a shared failure domain |
+| `UNAVAILABLE` | the path does not exist | raises; **never created** |
+| `NOT_A_DIRECTORY` | it exists and is a file | raises |
+| `AVAILABLE` | a directory | `manifests/` and `checkpoints/` are created beneath it; `plans/`, `migration/` and `derived/` appear when something writes them |
+
+A relative value resolves against the working directory, so `.evidence` (which
+`.gitignore` covers) puts the control plane in the project on the boot disk.
+The fallback exists so that existing corpora and development setups keep
+working unchanged; it is transitional, and `evidence status`, `harvest`,
+`harvest-manifest` and `sweep` all print which arrangement is in force. When a
+configured control root sits on the same device as the artifact root — a
+different directory on the same external drive — the layout prints a warning,
+decided from the device number rather than the path.
+
+### Two absences that must not be confused
+
+An unwritten manifest in a present directory is first-time initialisation and
+reads as empty. A manifest whose *directory* has gone is the control plane
+being unavailable, and reading it as empty would present a corpus of a hundred
+thousand vouched artifacts as a corpus of none. `Manifest.entries()` and
+`Manifest.append()` raise `ControlPlaneUnavailableError` in the second case and
+never create the directory. `load_checkpoint` draws the same line: a missing
+file in a present `checkpoints/` is a chunk never attempted; a missing
+`checkpoints/` is an unavailable control root, not a sweep that should start
+again from batch one.
+
+### What each failure looks like now
+
+| Scenario | Manifest, checkpoints, plans | Artifact operations |
+| --- | --- | --- |
+| artifact root gone, control root healthy | readable — recovery can be planned from them | `StorageUnavailableError`; no refetch into thin air, no request spent |
+| control root gone, artifact root healthy | `ControlPlaneUnavailableError`; nothing created, nothing assumed | untouched |
+| legacy colocated root gone | both gone together — the arrangement being retired | both raise |
+
+### Capacity is a local-backend question
+
+The sweep's free-space reserve is a property of a disk. `EvidenceStorage` does
+not carry it — an object store has no free bytes worth reporting, and a
+contract that demanded a number would get an invented one. `LocalEvidenceStorage`
+exposes `free_bytes()` on its own, the `LocalCapacity` protocol names that
+ability, and `preflight_corpus` checks the reserve only against a backend that
+has it. The corpus reconciliation gate runs against every backend alike.
+
+### `EvidenceRoot` after B2.5
+
+`EvidenceRoot` is the legacy layout as an object: an `EvidenceControlRoot`
+(manifest, checkpoints, derived beneath it) that is also, structurally, an
+`EvidenceStorage` (the local backend at the same path). `open_control_root`
+returns it unchanged as the fallback. Production wiring opens both roots and
+hands artifact-plane functions the root and control-plane functions the
+control root; only the fallback makes them the same object, and `colocated`
+says so.
+
+| Responsibility | Disposition |
+| --- | --- |
+| local artifact backend (`.storage`, six delegated operations, `free_bytes`) | keep — this is the local backend's home |
+| control-plane paths (`manifests`, `checkpoints`, `derived`, `manifest_path`) | inherited from `EvidenceControlRoot`; used only in the colocated fallback |
+| `harvest()`, `preflight()`, `free_bytes()` module-level compatibility forms | keep for the colocated layout and tests; production wiring uses `harvest_artifacts` and `preflight_corpus` |
+| `filing_path`, `submissions_path`, `fulltext_path` | deprecated compatibility helpers, zero production callers; remove once the tests that inspect the legacy layout no longer need them |
+| the fallback itself | remove when no corpus uses the colocated layout |
+
+### What did not change
+
+Manifest fields, JSONL ordering, per-entry fsync, `Entry.path` as a logical
+key, SHA-256 and byte semantics, checkpoint schema and resume rules, plan and
+target-manifest formats and their digests, `ARTIFACT_PREFIXES`, reconciliation
+counters, and every artifact-plane operation. No file was moved: an existing
+corpus keeps its colocated layout until an operator relocates its control
+files deliberately. `FTD_CACHE_DIR` remains a separate, redownloadable local
+cache outside both planes.
 
 ## Future staging databases
 

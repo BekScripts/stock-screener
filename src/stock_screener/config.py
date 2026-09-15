@@ -113,6 +113,24 @@ class Settings(BaseSettings):
             "papering over. See `docs/reference/storage-layout.md`."
         ),
     )
+    sec_control_dir: str | None = Field(
+        default=None,
+        description=(
+            "Root of the SEC evidence *control plane* — the provenance manifest, "
+            "sweep checkpoints, frozen plans and target manifests, and the "
+            "rebuildable derived index. Small, and the only record of what the "
+            "corpus is: Phase 9L.6 lost a drive that held both the artifacts and "
+            "this metadata, and the metadata was the irreplaceable half. Point it "
+            "at the boot disk or another volume than `SEC_EVIDENCE_DIR`. The "
+            "directory must already exist; it is never created, so an unmounted "
+            "volume raises rather than starting an empty second control plane. "
+            "**Unset means the legacy colocated layout**: the control plane lives "
+            "beneath `SEC_EVIDENCE_DIR`, which is how every corpus harvested "
+            "before B2.5 is laid out. That fallback is transitional and is "
+            "reported wherever the layout is printed. See "
+            "`docs/reference/storage-layout.md`."
+        ),
+    )
     fixture_path: str = Field(
         default="fixtures/sample_universe.json",
         description="Fixture file the mock providers read when selected.",
