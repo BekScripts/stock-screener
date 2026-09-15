@@ -33,6 +33,7 @@ FxProviderName = Literal["ecb", "ecb+fallback", "none", "mock"]
 ResearchProviderName = Literal["anthropic", "mock"]
 ExternalResearchProviderName = Literal["tavily", "mock", "none"]
 DeepResearchProviderName = Literal["anthropic", "mock"]
+StorageBackendName = Literal["local", "b2"]
 
 
 class Settings(BaseSettings):
@@ -99,18 +100,36 @@ class Settings(BaseSettings):
             "from disk rather than downloading them from a free public server again."
         ),
     )
+    sec_storage_backend: StorageBackendName = Field(
+        default="local",
+        description=(
+            "Which backend holds SEC evidence artifacts. `local` is a directory "
+            "at `SEC_EVIDENCE_DIR`; `b2` is a Backblaze B2 bucket described by the "
+            "`B2_*` settings, which does not use `SEC_EVIDENCE_DIR` at all. The "
+            "selection is explicit and never inferred: credentials being present "
+            "does not choose `b2`, and credentials being absent does not choose "
+            "`local`. A `b2` run whose configuration is incomplete stops rather "
+            "than writing evidence to a local directory instead. The default "
+            "exists for the corpora and development setups that predate the "
+            "setting and is reported as a default wherever the layout is printed; "
+            "production configuration should set it. The control plane "
+            "(`SEC_CONTROL_DIR`) is local under either backend."
+        ),
+    )
     sec_evidence_dir: str | None = Field(
         default=None,
         description=(
             "Root of the SEC evidence corpus — filings, submissions, full-text "
-            "responses and their provenance manifests. **Deliberately has no "
-            "default.** The corpus runs to hundreds of gigabytes and belongs on "
-            "external storage; a default pointing at the working tree would let a "
-            "harvest quietly fill the boot disk, and a default pointing at a "
-            "volume that is not mounted would let one silently start writing a "
-            "fresh empty cache beside the real one. Unset means 'not configured', "
-            "which `resolve_sec_evidence_dir` reports as an error rather than "
-            "papering over. See `docs/reference/storage-layout.md`."
+            "responses — when `SEC_STORAGE_BACKEND=local`, and the legacy home of "
+            "its provenance manifest. **Deliberately has no default.** The corpus "
+            "runs to hundreds of gigabytes and belongs on external storage; a "
+            "default pointing at the working tree would let a harvest quietly "
+            "fill the boot disk, and a default pointing at a volume that is not "
+            "mounted would let one silently start writing a fresh empty cache "
+            "beside the real one. Unset means 'not configured', which "
+            "`resolve_sec_evidence_dir` reports as an error rather than papering "
+            "over. Ignored by the `b2` backend. See "
+            "`docs/reference/storage-layout.md`."
         ),
     )
     sec_control_dir: str | None = Field(
@@ -129,6 +148,42 @@ class Settings(BaseSettings):
             "before B2.5 is laid out. That fallback is transitional and is "
             "reported wherever the layout is printed. See "
             "`docs/reference/storage-layout.md`."
+        ),
+    )
+    b2_endpoint_url: str | None = Field(
+        default=None,
+        description=(
+            "Backblaze B2 S3-compatible endpoint, e.g. "
+            "`https://s3.<region>.backblazeb2.com` — the region is part of the "
+            "hostname Backblaze assigns the bucket. Must be `https`, with no "
+            "embedded credentials and no query string. Required when "
+            "`SEC_STORAGE_BACKEND=b2`; otherwise unused."
+        ),
+    )
+    b2_bucket: str | None = Field(
+        default=None,
+        description=(
+            "The B2 bucket holding the artifact plane: `filings/`, "
+            "`submissions/` and `fulltext/` as key prefixes, exactly as the local "
+            "layout names them. A bucket name, not a URL. Required when "
+            "`SEC_STORAGE_BACKEND=b2`."
+        ),
+    )
+    b2_key_id: SecretStr | None = Field(
+        default=None,
+        description=(
+            "The B2 application key ID, presented to the S3-compatible API as the "
+            "access key ID. Treated as a secret so it never reaches a log line. "
+            "Required when `SEC_STORAGE_BACKEND=b2`."
+        ),
+    )
+    b2_application_key: SecretStr | None = Field(
+        default=None,
+        description=(
+            "The B2 application key, presented to the S3-compatible API as the "
+            "secret access key. Never printed, never logged, never written to a "
+            "manifest, checkpoint or plan. Required when "
+            "`SEC_STORAGE_BACKEND=b2`."
         ),
     )
     fixture_path: str = Field(

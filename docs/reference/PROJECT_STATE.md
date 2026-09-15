@@ -36,16 +36,20 @@ appears without the run or the test that produced it.
 
 ## Current phase
 
-**B2.5 — relocate and harden the local control plane** is the current
-checkpoint on `feat/phase-b2-storage-abstraction`, on top of B2.2–B2.4's storage
-abstraction. The artifact lifecycle runs through `EvidenceStorage`; the control
-plane — manifest, checkpoints, plans, derived index — has a root of its own,
-`SEC_CONTROL_DIR`, so losing the artifact volume no longer loses the record of
-what it held. See [Storage layout](storage-layout.md#b25-control-plane) for the
-two planes, the resolution rules and the failure-domain tests, and
-[the B2.2–B2.4 section](storage-layout.md#b22b24-storage-contract-checkpoint)
-for exception, parser, counter and boundary policies. The pre-refactor rollback
-point is `pre-b2-ssd-state` (`13d586b10dfc077325b2729602a30b74d01a8af0`).
+**B2.6 — Backblaze B2 configuration and credentials boundary** is the current
+checkpoint on `feat/phase-b2-storage-abstraction`. B2.5 (`071c1cd`) separated
+the control plane; B2.6 adds `SEC_STORAGE_BACKEND` (`local` | `b2`), the
+`B2_*` settings, offline validation of them, and one construction point —
+`open_evidence_layout` — from which every evidence command receives an
+`EvidenceStorage`. **No B2 backend exists yet**: selecting `b2` with a complete
+configuration reaches the seam and raises `NotImplementedError` naming B2.7.
+No SDK is installed, nothing has contacted Backblaze, no corpus has been
+migrated, and Plan A3 remains paused. See
+[B2.6](storage-layout.md#b26-backend-selection-and-the-b2-configuration-boundary),
+[B2.5](storage-layout.md#b25-control-plane) and
+[B2.2–B2.4](storage-layout.md#b22b24-storage-contract-checkpoint) in the
+storage layout reference. The pre-refactor rollback point is `pre-b2-ssd-state`
+(`13d586b10dfc077325b2729602a30b74d01a8af0`).
 
 **Phases 1 through 7 are complete. All of them are frozen.** The MVP finished at
 Phase 5; Phases 6 and 7 are layers over it, not revisions of it.
@@ -261,6 +265,29 @@ data alone. `compounder_radar.db` has received none of it.
 - **`sec_evidence_index.db` is rebuildable, not evidence.** The manifest plus
   the artifact corpus is the source of truth; the index and its fingerprint are
   a local cache under `derived/` and are never mirrored.
+
+### B2.6 backend selection and credentials
+
+- **The backend is selected, never inferred.** `SEC_STORAGE_BACKEND` is
+  `local` or `b2`; B2 credentials do not choose `b2` and their absence does not
+  choose `local`. Unset means `local` for configurations that predate the
+  setting, and every evidence command reports that as a default.
+- **A `b2` run never falls back to a local directory.** Incomplete or
+  malformed B2 configuration is a `StorageConfigurationError` before any
+  backend exists; a configured local root does not rescue it. The backend
+  chosen for a run is the backend for the whole run.
+- **B2 configuration is validated offline.** Presence, shape and coherence
+  only — `https` endpoint with no embedded credentials, a bucket *name*, both
+  credentials present. No authentication, HEAD or listing during validation.
+- **Secrets stay in `Settings`.** `B2_KEY_ID` and `B2_APPLICATION_KEY` are
+  `SecretStr`; no `repr`, log, error or status line carries their values, and
+  status reports `configured`/`MISSING` only. Credentials come from the
+  environment; there is no credentials file.
+- **`b2` still requires `SEC_CONTROL_DIR`.** The legacy colocated fallback
+  belongs to the local backend alone.
+- **One construction point.** `open_evidence_layout` builds the backend;
+  downstream code takes `EvidenceStorage`. The contract gains no B2 method,
+  and ETag is never SHA-256.
 
 These are load-bearing. Each is enforced by structure or by a test, not by
 convention, and none may be relaxed without an explicit instruction.
@@ -1379,6 +1406,22 @@ Documented rather than fixed. Each is a deliberate stop, not a backlog item.
 
 Measured runs, kept because they are the evidence behind decisions above.
 
+### B2.6 configuration boundary — 2026-09-15
+
+- `tests/integration/test_storage_configuration.py`: **51 passed**, offline.
+  Selector defaulted/explicit/invalid; credentials alone do not select `b2`; a
+  local root does not pull a `b2` run back; each missing `B2_*` setting named,
+  all at once; six malformed endpoints and six non-bucket-names refused; an
+  unfamiliar https host accepted with no derived region; incomplete `b2` with a
+  local root available raises and touches neither root; a complete `b2`
+  configuration opens the control root and stops at the B2.7 seam; `b2` with
+  no or a missing control root raises and creates nothing; a known application
+  key absent from `repr`, `str`, `describe()`, four error messages, captured
+  logs and every status output; status for local separated, legacy colocated,
+  `b2` configured, `b2` missing a setting, `b2` without a control root, and a
+  misconfigured `b2` harvest stopping with a `StorageConfigurationError`.
+- Every pre-B2.6 evidence suite passed unmodified.
+
 ### B2.5 control-plane separation — 2026-09-15
 
 - `tests/integration/test_control_plane.py`: **35 passed**. Artifact root
@@ -1470,7 +1513,9 @@ sibling orphan detection. B2.5 adds `test_control_plane.py`: control-root
 resolution without creation, unwritten-versus-gone for manifests and
 checkpoints, the separated-root lifecycle, both failure-domain halves, the
 legacy colocated layout, and backend-neutral preflight. Existing SEC evidence
-regression suites remain gates.
+regression suites remain gates. B2.6 adds `test_storage_configuration.py`:
+explicit backend selection, no local fallback from `b2`, offline B2 validation,
+and credential non-leakage across `repr`, errors, logs and status output.
 
 These must keep passing. Each one encodes a decision that cost something to
 learn.
@@ -1560,11 +1605,13 @@ under **80%**. It is what CI runs; run it rather than the individual tools.
 
 ## Next phase
 
-**B2.6** follows this checkpoint — either the Backblaze B2 configuration and
-credentials boundary, or the `B2EvidenceStorage` implementation, decided
-separately. Neither has been started. Relocating the BEK corpus's control files
-into a `SEC_CONTROL_DIR`, mirroring control metadata remotely, evidence
-migration and Plan A3 remain outside this checkpoint's authorization.
+**B2.7 — implement `B2EvidenceStorage` against the existing `EvidenceStorage`
+contract** follows this checkpoint, using the S3-compatible API through `boto3`
+(the reasoning is in the storage layout reference). It has not been started:
+no SDK is installed and `open_evidence_storage` raises `NotImplementedError`
+for `b2`. Relocating the BEK corpus's control files into a `SEC_CONTROL_DIR`,
+mirroring control metadata remotely, evidence migration and Plan A3 remain
+outside this checkpoint's authorization.
 
 Two pieces of work are *identified* but not authorised, and neither is to be
 started without being asked:
@@ -1605,10 +1652,10 @@ Not a backlog. These exclusions are deliberate.
 
 **Do not touch:**
 
-- B2.4 and B2.5 leave `COMPOUNDER_V1_2`, `MARKET_SIGNALS_V1`,
+- B2.4, B2.5 and B2.6 leave `COMPOUNDER_V1_2`, `MARKET_SIGNALS_V1`,
   `ResearchUniverseMonth`, PIT identity semantics, Plan A3, forward returns,
-  price history and database schema frozen. No BEK access, credentials, corpus
-  migration or SDK additions.
+  price history and database schema frozen. No BEK access, no credentials
+  created, no corpus migration, no SDK additions.
 - any scoring file, without a new `score_version` and a doc change in the same
   commit
 - a Phase 3 enum or class — `deep-research` imports them, never extends them
@@ -1631,7 +1678,7 @@ Not a backlog. These exclusions are deliberate.
 
 | | |
 | --- | --- |
-| Commit | The B2.5 commit containing this checkpoint, `refactor: separate SEC evidence control plane`; parent `1b56b86` (B2.2–B2.4, `refactor: decouple SEC evidence artifacts from local storage`) |
+| Commit | The B2.6 commit containing this checkpoint, `feat: add Backblaze B2 storage configuration`; parent `071c1cd` (B2.5, `refactor: separate SEC evidence control plane`) |
 | Branch | `feat/phase-b2-storage-abstraction` |
 | Migration head | `0031` — the research-universe layer (9K.7). Nothing since 9K.11 added one. |
 | Score version | `COMPOUNDER_V1_2` (unchanged by anything in Phase 8, 9A, 9B or 9C) |

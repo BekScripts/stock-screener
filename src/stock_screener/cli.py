@@ -147,22 +147,24 @@ from stock_screener.sec_evidence import (
     ControlPlaneUnavailableError,
     ControlState,
     EvidenceControlRoot,
-    EvidenceRoot,
+    EvidenceStorage,
     HarvestReport,
     LocalCapacity,
+    LocalEvidenceStorage,
     Manifest,
     Selection,
+    StorageBackend,
     SweepError,
     checkpoint_path,
     derived_root,
+    describe_storage,
     filing_targets,
     guard_selection,
     harvest_artifacts,
     inspect_control_dir,
     load_checkpoint,
     new_urls_since,
-    open_control_root,
-    open_evidence_root,
+    open_evidence_layout,
     preflight_corpus,
     prior_sample,
     reconcile,
@@ -171,6 +173,7 @@ from stock_screener.sec_evidence import (
     save_checkpoint,
     select_universe,
     selection_digest,
+    storage_backend,
     submissions_targets,
     verify_digests_of,
 )
@@ -1519,22 +1522,39 @@ def evidence_status_command() -> None:
     without reading a traceback.
     """
     settings = _bootstrap()
-    state, path = inspect_sec_evidence_dir(settings)
-    typer.echo("artifact backend : local")
-    typer.echo(f"artifact root    : {path if path is not None else '(unset)'}")
-    typer.echo(f"artifact state   : {state}")
-    if state is not EvidenceState.UNCONFIGURED and path is not None:
-        for name in ARTIFACT_PREFIXES:
-            child = path / name
-            typer.echo(f"  {name:<14} {'present' if child.is_dir() else 'absent'}")
+    backend = storage_backend(settings)
+    description = describe_storage(settings)
+    for label, text in description:
+        typer.echo(f"{label:<17}: {text}")
+    failed = any(label == "b2 state" and text.startswith("INVALID") for label, text in description)
+
+    # The local root is inspected only when it is the artifact backend. Under
+    # b2 it is unused, and reporting it would suggest a fallback that does
+    # not exist.
+    state: EvidenceState | None = None
+    path: Path | None = None
+    if backend is StorageBackend.LOCAL:
+        state, path = inspect_sec_evidence_dir(settings)
+        typer.echo(f"artifact root    : {path if path is not None else '(unset)'}")
+        typer.echo(f"artifact state   : {state}")
+        if state is not EvidenceState.UNCONFIGURED and path is not None:
+            for name in ARTIFACT_PREFIXES:
+                child = path / name
+                typer.echo(f"  {name:<14} {'present' if child.is_dir() else 'absent'}")
 
     control_state, control_path = inspect_control_dir(settings)
-    if control_state is ControlState.UNCONFIGURED:
+    if control_state is ControlState.UNCONFIGURED and backend is StorageBackend.LOCAL:
         typer.echo("control root     : (unset) — LEGACY: colocated beneath the artifact root")
         typer.echo(
             "control state    : shared failure domain with the artifacts; set SEC_CONTROL_DIR"
         )
         control_path = path
+    elif control_state is ControlState.UNCONFIGURED:
+        typer.echo("control root     : (unset)")
+        typer.echo(
+            "control state    : UNCONFIGURED — SEC_STORAGE_BACKEND=b2 requires SEC_CONTROL_DIR"
+        )
+        failed = True
     else:
         typer.echo(f"control root     : {control_path}")
         typer.echo(f"control state    : {control_state}")
@@ -1552,11 +1572,16 @@ def evidence_status_command() -> None:
         ):
             typer.echo("WARNING          : control root shares a volume with the artifact root")
 
-    if state in {
-        EvidenceState.UNCONFIGURED,
-        EvidenceState.UNAVAILABLE,
-        EvidenceState.NOT_A_DIRECTORY,
-    } or control_state in {ControlState.UNAVAILABLE, ControlState.NOT_A_DIRECTORY}:
+    if (
+        failed
+        or state
+        in {
+            EvidenceState.UNCONFIGURED,
+            EvidenceState.UNAVAILABLE,
+            EvidenceState.NOT_A_DIRECTORY,
+        }
+        or control_state in {ControlState.UNAVAILABLE, ControlState.NOT_A_DIRECTORY}
+    ):
         raise typer.Exit(code=1)
 
 
@@ -1649,7 +1674,7 @@ def evidence_harvest_command(
     included, so it is safe against an evidence root you are unsure about.
     """
     settings = _bootstrap()
-    root, control = _open_layout(settings)
+    storage, control = _open_layout(settings)
 
     with _database(settings) as factory, session_scope(factory) as session:
         selections = select_universe(session, production=production, offset=offset, limit=limit)
@@ -1679,7 +1704,7 @@ def evidence_harvest_command(
     )
 
     targets = submissions_targets(resolutions)
-    expanded = filing_targets(root, resolutions, filings_per_security=filings_per_security)
+    expanded = filing_targets(storage, resolutions, filings_per_security=filings_per_security)
     targets += expanded
     typer.echo(
         f"targets       : {len(targets)} ({len(targets) - len(expanded)} submissions, "
@@ -1693,7 +1718,7 @@ def evidence_harvest_command(
     try:
         report = harvest_artifacts(
             targets,
-            root,
+            storage,
             Manifest(control.manifest_path),
             documents,
             budget=budget,
@@ -1746,7 +1771,7 @@ def evidence_harvest_manifest_command(
     are all held issues zero HTTP requests.
     """
     settings = _bootstrap()
-    root, control = _open_layout(settings)
+    storage, control = _open_layout(settings)
     manifest = Manifest(control.manifest_path)
     index = derived_root(control) / "sec_evidence_index.db"
     if not index.is_file():
@@ -1792,11 +1817,11 @@ def evidence_harvest_manifest_command(
         typer.echo(f"  unresolved e.g. {[t.key for t in unresolved][:3]}")
 
     try:
-        preflight_corpus(root, manifest, min_free_bytes=min_free_bytes, verify_digests=False)
+        preflight_corpus(storage, manifest, min_free_bytes=min_free_bytes, verify_digests=False)
     except SweepError as exc:
         typer.echo(f"STOPPED: {exc}")
         raise typer.Exit(code=1) from exc
-    _echo_free(root)
+    _echo_free(storage)
 
     if dry_run:
         typer.echo("dry run — manifest verified, no request issued and nothing written")
@@ -1805,7 +1830,7 @@ def evidence_harvest_manifest_command(
     budget = Budget(max_requests=max_requests, max_bytes=max_bytes)
     documents = _sec_documents(settings, budget)
     try:
-        report = harvest_artifacts(resolved, root, manifest, documents, budget=budget)
+        report = harvest_artifacts(resolved, storage, manifest, documents, budget=budget)
     finally:
         documents.close()
 
@@ -1850,7 +1875,7 @@ def evidence_sweep_command(
     from whether one chunk is safe, and this command does not make it.
     """
     settings = _bootstrap()
-    root, control = _open_layout(settings)
+    storage, control = _open_layout(settings)
     manifest = Manifest(control.manifest_path)
     marker = checkpoint_path(control, offset, limit)
 
@@ -1873,12 +1898,12 @@ def evidence_sweep_command(
         # orphan, a missing file, a size mismatch, a stray temporary and a path
         # that contradicts its URL; digests are verified in full once the chunk
         # is otherwise done, below.
-        preflight_corpus(root, manifest, min_free_bytes=min_free_bytes, verify_digests=False)
+        preflight_corpus(storage, manifest, min_free_bytes=min_free_bytes, verify_digests=False)
     except SweepError as exc:
         typer.echo(f"STOPPED: {exc}")
         raise typer.Exit(code=1) from exc
 
-    before = _echo_free(root)
+    before = _echo_free(storage)
 
     if dry_run:
         typer.echo("dry run — preflight passed, no requests issued and nothing written")
@@ -1898,14 +1923,14 @@ def evidence_sweep_command(
     for name, stage in (("pass1", ChunkStage.PASS1_DONE), ("pass2", ChunkStage.PASS2_DONE)):
         typer.echo(f"--- {name} ---")
         report = _sweep_pass(
-            settings, root, manifest, selections, filings_per_security, max_requests, max_bytes
+            settings, storage, manifest, selections, filings_per_security, max_requests, max_bytes
         )
         typer.echo(f"  {report.summary()}")
         checkpoint.requests[name] = report.requests_made
         checkpoint.bytes_stored[name] = report.bytes_written
         checkpoint.stage = stage
         save_checkpoint(marker, checkpoint)
-        state = reconcile(root, manifest, verify_digests=False)
+        state = reconcile(storage, manifest, verify_digests=False)
         if not state.clean:
             checkpoint.stage = ChunkStage.FAILED
             checkpoint.notes.append(f"{name} reconciliation failed: {state.problems}")
@@ -1915,7 +1940,7 @@ def evidence_sweep_command(
 
     typer.echo("--- convergence ---")
     final = _sweep_pass(
-        settings, root, manifest, selections, filings_per_security, max_requests, max_bytes
+        settings, storage, manifest, selections, filings_per_security, max_requests, max_bytes
     )
     converged = final.bytes_written == 0
     typer.echo(f"  {final.summary()}")
@@ -1927,7 +1952,7 @@ def evidence_sweep_command(
         raise typer.Exit(code=1)
 
     typer.echo("--- verification ---")
-    verified = reconcile(root, manifest, verify_digests=full_verify)
+    verified = reconcile(storage, manifest, verify_digests=full_verify)
     typer.echo(f"  {verified.summary()}")
     if not verified.clean:
         checkpoint.stage = ChunkStage.FAILED
@@ -1956,8 +1981,8 @@ def evidence_sweep_command(
         fresh = [entry for entry in trusted if entry.url in fresh_urls]
         sample = prior_sample(trusted, exclude=fresh_urls)
         results = {
-            "new": verify_digests_of(root, fresh),
-            "sample": verify_digests_of(root, sample),
+            "new": verify_digests_of(storage, fresh),
+            "sample": verify_digests_of(storage, sample),
         }
         for tier, result in results.items():
             typer.echo(f"  {tier}: " + ", ".join(f"{k}={v}" for k, v in sorted(result.items())))
@@ -1983,38 +2008,41 @@ def evidence_sweep_command(
             f"max(500, 5%) = {len(sample)} of {len(trusted) - len(fresh_urls)}"
         )
 
-    checkpoint.free_after = _local_free(root)
+    checkpoint.free_after = _local_free(storage)
     checkpoint.completed_at = datetime.now(UTC).isoformat()
     checkpoint.stage = ChunkStage.COMPLETE
     save_checkpoint(marker, checkpoint)
     typer.echo(f"CHUNK COMPLETE — checkpoint {marker}")
 
 
-def _open_layout(settings: Settings) -> tuple[EvidenceRoot, EvidenceControlRoot]:
-    """Open both planes and say where each one is.
+def _open_layout(settings: Settings) -> tuple[EvidenceStorage, EvidenceControlRoot]:
+    """Choose the artifact backend once and open both planes.
 
-    The artifact root is the local backend; the control root is wherever
-    `SEC_CONTROL_DIR` points, or — transitionally — the artifact root itself
-    when it is unset. Printed every time, because a layout that shares one
-    failure domain is a fact the operator should keep seeing.
+    `open_evidence_layout` is the single place a backend is constructed from
+    configuration; everything after this line takes an `EvidenceStorage` and
+    cannot tell a directory from a bucket. The layout is printed every time,
+    because a control root that shares one failure domain with the artifacts
+    is a fact the operator should keep seeing.
     """
-    root = open_evidence_root(settings)
     try:
-        control = open_control_root(settings, colocate_with=root)
+        layout = open_evidence_layout(settings)
     except ControlPlaneUnavailableError as exc:
         typer.echo(f"STOPPED: {exc}")
         raise typer.Exit(code=1) from exc
-    typer.echo("artifact backend : local")
-    typer.echo(f"artifact root    : {root.path}")
+    storage, control = layout.storage, layout.control
+    defaulted = " (defaulted — set SEC_STORAGE_BACKEND)" if layout.backend_defaulted else ""
+    typer.echo(f"artifact backend : {layout.backend}{defaulted}")
+    if isinstance(storage, LocalEvidenceStorage):
+        typer.echo(f"artifact root    : {storage.root}")
     if control.colocated:
         typer.echo(f"control root     : {control.path} — LEGACY: colocated with the artifacts")
     else:
         typer.echo(f"control root     : {control.path}")
-        if same_volume(control.path, root.path):
+        if isinstance(storage, LocalEvidenceStorage) and same_volume(control.path, storage.root):
             typer.echo("WARNING          : control root shares a volume with the artifact root")
     typer.echo(f"manifest         : {control.manifest_path}")
     typer.echo(f"checkpoints      : {control.checkpoints}")
-    return root, control
+    return storage, control
 
 
 def _local_free(storage: object) -> int:
@@ -2032,7 +2060,7 @@ def _echo_free(storage: object) -> int:
 
 def _sweep_pass(
     settings: Settings,
-    root: EvidenceRoot,
+    storage: EvidenceStorage,
     manifest: Manifest,
     selections: Sequence[Selection],
     filings_per_security: int,
@@ -2047,13 +2075,13 @@ def _sweep_pass(
     finally:
         resolver.close()
     targets = submissions_targets(resolutions)
-    targets += filing_targets(root, resolutions, filings_per_security=filings_per_security)
+    targets += filing_targets(storage, resolutions, filings_per_security=filings_per_security)
     documents = _sec_documents(settings, budget)
     try:
         # A sweep pass always fetches; the command's own --dry-run returns before
         # reaching here. `resume` governs cache trust inside `harvest`, which is
         # its default behaviour, so there is nothing to pass through.
-        return harvest_artifacts(targets, root, manifest, documents, budget=budget)
+        return harvest_artifacts(targets, storage, manifest, documents, budget=budget)
     finally:
         documents.close()
 

@@ -25,8 +25,10 @@ defaulted to a local path would fill it.
 | --- | --- | --- |
 | `DATABASE_URL` | `sqlite:///./compounder_radar.db` | the database the application reads and writes |
 | `FTD_CACHE_DIR` | `.cache/sec-ftd` | SEC fails-to-deliver archives, ~600 MB over 433 files |
-| `SEC_EVIDENCE_DIR` | **none** | root of the SEC evidence corpus — the *artifact plane* |
-| `SEC_CONTROL_DIR` | **none** (legacy colocated layout) | root of the evidence *control plane* — manifest, checkpoints, plans, derived index |
+| `SEC_STORAGE_BACKEND` | `local` (reported as a default) | which backend holds the *artifact plane*: `local` or `b2` |
+| `SEC_EVIDENCE_DIR` | **none** | root of the SEC evidence corpus when the backend is `local`; ignored by `b2` |
+| `SEC_CONTROL_DIR` | **none** (legacy colocated layout) | root of the evidence *control plane* — manifest, checkpoints, plans, derived index; local under either backend |
+| `B2_ENDPOINT_URL`, `B2_BUCKET`, `B2_KEY_ID`, `B2_APPLICATION_KEY` | **none** | the Backblaze bucket, when the backend is `b2` — see [B2.6](#b26-backend-selection-and-the-b2-configuration-boundary) |
 
 `SEC_EVIDENCE_DIR` having no default is the point, not an oversight. So is
 `SEC_CONTROL_DIR` having no default of its own: unset means the control plane
@@ -391,6 +393,160 @@ counters, and every artifact-plane operation. No file was moved: an existing
 corpus keeps its colocated layout until an operator relocates its control
 files deliberately. `FTD_CACHE_DIR` remains a separate, redownloadable local
 cache outside both planes.
+
+## B2.6 backend selection and the B2 configuration boundary
+
+B2.6 adds the decision of *which* backend holds the artifact plane, and the
+settings a Backblaze backend will need. It adds no backend: `b2` is
+configurable and validated, and constructing it raises `NotImplementedError`
+naming B2.7. No SDK is installed and nothing contacts Backblaze.
+
+### Selection is explicit and fails closed
+
+`SEC_STORAGE_BACKEND` is `local` or `b2`, and anything else is refused when
+settings load. Nothing is inferred from what else is set:
+
+| Situation | Result |
+| --- | --- |
+| selector unset | `local`, reported as `(defaulted — set SEC_STORAGE_BACKEND)` by every evidence command; kept for configurations that predate the setting |
+| `local`, `SEC_EVIDENCE_DIR` unusable | the existing root rules apply unchanged — `EvidenceUnavailableError`, root never created |
+| `local`, every `B2_*` value present | still `local`; credentials do not select a backend |
+| `b2`, configuration complete, a local root also configured | `b2`; the local root is not opened, not touched, not a fallback |
+| `b2`, configuration incomplete or malformed | `StorageConfigurationError` naming the setting, before any backend exists; **never** `LocalEvidenceStorage` in its place |
+| `b2`, `SEC_CONTROL_DIR` unset or missing | `ControlPlaneUnavailableError`; the legacy colocated fallback belongs to `local` alone |
+
+The backend chosen for a run is the backend for the whole run. No code path
+writes artifacts locally "temporarily" when a remote backend is unavailable,
+and none will: that would put evidence somewhere the manifest does not
+describe.
+
+### One construction point
+
+`stock_screener.sec_evidence.wiring.open_evidence_layout(settings)` is where a
+backend is built from configuration. It validates the selected backend,
+opens the control root (for either backend — a `b2` run needs somewhere to
+put its manifest before it needs a bucket), constructs the artifact backend,
+and returns an `EvidenceLayout` whose `storage` is typed `EvidenceStorage`.
+The CLI calls it once per command; everything after that line takes an
+`EvidenceStorage` and cannot tell a directory from a bucket. Tests construct
+backends directly.
+
+`StorageConfigurationError` is a `providers.ConfigurationError`, so the CLI
+reports it as one line with exit code 2. It is deliberately not a
+`StorageUnavailableError`: that type means a backend that was configured and
+then could not answer; this one is raised before any backend exists.
+
+### What `b2` requires, and how it is checked
+
+| Setting | Meaning | Offline check |
+| --- | --- | --- |
+| `B2_ENDPOINT_URL` | the S3-compatible endpoint Backblaze assigns, `https://s3.<region>.backblazeb2.com` | `https` scheme; a hostname; no userinfo; no query string or fragment. **No hostname is hardcoded** — an unfamiliar https host is accepted and left to the backend to qualify |
+| `B2_BUCKET` | the bucket holding `filings/`, `submissions/`, `fulltext/` as key prefixes | a bucket *name*: 6 to 63 letters, digits or hyphens — refuses a URL, a path, a blank |
+| `B2_KEY_ID` | the application key ID, used as the S3 access key ID | present and non-blank; held as `SecretStr` |
+| `B2_APPLICATION_KEY` | the application key, used as the S3 secret access key | present and non-blank; held as `SecretStr` |
+
+There is no `B2_REGION`. The signing region is part of the hostname Backblaze
+assigns (`s3.us-west-004.backblazeb2.com` → `us-west-004`) and
+`B2Configuration.region` derives it; a separate setting would be one more thing
+to keep in step with the endpoint. If B2.7 meets an endpoint it cannot derive a
+region from, that is the moment to add one.
+
+Every missing setting is named at once. Validation is a presence and shape
+check only — no authentication, no bucket HEAD, no listing — so a
+misconfiguration surfaces as a one-line message when a command starts, not as
+a stack trace on the first upload.
+
+### Secrets
+
+Both credentials are `SecretStr` in `Settings` and stay wrapped inside
+`B2Configuration`. They do not appear in a `repr`, a log line, an error
+message or status output; errors name the setting, never its value. Status
+prints `endpoint: configured`, `bucket: configured`, `credentials:
+configured` (or `MISSING`) and nothing more — not the endpoint, not the
+bucket name. `test_storage_configuration.py::TestSecretsStayIn` checks each of
+those surfaces with a known application key and asserts it is absent.
+
+Credentials come from the environment through `Settings`, like every other
+provider credential in this project. There is no credentials file, and
+`.gitignore` covers `.env`, `.env.*`, `.evidence/`, `credentials.json`,
+`*.credentials.json` and `*.pem` should one ever be made by hand.
+
+### The future deployment, as configuration
+
+```text
+SEC_STORAGE_BACKEND=b2
+SEC_CONTROL_DIR=/Users/<you>/stock-screener-control     # boot disk, local
+B2_ENDPOINT_URL=https://s3.<region>.backblazeb2.com
+B2_BUCKET=<bucket name>
+B2_KEY_ID=<from the environment, never this file>
+B2_APPLICATION_KEY=<from the environment, never this file>
+```
+
+`SEC_EVIDENCE_DIR` is not part of that deployment. The control plane stays
+local; the manifest it holds records artifact keys that mean the same thing
+in a bucket as they did in a directory.
+
+### Recommendation for B2.7: the S3-compatible API through `boto3`
+
+Three options were weighed for the backend that B2.7 will build.
+
+| Option | For | Against |
+| --- | --- | --- |
+| **`boto3`/`botocore` against the S3-compatible API** | HEAD, GET, PUT, LIST and multipart are standard; retries (`standard` mode) and timeouts are configuration; streaming bodies; SigV4 signing that has been exercised against every S3-compatible store; `botocore.stub.Stubber` for unit tests, and the existing memory backend already proves the contract | a large dependency tree (botocore's service data is tens of megabytes); a second HTTP stack beside `httpx` |
+| native `b2sdk` | large-file upload API; per-upload SHA-1 verification | a vendor-specific auth and API model; verifies SHA-1 where this project's contract is SHA-256; heavier than the S3 path for the four operations needed; no shared test convention |
+| in-house SigV4 over `httpx` | no new dependency; one HTTP stack; `httpx.MockTransport` testing matching every other provider; `RetryPolicy` reuse | signing must be written and maintained; multipart would be ours to build; a signing bug surfaces as an opaque 403 |
+
+**`boto3` on the S3-compatible API is the recommendation.** The deciding
+points are the standard S3 semantics for exactly the six contract operations,
+and a property that falls out of SigV4 for free: a signed PUT carries
+`x-amz-content-sha256` and the server rejects a body that does not hash to
+it, so an upload is verified end to end against *our* digest, not the
+vendor's. Nothing is installed in B2.6; B2.7 adds it with `uv add`. The
+in-house client remains the fallback if the dependency footprint proves
+unacceptable — the corpus has no object near the 5 GB single-PUT limit, so
+multipart is not what would decide it.
+
+Two constraints on that backend, stated now so B2.7 inherits them:
+
+- **ETag is never SHA-256.** `digest()` reads the object and hashes it;
+  `write_bytes()` returns the digest of the bytes it sent. ETag is opaque
+  metadata and no code maps it to a digest, even as a shortcut.
+- **Nothing B2-specific reaches `EvidenceStorage`.** No `bucket`, `etag`,
+  `endpoint`, `multipart` or `presigned_url` on the contract; whatever the
+  backend needs internally stays internal.
+
+### Least privilege for the application key
+
+Create the key for the one bucket, after enabling the S3-compatible API on the
+account (a key created before that, and the master key, do not work with the
+S3 API). Grant:
+
+| Capability | Needed | Why |
+| --- | --- | --- |
+| list files | yes | `list_prefix` — reconciliation and orphan detection |
+| read files | yes | `read_bytes`, `digest`, `stat` — parsing and cache verification |
+| write files | yes | `write_bytes` — harvesting |
+| delete files | **no** | routine evidence operation never deletes; a manifest is append-only and an artifact is never removed. Grant it separately, temporarily, if a migration or cleanup explicitly needs it |
+| list buckets | no | the bucket is named in configuration |
+
+No credential is created in B2.6.
+
+### Bucket layout
+
+```text
+<bucket>/
+├── filings/<cik-padded>/<accession-no-dashes>/<document>
+├── submissions/CIK<cik-padded>.json
+├── fulltext/<query-digest>.json
+└── control/            reserved: a future mirror of manifests/, checkpoints/,
+                        plans/ and migration/ — a separate concern, not the
+                        control plane's home
+```
+
+The artifact prefixes are the local layout's, byte for byte, because they are
+the manifest's `path` keys. A manifest record does not name a bucket, an
+endpoint or a backend, and will not: `Entry.path` is the same string whichever
+backend stored the bytes.
 
 ## Future staging databases
 
