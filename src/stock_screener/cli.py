@@ -17,6 +17,7 @@ from __future__ import annotations
 import csv
 import json
 import sqlite3
+import tempfile
 from contextlib import closing, contextmanager
 from datetime import UTC, date, datetime
 from pathlib import Path
@@ -169,6 +170,7 @@ from stock_screener.sec_evidence import (
     prior_sample,
     reconcile,
     resolve_ciks,
+    run_live_canary,
     same_volume,
     save_checkpoint,
     select_universe,
@@ -1583,6 +1585,56 @@ def evidence_status_command() -> None:
         or control_state in {ControlState.UNAVAILABLE, ControlState.NOT_A_DIRECTORY}
     ):
         raise typer.Exit(code=1)
+
+
+@evidence_app.command("b2-canary")
+def evidence_b2_canary_command(
+    confirm: Annotated[
+        bool,
+        typer.Option(
+            "--confirm",
+            help=(
+                "Required. This command writes to the configured bucket — a few "
+                "synthetic objects under _canary/<run-id>/ — and deletes them afterwards."
+            ),
+        ),
+    ] = False,
+    keep: Annotated[
+        bool,
+        typer.Option("--keep", help="Leave the canary objects in place instead of deleting them."),
+    ] = False,
+) -> None:
+    """Prove the configured Backblaze bucket works, in an isolated namespace.
+
+    The first request that leaves the machine for B2 should be this one. It
+    exercises every storage operation, one real harvest into a temporary
+    control root, a replay and a reconciliation — all under
+    `_canary/<run-id>/`, never under the artifact prefixes — and then removes
+    what it wrote. It fetches nothing from the SEC and touches no production
+    manifest. About two megabytes are written.
+    """
+    settings = _bootstrap()
+    if storage_backend(settings) is not StorageBackend.B2:
+        typer.echo("STOPPED: the canary requires SEC_STORAGE_BACKEND=b2")
+        raise typer.Exit(code=1)
+    if not confirm:
+        typer.echo(
+            "refusing without --confirm: this writes synthetic objects under _canary/<run-id>/ "
+            "in the configured bucket and deletes them afterwards"
+        )
+        raise typer.Exit(code=1)
+
+    control_dir = Path(tempfile.mkdtemp(prefix="b2-canary-control-"))
+    try:
+        report = run_live_canary(settings, control_dir=control_dir, cleanup=not keep)
+    except ControlPlaneUnavailableError as exc:
+        typer.echo(f"STOPPED: {exc}")
+        raise typer.Exit(code=1) from exc
+    for line in report.summary():
+        typer.echo(line)
+    typer.echo(f"  canary control root: {report.control_root} (temporary; not the production one)")
+    typer.echo("CANARY PASSED" if report.passed else "CANARY FAILED")
+    raise typer.Exit(code=0 if report.passed else 1)
 
 
 @evidence_app.command("sample")

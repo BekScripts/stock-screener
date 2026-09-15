@@ -22,7 +22,7 @@ from __future__ import annotations
 import hashlib
 import io
 import logging
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any
 
 import pytest
 from botocore.exceptions import (
@@ -53,8 +53,6 @@ from stock_screener.sec_evidence.b2 import (
 )
 
 if TYPE_CHECKING:
-    from mypy_boto3_s3 import S3Client
-
     from conftest import FakeS3Client
 
 pytestmark = pytest.mark.unit
@@ -626,6 +624,34 @@ class TestListPrefix:
         assert client.calls == []
 
 
+class TestAMissingBucketIsUnavailableNotAbsent:
+    """`NoSuchBucket` is a 404 too. It is not an absent artifact."""
+
+    def test_get_against_a_missing_bucket_is_unavailable(self, fake_s3: type[FakeS3Client]) -> None:
+        client = fake_s3(failing={"get_object": s3_error("NoSuchBucket", 404, "GetObject")})
+
+        with pytest.raises(StorageUnavailableError, match="NoSuchBucket"):
+            backend(client).read_bytes(KEY)
+        with pytest.raises(StorageUnavailableError, match="NoSuchBucket"):
+            backend(client).digest(KEY)
+
+    def test_list_against_a_missing_bucket_is_unavailable_not_empty(
+        self, fake_s3: type[FakeS3Client]
+    ) -> None:
+        """The preflight relies on this: a missing bucket must not list as nothing."""
+        client = fake_s3(
+            failing={"list_objects_v2": s3_error("NoSuchBucket", 404, "ListObjectsV2")}
+        )
+
+        with pytest.raises(StorageUnavailableError, match="NoSuchBucket"):
+            list(backend(client).list_prefix("filings"))
+
+    def test_a_bare_404_with_no_code_is_still_absent(self, fake_s3: type[FakeS3Client]) -> None:
+        client = fake_s3(failing={"head_object": s3_error("", 404, "HeadObject")})
+
+        assert not backend(client).exists(KEY)
+
+
 class TestSecretsNeverReachTheWireOrTheOperator:
     def test_the_repr_names_the_bucket_and_endpoint_only(self, fake_s3: type[FakeS3Client]) -> None:
         rendered = repr(backend(fake_s3())) + str(backend(fake_s3()))
@@ -692,7 +718,7 @@ class TestTheRealClientIsBuiltExplicitly:
     """`build_b2_client` is offline; these read what it configured, not the network."""
 
     def test_the_client_is_bound_to_the_endpoint_region_and_signing(self) -> None:
-        client = cast("S3Client", build_b2_client(CONFIG))
+        client = build_b2_client(CONFIG)
         options = vars(client.meta.config)
 
         assert client.meta.endpoint_url == ENDPOINT
@@ -751,7 +777,7 @@ class TestTheRealClientIsBuiltExplicitly:
 
     def test_a_put_carries_the_digest_as_metadata_and_the_exact_length(self) -> None:
         """What goes on the wire, checked against the real SDK's parameter model."""
-        client = cast("S3Client", build_b2_client(CONFIG))
+        client = build_b2_client(CONFIG)
         payload = b"<html>cover</html>"
         sha256 = hashlib.sha256(payload).hexdigest()
         with Stubber(client) as stub:
@@ -778,14 +804,14 @@ class TestTheRealClientIsBuiltExplicitly:
         assert stored.sha256 == sha256
 
     def test_the_real_sdks_head_404_reads_as_absent(self) -> None:
-        client = cast("S3Client", build_b2_client(CONFIG))
+        client = build_b2_client(CONFIG)
         with Stubber(client) as stub:
             stub.add_client_error("head_object", service_error_code="404", http_status_code=404)
 
             assert not B2EvidenceStorage(CONFIG, client=client).exists(KEY)
 
     def test_the_real_sdks_head_403_reads_as_unavailable(self) -> None:
-        client = cast("S3Client", build_b2_client(CONFIG))
+        client = build_b2_client(CONFIG)
         with Stubber(client) as stub:
             stub.add_client_error("head_object", service_error_code="403", http_status_code=403)
 
@@ -793,7 +819,7 @@ class TestTheRealClientIsBuiltExplicitly:
                 B2EvidenceStorage(CONFIG, client=client).exists(KEY)
 
     def test_the_real_sdks_get_nosuchkey_reads_as_not_found(self) -> None:
-        client = cast("S3Client", build_b2_client(CONFIG))
+        client = build_b2_client(CONFIG)
         with Stubber(client) as stub:
             stub.add_client_error(
                 "get_object", service_error_code="NoSuchKey", http_status_code=404

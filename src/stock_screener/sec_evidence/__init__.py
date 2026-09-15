@@ -40,6 +40,14 @@ from stock_screener.sec_evidence.binding import (
     read_only_url,
     save_fingerprint,
 )
+from stock_screener.sec_evidence.canary import (
+    CanaryError,
+    CanaryNamespace,
+    CanaryReport,
+    delete_canary_prefix,
+    run_canary,
+    run_live_canary,
+)
 from stock_screener.sec_evidence.control import (
     CHECKPOINTS,
     CONTROL_SUBDIRECTORIES,
@@ -207,6 +215,9 @@ __all__ = [
     "B2EvidenceStorage",
     "BindingError",
     "Budget",
+    "CanaryError",
+    "CanaryNamespace",
+    "CanaryReport",
     "Candidate",
     "CatalogueRow",
     "Checkpoint",
@@ -266,6 +277,7 @@ __all__ = [
     "check_local_capacity",
     "checkpoint_path",
     "controlled_sample",
+    "delete_canary_prefix",
     "derived_root",
     "describe_storage",
     "digest_of",
@@ -307,6 +319,8 @@ __all__ = [
     "reconcile",
     "reconcile_subset",
     "resolve_ciks",
+    "run_canary",
+    "run_live_canary",
     "same_volume",
     "save_checkpoint",
     "save_fingerprint",

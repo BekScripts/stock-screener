@@ -70,9 +70,10 @@ from stock_screener.sec_evidence.backend import (
 from stock_screener.sec_evidence.storage import EvidenceWriteError, StorageUnavailableError
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable, Iterator, Mapping
+    from collections.abc import Callable, Iterable, Iterator, Mapping
 
     from botocore.response import StreamingBody
+    from mypy_boto3_s3 import S3Client
 
     from stock_screener.sec_evidence.wiring import B2Configuration
 
@@ -111,7 +112,9 @@ SINGLE_PUT_LIMIT = 5 * 1024**3
 
 #: Response codes that mean "the object is not there" and nothing else. HEAD
 #: has no body, so the SDK reports its 404 as the bare status; GET reports
-#: `NoSuchKey`. Everything outside this set is uncertainty.
+#: `NoSuchKey`. Everything outside this set is uncertainty — including
+#: `NoSuchBucket`, which is also a 404 but says the *bucket* is not there,
+#: and a missing bucket is unavailability, not an absent artifact.
 _NOT_FOUND = frozenset({"404", "NoSuchKey", "NotFound"})
 
 
@@ -156,7 +159,7 @@ class S3Operations(Protocol):
         ...
 
 
-def build_b2_client(config: B2Configuration) -> S3Operations:
+def build_b2_client(config: B2Configuration) -> S3Client:
     """Construct the S3-compatible client for one bucket's configuration.
 
     Explicit in every respect the SDK would otherwise fill from the ambient
@@ -241,6 +244,32 @@ class B2EvidenceStorage:
         """The one bucket this backend operates on."""
         return self._bucket
 
+    def observe_requests(self, callback: Callable[[str, str], None]) -> bool:
+        """Have the SDK report every API call and every HTTP attempt it makes.
+
+        Instrumentation for a canary or an operator, not part of the storage
+        contract. `callback("call", "PutObject")` fires once per API call
+        before any request; `callback("attempt", "PutObject")` fires once per
+        HTTP request, so the difference between the two is the SDK's retries.
+
+        Returns:
+            Whether the client exposed an event system to hook. A fake client
+            in a test has none, and that is reported rather than faked.
+        """
+        events = getattr(getattr(self._client, "meta", None), "events", None)
+        if events is None:
+            return False
+
+        def on_call(model: Any, **_: Any) -> None:
+            callback("call", str(getattr(model, "name", "?")))
+
+        def on_attempt(request: Any, operation_name: str = "?", **_: Any) -> None:
+            callback("attempt", operation_name)
+
+        events.register("before-call.s3", on_call)
+        events.register("request-created.s3", on_attempt)
+        return True
+
     # ------------------------------------------------------------------
     # Error classification: one place, so "absent" and "unreachable" can
     # never drift apart between operations.
@@ -262,7 +291,7 @@ class B2EvidenceStorage:
         except ClientError as exc:
             code = str(exc.response.get("Error", {}).get("Code", ""))
             status = exc.response.get("ResponseMetadata", {}).get("HTTPStatusCode")
-            if code in _NOT_FOUND or status == 404:
+            if code in _NOT_FOUND or (status == 404 and not code):
                 raise ArtifactNotFoundError(key) from exc
             log.warning("B2 request failed", operation=operation, key=key, code=code, status=status)
             raise StorageUnavailableError(

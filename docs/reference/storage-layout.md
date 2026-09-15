@@ -679,6 +679,84 @@ captured logs.
 (`botocore-stubs`, `mypy-boto3-s3`, `types-s3transfer`). No `b2sdk`, no
 `aiobotocore`, no `s3fs`.
 
+## B2.8 the live canary
+
+The first request that leaves the machine for Backblaze is made by the
+canary, on purpose, and by nothing else first. `stock-screener evidence
+b2-canary --confirm` (or `uv run pytest tests/live --live-b2 -p no:randomly
+-s`) drives `sec_evidence/canary.py`: production wiring, a temporary control
+root, every contract operation, one real harvest, a replay, a reconciliation,
+and cleanup — all under `_canary/<run-id>/` and never under an artifact
+prefix. It writes about two megabytes of synthetic, deterministic bytes and
+deletes them. It fetches nothing from the SEC.
+
+### Isolation without changing the production mapping
+
+`_canary` is not an artifact prefix, so a production reconciliation never
+sees a canary object, and a run id (`b28-<UTC stamp>-<random>`) is unique to
+one invocation. The production key mapping — object key equals logical key —
+is untouched: `CanaryNamespace` wraps the real backend and prepends the run
+prefix on the way in and strips it on the way out, so the harvester, the
+audit and the manifest see ordinary `filings/...` keys and behave exactly as
+in production while the bucket sees `_canary/<run-id>/filings/...`. Both
+layers validate every key; nothing the contract would refuse reaches the
+wire.
+
+### What one run proves, in order
+
+| Step | Proves |
+| --- | --- |
+| list the empty run prefix | endpoint, TLS, credentials, bucket, `listFiles` — before any write |
+| unknown key | `exists` False; `read_bytes` raises `ArtifactNotFoundError` |
+| unsafe keys | refused with zero requests |
+| write ×5 | absent before; receipt key, length and digest equal the bytes sent; PUT then HEAD verification |
+| verify ×5 | present after; `stat` length; `read_bytes` byte-for-byte and SHA-256; `digest` from the download |
+| listing | complete, sorted, recursive, one accession's listing excludes the other |
+| harvest | no record before; one trusted record after, whose digest the bucket's bytes hash to |
+| replay | `CACHE_HIT`, no fetch, no write |
+| reconcile: clean | trusted = 6, no orphans, no missing, no mismatches; `zero_byte = 1` for the empty object — an expected diagnostic, not a fault |
+| reconcile: orphan | one unrecorded object → `orphan_files = 1` |
+| reconcile: missing | one record for an object never written → `orphan_records = 1` |
+| cleanup | only `_canary/<run-id>/`; the prefix lists empty afterwards |
+
+The run stops at the first step that does not hold and always attempts
+cleanup. Cleanup is outside the evidence contract — `EvidenceStorage` still
+has no delete — and `validate_cleanup_prefix` refuses anything but exactly one
+`_canary/<run-id>/`: never the bucket, never the canary root, never an
+artifact prefix. An application key without `deleteFiles` leaves the objects
+in place and the report says so; that is not a failed canary.
+
+### Offline first
+
+`tests/unit/test_b2_canary.py` runs the whole flow against the fake client:
+a passing run, a truncated upload, a bucket whose GET body lies, a dead
+endpoint at preflight, a prefix that is not empty, cleanup refusals, and the
+command with and without `--confirm`. `tests/live/test_b2_canary_live.py`
+is the real thing and is skipped unless `--live-b2` is passed — `make check`
+never passes it, needs no credential, and makes no Backblaze request.
+`evidence status` still constructs no client.
+
+### The first live run — 2026-09-15
+
+Run `b28-20260915T233118Z-5a5c6689` (the command) and
+`b28-20260915T233201Z-a9b49b3b` (the opt-in pytest path) both passed every
+step against the configured bucket at `s3.us-east-005.backblazeb2.com`, with
+`SEC_CONTROL_DIR=.evidence` and a temporary control root for the canary
+manifest. Each run: 7 objects, 2,098,604 bytes, 7 PUT, 83 HEAD, 32 GET,
+15 LIST, one batch DELETE of 7; every `attempt` count equalled its `call`
+count, so the SDK retried nothing; cleanup left the run prefix empty. The
+captured output was searched for the application key and key ID and held
+neither. Afterwards `filings/`, `submissions/`, `fulltext/` and `_canary/`
+all list zero objects, and the production control root holds no manifest.
+
+Latencies seen (single run, informational): PUT+HEAD 267–667 ms per object,
+HEAD ~50 ms, GET ~120 ms, the 2 MiB GET+digest ~580 ms, LIST ~130 ms.
+
+To run it again after a credential rotation or an endpoint change:
+`stock-screener evidence b2-canary --confirm`. The key needs `listFiles`,
+`readFiles`, `writeFiles`, and `deleteFiles` only so the canary can remove
+its own objects.
+
 ## Future staging databases
 
 A research staging database is 20–30 GB. **Create new ones under

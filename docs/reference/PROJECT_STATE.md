@@ -36,16 +36,18 @@ appears without the run or the test that produced it.
 
 ## Current phase
 
-**B2.7 — `B2EvidenceStorage`** is the current checkpoint on
+**B2.8 — the live B2 canary** is the current checkpoint on
 `feat/phase-b2-storage-abstraction`. B2.5 (`071c1cd`) separated the control
 plane; B2.6 (`a49cd8d`) added `SEC_STORAGE_BACKEND` and the `B2_*` settings;
-B2.7 implements the Backblaze backend over the S3-compatible API with `boto3`,
-against the unchanged six-operation `EvidenceStorage` contract. It passes the
-same contract suite as the local and memory backends and the same
-reconciliation matrix, entirely over a stateful fake client and `botocore`
-stubs. **It has not been validated against a live bucket**: no request has
-left the machine, no corpus has been migrated, no production write has
-occurred, and Plan A3 remains paused. See
+B2.7 (`3261930`) implemented the Backblaze backend; B2.8 adds the canary —
+`evidence b2-canary --confirm`, isolated under `_canary/<run-id>/`, proven
+offline first — refines the backend's 404 classification (`NoSuchBucket` is
+unavailability, not an absent artifact), and **ran it live: the first
+requests to Backblaze passed every step** on 2026-09-15 against the
+configured bucket, with cleanup leaving nothing behind. The bucket holds no
+production object; no corpus has been migrated; no production write has
+occurred; Plan A3 remains paused. See
+[B2.8](storage-layout.md#b28-the-live-canary),
 [B2.7](storage-layout.md#b27-the-backblaze-backend),
 [B2.6](storage-layout.md#b26-backend-selection-and-the-b2-configuration-boundary),
 [B2.5](storage-layout.md#b25-control-plane) and
@@ -312,6 +314,21 @@ data alone. `compounder_radar.db` has received none of it.
   endpoint, SigV4, path-style, 3 retries, 10 s connect / 60 s read, no
   ambient `AWS_*`. Single PUTs; multipart is refused, not improvised.
 - **No live validation has been performed.** Every B2.7 test is offline.
+
+### B2.8 the canary
+
+- **The first live request is the canary's.** `evidence b2-canary --confirm`
+  writes only under `_canary/<run-id>/`, through production wiring with a
+  temporary control root, and deletes what it wrote. The production key
+  mapping is unchanged; `CanaryNamespace` confines the real backend.
+- **Cleanup is not a contract operation.** `EvidenceStorage` still has no
+  delete; the canary's cleanup works on the raw client and refuses every
+  prefix but exactly one run's.
+- **Live tests are opt-in.** `live_b2` is skipped unless `--live-b2` is
+  passed; `make check` makes no Backblaze request and needs no credential.
+- **`NoSuchBucket` is unavailability.** A missing bucket raises
+  `StorageUnavailableError` from read, digest and list — never an empty
+  listing or an absent artifact.
 
 These are load-bearing. Each is enforced by structure or by a test, not by
 convention, and none may be relaxed without an explicit instruction.
@@ -1430,6 +1447,27 @@ Documented rather than fixed. Each is a deliberate stop, not a backlog item.
 
 Measured runs, kept because they are the evidence behind decisions above.
 
+### B2.8 canary harness — 2026-09-15
+
+- `tests/unit/test_b2_canary.py`: **38 passed**, offline. A full run over the
+  fake passes every step and cleanup empties the prefix; every object written
+  sits under `_canary/<run-id>/` and none under an artifact prefix; a
+  truncated upload, a lying GET body, a dead endpoint at preflight and a
+  non-empty prefix each stop the run before or at the right step and still
+  clean up; cleanup refuses the bucket, the canary root, every artifact prefix
+  and multi-run prefixes; `run_live_canary` through `open_evidence_layout`
+  never opens the production control root; the command refuses without
+  `--confirm` and reports without secrets with it.
+- `tests/unit/test_storage_b2.py`: +3 for `NoSuchBucket` (**108 passed**).
+- **Live, 2026-09-15**: `evidence b2-canary --confirm` → run
+  `b28-20260915T233118Z-5a5c6689`, `CANARY PASSED`, 19 steps ok, 7 objects /
+  2,098,604 bytes, 7 PUT / 83 HEAD / 32 GET / 15 LIST / 1 batch DELETE, zero
+  SDK retries, 12 s wall; `pytest tests/live --live-b2` → run
+  `b28-20260915T233201Z-a9b49b3b`, 1 passed, identical accounting. Output
+  searched for both credentials: absent. Bucket afterwards: `filings/`,
+  `submissions/`, `fulltext/`, `_canary/` all empty; production control root
+  `.evidence/` holds no manifest.
+
 ### B2.7 backend implementation — 2026-09-15
 
 - Shared contract: `test_storage_contract.py` now runs 57 cases × 3 backends
@@ -1653,12 +1691,12 @@ under **80%**. It is what CI runs; run it rather than the individual tools.
 
 ## Next phase
 
-**B2.8 — live B2 canary validation on a dedicated test prefix** follows this
-checkpoint: the first request that leaves the machine, against a bucket and
-key created for it, under explicit authorization. It has not been started.
-Relocating the BEK corpus's control files into a `SEC_CONTROL_DIR`, mirroring
-control metadata remotely, evidence migration and Plan A3 remain outside this
-checkpoint's authorization.
+**B2.9 — manifest-driven migration / recovery planner for the existing SEC
+corpus** follows this checkpoint. The canary has passed live; the bucket is
+proven and empty. Relocating the BEK corpus's control files into
+`SEC_CONTROL_DIR`, mirroring control metadata remotely, evidence migration
+and Plan A3 remain outside this checkpoint's authorization and have not been
+started.
 
 Two pieces of work are *identified* but not authorised, and neither is to be
 started without being asked:
@@ -1725,7 +1763,7 @@ Not a backlog. These exclusions are deliberate.
 
 | | |
 | --- | --- |
-| Commit | The B2.7 commit containing this checkpoint, `feat: implement Backblaze B2 evidence storage`; parent `a49cd8d` (B2.6, `feat: add Backblaze B2 storage configuration`) |
+| Commit | The B2.8 commit containing this checkpoint, `test: validate Backblaze B2 storage integration`; parent `3261930` (B2.7, `feat: implement Backblaze B2 evidence storage`) |
 | Branch | `feat/phase-b2-storage-abstraction` |
 | Migration head | `0031` — the research-universe layer (9K.7). Nothing since 9K.11 added one. |
 | Score version | `COMPOUNDER_V1_2` (unchanged by anything in Phase 8, 9A, 9B or 9C) |

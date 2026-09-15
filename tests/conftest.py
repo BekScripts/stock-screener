@@ -70,6 +70,27 @@ if TYPE_CHECKING:
 
     from stock_screener.sec_evidence import EvidenceStorage
 
+
+def pytest_addoption(parser: pytest.Parser) -> None:
+    """`--live-b2` opts in to the tests that make real Backblaze requests."""
+    parser.addoption(
+        "--live-b2",
+        action="store_true",
+        default=False,
+        help="run tests marked live_b2 against the configured Backblaze bucket",
+    )
+
+
+def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
+    """Skip `live_b2` tests unless explicitly opted in. `make check` never opts in."""
+    if config.getoption("--live-b2"):
+        return
+    skip = pytest.mark.skip(reason="live Backblaze test; pass --live-b2 to run it")
+    for item in items:
+        if "live_b2" in item.keywords:
+            item.add_marker(skip)
+
+
 #: Every variable `Settings` reads. A field added to `Settings` without a line
 #: here leaks the developer's real environment into the tests, and the failure
 #: looks like a bug in the code rather than in the fixture.
@@ -398,6 +419,19 @@ class FakeS3Client:
         """Never called by the backend; recorded so a test can prove it."""
         self._call("delete_object", Key, Bucket)
         raise AssertionError("the evidence backend must never delete")
+
+    def delete_objects(
+        self,
+        *,
+        Bucket: str,  # noqa: N803 - SDK spelling
+        Delete: Mapping[str, Any],  # noqa: N803 - SDK spelling
+    ) -> dict[str, Any]:
+        """Batch delete — the canary cleanup's call, never the backend's."""
+        keys = [str(item["Key"]) for item in Delete["Objects"]]
+        self._call("delete_objects", ",".join(keys), Bucket)
+        for key in keys:
+            self.objects.pop(key, None)
+        return {"Deleted": [{"Key": key} for key in keys]}
 
     def get_paginator(self, operation_name: str) -> FakeS3Paginator:
         """Only `list_objects_v2` is paged, as in the real client."""

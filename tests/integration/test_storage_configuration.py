@@ -475,6 +475,30 @@ class TestStatusReportsTheBackendWithoutSecrets:
         assert ENDPOINT not in result.stdout
         get_settings.cache_clear()
 
+    def test_b2_status_builds_no_client_and_makes_no_request(
+        self, environment: None, control_dir: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Status is for finding out what is wrong; it must never need the network."""
+        monkeypatch.setenv("SEC_STORAGE_BACKEND", "b2")
+        monkeypatch.setenv("SEC_CONTROL_DIR", str(control_dir))
+        monkeypatch.setenv("B2_ENDPOINT_URL", ENDPOINT)
+        monkeypatch.setenv("B2_BUCKET", BUCKET)
+        monkeypatch.setenv("B2_KEY_ID", KEY_ID)
+        monkeypatch.setenv("B2_APPLICATION_KEY", APPLICATION_KEY)
+        get_settings.cache_clear()
+
+        def refuse(config: object) -> object:
+            raise AssertionError("status constructed a B2 client")
+
+        monkeypatch.setattr("stock_screener.sec_evidence.b2.build_b2_client", refuse)
+        monkeypatch.setattr("stock_screener.sec_evidence.wiring.B2EvidenceStorage", refuse)
+
+        result = CliRunner().invoke(app, ["evidence", "status"])
+
+        assert result.exit_code == 0, result.stdout
+        assert "no live probe" in result.stdout
+        get_settings.cache_clear()
+
     def test_b2_missing_config_reports_what_is_missing_and_exits_non_zero(
         self, environment: None, control_dir: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
