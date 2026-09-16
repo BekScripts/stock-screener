@@ -188,6 +188,11 @@ from stock_screener.sec_evidence import (
     submissions_targets,
     verify_digests_of,
 )
+from stock_screener.sec_evidence.binding import BindingError, read_only_url
+from stock_screener.sec_evidence.generation import (
+    build_generation_plan,
+    write_generation_plan,
+)
 from stock_screener.sec_evidence.migration import (
     SourceProbe,
     a3_accounting,
@@ -1818,6 +1823,148 @@ def _echo_remote_inventory(settings: Settings, remote: bool) -> None:
         typer.echo(f"remote           : could not be listed: {exc}")
         return
     typer.echo(f"remote           : {counts} objects under artifact prefixes (read-only listing)")
+
+
+@evidence_app.command("generation-plan")
+def evidence_generation_plan_command(
+    database: Annotated[
+        Path,
+        typer.Option(
+            "--database",
+            help=(
+                "The production universe database, opened read-only. Named explicitly: "
+                "DATABASE_URL points at the primary database, which holds a different universe."
+            ),
+        ),
+    ] = Path("stage9k.db"),
+    expect_universe_count: Annotated[
+        int,
+        typer.Option(
+            "--expect-universe-count",
+            help="Identities the universe must hold. Stated, never discovered.",
+        ),
+    ] = 8919,
+    expect_universe_sha: Annotated[
+        str | None,
+        typer.Option("--expect-universe-sha", help="Refuse a universe whose digest differs."),
+    ] = None,
+    check_remote: Annotated[
+        bool,
+        typer.Option(
+            "--check-remote/--no-check-remote",
+            help="Count objects under the bucket's artifact prefixes, read-only (three LISTs).",
+        ),
+    ] = True,
+    verify_database: Annotated[
+        bool,
+        typer.Option(
+            "--verify-database", help="Hash the database file too (22 GB, about a minute)."
+        ),
+    ] = False,
+) -> None:
+    """Plan the second SEC evidence generation from what survived. Fetches nothing.
+
+    Binds the production database read-only, reproduces the 8,919-identity
+    universe and its digest, writes the identity plan and the offline
+    submissions targets under the control root's `plans/generation_v2/`, and
+    records which rebuild inputs survive, which need the SEC, and which are
+    lost. Makes no SEC request and no bucket write.
+    """
+    settings = _bootstrap()
+    try:
+        control = open_control_root(
+            settings,
+            colocate_with=open_evidence_root(settings)
+            if storage_backend(settings) is StorageBackend.LOCAL
+            else None,
+        )
+    except (ControlPlaneUnavailableError, EvidenceUnavailableError) as exc:
+        typer.echo(f"STOPPED: {exc}")
+        raise typer.Exit(code=1) from exc
+    if not database.is_file():
+        typer.echo(f"STOPPED: no database at {database}")
+        raise typer.Exit(code=1)
+    remote = None
+    if check_remote:
+        if storage_backend(settings) is not StorageBackend.B2:
+            typer.echo("STOPPED: --check-remote requires SEC_STORAGE_BACKEND=b2")
+            raise typer.Exit(code=1)
+        remote = open_evidence_storage(settings)
+
+    engine = create_engine_from_url(read_only_url(database))
+    try:
+        with session_scope(build_session_factory(engine)) as session:
+            try:
+                plan = build_generation_plan(
+                    session,
+                    database,
+                    control,
+                    expect_universe_count=expect_universe_count,
+                    expect_universe_sha256=expect_universe_sha,
+                    repo_commit=_repo_commit(),
+                    remote=remote,
+                    verify_database_digest=verify_database,
+                )
+            except BindingError as exc:
+                typer.echo(f"STOPPED: {exc}")
+                raise typer.Exit(code=1) from exc
+            except StorageUnavailableError as exc:
+                typer.echo(f"STOPPED: the bucket could not be listed read-only: {exc}")
+                raise typer.Exit(code=1) from exc
+    finally:
+        engine.dispose()
+    paths = write_generation_plan(plan, control)
+    meta = plan.metadata
+    typer.echo(
+        f"generation       : {meta.generation_id} (previous {meta.previous_generation}: lost)"
+    )
+    typer.echo(f"control root     : {control.path}")
+    typer.echo(f"database         : {meta.database_path}")
+    typer.echo(f"universe         : {meta.universe_count} identities, sha {meta.universe_sha256}")
+    typer.echo(
+        f"identities       : {meta.identities_stored_cik} with a stored CIK, "
+        f"{meta.identities_edgar_required} need the SEC ticker map"
+    )
+    typer.echo(f"identity plan    : {paths['identities']} sha {meta.identity_plan_sha256}")
+    typer.echo(
+        f"offline targets  : {meta.offline_targets} submissions requests, "
+        f"sha {meta.offline_targets_sha256}"
+    )
+    typer.echo(f"baseline status  : {meta.baseline_plan_status}")
+    typer.echo(
+        f"Plan A3          : {meta.a3_status} (frozen {meta.a3_expected_targets:,} targets, "
+        f"{meta.a3_expected_sha256[:16]}…)"
+    )
+    typer.echo(
+        f"V2 progress      : {meta.v2_trusted_artifacts} trusted artifacts, "
+        f"{meta.v2_completed_batches} completed batches"
+    )
+    if meta.inconsistent_checkpoints:
+        typer.echo(
+            "WARNING          : checkpoints claiming completion the manifest cannot support: "
+            f"{meta.inconsistent_checkpoints}"
+        )
+    if meta.production_b2_objects is not None:
+        typer.echo(f"production B2    : {meta.production_b2_objects} objects (read-only listing)")
+    for item in plan.prerequisites:
+        typer.echo(f"  {item.status:<10} {item.name}")
+    typer.echo(f"generation file  : {paths['generation']}")
+    if meta.production_b2_objects and any(meta.production_b2_objects.values()):
+        typer.echo("STOPPED — production prefixes are not empty; classify the remote state first")
+        raise typer.Exit(code=1)
+    typer.echo("GENERATION PLAN WRITTEN — nothing was fetched")
+
+
+def _repo_commit() -> str | None:
+    """The current commit, for the generation record; None outside a checkout."""
+    head = Path(".git") / "HEAD"
+    if not head.is_file():
+        return None
+    ref = head.read_text(encoding="utf-8").strip()
+    if ref.startswith("ref: "):
+        target = Path(".git") / ref.removeprefix("ref: ")
+        return target.read_text(encoding="utf-8").strip() if target.is_file() else None
+    return ref
 
 
 @evidence_app.command("sample")

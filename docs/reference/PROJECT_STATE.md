@@ -36,18 +36,21 @@ appears without the run or the test that produced it.
 
 ## Current phase
 
-**B2.9 — the migration planner** is the current checkpoint on
-`feat/phase-b2-storage-abstraction`. B2.5 (`071c1cd`) separated the control
-plane; B2.6 (`a49cd8d`) added `SEC_STORAGE_BACKEND` and the `B2_*` settings;
-B2.7 (`3261930`) implemented the Backblaze backend; B2.8 (`8247a0f`) ran the
-live canary, which passed every step; B2.9 adds `evidence migration-plan` —
-one action per trusted manifest key, deterministic, written under the control
-root's `migration/`, read-only against the bucket and the old volume. **The
-plan is blocked on the authoritative manifest**: it lives on the failed
-volume in the legacy colocated layout and has not been copied under
-`SEC_CONTROL_DIR`, so no migration plan exists yet. The bucket's artifact
-prefixes are empty (re-verified read-only); no corpus has been migrated; no
-production write has occurred; Plan A3 remains paused. See
+**B2.9X — the clean-room second generation** is the current checkpoint on
+`feat/phase-b2-storage-abstraction`. **The BEK drive is permanently
+unavailable.** With it went the first generation of the SEC evidence corpus:
+its ~57k artifacts, its manifest, the frozen Plan A3, the A3 remainder, the
+61 batch manifests and the checkpoints. None of that is recoverable and none
+of it is reused for trust. B2.9X inspected what survived on the internal disk
+and started **Generation V2** from it: `stage9k.db` reproduces the 8,919-
+identity universe and its digest exactly; 402 stored CIKs yield offline
+submissions targets; the other 8,517 resolutions, every catalogue and every
+filing come from the SEC in later phases; Plan A3 is `MISSING_PREREQUISITE`
+and will be regenerated after the baseline is rebuilt and compared — never
+forced — to its frozen digest. V2 begins at zero trusted artifacts, zero
+completed batches, and an empty bucket (re-verified read-only). Nothing was
+fetched from the SEC. See
+[B2.9X](storage-layout.md#b29x-the-second-generation),
 [B2.9](storage-layout.md#b29-the-migration-plan),
 [B2.8](storage-layout.md#b28-the-live-canary),
 [B2.7](storage-layout.md#b27-the-backblaze-backend),
@@ -353,6 +356,29 @@ data alone. `compounder_radar.db` has received none of it.
   `REMOTE_ORPHAN` that blocks execution; `_canary/` is never evidence.
 - **Planner classification and execution state are separate fields.**
   `Action` versus `ExecutionState` plus `FailureCategory`; never merged.
+
+### B2.9X the second generation
+
+- **Generation V1 is history and creates no trust.** The drive is permanently
+  unavailable; the manifest, the corpus, Plan A3 and the checkpoints are lost.
+  A number in a report is not a record. V2 starts at zero trusted artifacts
+  and zero completed batches, and a checkpoint claiming completion over an
+  empty manifest is a contradiction, not progress.
+- **The universe survived exactly.** `stage9k.db`, read-only, reproduces the
+  8,919 identities and digest `b8eaed3e…` through the same `production_universe`
+  the V1 sweep used. That is the root of every V2 target.
+- **The baseline is PARTIAL offline; Plan A3 is not offline at all.** Stored
+  CIKs give 402 exact submissions requests; the rest need the SEC ticker map.
+  A3's inputs were the parsed baseline corpus and its assembly harness was
+  never committed; it is regenerated after V2.3 and *compared* to
+  `53e3f0ca…`, never forced to match. Target reproducibility is not byte
+  reproducibility.
+- **Artifact keys are generation-independent.** `filings/<cik>/<accession>/
+  <document>` is the same key in every generation and in the bucket; the
+  generation id is metadata.
+- **V2 keeps two copies of its control state.** A mirror of manifest,
+  checkpoints, batch manifests and generation metadata after every completed
+  batch is a hard requirement of V2.2, not an option.
 
 These are load-bearing. Each is enforced by structure or by a test, not by
 convention, and none may be relaxed without an explicit instruction.
@@ -1017,7 +1043,12 @@ or delisting events.
 
 ### Phase 9K.25 — the production SEC evidence corpus
 
-The corpus is complete. All 8,919 production identities have been harvested
+> **Historical (Generation V1).** The corpus described below, its manifest
+> and its checkpoints lived on the BEK drive, which is permanently
+> unavailable as of B2.9X. The figures are a record of what was built, not of
+> what exists. See [B2.9X](storage-layout.md#b29x-the-second-generation).
+
+The corpus was complete. All 8,919 production identities had been harvested
 across 36 chunks of 250 (the last holds 169), and the terminal state is **38,355
 trusted artifacts** — 5,771 submissions catalogues and 32,584 filing documents —
 over 38,540 manifest records and 37,695,067,178 logical bytes. Every artifact's
@@ -1471,6 +1502,33 @@ Documented rather than fixed. Each is a deliberate stop, not a backlog item.
 
 Measured runs, kept because they are the evidence behind decisions above.
 
+### B2.9X clean-room reconstruction — 2026-09-16
+
+- `stage9k.db` bound read-only: 8,919 identities (5,769 LIVE, 3,150 DELISTED),
+  universe digest `b8eaed3e737fb73a3f7288f0f96aa2bed2bef072f977d1abf67439e2af75f8b5`
+  — exact match to the frozen value; 402 stored CIKs, 8,517 without;
+  `filing_acceptance` 5,889,860 rows; `research_universe_months` 268,780 rows;
+  `ftd_source_files` 433. Database digest unchanged after every read.
+- `evidence generation-plan` run live (read-only): identity plan
+  `3eac451154403f2705cce1679ad1455bdc6df39966f9feba8deebc05eb1c2934`,
+  offline targets `c186934b4b638e8ff983f5ed8a67e428ada7d2af2a8c45e109fc84c024014f02`,
+  both identical on a second run; production B2 `{'filings': 0,
+  'submissions': 0, 'fulltext': 0}`; V2 progress 0 / 0; A3
+  `MISSING_PREREQUISITE`.
+- Repository archaeology: `PlanningInputs` is constructed nowhere in `src/`;
+  the A3 assembly ran from uncommitted working files. `plan.py` holds the
+  algorithm; `sample.py`, `expand.py`, `harvest.py`, `sweep.py` hold the
+  baseline policy (universe order, chunks of 250, `resolve_ciks` STORED →
+  EDGAR → UNRESOLVED, `FILING_FORMS`, cap 6 per security, most recent first).
+- `tests/integration/test_generation_plan.py`: **15 passed**, offline —
+  universe order and chunking, stored-CIK targets, `EDGAR_REQUIRED` never
+  guessed, byte-identical plans and digests, universe digest enforced, zero
+  start state, V1 checkpoints over an empty manifest reported inconsistent, a
+  supported checkpoint counted, A3 missing with inputs named, an empty bucket
+  costing three LISTs, bucket objects reported not adopted, the command with
+  no SEC client and no write, a non-empty prefix stopping it, the wrong
+  database refused.
+
 ### B2.9 migration planner — 2026-09-15
 
 - `tests/integration/test_migration_plan.py`: **33 passed**, offline. Manifest
@@ -1734,15 +1792,14 @@ under **80%**. It is what CI runs; run it rather than the individual tools.
 
 ## Next phase
 
-**The authoritative control files must reach `SEC_CONTROL_DIR`** before
-anything else: `manifests/evidence.jsonl`, the frozen expansion plan and its
-remainder, the batch manifests and the checkpoints all lived beside the
-artifacts on the failed volume and are absent from `.evidence/`. Copying them
-is a deliberate operator step (the volume reads on another machine). Then
-`evidence migration-plan` produces the plan, and **B2.10 — controlled
-manifest-driven migration canary** follows. Mirroring control metadata
-remotely, evidence migration and Plan A3 remain outside this checkpoint's
-authorization and have not been started.
+**B2.10 — clean-room base SEC→B2 rebuild canary** follows: V2.1 (filer
+resolution through the SEC ticker map, recorded per identity) and the first
+V2.2 chunk (submissions catalogues, then filing documents) directly into the
+bucket through `harvest_artifacts` → `B2EvidenceStorage`, with the manifest
+on `.evidence/` and a control-plane mirror in place before any batch beyond
+the canary. Plan A3 regeneration waits for V2.3–V2.4. FTD archives are
+redownloaded separately. None of this has been started; nothing has been
+fetched from the SEC.
 
 Two pieces of work are *identified* but not authorised, and neither is to be
 started without being asked:
@@ -1809,11 +1866,11 @@ Not a backlog. These exclusions are deliberate.
 
 | | |
 | --- | --- |
-| Commit | The B2.9 commit containing this checkpoint, `feat: plan manifest-driven B2 evidence migration`; parent `8247a0f` (B2.8, `test: validate Backblaze B2 storage integration`) |
+| Commit | The B2.9X commit containing this checkpoint, `feat: plan clean-room SEC evidence rebuild`; parent `0ef11c7` (B2.9, `feat: plan manifest-driven B2 evidence migration`) |
 | Branch | `feat/phase-b2-storage-abstraction` |
 | Migration head | `0031` — the research-universe layer (9K.7). Nothing since 9K.11 added one. |
 | Score version | `COMPOUNDER_V1_2` (unchanged by anything in Phase 8, 9A, 9B or 9C) |
 | Feature version | `MARKET_FEATURES_V1` |
 | Signal version | `MARKET_SIGNALS_V1` |
 | Primary database | untouched by 8A–8J and 9A–9L.5; all work ran against staging copies |
-| Checkpoint date | 2026-09-15 |
+| Checkpoint date | 2026-09-16 |

@@ -922,6 +922,116 @@ objects. The read-only remote audit found `filings/`, `submissions/` and
 tested offline; it runs the moment the manifest is placed under the control
 root.
 
+## B2.9X the second generation
+
+The first generation is lost. The external drive that held the corpus, the
+manifest, the frozen Plan A3 and its batch manifests is permanently
+unavailable, and nothing is coming back from it. **Generation V1 is history**:
+its numbers survive in reports, not in records, and no report creates trust.
+`stock-screener evidence generation-plan` starts **Generation V2** from what
+survived on the internal disk, and says exactly what that can reproduce.
+
+### What survived
+
+| Input | Where | Status |
+| --- | --- | --- |
+| production universe — 8,919 identities, total order, digest `b8eaed3e…` | `stage9k.db` via `production_universe()` | **reproduces exactly** |
+| stored CIKs — 402 delisted securities | `historical_securities.cik` | surviving |
+| ticker → CIK for the other 8,517 | never persisted; resolved from the SEC ticker map at harvest time | network |
+| submissions catalogues; filing documents | the SEC | network |
+| filing acceptance catalogue — 5,889,860 rows | `stage9k.db filing_acceptance` | surviving |
+| research universe months — 268,780 rows, the frozen class attribution | `stage9k.db research_universe_months` | surviving |
+| derived evidence index; cover rows; form yields; sizes | built from the corpus | lost — rebuilt |
+| Plan A3 inputs, and the harness that assembled `PlanningInputs` | working files, never committed | lost — `plan.py` holds the algorithm only |
+| frozen Plan A3 (61,941 targets), remainder, 61 batch manifests | the drive | lost — the digest `53e3f0ca…` survives as a comparison target |
+| FTD archives — 433 source files | the drive | lost; observations survive in the database; public and redownloadable |
+
+### What that decides
+
+- **The baseline is PARTIAL offline.** The identity plan is exact (every
+  identity, its chunk, its stored CIK). The 402 stored-CIK submissions
+  requests are exact. Everything else the first generation requested —
+  8,517 filer resolutions, every submissions catalogue, every filing
+  document — comes from the SEC in a later, explicit phase.
+- **Plan A3 is `MISSING_PREREQUISITE`.** Its inputs were the parsed baseline
+  corpus, and its assembly code never reached the repository. It is
+  regenerated after the baseline is rebuilt and re-indexed, and the result
+  is *compared* to the frozen digest. A match is `A3_REPRODUCED_EXACTLY`; a
+  difference is `A3_DIGEST_DIFFERS` and is reported, never forced — the
+  planner algorithm is not changed to reach an old hash.
+- **Target reproducibility is not byte reproducibility.** Even an exact A3
+  match says nothing about whether the SEC serves the same bytes today. V2
+  trust begins only when V2 bytes are fetched, hashed and recorded.
+
+### Generation V2 starts at zero
+
+`.evidence/` is the V2 control root. Its manifest holds no records; its
+checkpoints directory is empty; the bucket's artifact prefixes hold nothing
+(re-verified read-only). `v2_progress` counts a `COMPLETE` checkpoint only
+when the manifest vouches for at least as many artifacts as the checkpoint
+claims; a first-generation checkpoint that wanders in over an empty manifest
+is reported as inconsistent, not honoured. No V1 record is ever injected.
+
+Artifact keys do not change between generations:
+`filings/<cik>/<accession>/<document>` is the same key in V1, in V2 and in
+the bucket, and the generation id is metadata, never part of a key.
+
+### Files
+
+```text
+<SEC_CONTROL_DIR>/plans/generation_v2/
+├── base_identities.jsonl          8,919 rows in universe order: position, chunk, bucket,
+│                                  symbol, ids, cik, resolution, submissions_url
+├── base_identities.sha256
+├── base_targets_offline.jsonl     the 402 stored-CIK submissions requests
+├── base_targets_offline.sha256
+├── prerequisites.json             every rebuild input: SURVIVING / NETWORK / MISSING
+└── generation.json                generation id, commit, database, universe digest,
+                                   plan digests, A3 status, V2 progress, bucket counts
+```
+
+The plans and their digests reproduce byte for byte from the same database;
+`generation.json` carries `created_at` and is the one file that differs
+between runs.
+
+### The rebuild sequence
+
+```text
+V2.1  resolve filers      the 402 stored CIKs offline; the 8,517 others from the SEC
+                          ticker map, recorded per identity, never guessed
+V2.2  baseline harvest    submissions catalogues, then filing documents (cap per
+                          security, most recent first) — SEC → SHA-256 →
+                          B2EvidenceStorage.write_bytes → HEAD verification →
+                          manifest append on the control root; chunks of 250,
+                          checkpoints per chunk, all starting PENDING
+V2.3  re-index            build_index over V2 artifacts; evidence dates from
+                          filing_acceptance
+V2.4  coverage + reach    gaps from research_universe_months; class-aware
+                          reachability from V2 cover rows
+V2.5  regenerate Plan A3  the planner over V2 inputs; compare the digest to
+                          53e3f0ca…; report, never force
+V2.6  A3 expansion        directly to the bucket, batches of 1,000, checkpoints
+V2.7  terminal audit      full reconciliation and full remote digest verification
+```
+
+Steps V2.1–V2.2 need the SEC. Nothing in this checkpoint contacted it.
+
+### Control-plane durability, made a requirement
+
+V1 had one copy of its control state and lost it. V2 keeps two: the control
+root on the internal disk, and — before any large-scale harvest — a mirror
+of the manifest, the checkpoints, the batch manifests and the generation
+metadata after every completed batch, under a `control/` prefix in the
+bucket or another independent location. That mirror is not built here; it is
+a hard requirement of V2.2, recorded so it cannot be skipped.
+
+### The migration planner's place
+
+`evidence migration-plan` (B2.9) remains correct and useful for replicating a
+corpus whose manifest exists. It cannot plan V1's migration, because V1's
+manifest does not exist, and it is not the path for V2, which is built
+directly into the bucket.
+
 ## Future staging databases
 
 A research staging database is 20–30 GB. **Create new ones under
