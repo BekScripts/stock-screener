@@ -1032,6 +1032,218 @@ corpus whose manifest exists. It cannot plan V1's migration, because V1's
 manifest does not exist, and it is not the path for V2, which is built
 directly into the bucket.
 
+## B2.10 the rebuild canary
+
+One chunk of the second generation, built from the SEC into the bucket and
+proven at every step before the baseline rebuild is authorised.
+`stock-screener evidence rebuild-canary --live` is the entrypoint; it
+requires `SEC_STORAGE_BACKEND=b2`, the explicit `--live`, and chunk `000`
+only. It never advances to chunk 001.
+
+### The sequence
+
+```text
+preflight    V2 progress from the control root: 0 trusted, 0 completed, no
+             inconsistent checkpoint; every artifact prefix in the bucket empty
+mirror       generation.json and the offline plans (digests verified against
+             their .sha256 companions) into control/SEC_EVIDENCE_GENERATION_V2/,
+             each read back and hashed
+resolve      one request for the SEC ticker map, preserved raw with a sidecar;
+             all 8,919 identities resolved STORED → SEC_TICKER_MAP → UNRESOLVED,
+             twice, byte-identical; frozen as filer_resolution_v1.jsonl + .sha256
+freeze       chunk 000 = positions 0–249 of the universe order, nothing hand-
+             picked; identities.jsonl + .sha256; checkpoint PENDING carrying
+             the identity, resolution and generation digests in its notes
+mirror       resolution, ticker map, chunk identities; manifest snapshot,
+             checkpoint and summary snapshots
+pass 1       submissions catalogues, one filer each — a filer shared by several
+             identities (share classes, a delisted symbol whose company is
+             still listed) is one catalogue
+pass 2       filing targets derived from the trusted catalogues: FILING_FORMS
+             only, newest first, cap 6 per filer, one target per (CIK,
+             accession); derived twice, byte-identical; frozen and mirrored
+             before the first document is fetched
+converge     every frozen target replayed: 0 fetches, 0 bytes, 0 PUTs, every
+             target CACHE_HIT — which means every artifact downloaded and
+             hashed again
+verify       full reconciliation with every artifact digest verified against
+             the bucket; zero_byte must be 0; trusted must equal the targets
+complete     checkpoint COMPLETE; final snapshots mirrored; recovery proven
+```
+
+The run stops at the first step that does not hold, records why in the
+checkpoint's notes, saves the checkpoint, and writes the mirror ledger. A
+rerun resumes: the preserved ticker map is reused, the frozen files must
+reproduce under the checkpoint's digests, and the harvest passes find
+their trusted artifacts as `CACHE_HIT`.
+
+### The chain, one link stricter
+
+```text
+SEC fetch → SHA-256 of the received bytes → write_bytes (PUT, then HEAD:
+length and digest metadata) → digest(key) (GET, hashed) == fetched digest
+→ manifest append → state.record
+```
+
+`harvest_artifacts(verify_written=True)` adds the read-back. It is a
+generic flag — a local directory re-reads the file, a bucket downloads the
+object — and no code asks which backend it holds. Its regression shows what
+it exists for: a bucket that holds different bytes of the same length after
+a PUT passes the HEAD check and fails the read-back, and the result is zero
+manifest rows, zero `state.record`, and the object left in place for
+reconciliation to find. A failed remote digest creates no trust.
+
+Every SEC failure is a policy, not a surprise: a `403` stops the run
+before the next request (targets go through the harvester one at a time so
+the stop is immediate, not at the end of the pass); a sustained `429`
+stops it the same way; a `503` is retried within the client's bounded
+policy; a `200` with an empty body is `FAILED`, never stored; anything
+still failed after a second pass stops the run with what did succeed left
+trusted and nothing rolled back.
+
+### The mirror
+
+`control/SEC_EVIDENCE_GENERATION_V2/` in the bucket is the second copy of
+the control plane. It is not an artifact prefix: reconciliation never lists
+it, so a mirrored file can never be an orphan, a trusted artifact, or
+evidence. Its trust is full read-back — local SHA-256 → PUT → HEAD → GET,
+hashed, equal — and an existing remote key is never overwritten: identical
+bytes are a `MIRROR_HIT` at no PUT; different bytes are a `CONFLICT` and
+the run stops.
+
+Mutable files are mirrored as immutable snapshots. The bytes go to a
+content-addressed key (`manifests/evidence-<sha16>.jsonl`), so identical
+bytes mirrored again are one object; a descriptor stamped to the
+microsecond (`manifests/evidence-<stamp>.snapshot.json`) names that key,
+its digest, its size and the run's facts. Recovery lists the descriptors,
+takes the newest, reads the file it names, and refuses it unless the bytes
+hash to what the descriptor recorded. Same for checkpoints and chunk
+summaries under `chunks/000/`.
+
+```text
+control/SEC_EVIDENCE_GENERATION_V2/
+├── generation.json
+├── plans/                      base_identities, base_targets_offline (+ .sha256), prerequisites.json
+├── prerequisites/              company_tickers.json (raw), company_tickers.meta.json
+├── resolution/                 filer_resolution_v1.jsonl, .sha256, .summary.json
+├── manifests/                  evidence-<sha16>.jsonl; evidence-<stamp>.snapshot.json
+└── chunks/000/
+    ├── identities.jsonl, identities.sha256
+    ├── filing_targets.jsonl, filing_targets.sha256
+    ├── checkpoints/            chunk-000000-0250-<sha16>.json; <stamp>.snapshot.json
+    └── summaries/              summary-<sha16>.json; <stamp>.snapshot.json
+```
+
+`plans/generation_v2/mirror_ledger.jsonl` on the control root records every
+mirror operation with its outcome and verification time; `evidence status`
+reads it to report the mirror as established, and nothing else about the
+bucket, without a request.
+
+### Resolution is not guessing
+
+A stored CIK wins. A live company's symbol is looked up in the ticker map,
+which describes who holds the symbol *now* — correct for a company listed
+now. A delisted security without a stored CIK stays `UNRESOLVED` even when
+its symbol is in the map, because the map names today's holder, not the
+security that mattered on the day. That is stricter than the first
+generation's `resolve_ciks`, which asked the map for every symbol; the
+difference is counted (`delisted_symbols_in_map_declined`) and reported,
+never corrected back.
+
+### Files
+
+```text
+<SEC_CONTROL_DIR>/plans/generation_v2/
+├── prerequisites/company_tickers.json          the SEC ticker map, raw; .meta.json; .sha256
+├── filer_resolution_v1.jsonl                   8,919 rows: position, chunk, bucket, symbol,
+│                                               ids, cik, source, reason
+├── filer_resolution_v1.sha256 / .summary.json
+├── chunks/000/identities.jsonl (+ .sha256)     the 250 frozen identities with their resolution
+├── chunks/000/filing_targets.jsonl (+ .sha256) the frozen filing targets
+├── chunks/000/summary.json                     counts and digests, rewritten per stage
+└── mirror_ledger.jsonl                         every mirror operation, appended per run
+<SEC_CONTROL_DIR>/checkpoints/chunk-000000-0250.json
+<SEC_CONTROL_DIR>/manifests/evidence.jsonl      the V2 manifest
+```
+
+### The live run — 2026-09-16, in two invocations
+
+The first invocation ran 01:46:58–02:16:33 UTC against `stage9k.db`
+(read-only; digest unchanged before and after) with
+`--expect-universe-sha b8eaed3e…`.
+
+| Step | Result |
+| --- | --- |
+| preflight | trusted 0, completed 0, bucket `{filings: 0, submissions: 0, fulltext: 0}` |
+| mirror offline plans | 6 files `MIRRORED`, each read back |
+| resolve filers | one request; ticker map 797,759 bytes, `82cd5fd9…`; 8,919 rows: 402 `STORED`, 5,646 `SEC_TICKER_MAP`, 2,871 `UNRESOLVED` (135 delisted symbols declined although in the map); `filer_resolution_v1.jsonl` `161429f5…`, deterministic |
+| freeze chunk | positions 0–249: 167 LIVE, 83 DELISTED; 15 `STORED`, 165 `SEC_TICKER_MAP`, 70 `UNRESOLVED`; 180 resolved identities → **165 filers** (share classes, one delisted/live pair); `identities.jsonl` `14f41c86…`; checkpoint `PENDING` |
+| pass 1 | 165 catalogues `DOWNLOADED`, 17,319,117 bytes, 185 s; each read back before its row |
+| derive | 936 targets over 936 `(CIK, accession)` pairs — 587 8-K, 213 10-Q, 70 20-F, 30 40-F, 23 10-K, 13 20-F/A — derived twice, identical; `filing_targets.jsonl` `0c67536b…`; mirrored before the first document |
+| pass 2 | 936 documents `DOWNLOADED`, 885,706,263 bytes, 1,315 s; each read back before its row |
+| manifest | 1,101 records, 1,101 trusted, 0 `FAILED`; snapshot `evidence-4328d3b4…` mirrored |
+| converge | **stopped** after 754 of 1,101 `CACHE_HIT` (165 catalogues, 589 documents, every digest equal): the bucket answered `AccessDenied` to a GET |
+| verify, complete, recovery | not reached; checkpoint `PASS2_DONE` with the stop recorded in its notes |
+
+SEC: 1,106 metered attempts for 1,102 documents — one `503` retried, two
+large 20-F bodies re-read after a timeout, one attempt with no response —
+all within the client's bounded policy; zero `403`, zero `429`, zero empty
+bodies. 903,025,380 bytes stored; 27.6% of the request budget, 42.0% of
+the byte budget. Bucket: 1,136 PUT, 1,136 HEAD, 2,258 GET, 3 LIST, no
+delete. Mirror: 35 `MIRRORED`, 2 `MIRROR_HIT`, 0 `CONFLICT`, 6,006,205
+bytes. Credential audit over the log and every control file: 0.
+
+The stop was Backblaze's account-level daily cap, verified afterwards with
+one HEAD and one GET: *"download bandwidth or transaction (Class B) cap
+exceeded. See the Caps & Alerts page to increase your cap."* Not a
+permissions fault, not a trust fault: nothing was recorded that the bucket
+had not proven, and the 754 artifacts replayed before the denial hashed to
+their rows.
+
+With the caps removed, the **same command resumed at 02:46:49 UTC** over
+the existing state — checkpoint `PASS2_DONE`, 1,101 trusted, the preserved
+ticker map, the frozen resolution and chunk files (every one verified
+against its `.sha256` and its mirror copy first) — and completed at
+03:14:07:
+
+| Step | Result |
+| --- | --- |
+| preflight (resume) | trusted 1,101, bucket `{filings: 936, submissions: 165}`; reconciliation clean before any step |
+| mirror | offline plans, resolution, ticker map, chunk plans: 26 `MIRROR_HIT`, 0 `CONFLICT`; 19 new snapshot objects (descriptors, checkpoint and summary states) |
+| resolve, freeze, derive | ticker map reused from disk (no request); resolution, identities and filing targets reproduced byte for byte under the checkpoint's digests |
+| pass 1, pass 2 | 165 + 936 `CACHE_HIT`; 0 requests, 0 bytes |
+| converge | **1,101 / 1,101 `CACHE_HIT`, 0 fetches, 0 bytes, 0 PUTs** |
+| verify | full reconciliation, every artifact downloaded and hashed: trusted 1,101 = objects 1,101; orphans 0 / 0, byte and hash mismatches 0, path violations 0, zero-byte 0, duplicate URLs 0; 885,706,263 logical bytes |
+| complete | checkpoint `COMPLETE` at 03:14:07 with accounting `{trusted: 1101, submissions: 165, filings: 936, manifest_records: 1101}` and `verification.full_corpus = 1101`; final manifest snapshot `evidence-4328d3b4…` (unchanged bytes, `MIRROR_HIT`) with a new descriptor; checkpoint and summary snapshots mirrored and read back |
+| recovery | 54 mirrored objects; required files present and hashed; newest manifest snapshot names 1,101 artifacts = 1,101 bucket objects; mirrored checkpoint `COMPLETE` — and, independently, a bucket-only script reconstructed the generation, plans, ticker map, resolution, chunk membership, targets, manifest and checkpoint from the mirror and hashed all 1,101 evidence objects against the mirrored manifest |
+
+Resume traffic: **SEC 0**. Bucket: evidence PUT **0**; evidence HEAD 6,606
+(two reconciliations at three HEADs per artifact); evidence GET 3,633 (pass
+replays 1,101, derivation 330, convergence 1,101, verification 1,101);
+control PUT 19, control GET 72, LIST 15. Mirror ledger over both
+invocations: 54 `MIRRORED`, 28 `MIRROR_HIT`, 0 `CONFLICT`. Credential
+audit over both logs and every control file: 0. Database digests unchanged.
+
+**Caps are an operational requirement.** One chunk downloads its corpus
+about three times (read-back, replay, verification — ~2.7 GB for chunk
+000) and a resume about four; each reconciliation costs three HEADs per
+artifact. Backblaze's default caps refused that; with the caps removed the
+same run completed. Expect 35 further chunks at ~0.9 GB stored, ~1,100 SEC
+requests and ~26 minutes of harvest each, plus ~20 minutes of verification.
+
+Defects found and fixed along the way, none of them in the trust chain:
+two snapshots of identical bytes within one second collided on the
+descriptor key with different facts (the scheme above is the fix); the
+chunk summary lost its identity counts when rewritten by a snapshot step;
+two identities sharing a filer would have produced duplicate filing
+targets and failed the trusted count — hence one catalogue per filer and
+one target per `(CIK, accession)`; and a resume would have overwritten the
+first invocation's per-pass request and byte accounting with zero and
+walked the checkpoint back through `PASS1_DONE` — accounting is now a
+delta accumulated across resumes, and the stage never regresses. The
+checkpoint's recorded `requests` (`submissions: 166`, `filings: 1106`) are
+the first invocation's cumulative meter readings, kept as written.
+
 ## Future staging databases
 
 A research staging database is 20–30 GB. **Create new ones under

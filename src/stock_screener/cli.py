@@ -188,9 +188,11 @@ from stock_screener.sec_evidence import (
     submissions_targets,
     verify_digests_of,
 )
-from stock_screener.sec_evidence.binding import BindingError, read_only_url
+from stock_screener.sec_evidence.binding import BindingError, bind_source, read_only_url
 from stock_screener.sec_evidence.generation import (
     build_generation_plan,
+    identity_plan,
+    v2_progress,
     write_generation_plan,
 )
 from stock_screener.sec_evidence.migration import (
@@ -199,6 +201,7 @@ from stock_screener.sec_evidence.migration import (
     build_plan,
     write_migration_plan,
 )
+from stock_screener.sec_evidence.rebuild import run_chunk
 from stock_screener.sec_evidence.targets import (
     TargetManifestError,
     held_from_manifest,
@@ -1586,6 +1589,7 @@ def evidence_status_command() -> None:
             typer.echo(f"  {name:<14} {'present' if child.is_dir() else 'absent'}")
         typer.echo(f"manifest         : {control_path / 'manifests' / 'evidence.jsonl'}")
         typer.echo(f"checkpoints      : {control_path / 'checkpoints'}")
+        _echo_generation(control_path)
         if (
             control_state is not ControlState.UNCONFIGURED
             and path is not None
@@ -1965,6 +1969,113 @@ def _repo_commit() -> str | None:
         target = Path(".git") / ref.removeprefix("ref: ")
         return target.read_text(encoding="utf-8").strip() if target.is_file() else None
     return ref
+
+
+@evidence_app.command("rebuild-canary")
+def evidence_rebuild_canary_command(
+    live: Annotated[
+        bool,
+        typer.Option(
+            "--live",
+            help=(
+                "Required. Fetches from the SEC and writes production evidence to the "
+                "configured bucket for one chunk of the universe."
+            ),
+        ),
+    ] = False,
+    chunk: Annotated[
+        int, typer.Option(min=0, help="Which 250-identity chunk. Only 0 is authorised.")
+    ] = 0,
+    database: Annotated[
+        Path, typer.Option("--database", help="The production universe database, read-only.")
+    ] = Path("stage9k.db"),
+    expect_universe_count: Annotated[
+        int, typer.Option(help="Identities the universe must hold.")
+    ] = 8919,
+    expect_universe_sha: Annotated[
+        str | None, typer.Option(help="Refuse a universe whose digest differs.")
+    ] = None,
+    max_requests: Annotated[int, typer.Option(help="SEC HTTP attempts allowed.")] = 4000,
+    max_bytes: Annotated[int, typer.Option(help="Source bytes allowed to be stored.")] = 2
+    * 1024**3,
+    filings_per_security: Annotated[int, typer.Option(help="Filing cap per security.")] = 6,
+) -> None:
+    """Rebuild one chunk of the second generation, SEC → bucket, and prove every step.
+
+    Preflight, mirror the offline plans, fetch the SEC ticker map once and
+    freeze the resolution of every identity, freeze the chunk, harvest
+    submissions then filings — each artifact read back from the bucket and
+    hashed before its manifest entry — replay to convergence, reconcile with
+    every artifact downloaded, mark the checkpoint COMPLETE, and prove the
+    control mirror could recover all of it. Stops at the first step that
+    does not hold. Never advances to the next chunk.
+    """
+    settings = _bootstrap()
+    if storage_backend(settings) is not StorageBackend.B2:
+        typer.echo("STOPPED: the rebuild canary requires SEC_STORAGE_BACKEND=b2")
+        raise typer.Exit(code=1)
+    if not live:
+        typer.echo(
+            "refusing without --live: this fetches SEC documents and writes production "
+            "evidence to the bucket for one chunk"
+        )
+        raise typer.Exit(code=1)
+    if chunk != 0:
+        typer.echo("STOPPED: only chunk 0 is authorised in this phase")
+        raise typer.Exit(code=1)
+    try:
+        layout = open_evidence_layout(settings)
+    except ControlPlaneUnavailableError as exc:
+        typer.echo(f"STOPPED: {exc}")
+        raise typer.Exit(code=1) from exc
+    if not database.is_file():
+        typer.echo(f"STOPPED: no database at {database}")
+        raise typer.Exit(code=1)
+
+    engine = create_engine_from_url(read_only_url(database))
+    try:
+        with session_scope(build_session_factory(engine)) as session:
+            try:
+                bind_source(
+                    session,
+                    database,
+                    expect_count=expect_universe_count,
+                    expect_digest=expect_universe_sha,
+                )
+            except BindingError as exc:
+                typer.echo(f"STOPPED: {exc}")
+                raise typer.Exit(code=1) from exc
+            identities = identity_plan(session)
+    finally:
+        engine.dispose()
+
+    budget = Budget(max_requests=max_requests, max_bytes=max_bytes)
+    documents = _sec_documents(settings, budget)
+    observe = getattr(layout.storage, "observe_requests", None)
+    typer.echo(f"generation       : SEC_EVIDENCE_GENERATION_V2 chunk {chunk:03d}")
+    typer.echo(f"control root     : {layout.control.path}")
+    typer.echo(f"identities       : {len(identities)} in the universe")
+    try:
+        report = run_chunk(
+            layout.storage,
+            layout.control,
+            documents,
+            identities,
+            chunk=chunk,
+            budget=budget,
+            filings_per_security=filings_per_security,
+            observe=observe,
+        )
+    finally:
+        documents.close()
+    for line in report.summary():
+        typer.echo(line)
+    typer.echo(
+        "CHUNK COMPLETE — stop here; chunk 001 is not authorised"
+        if report.passed
+        else "CHUNK NOT COMPLETE"
+    )
+    raise typer.Exit(code=0 if report.passed else 1)
 
 
 @evidence_app.command("sample")
@@ -2395,6 +2506,36 @@ def evidence_sweep_command(
     checkpoint.stage = ChunkStage.COMPLETE
     save_checkpoint(marker, checkpoint)
     typer.echo(f"CHUNK COMPLETE — checkpoint {marker}")
+
+
+def _echo_generation(control_path: Path) -> None:
+    """The second generation's state, from local control files only. No request."""
+    generation = control_path / "plans" / "generation_v2" / "generation.json"
+    if not generation.is_file():
+        typer.echo("generation       : (no generation_v2 plan; run `evidence generation-plan`)")
+        return
+    typer.echo("generation       : SEC_EVIDENCE_GENERATION_V2 (V1 unavailable)")
+    control = EvidenceControlRoot(path=control_path)
+    try:
+        trusted, completed, inconsistent = v2_progress(control)
+    except ControlPlaneUnavailableError:
+        typer.echo("V2 progress      : control root unreadable")
+        return
+    typer.echo(f"V2 progress      : {trusted} trusted artifacts, {completed} completed chunks")
+    if inconsistent:
+        typer.echo(f"WARNING          : inconsistent checkpoints {inconsistent}")
+    ledger = control_path / "plans" / "generation_v2" / "mirror_ledger.jsonl"
+    if not ledger.is_file():
+        typer.echo("control mirror   : not yet established")
+        return
+    last = ""
+    with ledger.open(encoding="utf-8") as handle:
+        for line in handle:
+            if line.strip():
+                last = str(json.loads(line).get("verified_at", last))
+    typer.echo(
+        f"control mirror   : configured (control/SEC_EVIDENCE_GENERATION_V2); last verified {last}"
+    )
 
 
 def _open_layout(settings: Settings) -> tuple[EvidenceStorage, EvidenceControlRoot]:

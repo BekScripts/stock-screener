@@ -36,20 +36,36 @@ appears without the run or the test that produced it.
 
 ## Current phase
 
-**B2.9X — the clean-room second generation** is the current checkpoint on
+**B2.10 — the clean-room rebuild canary** is the current checkpoint on
 `feat/phase-b2-storage-abstraction`. **The BEK drive is permanently
-unavailable.** With it went the first generation of the SEC evidence corpus:
-its ~57k artifacts, its manifest, the frozen Plan A3, the A3 remainder, the
-61 batch manifests and the checkpoints. None of that is recoverable and none
-of it is reused for trust. B2.9X inspected what survived on the internal disk
-and started **Generation V2** from it: `stage9k.db` reproduces the 8,919-
-identity universe and its digest exactly; 402 stored CIKs yield offline
-submissions targets; the other 8,517 resolutions, every catalogue and every
-filing come from the SEC in later phases; Plan A3 is `MISSING_PREREQUISITE`
-and will be regenerated after the baseline is rebuilt and compared — never
-forced — to its frozen digest. V2 begins at zero trusted artifacts, zero
-completed batches, and an empty bucket (re-verified read-only). Nothing was
-fetched from the SEC. See
+unavailable** and Generation V1 — its ~57k artifacts, its manifest, the
+frozen Plan A3, the remainder, the batch manifests and the checkpoints — is
+history that creates no trust. B2.9X started **Generation V2** from what
+survived on the internal disk: `stage9k.db` reproduces the 8,919-identity
+universe and its digest exactly, 402 stored CIKs, and offline plans on
+`.evidence/`. B2.10 proved the complete V2 pipeline on exactly one
+production chunk: the SEC ticker map fetched once and preserved raw, all
+8,919 identities resolved without a guess and frozen, chunk 000 (positions
+0–249, nothing hand-picked) frozen with its digest, submissions catalogues
+then filing documents fetched from the SEC straight into the bucket with
+every artifact read back and hashed before its manifest row — 1,101
+artifacts, 1,101 trusted, zero failures — the frozen targets replayed to
+convergence (1,101 / 1,101 `CACHE_HIT`, no fetch, no PUT), a full
+reconciliation with every artifact downloaded and hashed (all zeros),
+**chunk 000 `COMPLETE`**, and a control mirror under
+`control/SEC_EVIDENCE_GENERATION_V2/` proven — from the bucket alone — to
+recover the generation, the plans, the ticker map, the resolution, the
+chunk, the manifest and the checkpoint, and to verify every evidence
+object. The run took two invocations: Backblaze's daily download cap
+stopped the first replay, and the same command resumed over the existing
+state with zero SEC requests and zero evidence PUTs. **V1 unavailable; V2
+active; trusted V2 artifacts 1,101; control mirror HEALTHY; disaster
+recovery PROVEN; 35 baseline chunks remain.** Chunk 001 is not authorised
+(B2.11 needs explicit approval); Plan A3 is BLOCKED until the baseline is
+rebuilt and the derived index reconstructed — it is still
+`MISSING_PREREQUISITE` and is regenerated after the baseline is rebuilt and
+compared — never forced — to its frozen digest. See
+[B2.10](storage-layout.md#b210-the-rebuild-canary),
 [B2.9X](storage-layout.md#b29x-the-second-generation),
 [B2.9](storage-layout.md#b29-the-migration-plan),
 [B2.8](storage-layout.md#b28-the-live-canary),
@@ -382,6 +398,41 @@ data alone. `compounder_radar.db` has received none of it.
 
 These are load-bearing. Each is enforced by structure or by a test, not by
 convention, and none may be relaxed without an explicit instruction.
+
+### B2.10 the rebuild canary
+
+- **No manifest row before the bucket has proven the bytes.** The V2 chain is
+  fetch → SHA-256 → `write_bytes` (PUT, HEAD) → `digest` (GET, hashed) equal
+  to the fetched digest → manifest append → `state.record`. The read-back is
+  `harvest_artifacts(verify_written=True)`, a generic flag with no backend
+  test in it. A read-back that differs raises before the manifest is
+  touched; the object stays for reconciliation to find; nothing is deleted.
+- **The control mirror is not evidence.** `control/SEC_EVIDENCE_GENERATION_V2/`
+  is outside every artifact prefix; reconciliation never lists it and no
+  mirrored file can be an orphan or a trusted artifact. Its trust is full
+  read-back, an existing key is never overwritten (`MIRROR_HIT` or
+  `CONFLICT`, and a conflict stops the run), and mutable files are mirrored
+  as content-addressed bytes with a microsecond-stamped descriptor — never
+  a replaced "latest".
+- **A chunk is arithmetic, never a selection.** Chunk 000 is positions 0–249
+  of the production universe order, frozen with its digest in the
+  checkpoint; an unresolved identity stays in the chunk and contributes no
+  request; a filer shared by several identities is one catalogue; filing
+  targets are one per `(CIK, accession)`, `FILING_FORMS` only, newest
+  first, cap 6, derived twice and byte-identical before anything is
+  fetched.
+- **Resolution is stricter than V1 and says so.** STORED → SEC_TICKER_MAP
+  (live companies only) → UNRESOLVED. A delisted security without a stored
+  CIK is not resolved from today's map even when its symbol is there; the
+  declined count is recorded. The first generation asked the map for every
+  symbol; the difference is reported, never corrected back.
+- **A SEC refusal stops before the next request.** Targets go through the
+  harvester one at a time; a `403` or a rate-limit failure raises at once.
+  A `200` with an empty body is never stored. Anything still failed after
+  a second pass stops the run; what succeeded stays trusted.
+- **Chunk 001 is not authorised.** The command refuses any other chunk. The
+  full baseline rebuild is a separate decision, taken on the canary's
+  evidence.
 
 ### Cross-cutting
 
@@ -1361,7 +1412,10 @@ The map in `src/stock_screener/jobs.py` is the entire allowlist.
 `update-benchmark` · `update-fundamentals` · `scan` · `run-scan` · `score` ·
 `enrich` · `rankings` · `hidden-gems` · `wrong-price` · `improving` · `explain` ·
 `run-daily`, plus the `research` group (`candidates`, `brief`, `update-filings`,
-`update-filing-text`, `run`) and the `deep-research` group (`prepare`, `run`).
+`update-filing-text`, `run`), the `deep-research` group (`prepare`, `run`)
+and the `evidence` group (`status`, `sample`, `harvest`, `harvest-manifest`,
+`sweep`, `migration-plan`, `generation-plan`, `b2-canary --confirm`,
+`rebuild-canary --live`).
 
 ---
 
@@ -1463,6 +1517,14 @@ Backend temporaries are hidden from artifact listing (`temporary_files` remains
 zero). The local backend does not pin mount identity against concurrent
 replacement. See [`EvidenceRoot` after B2.5](storage-layout.md#evidenceroot-after-b25).
 
+**The bucket's daily caps bound a chunk run.** One chunk downloads its corpus
+about three times (read-back, replay, full verification), a resume about
+four, and each reconciliation costs three HEADs per artifact; Backblaze's
+default Caps & Alerts refused the chunk 000 replay after 2,258 GETs, and the
+same run completed once the caps were removed. Keep them removed for the
+baseline rebuild; the run stops cleanly and resumes when it can. See
+[B2.10](storage-layout.md#b210-the-rebuild-canary).
+
 **Historical listing evidence is monthly and partly censored.** Free sources give
 Nasdaq and NYSE from 2022-01 at month resolution only; NYSE American is not
 covered at any date, and no free daily listing source exists. A 2022+ universe
@@ -1501,6 +1563,67 @@ Documented rather than fixed. Each is a deliberate stop, not a backlog item.
 ## Completed experiments
 
 Measured runs, kept because they are the evidence behind decisions above.
+
+### B2.10 rebuild canary, chunk 000 — 2026-09-16
+
+- `evidence rebuild-canary --live --expect-universe-sha b8eaed3e…` against
+  `stage9k.db` read-only; both database digests unchanged before and after
+  (`02a6660b…`, `20a77d24…`).
+- Preflight: 0 trusted, 0 completed, every artifact prefix empty. Offline
+  plans verified against their digests and mirrored, 6 files read back.
+- Ticker map fetched once, 797,759 bytes, `82cd5fd9ccffda81…`, preserved
+  raw with sidecar. Resolution of all 8,919 identities, deterministic:
+  402 `STORED`, 5,646 `SEC_TICKER_MAP`, 2,871 `UNRESOLVED` (135 delisted
+  symbols in the map declined); `filer_resolution_v1.jsonl`
+  `161429f58606e0c069eb23ca79fc8b9a6aafe65a4b39238f7d8f32a315132c6b`.
+- Chunk 000 frozen: positions 0–249, `identities.jsonl`
+  `14f41c86200248179992eefb3b5d330e82792f1f0f040d79c1fb8519b22376d2`;
+  180 resolved identities over 165 filers. Filing targets: 936 over 936
+  `(CIK, accession)` pairs, cap 6, newest first, derived twice identical,
+  `0c67536b6cc3c312466dd04659eb600e233bfd32a874f5f6df5890dbae3b2497`.
+- Harvest: 165 catalogues (17,319,117 bytes, 185 s) then 936 documents
+  (885,706,263 bytes, 1,315 s), every one read back from the bucket and
+  hashed before its manifest row. Manifest 1,101 records, 1,101 trusted,
+  0 `FAILED`. SEC 1,106 metered attempts (one `503`, two body timeouts on
+  20-Fs, one no-response — all retried within policy; no `403`, no `429`).
+  Bucket 1,136 PUT / 1,136 HEAD / 2,258 GET / 3 LIST / 0 delete. Mirror
+  35 `MIRRORED`, 2 `MIRROR_HIT`, 0 `CONFLICT`. Credential audit: 0.
+- First invocation's convergence replay stopped at 754 of 1,101
+  `CACHE_HIT` by the bucket's `AccessDenied` — Backblaze's daily download /
+  Class B cap, confirmed afterwards by one HEAD and one GET. Checkpoint
+  `PASS2_DONE`, stop recorded in its notes.
+- Resume (caps removed), same command, 02:46:49–03:14:07 UTC: preflight
+  reconciliation clean over 1,101 trusted; mirror 26 `MIRROR_HIT` / 0
+  `CONFLICT`; ticker map reused from disk; resolution, identities and
+  targets reproduced byte-identical; passes 165 + 936 `CACHE_HIT`;
+  convergence **1,101 / 1,101 `CACHE_HIT`, 0 fetches, 0 bytes, 0 PUTs**;
+  full reconciliation trusted 1,101 = objects 1,101, orphans 0/0,
+  mismatches 0/0, path violations 0, zero-byte 0, duplicates 0,
+  885,706,263 logical bytes, every artifact downloaded and hashed;
+  checkpoint `COMPLETE` (`accounting.trusted 1101`, `verification.full_corpus
+  1101`); final manifest snapshot `4328d3b463ab08875c4dd54ab9519323cc1a33e3cd15f1e7ff3ff7c39fcac886`
+  mirrored; recovery proven by the run (54 mirrored objects) and by an
+  independent bucket-only script that hashed all 1,101 evidence objects
+  against the mirrored manifest. **SEC requests 0; evidence PUTs 0**;
+  evidence HEAD 6,606, evidence GET 3,633, control PUT 19, control GET 72,
+  LIST 15. Credential audit: 0. Database digests unchanged.
+- `tests/integration/test_rebuild_canary.py`: **45 passed**, offline —
+  resolution rules and determinism; the pre-manifest read-back (tampered
+  bytes → `EvidenceWriteError`, 0 manifest rows, object left in place; the
+  HEAD check alone would have trusted them); mirror new/hit/conflict/
+  read-back mismatch, unsafe keys and artifact prefixes refused before any
+  request, digest-addressed snapshots never overwritten, mirrored files
+  invisible to reconciliation; one chunk end to end with recovery proven,
+  checkpoint digests, PUT-before-GET ordering, byte-identical frozen files
+  across two generations, replay with 0 fetches / 0 PUTs, forms and
+  ordering; stops on a non-empty bucket, a V1 checkpoint, a `403` before
+  the next request, a persistent failure after two passes, a tampered
+  object, a mirror conflict, the request budget; resume after submissions,
+  mid-filings, an unrecorded object left as an orphan, a completed rerun
+  all hits, first-run spend kept on the checkpoint, no stage demotion in
+  mirrored snapshots; V2 zero start; the command refusing without `--live`, on a
+  local backend and for any other chunk, and completing a seeded chunk
+  with `evidence status` reporting it.
 
 ### B2.9X clean-room reconstruction — 2026-09-16
 
@@ -1792,14 +1915,13 @@ under **80%**. It is what CI runs; run it rather than the individual tools.
 
 ## Next phase
 
-**B2.10 — clean-room base SEC→B2 rebuild canary** follows: V2.1 (filer
-resolution through the SEC ticker map, recorded per identity) and the first
-V2.2 chunk (submissions catalogues, then filing documents) directly into the
-bucket through `harvest_artifacts` → `B2EvidenceStorage`, with the manifest
-on `.evidence/` and a control-plane mirror in place before any batch beyond
-the canary. Plan A3 regeneration waits for V2.3–V2.4. FTD archives are
-redownloaded separately. None of this has been started; nothing has been
-fetched from the SEC.
+**The full V2 baseline rebuild** follows the canary, as a separate decision
+taken on its evidence: chunks 001–035 through the same `run_chunk` sequence
+(the command refuses them today), the control mirror after every chunk, then
+V2.3 re-index, V2.4 coverage and reach, V2.5 Plan A3 regeneration compared
+to `53e3f0ca…` and never forced, V2.6 A3 expansion, V2.7 terminal audit. FTD
+archives are redownloaded separately. Chunk 000 is the only chunk that
+exists; nothing beyond it has been fetched.
 
 Two pieces of work are *identified* but not authorised, and neither is to be
 started without being asked:
@@ -1866,7 +1988,7 @@ Not a backlog. These exclusions are deliberate.
 
 | | |
 | --- | --- |
-| Commit | The B2.9X commit containing this checkpoint, `feat: plan clean-room SEC evidence rebuild`; parent `0ef11c7` (B2.9, `feat: plan manifest-driven B2 evidence migration`) |
+| Commit | The B2.10 commit containing this checkpoint, `feat: validate clean-room SEC to B2 rebuild`; parent `de41537` (B2.9X, `feat: plan clean-room SEC evidence rebuild`) |
 | Branch | `feat/phase-b2-storage-abstraction` |
 | Migration head | `0031` — the research-universe layer (9K.7). Nothing since 9K.11 added one. |
 | Score version | `COMPOUNDER_V1_2` (unchanged by anything in Phase 8, 9A, 9B or 9C) |

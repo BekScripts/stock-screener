@@ -52,6 +52,7 @@ from stock_screener.sec_evidence.manifest import (
     Outcome,
 )
 from stock_screener.sec_evidence.storage import (
+    EvidenceWriteError,
     RequestKind,
     filing_key,
     fulltext_key,
@@ -254,6 +255,7 @@ def harvest_artifacts(
     *,
     budget: Budget | None = None,
     dry_run: bool = False,
+    verify_written: bool = False,
 ) -> HarvestReport:
     """Obtain each target, skipping what is already provably held.
 
@@ -270,12 +272,19 @@ def harvest_artifacts(
         budget: Spending limits. Unlimited when omitted.
         dry_run: Plan only — no request is issued and nothing is written, the
             manifest included.
+        verify_written: Read every newly stored artifact back and hash it
+            before its manifest entry is appended. Backend-neutral: a local
+            directory re-reads a file, a bucket downloads the object. Costs
+            one read per new artifact and buys the guarantee that no trusted
+            row describes bytes the backend does not hold.
 
     Returns:
         What happened.
 
     Raises:
         ValueError: If a real run is asked for without a client.
+        EvidenceWriteError: If `verify_written` finds stored bytes that do not
+            hash to the fetched bytes. The run stops; nothing was recorded.
     """
     if documents is None and not dry_run:
         message = "a harvest that is not a dry run needs a SEC client"
@@ -306,7 +315,9 @@ def harvest_artifacts(
         if documents is None:  # pragma: no cover — guarded at entry
             message = "a harvest that is not a dry run needs a SEC client"
             raise ValueError(message)
-        entry = _fetch_one(target, key, storage, documents, limits, manifest, state)
+        entry = _fetch_one(
+            target, key, storage, documents, limits, manifest, state, verify_written=verify_written
+        )
         # A re-fetch caused by a corrupt cache is reported as `INVALID_CACHE`
         # rather than `DOWNLOADED`: the bytes were downloaded either way, and
         # what the operator needs to see is that something on disk was wrong.
@@ -334,8 +345,17 @@ def _fetch_one(
     limits: Budget,
     manifest: Manifest,
     state: ManifestState,
+    *,
+    verify_written: bool = False,
 ) -> Entry:
-    """Fetch, store and record one target. Never raises for a request failure."""
+    """Fetch, store and record one target. Never raises for a request failure.
+
+    Raises:
+        EvidenceWriteError: If `verify_written` is set and the bytes read back
+            from storage do not hash to the bytes that were sent. That is an
+            integrity fault in the backend, not a request failure, and it stops
+            the run before any manifest entry exists for the artifact.
+    """
     attempt = state.next_attempt(target.url)
     # A metered client records each network attempt itself, retries included, so
     # `requests_made` moves during the call. A client that is *not* metered — a
@@ -417,8 +437,24 @@ def _fetch_one(
         return entry
 
     # Trust ordering, unchanged: the bytes are stored and vouched for by the
-    # backend first; only then is the manifest entry built and appended.
+    # backend first; only then is the manifest entry built and appended. With
+    # `verify_written` the caller asks for one more step in between — the
+    # stored bytes are read back and hashed, independently of whatever the
+    # backend's own write verification did — so that a backend which accepted
+    # the write and then holds something else can never become a trusted row.
     stored = storage.write_bytes(key, fetched.body)
+    if verify_written:
+        readback = storage.digest(key)
+        if readback != fetched.sha256:
+            log.error(
+                "stored bytes do not hash to the fetched bytes; not recording",
+                url=target.url,
+                key=key,
+            )
+            raise EvidenceWriteError(
+                f"{key!r}: the backend holds bytes hashing to {readback[:16]}…, "
+                f"not the {fetched.sha256[:16]}… that were fetched; no manifest entry written"
+            )
     limits.spend(stored=stored.bytes)
     entry = Entry(
         url=target.url,
