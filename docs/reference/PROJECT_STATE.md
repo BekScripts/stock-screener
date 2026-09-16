@@ -36,17 +36,19 @@ appears without the run or the test that produced it.
 
 ## Current phase
 
-**B2.8 — the live B2 canary** is the current checkpoint on
+**B2.9 — the migration planner** is the current checkpoint on
 `feat/phase-b2-storage-abstraction`. B2.5 (`071c1cd`) separated the control
 plane; B2.6 (`a49cd8d`) added `SEC_STORAGE_BACKEND` and the `B2_*` settings;
-B2.7 (`3261930`) implemented the Backblaze backend; B2.8 adds the canary —
-`evidence b2-canary --confirm`, isolated under `_canary/<run-id>/`, proven
-offline first — refines the backend's 404 classification (`NoSuchBucket` is
-unavailability, not an absent artifact), and **ran it live: the first
-requests to Backblaze passed every step** on 2026-09-15 against the
-configured bucket, with cleanup leaving nothing behind. The bucket holds no
-production object; no corpus has been migrated; no production write has
-occurred; Plan A3 remains paused. See
+B2.7 (`3261930`) implemented the Backblaze backend; B2.8 (`8247a0f`) ran the
+live canary, which passed every step; B2.9 adds `evidence migration-plan` —
+one action per trusted manifest key, deterministic, written under the control
+root's `migration/`, read-only against the bucket and the old volume. **The
+plan is blocked on the authoritative manifest**: it lives on the failed
+volume in the legacy colocated layout and has not been copied under
+`SEC_CONTROL_DIR`, so no migration plan exists yet. The bucket's artifact
+prefixes are empty (re-verified read-only); no corpus has been migrated; no
+production write has occurred; Plan A3 remains paused. See
+[B2.9](storage-layout.md#b29-the-migration-plan),
 [B2.8](storage-layout.md#b28-the-live-canary),
 [B2.7](storage-layout.md#b27-the-backblaze-backend),
 [B2.6](storage-layout.md#b26-backend-selection-and-the-b2-configuration-boundary),
@@ -329,6 +331,28 @@ data alone. `compounder_radar.db` has received none of it.
 - **`NoSuchBucket` is unavailability.** A missing bucket raises
   `StorageUnavailableError` from read, digest and list — never an empty
   listing or an absent artifact.
+
+### B2.9 migration planning
+
+- **The manifest is the only source of trust for migration.** The plan is
+  built from trusted entries under the manifest's replay semantics; a file on
+  the old volume or an object in the bucket is never an input on its own, and
+  trust is never reconstructed when the manifest is unavailable.
+- **Migration reproduces trusted bytes.** `Entry.bytes` and `Entry.sha256`
+  are the target; a refetch that returns different bytes is a
+  `REFETCH_SHA_MISMATCH`, not a new artifact. The manifest is not rewritten
+  because storage changed, and no second manifest is created.
+- **Exactly one action per trusted key**, in a fixed precedence
+  (`CONFLICT` > `REMOTE_VERIFIED` > local copy > `REFETCH_REQUIRED` >
+  `SOURCE_UNRECOVERABLE`), and the plan reproduces byte for byte from the
+  same inputs; source observations are inputs and are recorded as such.
+- **The old volume is asked, never walked.** Manifest keys only, in order;
+  the first fault ends the probe, keeps what was learned, and is not retried.
+- **The bucket is listed, never written.** A remote object is verified by
+  downloaded digest, never by metadata; an object no entry claims is a
+  `REMOTE_ORPHAN` that blocks execution; `_canary/` is never evidence.
+- **Planner classification and execution state are separate fields.**
+  `Action` versus `ExecutionState` plus `FailureCategory`; never merged.
 
 These are load-bearing. Each is enforced by structure or by a test, not by
 convention, and none may be relaxed without an explicit instruction.
@@ -1447,6 +1471,25 @@ Documented rather than fixed. Each is a deliberate stop, not a backlog item.
 
 Measured runs, kept because they are the evidence behind decisions above.
 
+### B2.9 migration planner — 2026-09-15
+
+- `tests/integration/test_migration_plan.py`: **33 passed**, offline. Manifest
+  replay (failed→downloaded→cache hit→second URL folds to one key; a trailing
+  failure untrusts; conflicting bytes across URLs is `CONFLICT`; unsafe keys
+  and unreadable lines are counted and excluded); manifest-only plan; metadata
+  and verify probes with present, missing, size- and SHA-mismatched copies; an
+  unmounted source asked once; a source failing mid-probe keeping two answers
+  and marking the rest `UNAVAILABLE`; the source never walked; an empty bucket
+  costing three LISTs; remote verified by GET, wrong size without a GET, wrong
+  bytes despite a lying metadata claim, orphan, canary object ignored, listing
+  failure stopping the planner, no PUT/DELETE ever; precedence and the
+  exactly-once invariant; deterministic bytes, digest, batches and summary;
+  A3 partition invariants; the command blocked on a missing manifest,
+  writing a plan on a present one, and blocking on remote orphans.
+- Live, read-only, 2026-09-15: `evidence migration-plan` → **BLOCKED —
+  AUTHORITATIVE MANIFEST UNAVAILABLE**; remote `{'filings': 0,
+  'submissions': 0, 'fulltext': 0}`; nothing written.
+
 ### B2.8 canary harness — 2026-09-15
 
 - `tests/unit/test_b2_canary.py`: **38 passed**, offline. A full run over the
@@ -1691,12 +1734,15 @@ under **80%**. It is what CI runs; run it rather than the individual tools.
 
 ## Next phase
 
-**B2.9 — manifest-driven migration / recovery planner for the existing SEC
-corpus** follows this checkpoint. The canary has passed live; the bucket is
-proven and empty. Relocating the BEK corpus's control files into
-`SEC_CONTROL_DIR`, mirroring control metadata remotely, evidence migration
-and Plan A3 remain outside this checkpoint's authorization and have not been
-started.
+**The authoritative control files must reach `SEC_CONTROL_DIR`** before
+anything else: `manifests/evidence.jsonl`, the frozen expansion plan and its
+remainder, the batch manifests and the checkpoints all lived beside the
+artifacts on the failed volume and are absent from `.evidence/`. Copying them
+is a deliberate operator step (the volume reads on another machine). Then
+`evidence migration-plan` produces the plan, and **B2.10 — controlled
+manifest-driven migration canary** follows. Mirroring control metadata
+remotely, evidence migration and Plan A3 remain outside this checkpoint's
+authorization and have not been started.
 
 Two pieces of work are *identified* but not authorised, and neither is to be
 started without being asked:
@@ -1763,7 +1809,7 @@ Not a backlog. These exclusions are deliberate.
 
 | | |
 | --- | --- |
-| Commit | The B2.8 commit containing this checkpoint, `test: validate Backblaze B2 storage integration`; parent `3261930` (B2.7, `feat: implement Backblaze B2 evidence storage`) |
+| Commit | The B2.9 commit containing this checkpoint, `feat: plan manifest-driven B2 evidence migration`; parent `8247a0f` (B2.8, `test: validate Backblaze B2 storage integration`) |
 | Branch | `feat/phase-b2-storage-abstraction` |
 | Migration head | `0031` — the research-universe layer (9K.7). Nothing since 9K.11 added one. |
 | Score version | `COMPOUNDER_V1_2` (unchanged by anything in Phase 8, 9A, 9B or 9C) |

@@ -15,6 +15,7 @@ are being emitted as JSON.
 from __future__ import annotations
 
 import csv
+import hashlib
 import json
 import sqlite3
 import tempfile
@@ -63,7 +64,11 @@ from stock_screener.deep_research import (
     prepare_company,
     run_deep_research,
 )
-from stock_screener.evidence import EvidenceState, inspect_sec_evidence_dir
+from stock_screener.evidence import (
+    EvidenceState,
+    EvidenceUnavailableError,
+    inspect_sec_evidence_dir,
+)
 from stock_screener.identity import (
     ContaminationReport,
     FtdFileResult,
@@ -155,6 +160,7 @@ from stock_screener.sec_evidence import (
     Manifest,
     Selection,
     StorageBackend,
+    StorageUnavailableError,
     SweepError,
     checkpoint_path,
     derived_root,
@@ -165,7 +171,10 @@ from stock_screener.sec_evidence import (
     inspect_control_dir,
     load_checkpoint,
     new_urls_since,
+    open_control_root,
     open_evidence_layout,
+    open_evidence_root,
+    open_evidence_storage,
     preflight_corpus,
     prior_sample,
     reconcile,
@@ -178,6 +187,12 @@ from stock_screener.sec_evidence import (
     storage_backend,
     submissions_targets,
     verify_digests_of,
+)
+from stock_screener.sec_evidence.migration import (
+    SourceProbe,
+    a3_accounting,
+    build_plan,
+    write_migration_plan,
 )
 from stock_screener.sec_evidence.targets import (
     TargetManifestError,
@@ -1635,6 +1650,174 @@ def evidence_b2_canary_command(
     typer.echo(f"  canary control root: {report.control_root} (temporary; not the production one)")
     typer.echo("CANARY PASSED" if report.passed else "CANARY FAILED")
     raise typer.Exit(code=0 if report.passed else 1)
+
+
+@evidence_app.command("migration-plan")
+def evidence_migration_plan_command(
+    source_root: Annotated[
+        Path | None,
+        typer.Option(
+            "--source-root",
+            help=(
+                "The legacy local evidence root to probe for source copies. Defaults to "
+                "SEC_EVIDENCE_DIR when set. Read-only; never walked, only asked about "
+                "manifest-known keys."
+            ),
+        ),
+    ] = None,
+    probe: Annotated[
+        SourceProbe,
+        typer.Option(
+            "--probe",
+            help=(
+                "How much to ask of the local source: none, metadata (existence and "
+                "length; the default) or verify (read and hash every present key)."
+            ),
+        ),
+    ] = SourceProbe.METADATA,
+    remote: Annotated[
+        bool,
+        typer.Option(
+            "--remote/--no-remote",
+            help=(
+                "Consult the configured B2 bucket, read-only: LIST, and HEAD/GET only for "
+                "keys it already holds."
+            ),
+        ),
+    ] = True,
+    batch_size: Annotated[int, typer.Option(min=1, help="Plan rows per execution batch.")] = 1000,
+    a3_plan: Annotated[
+        Path | None,
+        typer.Option(
+            "--a3-plan",
+            help="A frozen target manifest (JSONL) to account against the trusted manifest.",
+        ),
+    ] = None,
+) -> None:
+    """Plan the migration of the trusted corpus to Backblaze. Moves nothing.
+
+    Reads the authoritative evidence manifest from the control root, lists the
+    bucket's artifact prefixes read-only, optionally asks the legacy local
+    root about each manifest key, and writes a deterministic plan — one row
+    per trusted key, exactly one action each — under the control root's
+    `migration/`. Issues no PUT, no DELETE, and no SEC request. A missing
+    manifest is reported as blocked, never reconstructed from files.
+    """
+    settings = _bootstrap()
+    try:
+        control = open_control_root(
+            settings,
+            colocate_with=open_evidence_root(settings)
+            if storage_backend(settings) is StorageBackend.LOCAL
+            else None,
+        )
+    except (ControlPlaneUnavailableError, EvidenceUnavailableError) as exc:
+        typer.echo(f"STOPPED: {exc}")
+        raise typer.Exit(code=1) from exc
+    manifest = Manifest(control.manifest_path)
+    typer.echo(f"control root     : {control.path}")
+    typer.echo(f"manifest         : {manifest.path}")
+
+    if not manifest.path.is_file():
+        typer.echo("manifest state   : ABSENT")
+        typer.echo("BLOCKED — AUTHORITATIVE MANIFEST UNAVAILABLE")
+        typer.echo(
+            "  the evidence manifest is not under this control root; trust is never "
+            "reconstructed from files, checkpoints or bucket objects"
+        )
+        _echo_remote_inventory(settings, remote)
+        raise typer.Exit(code=1)
+    manifest_sha = hashlib.sha256(manifest.path.read_bytes()).hexdigest()
+    typer.echo(f"manifest bytes   : {manifest.path.stat().st_size}")
+    typer.echo(f"manifest sha256  : {manifest_sha}")
+
+    source = None
+    configured = (settings.sec_evidence_dir or "").strip()
+    root = source_root if source_root is not None else (Path(configured) if configured else None)
+    if root is not None:
+        state = "present" if root.is_dir() else "NOT MOUNTED"
+        typer.echo(f"source root      : {root} ({state})")
+        source = LocalEvidenceStorage(root)
+    else:
+        typer.echo("source root      : (none configured)")
+
+    remote_storage = None
+    if remote:
+        if storage_backend(settings) is not StorageBackend.B2:
+            typer.echo("STOPPED: --remote requires SEC_STORAGE_BACKEND=b2")
+            raise typer.Exit(code=1)
+        remote_storage = open_evidence_storage(settings)
+
+    try:
+        plan = build_plan(
+            manifest, remote=remote_storage, source=source, probe=probe, batch_size=batch_size
+        )
+    except StorageUnavailableError as exc:
+        typer.echo(f"STOPPED: the bucket could not be audited read-only: {exc}")
+        raise typer.Exit(code=1) from exc
+    paths, sha = write_migration_plan(plan, control)
+
+    audit = plan.corpus.audit
+    typer.echo(f"manifest records : {audit.records} ({audit.unreadable_lines} unreadable lines)")
+    typer.echo(f"trusted artifacts: {len(plan.corpus.by_key)} {plan.corpus.counts_by_kind()}")
+    typer.echo(f"logical bytes    : {plan.corpus.logical_bytes}")
+    typer.echo(
+        f"manifest conflicts: {len(audit.conflicting_keys)} conflicting, "
+        f"{len(audit.invalid_keys)} invalid keys, {len(audit.shared_keys)} shared"
+    )
+    if plan.remote is not None:
+        typer.echo(
+            f"remote           : {len(plan.remote.listed)} objects under artifact prefixes; "
+            f"{plan.remote.digests_read} verified by download; {len(plan.remote.orphans)} orphans"
+        )
+    else:
+        typer.echo("remote           : not consulted")
+    typer.echo(
+        f"source probe     : {plan.source_probe} — asked {plan.source_asked} keys"
+        + (f"; stopped: {plan.source_fault}" if plan.source_fault else "")
+    )
+    typer.echo(f"source status    : {plan.source_counts()}")
+    typer.echo(f"actions          : {plan.counts()}")
+    typer.echo(f"plan rows        : {len(plan.rows)} (complete: {plan.complete})")
+    typer.echo(f"plan             : {paths['plan']}")
+    typer.echo(f"plan sha256      : {sha}")
+    typer.echo(f"batches          : {len(plan.batches)} of up to {batch_size}")
+
+    if a3_plan is not None:
+        try:
+            a3 = a3_accounting(a3_plan, manifest)
+        except TargetManifestError as exc:
+            typer.echo(f"A3 accounting    : STOPPED — {exc}")
+            raise typer.Exit(code=1) from exc
+        typer.echo(
+            f"A3 accounting    : frozen {len(a3.frozen)}, trusted {len(a3.trusted)}, "
+            f"remaining {len(a3.remaining)}, partitioned {a3.partitioned}, "
+            f"plan sha {a3.plan_sha256[:16]}"
+        )
+
+    if plan.remote_orphans:
+        typer.echo(f"BLOCKED — REMOTE ORPHANS: {list(plan.remote_orphans)[:5]}")
+        raise typer.Exit(code=1)
+    if not plan.complete:
+        typer.echo("FAILED — the plan does not cover every trusted key exactly once")
+        raise typer.Exit(code=1)
+    typer.echo("PLAN WRITTEN — nothing was moved")
+
+
+def _echo_remote_inventory(settings: Settings, remote: bool) -> None:
+    """Read-only: how many objects each artifact prefix holds. LIST only."""
+    if not remote or storage_backend(settings) is not StorageBackend.B2:
+        typer.echo("remote           : not consulted")
+        return
+    try:
+        storage = open_evidence_storage(settings)
+        counts = {
+            prefix: sum(1 for _ in storage.list_prefix(prefix)) for prefix in ARTIFACT_PREFIXES
+        }
+    except StorageUnavailableError as exc:
+        typer.echo(f"remote           : could not be listed: {exc}")
+        return
+    typer.echo(f"remote           : {counts} objects under artifact prefixes (read-only listing)")
 
 
 @evidence_app.command("sample")

@@ -757,6 +757,171 @@ To run it again after a credential rotation or an endpoint change:
 `readFiles`, `writeFiles`, and `deleteFiles` only so the canary can remove
 its own objects.
 
+## B2.9 the migration plan
+
+`stock-screener evidence migration-plan` answers one question per trusted
+artifact — *how would this one get into the bucket, and can we prove it
+arrived?* — and writes the answers under the control root's `migration/`.
+It moves nothing: no PUT, no DELETE, no SEC request. `sec_evidence/migration.py`
+is the planner; the executor is a later phase.
+
+### Trust, replica, reproduction
+
+| Thing | Role |
+| --- | --- |
+| `manifests/evidence.jsonl` | **the source of trust.** Migration starts from its trusted entries and from nothing else. It is never rewritten because storage changed, and never forked into a second manifest. |
+| the B2 bucket | **the artifact backend** — where the bytes live once migrated. Its objects are evidence only when a trusted entry names them *and* their bytes hash to `Entry.sha256`. |
+| `migration/sec_b2_migration_plan_v1.jsonl` | **replication state**, not trust: what should happen to each key, and later what did. |
+
+The migration reproduces *the bytes already trusted*: `Entry.bytes` and
+`Entry.sha256`. A local copy is used only if it hashes to them; a refetch is
+accepted only if the bytes downloaded today hash to what was trusted then.
+Different bytes from the same URL are a `REFETCH_SHA_MISMATCH`, never a
+quietly new artifact.
+
+### One action per trusted key
+
+The trusted set is built with the manifest's own replay semantics — the
+latest word per URL wins; a `FAILED` after a `DOWNLOADED` untrusts; two URLs
+vouching for one key with the same bytes are one key — so no JSONL line is
+ever counted as an artifact. Every trusted key then receives exactly one
+action, in this order of precedence:
+
+| Order | Observation | Action |
+| --- | --- | --- |
+| 1 | the manifest is ambiguous about the key (two URLs, different bytes; no digest; no length; unsafe key) | `CONFLICT` |
+| 2 | the bucket holds it and the **downloaded** bytes hash to the manifest digest | `REMOTE_VERIFIED` |
+| 2 | the bucket holds it with the wrong length or digest | `CONFLICT` |
+| 3 | the local source holds it, read and hashed, and matches | `LOCAL_VERIFIED_COPY_CANDIDATE` |
+| 3 | the local source holds it at the recorded length, not hashed | `LOCAL_COPY_CANDIDATE` |
+| 3 | the local source holds it with the wrong length or digest | `CONFLICT` |
+| 4 | none of the above, and the manifest carries URL, digest and length | `REFETCH_REQUIRED` |
+| 4 | none of the above, and it does not | `SOURCE_UNRECOVERABLE` |
+
+`sum(actions) == trusted keys`; the plan has one row per key, sorted by key;
+the same inputs reproduce the same bytes and the same digest. Source
+observations are part of the inputs — the plan digest differs between a
+day the old volume answered and a day it did not, and the summary records
+which.
+
+### The old volume is asked, never walked
+
+The planner never enumerates the legacy root. It asks about manifest keys
+only, one at a time, in key order, as much as the probe allows:
+
+| `--probe` | Asks | Default |
+| --- | --- | --- |
+| `none` | nothing; every key `UNKNOWN` | |
+| `metadata` | existence and length per key | **yes** |
+| `verify` | reads and hashes every present key | explicit, because the volume is unreliable |
+
+The first `StorageUnavailableError` ends the probe: keys already answered
+keep their answers, every later key is `UNAVAILABLE`, and no further request
+is made against a volume that just failed. A plan is always produced;
+`--source-root` overrides the configured `SEC_EVIDENCE_DIR`.
+
+### The bucket is listed, never written
+
+Remote discovery is `list_prefix` over `filings/`, `submissions/` and
+`fulltext/` — three requests when the prefixes are empty, which is the
+expected state. When they are not, each listed key a trusted entry claims is
+verified by `stat` *and* by a downloaded digest (a HEAD's metadata is a
+claim), and each listed key no entry claims is a **`REMOTE_ORPHAN`**: the
+plan is still written, but the command exits non-zero and execution is
+blocked until every orphan is explained. `_canary/` is not an artifact prefix
+and is never listed. A listing failure stops the planner; an uncertain
+bucket is not planned against.
+
+### Files
+
+```text
+<SEC_CONTROL_DIR>/migration/
+├── sec_b2_migration_plan_v1.jsonl          one row per trusted key, key order
+├── sec_b2_migration_plan_v1.sha256         "<sha256>  sec_b2_migration_plan_v1.jsonl"
+├── sec_b2_migration_plan_v1.batches.jsonl  contiguous batches, each with its own digest
+└── sec_b2_migration_plan_v1.summary.json   counts, source probe and fault, remote findings
+```
+
+A row carries `plan_version`, `key`, `url`, `expected_bytes`,
+`expected_sha256`, `artifact_kind`, `cik`, `accession`, `form`,
+`filing_date`, `local_source_status`, `remote_status`, `action`, `reason` —
+provenance the manifest already holds and the planner's observations.
+Nothing else: no credential, no path, no bucket. Batches are 1,000 rows of
+the sorted plan (`--batch-size`), each with `number`, `first_key`,
+`last_key`, `targets`, `logical_bytes` and a SHA-256 over its rows' lines.
+
+### The execution ledger, designed and not built
+
+`ExecutionState` — `PENDING`, `COPYING`, `UPLOADED` (the backend's HEAD
+verification passed), `REMOTE_VERIFIED` (an independent download hashed to
+the manifest digest), `FAILED` — is the ledger's vocabulary, and
+`FailureCategory` names why: `LOCAL_MISSING`, `LOCAL_READ_ERROR`,
+`LOCAL_SHA_MISMATCH`, `REFETCH_HTTP_ERROR`, `REFETCH_BYTE_MISMATCH`,
+`REFETCH_SHA_MISMATCH`, `B2_PUT_ERROR`, `B2_VERIFY_ERROR`,
+`B2_DIGEST_MISMATCH`, `REMOTE_CONFLICT`, `REMOTE_ORPHAN`. Planner
+classification and execution state are separate fields; a row planned
+`REFETCH_REQUIRED` may end `REMOTE_VERIFIED` and the plan row does not
+change.
+
+The chain a later phase must follow, per row:
+
+```text
+trusted entry
+→ obtain candidate bytes   (1 REMOTE_VERIFIED: skip; 2 verified local; 3 local, hash first;
+                            4 refetch the URL; 5 unresolved: stop and report)
+→ SHA-256(candidate) == Entry.sha256 and len == Entry.bytes, or FAILED
+→ B2 write_bytes           (PUT, then the backend's own HEAD verification)
+→ digest(key) == Entry.sha256   (independent download)
+→ ledger REMOTE_VERIFIED, durable, before the next row
+```
+
+Idempotent by construction: a key the bucket already holds with the right
+digest is skipped; a crash resumes from the ledger, never from zero; no
+verified object is uploaded twice. Rollback is never "delete remote
+objects" — a failed migration leaves verified objects intact, and the key
+needs no delete capability beyond the canary's.
+
+### Verification cost, from the canary
+
+Whether to download every migrated object once and hash it, or a sample.
+The recommendation is **full**: this corpus is provenance-critical and a
+metadata claim is what a digest check exists to catch. The cost, from the
+last known corpus shape (about 57,000 trusted artifacts, 38.8 GB, average
+680 KB — the manifest itself will replace these numbers) and the B2.8
+latencies (PUT+HEAD 0.27–0.67 s per object; GET of a small object about
+0.12 s; a 2 MiB GET about 0.58 s):
+
+| | Requests | Bytes moved | Sequential time, rough |
+| --- | --- | --- | --- |
+| upload + HEAD | ~57k PUT, ~57k HEAD | ~39 GB up | 8–10 h |
+| full digest verification | ~57k GET | ~39 GB down | 4–6 h |
+| listing per batch | ~60 LIST | — | minutes |
+
+Roughly 170,000 requests and one full pass of the corpus in each direction,
+comfortably parallelisable across batches. Sampling would save the download
+pass and nothing else; it is not worth the provenance it gives up.
+
+### Control-plane recovery files
+
+Execution needs these to exist somewhere other than the artifact volume:
+the evidence manifest, the migration plan and its digest, the frozen
+expansion plan and its remainder, the batch manifests, the checkpoints, and
+`PROJECT_STATE.md`. As of this checkpoint only `PROJECT_STATE.md` is on the
+boot disk; the rest lived beside the artifacts on the failed volume and are
+**absent from `SEC_CONTROL_DIR`** — see the phase report. They are copied
+there by an operator, deliberately, before any migration runs.
+
+### Status — 2026-09-15
+
+`evidence migration-plan` against the configured control root reported
+**BLOCKED — AUTHORITATIVE MANIFEST UNAVAILABLE**: `.evidence/manifests/
+evidence.jsonl` does not exist, the legacy root `/Volumes/BEK/...` is not
+mounted, and trust is never reconstructed from files, checkpoints or bucket
+objects. The read-only remote audit found `filings/`, `submissions/` and
+`fulltext/` all empty. No plan was written. The planner is complete and
+tested offline; it runs the moment the manifest is placed under the control
+root.
+
 ## Future staging databases
 
 A research staging database is 20–30 GB. **Create new ones under
