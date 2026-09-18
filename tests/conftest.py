@@ -13,7 +13,8 @@ from __future__ import annotations
 
 import hashlib
 import io
-from datetime import date, timedelta
+import json
+from datetime import UTC, date, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
 import pytest
@@ -21,6 +22,8 @@ from botocore.exceptions import ClientError
 from botocore.response import StreamingBody
 
 from api_clients import MockFundamentals, MockMarketData
+from api_clients.errors import ProviderRequestError
+from api_clients.sec_documents import FetchedDocument
 from data_access import (
     PRELIMINARY,
     CompanyRepository,
@@ -54,16 +57,18 @@ from domain import (
 )
 from stock_screener.config import Settings, get_settings
 from stock_screener.sec_evidence import (
+    TICKER_MAP_URL,
     ArtifactNotFoundError,
     ArtifactStat,
     EvidenceWriteError,
+    IdentityRow,
     StorageUnavailableError,
     StoredArtifact,
     validate_key,
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator, Mapping
+    from collections.abc import Callable, Iterator, Mapping
     from pathlib import Path
 
     from sqlalchemy.orm import Session
@@ -467,6 +472,116 @@ class FakeS3Paginator:
 def fake_s3() -> type[FakeS3Client]:
     """Return the in-memory S3 client used to test `B2EvidenceStorage` offline."""
     return FakeS3Client
+
+
+def submissions_payload(cik: int, filings: list[tuple[str, str, str, str]]) -> bytes:
+    """A submissions catalogue in the SEC's column-wise shape.
+
+    `filings` are `(accession, form, filing date, primary document)`.
+    """
+    return json.dumps(
+        {
+            "cik": f"{cik:010d}",
+            "filings": {
+                "recent": {
+                    "accessionNumber": [f[0] for f in filings],
+                    "form": [f[1] for f in filings],
+                    "filingDate": [f[2] for f in filings],
+                    "reportDate": ["" for _ in filings],
+                    "primaryDocument": [f[3] for f in filings],
+                    "acceptanceDateTime": [f"{f[2]}T16:05:00.000Z" for f in filings],
+                }
+            },
+        }
+    ).encode()
+
+
+class FakeSec:
+    """A dict of URLs that answers like the SEC and records every fetch.
+
+    The rebuild's `DocumentSource`: `fetch` returns the canned bytes for a
+    URL with their digest, raises `ProviderRequestError` for an unknown one,
+    and honours two hooks — `fail_once` (a transient failure on the first
+    attempt) and `fail_always` (a refusal or a persistent fault). `calls`
+    records every URL asked for, so a test can show the ticker map was
+    fetched once, a refused request was the last one, or nothing at all was
+    asked on a resume.
+
+    Args:
+        ticker_map: The SEC ticker map the fake serves, in the SEC's shape.
+    """
+
+    def __init__(self, ticker_map: Mapping[str, Mapping[str, object]] | None = None) -> None:
+        self.responses: dict[str, bytes] = {
+            TICKER_MAP_URL: json.dumps(dict(ticker_map or {})).encode()
+        }
+        self.calls: list[str] = []
+        self.fail_once: dict[str, type[Exception]] = {}
+        self.fail_always: dict[str, type[Exception]] = {}
+
+    def add_filer(self, cik: int, docs: list[tuple[str, str, str, str]]) -> None:
+        """Serve a filer's catalogue and one document per filing."""
+        self.responses[f"https://data.sec.gov/submissions/CIK{cik:010d}.json"] = (
+            submissions_payload(cik, docs)
+        )
+        for accession, _, _, document in docs:
+            plain = accession.replace("-", "")
+            url = f"https://www.sec.gov/Archives/edgar/data/{cik}/{plain}/{document}"
+            self.responses[url] = f"<html><body>{cik} {accession} {document}</body></html>".encode()
+
+    def close(self) -> None:
+        """The CLI closes its client; the fake has nothing to release."""
+
+    def fetch(self, url: str) -> FetchedDocument:
+        """Answer one URL, or fail the way the test arranged."""
+        self.calls.append(url)
+        if url in self.fail_always:
+            raise self.fail_always[url]("sec refused")
+        if url in self.fail_once:
+            raise self.fail_once.pop(url)("transient")
+        body = self.responses.get(url)
+        if body is None:
+            raise ProviderRequestError(f"404 {url}")
+        return FetchedDocument(
+            url=url,
+            status=200,
+            body=body,
+            sha256=hashlib.sha256(body).hexdigest(),
+            content_type="application/json" if url.endswith(".json") else "text/html",
+            etag=None,
+            last_modified=None,
+            retrieved_at=datetime(2026, 9, 16, tzinfo=UTC),
+        )
+
+
+@pytest.fixture
+def fake_sec() -> type[FakeSec]:
+    """Return the canned SEC used to drive the rebuild offline."""
+    return FakeSec
+
+
+def identity_row(
+    position: int, bucket: str, symbol: str, cik: int | None = None, *, chunk: int | None = None
+) -> IdentityRow:
+    """One row of a V2 identity plan; `chunk` defaults to the production arithmetic."""
+    return IdentityRow(
+        position=position,
+        chunk=position // 250 if chunk is None else chunk,
+        bucket=bucket,
+        symbol=symbol,
+        name=symbol,
+        company_id=position if bucket == "LIVE" else None,
+        historical_security_id=None if bucket == "LIVE" else position,
+        cik=cik,
+        resolution="STORED" if cik is not None else "EDGAR_REQUIRED",
+        submissions_url=f"https://data.sec.gov/submissions/CIK{cik:010d}.json" if cik else None,
+    )
+
+
+@pytest.fixture
+def make_identity() -> Callable[..., IdentityRow]:
+    """Return the identity-row builder for V2 plans."""
+    return identity_row
 
 
 @pytest.fixture

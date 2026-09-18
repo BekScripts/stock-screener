@@ -36,35 +36,25 @@ appears without the run or the test that produced it.
 
 ## Current phase
 
-**B2.10 — the clean-room rebuild canary** is the current checkpoint on
+**B2.11 — the full baseline rebuild** is the current checkpoint on
 `feat/phase-b2-storage-abstraction`. **The BEK drive is permanently
-unavailable** and Generation V1 — its ~57k artifacts, its manifest, the
-frozen Plan A3, the remainder, the batch manifests and the checkpoints — is
-history that creates no trust. B2.9X started **Generation V2** from what
-survived on the internal disk: `stage9k.db` reproduces the 8,919-identity
-universe and its digest exactly, 402 stored CIKs, and offline plans on
-`.evidence/`. B2.10 proved the complete V2 pipeline on exactly one
-production chunk: the SEC ticker map fetched once and preserved raw, all
-8,919 identities resolved without a guess and frozen, chunk 000 (positions
-0–249, nothing hand-picked) frozen with its digest, submissions catalogues
-then filing documents fetched from the SEC straight into the bucket with
-every artifact read back and hashed before its manifest row — 1,101
-artifacts, 1,101 trusted, zero failures — the frozen targets replayed to
-convergence (1,101 / 1,101 `CACHE_HIT`, no fetch, no PUT), a full
-reconciliation with every artifact downloaded and hashed (all zeros),
-**chunk 000 `COMPLETE`**, and a control mirror under
-`control/SEC_EVIDENCE_GENERATION_V2/` proven — from the bucket alone — to
-recover the generation, the plans, the ticker map, the resolution, the
-chunk, the manifest and the checkpoint, and to verify every evidence
-object. The run took two invocations: Backblaze's daily download cap
-stopped the first replay, and the same command resumed over the existing
-state with zero SEC requests and zero evidence PUTs. **V1 unavailable; V2
-active; trusted V2 artifacts 1,101; control mirror HEALTHY; disaster
-recovery PROVEN; 35 baseline chunks remain.** Chunk 001 is not authorised
-(B2.11 needs explicit approval); Plan A3 is BLOCKED until the baseline is
-rebuilt and the derived index reconstructed — it is still
-`MISSING_PREREQUISITE` and is regenerated after the baseline is rebuilt and
-compared — never forced — to its frozen digest. See
+unavailable** and Generation V1 is history that creates no trust. B2.9X
+started **Generation V2** from what survived on the internal disk; B2.10
+proved the pipeline on chunk 000; B2.11 built chunks 001–035 the same way,
+one at a time, and closed the baseline. **V1 unavailable; V2 baseline
+COMPLETE; 36/36 chunks; 38,146 trusted artifacts — 5,733 submissions
+catalogues and 32,413 filing documents — 37,141,434,863 bytes; manifest
+SHA-256 `13722e021e2d4e03d13784c5c829320bad5b7dc74055378057bf8804d356086b`;
+every artifact downloaded and hashed against the manifest in the terminal
+gate; reconciliation all zeros; control mirror HEALTHY (1,118 objects, 0
+conflicts); disaster recovery PROVEN from the bucket alone;
+`BASELINE_COMPLETE` written and mirrored.** The frozen resolution stands:
+8,919 identities, 6,048 resolved (402 `STORED`, 5,646 `SEC_TICKER_MAP`),
+2,871 `UNRESOLVED`; the ticker map was fetched once, in B2.10, and never
+again. Plan A3 is **not yet regenerated**: it waits for B2.12 (the V2
+derived index), B2.13 (planning inputs) and B2.14 (regeneration and
+comparison to `53e3f0ca…`, never forced). See
+[B2.11](storage-layout.md#b211-the-baseline-rebuild),
 [B2.10](storage-layout.md#b210-the-rebuild-canary),
 [B2.9X](storage-layout.md#b29x-the-second-generation),
 [B2.9](storage-layout.md#b29-the-migration-plan),
@@ -433,6 +423,37 @@ convention, and none may be relaxed without an explicit instruction.
 - **Chunk 001 is not authorised.** The command refuses any other chunk. The
   full baseline rebuild is a separate decision, taken on the canary's
   evidence.
+
+### B2.11 the baseline rebuild
+
+- **Chunks are built in order, one at a time, and a chunk is a no-op only
+  when its mirror was proven.** Chunk N requires chunk N−1 `COMPLETE`. A
+  rerun skips a chunk only if its checkpoint is `COMPLETE`, carries
+  `recovery=proven`, and its frozen files hash to their companions and to
+  the checkpoint; anything less runs again and converges as `CACHE_HIT`.
+  Work is derived from the manifest, the checkpoints and the frozen plans,
+  never from a report.
+- **Verification is per artifact at write, per chunk in the replay, and
+  whole-corpus once.** Every chunk downloads and hashes its own targets in
+  the convergence replay and reconciles its own prefixes; every fifth
+  chunk the namespace is walked at listing cost; after the last chunk
+  every trusted artifact is downloaded and hashed once and the namespace
+  fully reconciled. No chunk downloads an earlier chunk's corpus again.
+- **Nothing in the bucket is ever overwritten or repaired by the run.** An
+  untrusted target the bucket already holds is `REMOTE_ORPHAN`; a trusted
+  artifact whose bytes no longer hash is `REMOTE_UNTRUSTED`, reported and
+  left as found, never refetched (`harvest_artifacts(refetch_invalid=False)`
+  is the generic form). Both stop the run for an operator.
+- **The generation's resolution is frozen.** The preserved ticker map and
+  the resolution snapshot are verified against their digests and against
+  chunk 000's checkpoint before any chunk, and re-resolution that differs
+  stops the run. The ticker map is never fetched again; the 8,919
+  decisions — 402 `STORED`, 5,646 `SEC_TICKER_MAP`, 2,871 `UNRESOLVED` — do
+  not change because the live map changes.
+- **`BASELINE_COMPLETE` is written last and is deterministic.** Only after
+  the last chunk, the terminal download-and-hash, the full reconciliation,
+  the mirrored final snapshot and the bucket-only recovery proof; a rerun
+  mirrors it as a `MIRROR_HIT`. Plan A3 is not regenerated by the baseline.
 
 ### Cross-cutting
 
@@ -1415,7 +1436,7 @@ The map in `src/stock_screener/jobs.py` is the entire allowlist.
 `update-filing-text`, `run`), the `deep-research` group (`prepare`, `run`)
 and the `evidence` group (`status`, `sample`, `harvest`, `harvest-manifest`,
 `sweep`, `migration-plan`, `generation-plan`, `b2-canary --confirm`,
-`rebuild-canary --live`).
+`rebuild-canary --live`, `rebuild-baseline --live`).
 
 ---
 
@@ -1517,13 +1538,15 @@ Backend temporaries are hidden from artifact listing (`temporary_files` remains
 zero). The local backend does not pin mount identity against concurrent
 replacement. See [`EvidenceRoot` after B2.5](storage-layout.md#evidenceroot-after-b25).
 
-**The bucket's daily caps bound a chunk run.** One chunk downloads its corpus
-about three times (read-back, replay, full verification), a resume about
-four, and each reconciliation costs three HEADs per artifact; Backblaze's
-default Caps & Alerts refused the chunk 000 replay after 2,258 GETs, and the
-same run completed once the caps were removed. Keep them removed for the
-baseline rebuild; the run stops cleanly and resumes when it can. See
-[B2.10](storage-layout.md#b210-the-rebuild-canary).
+**The bucket's daily caps bound a run, and the terminal walk is one pass.**
+A baseline chunk downloads its own targets twice (read-back and replay), the
+terminal gate downloads the whole corpus once, and `reconcile` costs three
+HEADs per artifact; Backblaze's default Caps & Alerts refused the chunk 000
+replay after 2,258 GETs, and the same run completed once the caps were
+removed — keep them removed. The terminal walk has no state to resume from:
+a fault inside it, after its reads' own retries, means the whole pass again
+(5 h 22 min over 38,146 artifacts). See
+[B2.11](storage-layout.md#b211-the-baseline-rebuild).
 
 **Historical listing evidence is monthly and partly censored.** Free sources give
 Nasdaq and NYSE from 2022-01 at month resolution only; NYSE American is not
@@ -1564,6 +1587,57 @@ Documented rather than fixed. Each is a deliberate stop, not a backlog item.
 
 Measured runs, kept because they are the evidence behind decisions above.
 
+### B2.11 full baseline rebuild — 2026-09-16 to 2026-09-18
+
+- `evidence rebuild-baseline --live --expect-universe-sha b8eaed3e… --expect-database-sha …`
+  three times against `stage9k.db` read-only; universe digest and both
+  database digests verified before each run and at every milestone,
+  unchanged throughout (`02a6660b…`, `20a77d24…`).
+- Chunks 001–035 `COMPLETE` in order, each with its plans frozen and
+  mirrored, its targets derived twice and byte-identical, every new artifact
+  read back before its row, every target downloaded and hashed in the
+  replay, its prefixes reconciled, its mirror proven (`recovery=proven`).
+  Invocation 1 stopped at chunk 003 on a B2 `PUT` timeout (correct; the
+  object never landed); invocation 2 resumed 003 as 167 + 669 `CACHE_HIT`
+  and ran to 035, then stopped in the terminal walk on a broken stream;
+  invocation 3 treated all 35 chunks as no-ops and passed the terminal gate.
+- Milestones 005–035: objects = trusted at every one (6,667 … 38,146), 0
+  orphans, 0 missing, 0 path violations; mirror audit clean; databases
+  unchanged.
+- Terminal gate 2026-09-18 00:09 UTC: **38,146 / 38,146 verified from
+  downloaded bytes**, 0 hash mismatches, 0 byte mismatches, 0 read failures
+  (one read retried); reconciliation 38,146 objects = 38,146 trusted,
+  orphans 0/0, path violations 0, zero-byte 0, duplicates 0; final snapshot
+  `manifests/evidence-13722e021e2d4e03.jsonl` mirrored; bucket-only recovery
+  proof sufficient; `baseline_complete.json` mirrored (`6c25b3c3…`).
+- Authoritative V2 baseline: 8,919 identities; 6,048 resolved; 2,871
+  unresolved; 5,733 unique filers; 5,733 trusted submissions; 32,413 trusted
+  filings; 38,146 trusted; 37,141,434,863 logical bytes; 38,146 manifest
+  records; manifest SHA-256
+  `13722e021e2d4e03d13784c5c829320bad5b7dc74055378057bf8804d356086b`.
+- Network: SEC 37,152 attempts / 36,301 documents / 36,255,728,600 bytes,
+  72 `503` and 18 no-response attempts all retried within policy, 0 `403`,
+  0 `429`, ticker map never refetched; B2 38,110 PUT (37,045 evidence, 1,064
+  control), 140,946 GET, 428,812 HEAD, 34,034 LIST, 3 transport faults, 0
+  conflicts, 0 deletes; mirror 1,064 `MIRRORED` / 547 `MIRROR_HIT` / 0
+  `CONFLICT`. Credential audit over every log and control file: 0.
+- `tests/integration/test_baseline_rebuild.py`: **36 passed**, offline —
+  progression and closure over a four-chunk universe, shared filers as one
+  catalogue and `CACHE_HIT`, the partial last chunk, no ticker-map refetch,
+  unresolved identities without targets, range and order refusals, no-op
+  reruns, tampered frozen files, resume mid-chunk, a failing terminal gate
+  leaving no marker, a `403` before the next request, `REMOTE_ORPHAN` and
+  `REMOTE_UNTRUSTED` never overwritten, a stray object stopping the next
+  chunk without a body fetch, clean milestones at listing cost, the
+  milestone hook, frozen resolution and ticker-map drift, the per-chunk
+  budget, transient and persistent transport faults, integrity never
+  retried, the terminal walk's read retry, the mirror's per-chunk contents,
+  the deterministic marker as a `MIRROR_HIT`, bucket-only recovery, mirror
+  conflicts, structural reconciliation, and the command. Two harvest tests
+  added (`refetch_invalid=False`, a shared replay state); two B2.10
+  assertions updated to the scoped stop semantics (`REMOTE_ORPHAN` before
+  any overwrite; the renamed replay step).
+
 ### B2.10 rebuild canary, chunk 000 — 2026-09-16
 
 - `evidence rebuild-canary --live --expect-universe-sha b8eaed3e…` against
@@ -1582,7 +1656,7 @@ Measured runs, kept because they are the evidence behind decisions above.
   `(CIK, accession)` pairs, cap 6, newest first, derived twice identical,
   `0c67536b6cc3c312466dd04659eb600e233bfd32a874f5f6df5890dbae3b2497`.
 - Harvest: 165 catalogues (17,319,117 bytes, 185 s) then 936 documents
-  (885,706,263 bytes, 1,315 s), every one read back from the bucket and
+  (868,387,146 bytes, 1,315 s), every one read back from the bucket and
   hashed before its manifest row. Manifest 1,101 records, 1,101 trusted,
   0 `FAILED`. SEC 1,106 metered attempts (one `503`, two body timeouts on
   20-Fs, one no-response — all retried within policy; no `403`, no `429`).
@@ -1915,13 +1989,15 @@ under **80%**. It is what CI runs; run it rather than the individual tools.
 
 ## Next phase
 
-**The full V2 baseline rebuild** follows the canary, as a separate decision
-taken on its evidence: chunks 001–035 through the same `run_chunk` sequence
-(the command refuses them today), the control mirror after every chunk, then
-V2.3 re-index, V2.4 coverage and reach, V2.5 Plan A3 regeneration compared
-to `53e3f0ca…` and never forced, V2.6 A3 expansion, V2.7 terminal audit. FTD
-archives are redownloaded separately. Chunk 000 is the only chunk that
-exists; nothing beyond it has been fetched.
+**B2.12 — rebuild the V2 derived SEC evidence index** follows: `build_index`
+over the 38,146 verified V2 artifacts, evidence dates from
+`filing_acceptance`. Then B2.13 reconstructs the class-aware PIT coverage
+and the `PlanningInputs` assembly that was never committed, and B2.14
+regenerates Plan A3 over V2 inputs and *compares* its digest to
+`53e3f0ca98ac54068232c13f6b0c214e969ff6e6f204000d5a050c43be3bdcd9` — a
+match is reported, a difference is reported, and the algorithm is never
+changed to reach the old hash. FTD archives are redownloaded separately.
+None of this has started.
 
 Two pieces of work are *identified* but not authorised, and neither is to be
 started without being asked:
@@ -1988,7 +2064,7 @@ Not a backlog. These exclusions are deliberate.
 
 | | |
 | --- | --- |
-| Commit | The B2.10 commit containing this checkpoint, `feat: validate clean-room SEC to B2 rebuild`; parent `de41537` (B2.9X, `feat: plan clean-room SEC evidence rebuild`) |
+| Commit | The B2.11 commit containing this checkpoint, `feat: complete clean-room SEC baseline rebuild`; parent `6c6a544` (B2.10, `feat: validate clean-room SEC to B2 rebuild`) |
 | Branch | `feat/phase-b2-storage-abstraction` |
 | Migration head | `0031` — the research-universe layer (9K.7). Nothing since 9K.11 added one. |
 | Score version | `COMPOUNDER_V1_2` (unchanged by anything in Phase 8, 9A, 9B or 9C) |

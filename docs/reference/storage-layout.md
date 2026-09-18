@@ -1180,7 +1180,7 @@ The first invocation ran 01:46:58–02:16:33 UTC against `stage9k.db`
 | freeze chunk | positions 0–249: 167 LIVE, 83 DELISTED; 15 `STORED`, 165 `SEC_TICKER_MAP`, 70 `UNRESOLVED`; 180 resolved identities → **165 filers** (share classes, one delisted/live pair); `identities.jsonl` `14f41c86…`; checkpoint `PENDING` |
 | pass 1 | 165 catalogues `DOWNLOADED`, 17,319,117 bytes, 185 s; each read back before its row |
 | derive | 936 targets over 936 `(CIK, accession)` pairs — 587 8-K, 213 10-Q, 70 20-F, 30 40-F, 23 10-K, 13 20-F/A — derived twice, identical; `filing_targets.jsonl` `0c67536b…`; mirrored before the first document |
-| pass 2 | 936 documents `DOWNLOADED`, 885,706,263 bytes, 1,315 s; each read back before its row |
+| pass 2 | 936 documents `DOWNLOADED`, 868,387,146 bytes, 1,315 s; each read back before its row |
 | manifest | 1,101 records, 1,101 trusted, 0 `FAILED`; snapshot `evidence-4328d3b4…` mirrored |
 | converge | **stopped** after 754 of 1,101 `CACHE_HIT` (165 catalogues, 589 documents, every digest equal): the bucket answered `AccessDenied` to a GET |
 | verify, complete, recovery | not reached; checkpoint `PASS2_DONE` with the stop recorded in its notes |
@@ -1188,7 +1188,7 @@ The first invocation ran 01:46:58–02:16:33 UTC against `stage9k.db`
 SEC: 1,106 metered attempts for 1,102 documents — one `503` retried, two
 large 20-F bodies re-read after a timeout, one attempt with no response —
 all within the client's bounded policy; zero `403`, zero `429`, zero empty
-bodies. 903,025,380 bytes stored; 27.6% of the request budget, 42.0% of
+bodies. 885,706,263 bytes stored; 27.6% of the request budget, 41.2% of
 the byte budget. Bucket: 1,136 PUT, 1,136 HEAD, 2,258 GET, 3 LIST, no
 delete. Mirror: 35 `MIRRORED`, 2 `MIRROR_HIT`, 0 `CONFLICT`, 6,006,205
 bytes. Credential audit over the log and every control file: 0.
@@ -1241,8 +1241,147 @@ one target per `(CIK, accession)`; and a resume would have overwritten the
 first invocation's per-pass request and byte accounting with zero and
 walked the checkpoint back through `PASS1_DONE` — accounting is now a
 delta accumulated across resumes, and the stage never regresses. The
-checkpoint's recorded `requests` (`submissions: 166`, `filings: 1106`) are
-the first invocation's cumulative meter readings, kept as written.
+chunk 000 checkpoint's recorded `requests` (`submissions: 166`,
+`filings: 1106`) and `bytes_stored` (`submissions: 17,319,117`,
+`filings: 885,706,263`) are the first invocation's cumulative meter
+readings, kept as written: the filings figure is the whole corpus, and the
+filings pass alone stored 868,387,146 bytes.
+
+## B2.11 the baseline rebuild
+
+The canary proved one chunk. `stock-screener evidence rebuild-baseline
+--live` runs the rest — 001 through the plan's last chunk, one at a time,
+each `COMPLETE` and its mirror proven before the next begins — and then
+closes the generation's baseline with the checks that only make sense
+once. It requires `SEC_STORAGE_BACKEND=b2`, the explicit `--live`, and a
+range that starts at 001 or later and ends at the plan's last chunk or
+earlier; chunk 000 cannot be reinitialised through it.
+
+### What is verified when
+
+| When | What | Cost |
+| --- | --- | --- |
+| every new artifact | SEC fetch → SHA-256 → PUT → HEAD → read-back digest → manifest row (unchanged from B2.10) | one upload, one download |
+| before every untrusted target | the bucket is asked whether it already holds the key: an object no row vouches for is `REMOTE_ORPHAN`, never overwritten | one HEAD |
+| every trusted target a chunk touches | downloaded and hashed in the pass replay; bytes that no longer match are `REMOTE_UNTRUSTED`, reported and left as found — never refetched, never overwritten | one download |
+| every chunk | the replay downloads and hashes every target once more (`CONVERGED` only at 0 fetches, 0 bytes, 0 PUTs); `reconcile_subset` proves each target trusted, present, the size on record, non-empty, and lists the prefixes the chunk wrote to for orphans; the chunk's plans, checkpoint, summary and a manifest snapshot are mirrored and read back; the mirror is proven able to recover the chunk and the newest manifest snapshot must name exactly the bucket's objects | one download of the chunk, HEADs, LISTs |
+| every fifth chunk, and the last | a structural walk: every production object listed and compared with the trusted set — orphans, missing, unsafe keys — no bodies; a recovery audit of the mirror; the operator summary; the database digests | LISTs |
+| once, after the last chunk | every trusted artifact downloaded and hashed against the manifest, full reconciliation, the final manifest snapshot mirrored, a bucket-only recovery proof, `BASELINE_COMPLETE` | one download of the corpus |
+
+Nothing older is downloaded again for a later chunk: a filer already
+trusted by an earlier chunk is one catalogue and a `CACHE_HIT`, and its
+bytes are hashed only where a chunk touches them and once more at the end.
+
+### Resume
+
+Work is derived from the manifest, the checkpoints and the frozen plans,
+never from a report. A chunk whose checkpoint is `COMPLETE`, carries
+`recovery=proven` (written only when its mirror proof passed), and whose
+frozen files still hash to their digests and to the checkpoint's, is a
+no-op on a rerun. Anything less runs again through `run_chunk`, which
+converges what is trusted as `CACHE_HIT` and fetches only what is not.
+The per-pass request and byte accounting on a checkpoint accumulates
+across resumes, and the stage never regresses.
+
+The frozen inputs are verified before any chunk: the preserved ticker map
+against its sidecar, the resolution snapshot against its companion and
+against the digest chunk 000 recorded. Drift stops the run — a later chunk
+resolved from anything else would be a different generation — and the
+ticker map is never fetched again.
+
+### Stop conditions
+
+A `403` or a rate-limit failure stops before the next request; anything
+still failed after a second pass stops with what succeeded left trusted;
+the per-chunk budget stops the chunk; `REMOTE_ORPHAN`, `REMOTE_UNTRUSTED`,
+a mirror `CONFLICT`, a chunk out of order, a structural walk that finds
+an orphan or a missing artifact, an inconsistent checkpoint, a database
+digest that drifts, and a terminal gate that fails all stop the run. None
+of them repairs anything. The report names the next incomplete chunk.
+
+### BASELINE_COMPLETE
+
+Written only after the last chunk is `COMPLETE`, the terminal
+download-and-hash passes, the full reconciliation is clean, the final
+manifest snapshot is mirrored and read back, and the bucket-only recovery
+proof passes. `plans/generation_v2/baseline_complete.json` is
+deterministic — generation, stage, chunks, manifest records, trusted,
+logical bytes, manifest SHA, universe SHA, resolution SHA, the terminal
+count — so a rerun mirrors it as a `MIRROR_HIT`; the timestamp lives in
+the final manifest snapshot's descriptor. `evidence status` reports it.
+
+### Files
+
+```text
+<SEC_CONTROL_DIR>/plans/generation_v2/
+├── chunks/001..035/                identities.jsonl, filing_targets.jsonl (+ .sha256), summary.json
+├── baseline_complete.json          the deterministic marker
+└── mirror_ledger.jsonl             every mirror operation of every invocation
+<SEC_CONTROL_DIR>/checkpoints/chunk-000250-0250.json … chunk-008750-0250.json
+```
+
+### The live run — 2026-09-16 to 2026-09-18
+
+Three invocations of the same command, 2026-09-16 12:14 UTC to
+2026-09-18 00:11 UTC, against `stage9k.db` read-only with the universe
+digest and both database digests enforced before the run and at every
+milestone (all unchanged throughout).
+
+| Invocation | What it did | How it ended |
+| --- | --- | --- |
+| 1 | chunks 001–002 `COMPLETE`; chunk 003 to `PASS1_DONE` + 683 filings | one B2 `PUT` timed out through the SDK's retries: `EvidenceWriteError`, no row written, the object never landed (404) — a correct stop, seven hours idle |
+| 2 | chunks 001–002 no-ops; 003 resumed (167 catalogues + 669 filings `CACHE_HIT`, 296 fetched); 004–035 `COMPLETE`; milestones 005–035 clean | the terminal walk's stream broke 1 h 39 min in (`ResponseStreamingError`): a correct stop of a pass with nothing to resume from |
+| 3 | 35 no-ops in two minutes; milestone 035 re-walked; the terminal gate | `BASELINE_COMPLETE` |
+
+Two changes went in between invocations, each offline-tested first: a
+chunk stopped by a transport fault is resumed up to twice, 60 s apart
+(never an integrity stop — `EvidenceIntegrityError` is now its own type);
+and the whole-namespace walks read through `RetryingReads`, three attempts
+per read, writes untouched. The second earned its keep at 21:54 UTC on the
+17th: one digest read faulted mid-walk, was re-read, and the pass went on.
+
+**The baseline.** 36 chunks; 8,919 identities; 6,048 resolved (402
+`STORED`, 5,646 `SEC_TICKER_MAP`), 2,871 `UNRESOLVED` and never guessed;
+5,733 unique filers. **38,146 trusted artifacts — 5,733 catalogues and
+32,413 filing documents — 37,141,434,863 bytes; 38,146 manifest records,
+zero `FAILED`; manifest SHA-256
+`13722e021e2d4e03d13784c5c829320bad5b7dc74055378057bf8804d356086b`.**
+Shared filers: 188 catalogues and 795 documents were inherited across
+chunks as `CACHE_HIT`, never a second PUT.
+
+**Terminal gate** (00:09 UTC): every trusted artifact downloaded and
+hashed — 38,146 verified, 0 hash mismatches, 0 byte mismatches, 0 read
+failures after one retried read; full reconciliation 38,146 objects =
+38,146 trusted, orphans 0 / 0, path violations 0, zero-byte 0, duplicate
+URLs 0; final manifest snapshot `manifests/evidence-13722e021e2d4e03.jsonl`
+mirrored with a `BASELINE_COMPLETE` descriptor; recovery proven from the
+bucket alone (generation, plans, ticker map, resolution, all 36 chunk
+plans and checkpoints, the manifest snapshot naming exactly the bucket's
+38,146 objects); `baseline_complete.json` mirrored and read back
+(`6c25b3c3…`).
+
+**Network.** SEC: 37,152 metered attempts for 36,301 documents this phase
+(72 `503`s and 18 attempts with no response, all recovered by the client's
+bounded retry; zero `403`, zero `429`, zero empty bodies; ticker map never
+refetched); 36,255,728,600 source bytes. Bucket, all three invocations:
+38,110 PUT calls (37,045 evidence — one per new artifact — and 1,064
+control), 140,946 GET, 428,812 HEAD, 34,034 LIST, 3 transport faults
+(one PUT, one GET, one read retried), 0 conflicts, 0 deletes. Mirror:
+1,064 `MIRRORED`, 547 `MIRROR_HIT`, 0 `CONFLICT`; 1,118 objects, none
+unexplained. Credential audit over every log and control file: 0.
+
+**Time.** 35 chunks, 71,704 s of chunk time (median 32 min, fastest 24 —
+the resumed chunk 003 — slowest 75; chunk 002); the terminal walk 5 h 22
+min, dominated by the ~115,000 HEADs of `reconcile`'s existing semantics
+(existence, size, and size again over the listing) plus the 37 GB
+download.
+
+**Historical V1 counts, for context only:** 5,771 catalogues, 32,584
+documents, 38.8 GB. V2 is a fresh generation and is not required to
+reproduce them; it holds 38 fewer catalogues and 171 fewer documents
+because 135 delisted symbols that V1 resolved through the current ticker
+map are `UNRESOLVED` in V2 by policy, and because the SEC's catalogues
+have moved on.
 
 ## Future staging databases
 

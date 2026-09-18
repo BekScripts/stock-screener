@@ -67,7 +67,11 @@ from stock_screener.sec_evidence.backend import (
     StoredArtifact,
     validate_key,
 )
-from stock_screener.sec_evidence.storage import EvidenceWriteError, StorageUnavailableError
+from stock_screener.sec_evidence.storage import (
+    EvidenceIntegrityError,
+    EvidenceWriteError,
+    StorageUnavailableError,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Iterator, Mapping
@@ -388,7 +392,7 @@ class B2EvidenceStorage:
                 remote_bytes=remote_bytes,
                 digest_matches=remote_sha256 == sha256,
             )
-            raise EvidenceWriteError(
+            raise EvidenceIntegrityError(
                 f"B2 upload of {key!r} did not verify: sent {len(data)} bytes, bucket reports "
                 f"{remote_bytes}; digest {'matches' if remote_sha256 == sha256 else 'differs'}"
             )

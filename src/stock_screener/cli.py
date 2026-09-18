@@ -188,6 +188,7 @@ from stock_screener.sec_evidence import (
     submissions_targets,
     verify_digests_of,
 )
+from stock_screener.sec_evidence.baseline import marker_facts, run_baseline
 from stock_screener.sec_evidence.binding import BindingError, bind_source, read_only_url
 from stock_screener.sec_evidence.generation import (
     build_generation_plan,
@@ -201,7 +202,7 @@ from stock_screener.sec_evidence.migration import (
     build_plan,
     write_migration_plan,
 )
-from stock_screener.sec_evidence.rebuild import run_chunk
+from stock_screener.sec_evidence.rebuild import CanaryStopError, run_chunk
 from stock_screener.sec_evidence.targets import (
     TargetManifestError,
     held_from_manifest,
@@ -2078,6 +2079,165 @@ def evidence_rebuild_canary_command(
     raise typer.Exit(code=0 if report.passed else 1)
 
 
+@evidence_app.command("rebuild-baseline")
+def evidence_rebuild_baseline_command(
+    live: Annotated[
+        bool,
+        typer.Option(
+            "--live",
+            help=(
+                "Required. Fetches from the SEC and writes production evidence to the "
+                "configured bucket, chunk after chunk, until the baseline is complete."
+            ),
+        ),
+    ] = False,
+    start: Annotated[
+        int, typer.Option(min=1, help="First chunk. Never 000 — the canary built it.")
+    ] = 1,
+    end: Annotated[
+        int | None, typer.Option(min=1, help="Last chunk. Defaults to the plan's last chunk.")
+    ] = None,
+    database: Annotated[
+        Path, typer.Option("--database", help="The production universe database, read-only.")
+    ] = Path("stage9k.db"),
+    expect_universe_count: Annotated[
+        int, typer.Option(help="Identities the universe must hold.")
+    ] = 8919,
+    expect_universe_sha: Annotated[
+        str | None, typer.Option(help="Refuse a universe whose digest differs.")
+    ] = None,
+    expect_database_sha: Annotated[
+        list[str] | None,
+        typer.Option(
+            help=(
+                "PATH=SHA256 pairs verified before the run and at every milestone; "
+                "any drift stops the run."
+            )
+        ),
+    ] = None,
+    max_requests: Annotated[int, typer.Option(help="SEC HTTP attempts allowed per chunk.")] = 4000,
+    max_bytes: Annotated[int, typer.Option(help="Source bytes allowed per chunk.")] = 2 * 1024**3,
+    filings_per_security: Annotated[int, typer.Option(help="Filing cap per security.")] = 6,
+) -> None:
+    """Rebuild the remaining baseline chunks, in order, then close the baseline.
+
+    Each chunk goes through the canary's sequence and must be COMPLETE and
+    mirrored before the next begins. Completed chunks are no-ops on a rerun.
+    Every fifth chunk the whole namespace is walked structurally and the
+    mirror audited; after the last chunk every trusted artifact is
+    downloaded and hashed, the namespace reconciled, recovery proven from
+    the bucket alone, and BASELINE_COMPLETE written and mirrored.
+    """
+    settings = _bootstrap()
+    if storage_backend(settings) is not StorageBackend.B2:
+        typer.echo("STOPPED: the baseline rebuild requires SEC_STORAGE_BACKEND=b2")
+        raise typer.Exit(code=1)
+    if not live:
+        typer.echo(
+            "refusing without --live: this fetches SEC documents and writes production "
+            "evidence to the bucket for every remaining chunk"
+        )
+        raise typer.Exit(code=1)
+    expected_digests = _parse_digest_pairs(expect_database_sha or [])
+    try:
+        layout = open_evidence_layout(settings)
+    except ControlPlaneUnavailableError as exc:
+        typer.echo(f"STOPPED: {exc}")
+        raise typer.Exit(code=1) from exc
+    if not database.is_file():
+        typer.echo(f"STOPPED: no database at {database}")
+        raise typer.Exit(code=1)
+
+    def verify_databases(chunk: int) -> None:
+        for path, expected in expected_digests.items():
+            actual = _file_sha256(path)
+            if actual != expected:
+                raise CanaryStopError(
+                    f"database digest drift at chunk {chunk:03d}: {path} is {actual[:16]}…, "
+                    f"expected {expected[:16]}…"
+                )
+        if expected_digests:
+            when = "before the run" if chunk < 0 else f"after chunk {chunk:03d}"
+            typer.echo(f"databases verified {when}: {len(expected_digests)} unchanged")
+
+    try:
+        verify_databases(-1)
+    except CanaryStopError as exc:
+        typer.echo(f"STOPPED: {exc}")
+        raise typer.Exit(code=1) from exc
+    engine = create_engine_from_url(read_only_url(database))
+    try:
+        with session_scope(build_session_factory(engine)) as session:
+            try:
+                bind_source(
+                    session,
+                    database,
+                    expect_count=expect_universe_count,
+                    expect_digest=expect_universe_sha,
+                )
+            except BindingError as exc:
+                typer.echo(f"STOPPED: {exc}")
+                raise typer.Exit(code=1) from exc
+            identities = identity_plan(session)
+    finally:
+        engine.dispose()
+
+    last_chunk = max(row.chunk for row in identities)
+    end_chunk = last_chunk if end is None else end
+    if start > end_chunk or end_chunk > last_chunk:
+        typer.echo(
+            f"STOPPED: chunk range {start:03d}-{end_chunk:03d} is not within 001-{last_chunk:03d}"
+        )
+        raise typer.Exit(code=1)
+    observe = getattr(layout.storage, "observe_requests", None)
+    typer.echo(f"generation       : SEC_EVIDENCE_GENERATION_V2 chunks {start:03d}-{end_chunk:03d}")
+    typer.echo(f"control root     : {layout.control.path}")
+    typer.echo(f"identities       : {len(identities)} in the universe, last chunk {last_chunk:03d}")
+    report = run_baseline(
+        layout.storage,
+        layout.control,
+        lambda budget: _sec_documents(settings, budget),
+        identities,
+        start=start,
+        end=end_chunk,
+        budget_factory=lambda: Budget(max_requests=max_requests, max_bytes=max_bytes),
+        filings_per_security=filings_per_security,
+        observe=observe,
+        progress=typer.echo,
+        milestone_hook=verify_databases,
+        universe_sha256=expect_universe_sha,
+    )
+    for line in report.summary():
+        typer.echo(line)
+    if report.passed and report.baseline_complete:
+        typer.echo("BASELINE COMPLETE — every chunk COMPLETE; terminal gates passed")
+    elif report.passed:
+        typer.echo(f"CHUNKS {start:03d}-{end_chunk:03d} COMPLETE — the baseline is not closed")
+    else:
+        typer.echo("BASELINE NOT COMPLETE")
+    raise typer.Exit(code=0 if report.passed else 1)
+
+
+def _parse_digest_pairs(pairs: list[str]) -> dict[Path, str]:
+    """`PATH=SHA256` options into a mapping, refusing anything malformed."""
+    parsed: dict[Path, str] = {}
+    for pair in pairs:
+        path, separator, digest = pair.partition("=")
+        if not separator or len(digest) != 64:
+            typer.echo(f"STOPPED: --expect-database-sha wants PATH=SHA256, got {pair!r}")
+            raise typer.Exit(code=1)
+        parsed[Path(path)] = digest.lower()
+    return parsed
+
+
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for block in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
 @evidence_app.command("sample")
 def evidence_sample_command(
     limit: Annotated[int, typer.Option(help="How many securities to print.")] = 100,
@@ -2536,6 +2696,15 @@ def _echo_generation(control_path: Path) -> None:
     typer.echo(
         f"control mirror   : configured (control/SEC_EVIDENCE_GENERATION_V2); last verified {last}"
     )
+    marker = marker_facts(control)
+    if marker is not None:
+        typer.echo(
+            f"baseline         : {marker.get('stage')} — {marker.get('chunks')} chunks, "
+            f"{marker.get('trusted')} trusted, {marker.get('logical_bytes')} bytes, "
+            f"manifest {str(marker.get('manifest_sha256'))[:16]}…"
+        )
+    else:
+        typer.echo("baseline         : not complete")
 
 
 def _open_layout(settings: Settings) -> tuple[EvidenceStorage, EvidenceControlRoot]:

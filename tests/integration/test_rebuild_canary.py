@@ -21,7 +21,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 import pytest
@@ -29,7 +28,6 @@ from pydantic import SecretStr
 from typer.testing import CliRunner
 
 from api_clients.errors import ProviderAuthError, ProviderRequestError
-from api_clients.sec_documents import FetchedDocument
 from data_access import (
     CompanyRepository,
     build_session_factory,
@@ -75,7 +73,7 @@ if TYPE_CHECKING:
     from collections.abc import Iterator
     from pathlib import Path
 
-    from conftest import FakeS3Client
+    from conftest import FakeS3Client, FakeSec
     from stock_screener.sec_evidence import EvidenceControlRoot
 
 pytestmark = pytest.mark.integration
@@ -104,67 +102,6 @@ SGEN_8K_4 = "https://www.sec.gov/Archives/edgar/data/1060736/000106073623000004/
 SGEN_8K_4_KEY = "filings/0001060736/000106073623000004/sgen-4.htm"
 CHECKPOINT = "chunk-000000-0250.json"
 ALLOWED_FORMS = {"10-K", "10-Q", "8-K", "20-F", "20-F/A", "40-F", "40-F/A"}
-
-
-def submissions_payload(cik: int, filings: list[tuple[str, str, str, str]]) -> bytes:
-    """A submissions catalogue in the SEC's column-wise shape."""
-    return json.dumps(
-        {
-            "cik": f"{cik:010d}",
-            "filings": {
-                "recent": {
-                    "accessionNumber": [f[0] for f in filings],
-                    "form": [f[1] for f in filings],
-                    "filingDate": [f[2] for f in filings],
-                    "reportDate": ["" for _ in filings],
-                    "primaryDocument": [f[3] for f in filings],
-                    "acceptanceDateTime": [f"{f[2]}T16:05:00.000Z" for f in filings],
-                }
-            },
-        }
-    ).encode()
-
-
-class FakeSec:
-    """A dict of URLs that answers like the SEC and records every fetch."""
-
-    def __init__(self) -> None:
-        self.responses: dict[str, bytes] = {TICKER_MAP_URL: json.dumps(TICKER_MAP).encode()}
-        self.calls: list[str] = []
-        self.fail_once: dict[str, type[Exception]] = {}
-        self.fail_always: dict[str, type[Exception]] = {}
-
-    def add_filer(self, cik: int, docs: list[tuple[str, str, str, str]]) -> None:
-        self.responses[f"https://data.sec.gov/submissions/CIK{cik:010d}.json"] = (
-            submissions_payload(cik, docs)
-        )
-        for accession, _, _, document in docs:
-            plain = accession.replace("-", "")
-            url = f"https://www.sec.gov/Archives/edgar/data/{cik}/{plain}/{document}"
-            self.responses[url] = f"<html><body>{cik} {accession} {document}</body></html>".encode()
-
-    def close(self) -> None:
-        """The CLI closes its client; the fake has nothing to release."""
-
-    def fetch(self, url: str) -> FetchedDocument:
-        self.calls.append(url)
-        if url in self.fail_always:
-            raise self.fail_always[url]("sec refused")
-        if url in self.fail_once:
-            raise self.fail_once.pop(url)("transient")
-        body = self.responses.get(url)
-        if body is None:
-            raise ProviderRequestError(f"404 {url}")
-        return FetchedDocument(
-            url=url,
-            status=200,
-            body=body,
-            sha256=hashlib.sha256(body).hexdigest(),
-            content_type="application/json" if url.endswith(".json") else "text/html",
-            etag=None,
-            last_modified=None,
-            retrieved_at=datetime(2026, 9, 16, tzinfo=UTC),
-        )
 
 
 def identity(position: int, bucket: str, symbol: str, cik: int | None = None) -> IdentityRow:
@@ -203,8 +140,8 @@ OFFLINE_PLAN_FILES = (
 
 
 @pytest.fixture
-def sec() -> FakeSec:
-    fake = FakeSec()
+def sec(fake_sec: type[FakeSec]) -> FakeSec:
+    fake = fake_sec(TICKER_MAP)
     fake.add_filer(
         320193,
         [
@@ -309,13 +246,13 @@ class TestResolutionNeverGuesses:
 
 class TestTheStricterTrustChain:
     def test_a_bucket_holding_different_bytes_after_put_gets_no_manifest_row(
-        self, fake_s3: type[FakeS3Client], control: EvidenceControlRoot
+        self, fake_s3: type[FakeS3Client], fake_sec: type[FakeSec], control: EvidenceControlRoot
     ) -> None:
         storage, client = bucket(fake_s3)
         key = "submissions/CIK0000320193.json"
         payload = b'{"cik": "0000320193"}'
         client.tamper_after_put[key] = same_length_tamper(payload)
-        sec = FakeSec()
+        sec = fake_sec()
         sec.responses[AAPL_SUBMISSIONS] = payload
         manifest = Manifest(control.manifest_path)
         target = Target(url=AAPL_SUBMISSIONS, kind=RequestKind.SUBMISSIONS, cik=320193)
@@ -331,14 +268,14 @@ class TestTheStricterTrustChain:
         assert not any(op.startswith("delete") for op, _ in client.calls)
 
     def test_the_backend_head_check_alone_would_have_trusted_the_same_tamper(
-        self, fake_s3: type[FakeS3Client], control: EvidenceControlRoot
+        self, fake_s3: type[FakeS3Client], fake_sec: type[FakeSec], control: EvidenceControlRoot
     ) -> None:
         """Why the flag exists: HEAD agrees on length and metadata, the body does not."""
         storage, client = bucket(fake_s3)
         key = "submissions/CIK0000320193.json"
         payload = b'{"cik": "0000320193"}'
         client.tamper_after_put[key] = same_length_tamper(payload)
-        sec = FakeSec()
+        sec = fake_sec()
         sec.responses[AAPL_SUBMISSIONS] = payload
         manifest = Manifest(control.manifest_path)
         target = Target(url=AAPL_SUBMISSIONS, kind=RequestKind.SUBMISSIONS, cik=320193)
@@ -587,9 +524,9 @@ class TestOneChunkEndToEnd:
 
         report = run_chunk(storage, control, sec, UNIVERSE, chunk=0)
 
-        converge = next(s for s in report.steps if s.name == "converge: replay")
+        converge = next(s for s in report.steps if s.name.startswith("converge"))
         assert converge.ok
-        assert converge.detail == "12 CACHE_HIT, 0 fetches, 0 bytes, 0 PUTs"
+        assert converge.detail.startswith("12 CACHE_HIT, 0 fetches, 0 bytes, 0 PUTs")
 
     def test_filing_targets_are_newest_first_within_the_allowed_forms(
         self, fake_s3: type[FakeS3Client], control: EvidenceControlRoot, sec: FakeSec
@@ -780,10 +717,15 @@ class TestInterruptionAndResume:
         assert SGEN_8K_4_KEY not in trusted_paths(control)
         del client.tamper_after_put[SGEN_8K_4_KEY]
 
+        puts_before = len(artifact_calls(client, "put_object"))
+
         second = run_chunk(storage, control, sec, UNIVERSE, chunk=0)
 
         assert not second.passed, "an object the manifest does not vouch for is an orphan"
-        assert "unclean corpus" in (second.failure or "")
+        assert "REMOTE_ORPHAN" in (second.failure or "")
+        assert SGEN_8K_4_KEY in (second.failure or "")
+        assert len(artifact_calls(client, "put_object")) == puts_before, "never overwritten"
+        assert SGEN_8K_4 not in sec.calls[sec.calls.index(SGEN_8K_4) + 1 :], "not refetched"
         assert v2_progress(control)[1] == 0
 
     def test_a_resume_keeps_the_first_runs_spend_on_the_checkpoint(

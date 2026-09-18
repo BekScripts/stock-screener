@@ -349,6 +349,15 @@ class EvidenceWriteError(StorageUnavailableError):
     """An artifact write did not complete successfully; no provenance is earned."""
 
 
+class EvidenceIntegrityError(EvidenceWriteError):
+    """The backend holds bytes that do not match what was sent.
+
+    Not a transport fault: the write went through and the bucket answered,
+    but what it answered with is wrong. A caller that would retry a
+    transport fault must not retry this one — retrying means overwriting.
+    """
+
+
 def _safe(name: str) -> str:
     """Return a document name that cannot escape its directory.
 

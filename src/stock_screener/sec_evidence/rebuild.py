@@ -69,7 +69,7 @@ import structlog
 from api_clients.edgar import DEFAULT_WWW_URL, load_cik_map_from_file
 from api_clients.errors import ProviderAuthError, ProviderRateLimitError
 from domain import normalise_ticker
-from stock_screener.sec_evidence.audit import reconcile
+from stock_screener.sec_evidence.audit import new_urls_since, reconcile_subset
 from stock_screener.sec_evidence.expand import Resolution, filing_targets, submissions_targets
 from stock_screener.sec_evidence.generation import (
     GENERATION_ID,
@@ -77,11 +77,15 @@ from stock_screener.sec_evidence.generation import (
     IdentityRow,
     v2_progress,
 )
-from stock_screener.sec_evidence.harvest import Budget, HarvestReport, harvest_artifacts
-from stock_screener.sec_evidence.manifest import Manifest, Outcome
+from stock_screener.sec_evidence.harvest import Budget, HarvestReport, harvest_artifacts, key_for
+from stock_screener.sec_evidence.manifest import Manifest, ManifestState, Outcome
 from stock_screener.sec_evidence.mirror import ControlMirror, MirrorConflictError
 from stock_screener.sec_evidence.sample import DELISTED, LIVE, Selection
-from stock_screener.sec_evidence.storage import ARTIFACT_PREFIXES, StorageUnavailableError
+from stock_screener.sec_evidence.storage import (
+    ARTIFACT_PREFIXES,
+    EvidenceIntegrityError,
+    StorageUnavailableError,
+)
 from stock_screener.sec_evidence.sweep import (
     Checkpoint,
     ChunkStage,
@@ -100,6 +104,7 @@ if TYPE_CHECKING:
 log = structlog.get_logger(__name__)
 
 __all__ = [
+    "RECOVERY_NOTE",
     "TICKER_MAP_URL",
     "CanaryStopError",
     "RebuildReport",
@@ -112,6 +117,9 @@ __all__ = [
     "run_chunk",
     "write_resolution",
 ]
+
+#: Written to a chunk's checkpoint only once its mirror has proven recoverable.
+RECOVERY_NOTE = "recovery=proven"
 
 #: The SEC's ticker-to-CIK map. One request serves the whole universe.
 TICKER_MAP_URL = f"{DEFAULT_WWW_URL}/files/company_tickers.json"
@@ -126,6 +134,11 @@ _OFFLINE_PLAN_FILES = (
     "base_targets_offline.sha256",
     "prerequisites.json",
 )
+
+
+def chunk_checkpoint_path(control: EvidenceControlRoot, chunk: int) -> Path:
+    """Where a chunk's checkpoint lives: the first generation's naming, unchanged."""
+    return control.checkpoints / f"chunk-{chunk * PRODUCTION_CHUNK:06d}-{PRODUCTION_CHUNK:04d}.json"
 
 
 class ResolutionSource(StrEnum):
@@ -196,9 +209,18 @@ class RebuildReport:
     filings: dict[str, int] = field(default_factory=dict)
     manifest: dict[str, int | str] = field(default_factory=dict)
     reconciliation: dict[str, int] = field(default_factory=dict)
+    identities: int = 0
+    resolved: int = 0
     recovery_sufficient: bool = False
     stage: str = ChunkStage.PENDING
     failure: str | None = None
+    transient: bool = False
+    """Whether the stop was a transport fault a resume can reasonably retry.
+
+    True for a bucket that could not be reached or did not answer in time;
+    never for an integrity condition — a mismatch, an orphan, a conflict, a
+    refusal — which a retry would turn into an overwrite or a repeat.
+    """
 
     @property
     def passed(self) -> bool:
@@ -448,6 +470,7 @@ def run_chunk(
     filings_per_security: int = 6,
     generation_id: str = GENERATION_ID,
     observe: Callable[[Callable[[str, str], None]], bool] | None = None,
+    counters: dict[str, int] | None = None,
 ) -> RebuildReport:
     """Rebuild one chunk of the second generation, end to end, and report.
 
@@ -463,11 +486,16 @@ def run_chunk(
         filings_per_security: The production cap.
         generation_id: Mirror namespace and record label.
         observe: Registers a request observer on the backend, when it has one.
+            An observer is permanent, so a caller running many chunks
+            registers once and passes `counters` instead.
+        counters: The request counters to read and update — a driver's
+            cumulative store, shared across chunks. `report.b2_requests` is
+            then cumulative too, and the driver takes the difference.
 
     Returns:
         The report. `passed` is true only for `COMPLETE`.
     """
-    b2_counts: dict[str, int] = {}
+    b2_counts: dict[str, int] = counters if counters is not None else {}
     if observe is not None:
 
         def count(kind: str, operation: str) -> None:
@@ -478,9 +506,7 @@ def run_chunk(
 
     generation_dir = control.plans / "generation_v2"
     chunk_dir = generation_dir / "chunks" / f"{chunk:03d}"
-    checkpoint_path = (
-        control.checkpoints / f"chunk-{chunk * PRODUCTION_CHUNK:06d}-{PRODUCTION_CHUNK:04d}.json"
-    )
+    checkpoint_path = chunk_checkpoint_path(control, chunk)
     existing = load_checkpoint(checkpoint_path)
     report = RebuildReport(generation_id=generation_id, chunk=chunk)
     if existing is not None:
@@ -506,6 +532,9 @@ def run_chunk(
         _run(context, identities, filings_per_security)
     except (CanaryStopError, StorageUnavailableError, MirrorConflictError) as exc:
         report.failure = f"{type(exc).__name__}: {exc}"
+        report.transient = isinstance(exc, StorageUnavailableError) and not isinstance(
+            exc, EvidenceIntegrityError
+        )
         context.checkpoint.notes.append(f"stopped: {type(exc).__name__}: {exc}")
         save_checkpoint(checkpoint_path, context.checkpoint)
         log.error("rebuild canary stopped", chunk=chunk, error=type(exc).__name__)
@@ -551,6 +580,15 @@ def _mirror_offline_plans(context: _Context) -> str:
 
 
 def _preflight(context: _Context) -> str:
+    """The generation must be consistent, and chunks are built in order.
+
+    Chunk 000 starts an empty generation. Every later chunk requires the one
+    before it `COMPLETE`, and inherits whatever those chunks trusted — a
+    filer shared across chunks is one catalogue. No whole-corpus walk
+    happens here: the chunk's own targets are proven by the passes, the
+    replay and the scoped reconciliation, and the whole namespace by the
+    milestone and terminal checks.
+    """
     trusted, completed, inconsistent = v2_progress(context.control)
     if inconsistent:
         raise CanaryStopError(
@@ -558,14 +596,20 @@ def _preflight(context: _Context) -> str:
         )
     listed = {p: sum(1 for _ in context.storage.list_prefix(p)) for p in ARTIFACT_PREFIXES}
     fresh = context.checkpoint.selected == 0
-    if fresh and (trusted or any(listed.values())):
-        raise CanaryStopError(
-            f"a fresh chunk run requires an empty generation: trusted={trusted}, bucket={listed}"
-        )
-    if not fresh:
-        state = reconcile(context.storage, context.manifest, verify_digests=False)
-        if not state.clean:
-            raise CanaryStopError(f"resuming over an unclean corpus: {state.problems}")
+    chunk = context.report.chunk
+    if chunk == 0:
+        if fresh and (trusted or any(listed.values())):
+            raise CanaryStopError(
+                f"a fresh chunk run requires an empty generation: trusted={trusted}, "
+                f"bucket={listed}"
+            )
+    else:
+        previous = load_checkpoint(chunk_checkpoint_path(context.control, chunk - 1))
+        if previous is None or previous.stage != ChunkStage.COMPLETE:
+            stage = "absent" if previous is None else previous.stage
+            raise CanaryStopError(
+                f"chunk {chunk - 1:03d} is {stage}, not COMPLETE; chunks are built in order"
+            )
     return f"trusted={trusted} completed={completed} bucket={listed} resume={not fresh}"
 
 
@@ -576,6 +620,14 @@ def _resolve(context: _Context, identities: Sequence[IdentityRow]) -> list[Resol
     again = resolve_identities(identities, ticker_map)
     if [r.line() for r in rows] != [r.line() for r in again]:
         raise CanaryStopError("resolution is not deterministic from one snapshot")
+    frozen = context.generation_dir / "filer_resolution_v1.sha256"
+    if frozen.is_file():
+        recorded = frozen.read_text(encoding="utf-8").split()[0]
+        if recorded != _digest_lines([r.line() for r in rows]):
+            raise CanaryStopError(
+                f"frozen resolution drift: the generation's resolution is {recorded[:16]}…, "
+                "resolving again from the preserved ticker map gives something else"
+            )
     _, sha = write_resolution(rows, context.generation_dir)
     counts = {
         source.value: sum(1 for r in rows if r.source == source) for source in ResolutionSource
@@ -702,9 +754,26 @@ def _harvest_pass(context: _Context, targets: Sequence[Target], label: str) -> H
 
 
 def _one_at_a_time(context: _Context, targets: Sequence[Target]) -> HarvestReport:
-    """Harvest each target separately, merging the reports; stop on refusal or budget."""
+    """Harvest each target separately, merging the reports; stop on refusal or budget.
+
+    The manifest is replayed once for the pass and carried through every
+    call. Before a target the manifest does not vouch for is fetched, the
+    backend is asked whether it already holds that key: an object nobody
+    recorded is `REMOTE_ORPHAN`, and it is never overwritten. A trusted
+    target whose stored bytes no longer hash to its record is
+    `REMOTE_UNTRUSTED`, reported and left as found.
+    """
     merged = HarvestReport()
+    state: ManifestState = context.manifest.replay()
     for target in targets:
+        entry = state.latest.get(target.url)
+        if entry is None or not entry.is_stored:
+            key = key_for(target)
+            if context.storage.exists(key):
+                raise CanaryStopError(
+                    f"REMOTE_ORPHAN: {key} exists in the bucket without a trusted manifest row; "
+                    "not overwritten"
+                )
         part = harvest_artifacts(
             [target],
             context.storage,
@@ -712,7 +781,14 @@ def _one_at_a_time(context: _Context, targets: Sequence[Target]) -> HarvestRepor
             context.documents,
             budget=context.budget,
             verify_written=True,
+            state=state,
+            refetch_invalid=False,
         )
+        if part.by_outcome.get(str(Outcome.INVALID_CACHE)):
+            raise CanaryStopError(
+                f"REMOTE_UNTRUSTED: {key_for(target)} no longer hashes to its trusted record; "
+                "not overwritten"
+            )
         for outcome, count in part.by_outcome.items():
             merged.by_outcome[outcome] = merged.by_outcome.get(outcome, 0) + count
         merged.failures.extend(part.failures)
@@ -902,6 +978,7 @@ def _run(context: _Context, identities: Sequence[IdentityRow], cap: int) -> None
             context.documents,
             budget=context.budget,
             verify_written=True,
+            refetch_invalid=False,
         )
         fetched = context.budget.requests_made - before_requests
         written = context.budget.bytes_written - before_bytes
@@ -913,12 +990,26 @@ def _run(context: _Context, identities: Sequence[IdentityRow], cap: int) -> None
                 f"{hits} cache hits of {len(submissions) + len(filings)}"
             )
         _advance(checkpoint, ChunkStage.CONVERGED)
-        return f"{hits} CACHE_HIT, 0 fetches, 0 bytes, {puts} PUTs"
+        return (
+            f"{hits} CACHE_HIT, 0 fetches, 0 bytes, {puts} PUTs; every target downloaded and hashed"
+        )
 
-    _step(context, "converge: replay", converge)
+    _step(context, "converge: replay + chunk verification", converge)
 
     def verify() -> str:
-        state = reconcile(context.storage, context.manifest, verify_digests=True)
+        """Chunk reconciliation: every target accounted, its prefixes free of orphans.
+
+        The replay above downloaded and hashed every target of this chunk.
+        This proves the accounting — each target trusted, present, the size
+        on record, no zero-byte artifact, nothing unvouched-for in the
+        prefixes the chunk wrote to — without a third download. The whole
+        namespace is walked at the milestones and the terminal gate.
+        """
+        urls = [t.url for t in (*submissions, *filings)]
+        state = reconcile_subset(context.storage, context.manifest, urls, verify_digests=False)
+        new_urls = new_urls_since(context.manifest, checkpoint.records_before)
+        trusted_now = {e.url for e in context.manifest.latest_by_url().values() if e.is_stored}
+        new_trusted = sum(1 for url in urls if url in new_urls and url in trusted_now)
         report.reconciliation = {
             "trusted": state.trusted,
             "objects": state.files_on_disk,
@@ -930,27 +1021,30 @@ def _run(context: _Context, identities: Sequence[IdentityRow], cap: int) -> None
             "zero_byte": state.zero_byte,
             "duplicate_urls": state.duplicate_urls,
         }
+        report.reconciliation["new_trusted"] = new_trusted
         if not state.clean or state.zero_byte:
             checkpoint.stage = ChunkStage.FAILED
-            raise CanaryStopError(f"full verification failed: {state.summary()}")
-        if state.trusted != len(submissions) + len(filings):
+            raise CanaryStopError(f"chunk verification failed: {state.summary()}")
+        if state.trusted != len(urls):
             checkpoint.stage = ChunkStage.FAILED
-            raise CanaryStopError(
-                f"trusted {state.trusted} != chunk targets {len(submissions) + len(filings)}"
-            )
+            raise CanaryStopError(f"trusted {state.trusted} != chunk targets {len(urls)}")
         checkpoint.accounting = {
             "trusted": state.trusted,
             "submissions": state.submissions,
             "filings": state.filings,
+            "new_artifacts": new_trusted,
             "manifest_records": state.manifest_records,
         }
-        checkpoint.verification = {"full_corpus": state.trusted}
+        checkpoint.verification = {"chunk_targets_hashed": len(urls), "new_verified": new_trusted}
         checkpoint.completed_at = datetime.now(UTC).isoformat()
         _advance(checkpoint, ChunkStage.COMPLETE)
-        report.manifest["logical_bytes"] = state.logical_bytes
-        return f"{state.summary()}; every artifact downloaded and hashed"
+        report.manifest["chunk_bytes"] = state.logical_bytes
+        return (
+            f"{state.summary()}; {new_trusted} new artifacts, all hashed in the replay; "
+            f"{len(urls) - new_trusted} inherited"
+        )
 
-    _step(context, "verify: full reconciliation", verify)
+    _step(context, "verify: chunk reconciliation", verify)
     _step(context, "snapshot: complete", lambda: _snapshot_and_mirror(context, "complete"))
     _step(context, "recovery: prove the mirror", lambda: _prove_recovery(context, mine))
 
@@ -967,6 +1061,8 @@ def _describe_freeze(
 ) -> str:
     mine.extend(_freeze_chunk(context, rows))
     resolved = sum(1 for r in mine if r.cik is not None)
+    context.report.identities = len(mine)
+    context.report.resolved = resolved
     return (
         f"{len(mine)} identities, {resolved} resolved, sha "
         f"{context.checkpoint.selection_digest[:16]}…; checkpoint {context.checkpoint.stage}"
@@ -1036,6 +1132,9 @@ def _prove_recovery(context: _Context, mine: Sequence[ResolutionRow]) -> str:
     if stage != ChunkStage.COMPLETE:
         raise CanaryStopError(f"the mirrored checkpoint says {stage}, not COMPLETE")
     context.report.recovery_sufficient = True
+    if RECOVERY_NOTE not in context.checkpoint.notes:
+        context.checkpoint.notes.append(RECOVERY_NOTE)
+        save_checkpoint(context.checkpoint_path, context.checkpoint)
     return (
         f"{len(listing)} mirrored objects; required files present and hashed; newest manifest "
         f"snapshot names {len(remote_trusted)} artifacts == {len(remote_objects)} bucket objects; "

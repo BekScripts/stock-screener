@@ -568,6 +568,44 @@ class TestHarvestingThroughAMemoryBackend:
         assert source.calls == 2
         assert storage.digest(FILING_KEY) == hashlib.sha256(COVER).hexdigest()
 
+    def test_a_tampered_object_is_reported_and_left_alone_when_refetching_is_off(
+        self, memory_storage: type[MemoryEvidenceStorage], manifest: Manifest
+    ) -> None:
+        storage = memory_storage()
+        source = Source(COVER)
+        harvest_artifacts([FILING], storage, manifest, source, budget=budget())
+        storage.write_bytes(FILING_KEY, b"tampered")
+        records_before = len(list(manifest.entries()))
+
+        replay = harvest_artifacts(
+            [FILING], storage, manifest, source, budget=budget(), refetch_invalid=False
+        )
+
+        assert replay.by_outcome == {"INVALID_CACHE": 1}
+        assert replay.failures == [
+            (FILING.url, "INVALID_CACHE: stored bytes differ from the record")
+        ]
+        assert source.calls == 1, "not fetched again"
+        assert storage.read_bytes(FILING_KEY) == b"tampered", "not overwritten"
+        assert len(list(manifest.entries())) == records_before, "nothing recorded"
+
+    def test_a_shared_replay_state_sees_what_earlier_calls_recorded(
+        self, memory_storage: type[MemoryEvidenceStorage], manifest: Manifest
+    ) -> None:
+        storage = memory_storage()
+        source = Source(COVER)
+        state = manifest.replay()
+
+        first = harvest_artifacts([FILING], storage, manifest, source, budget=budget(), state=state)
+        second = harvest_artifacts(
+            [FILING], storage, manifest, source, budget=budget(), state=state
+        )
+
+        assert first.by_outcome == {"DOWNLOADED": 1}
+        assert second.by_outcome == {"CACHE_HIT": 1}, "the state carried the new entry"
+        assert source.calls == 1
+        assert state.latest[FILING.url].is_stored
+
     def test_a_vanished_object_is_refetched(
         self, memory_storage: type[MemoryEvidenceStorage], manifest: Manifest
     ) -> None:

@@ -52,7 +52,7 @@ from stock_screener.sec_evidence.manifest import (
     Outcome,
 )
 from stock_screener.sec_evidence.storage import (
-    EvidenceWriteError,
+    EvidenceIntegrityError,
     RequestKind,
     filing_key,
     fulltext_key,
@@ -256,6 +256,8 @@ def harvest_artifacts(
     budget: Budget | None = None,
     dry_run: bool = False,
     verify_written: bool = False,
+    state: ManifestState | None = None,
+    refetch_invalid: bool = True,
 ) -> HarvestReport:
     """Obtain each target, skipping what is already provably held.
 
@@ -277,13 +279,24 @@ def harvest_artifacts(
             directory re-reads a file, a bucket downloads the object. Costs
             one read per new artifact and buys the guarantee that no trusted
             row describes bytes the backend does not hold.
+        state: A replayed manifest to work from, for a caller that harvests
+            one target at a time and would otherwise replay the whole log
+            per target. Every entry this call appends is recorded into it,
+            so it stays the truth for the next call. Replayed here when
+            omitted.
+        refetch_invalid: What to do with a trusted artifact whose stored
+            bytes no longer hash to its record. The historical answer is to
+            fetch it again and overwrite (`INVALID_CACHE`, then
+            `DOWNLOADED`). `False` reports `INVALID_CACHE` and leaves the
+            artifact exactly as found, for a caller whose policy is to stop
+            and look rather than repair.
 
     Returns:
         What happened.
 
     Raises:
         ValueError: If a real run is asked for without a client.
-        EvidenceWriteError: If `verify_written` finds stored bytes that do not
+        EvidenceIntegrityError: If `verify_written` finds stored bytes that do not
             hash to the fetched bytes. The run stops; nothing was recorded.
     """
     if documents is None and not dry_run:
@@ -291,7 +304,8 @@ def harvest_artifacts(
         raise ValueError(message)
 
     limits = budget or Budget()
-    state = manifest.replay()
+    if state is None:
+        state = manifest.replay()
     known = state.latest
     report = HarvestReport()
 
@@ -305,6 +319,14 @@ def harvest_artifacts(
 
         if outcome is Outcome.CACHE_HIT:
             report.record(Outcome.CACHE_HIT)
+            continue
+
+        if outcome is Outcome.INVALID_CACHE and not refetch_invalid:
+            log.error("trusted artifact no longer reproduces its digest", url=target.url, key=key)
+            report.record(Outcome.INVALID_CACHE)
+            report.failures.append(
+                (target.url, "INVALID_CACHE: stored bytes differ from the record")
+            )
             continue
 
         if limits.exhausted:
@@ -351,7 +373,7 @@ def _fetch_one(
     """Fetch, store and record one target. Never raises for a request failure.
 
     Raises:
-        EvidenceWriteError: If `verify_written` is set and the bytes read back
+        EvidenceIntegrityError: If `verify_written` is set and the bytes read back
             from storage do not hash to the bytes that were sent. That is an
             integrity fault in the backend, not a request failure, and it stops
             the run before any manifest entry exists for the artifact.
@@ -451,7 +473,7 @@ def _fetch_one(
                 url=target.url,
                 key=key,
             )
-            raise EvidenceWriteError(
+            raise EvidenceIntegrityError(
                 f"{key!r}: the backend holds bytes hashing to {readback[:16]}…, "
                 f"not the {fetched.sha256[:16]}… that were fetched; no manifest entry written"
             )
@@ -520,12 +542,18 @@ def _classify(
     return Outcome.CACHE_HIT
 
 
-def _key_for(target: Target) -> str:
+def key_for(target: Target) -> str:
     """The storage key one target's bytes belong under.
 
     Derived from the target alone — no root, no backend — so the same target
-    yields the same key wherever the artifact ends up living.
+    yields the same key wherever the artifact ends up living. Public so a
+    caller can ask the backend about a target *before* harvesting it.
     """
+    return _key_for(target)
+
+
+def _key_for(target: Target) -> str:
+    """See `key_for`."""
     if target.kind is RequestKind.SUBMISSIONS:
         if target.cik is None:
             message = "a submissions target needs a CIK"
