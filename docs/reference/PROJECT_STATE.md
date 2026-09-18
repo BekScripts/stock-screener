@@ -36,15 +36,15 @@ appears without the run or the test that produced it.
 
 ## Current phase
 
-**B2.13 — V2 PIT coverage and the class-aware A3 planning inputs** is the
-current checkpoint on `feat/phase-b2-storage-abstraction`. **The BEK drive
-is permanently unavailable** and Generation V1 is history that creates no
-trust. B2.9X started **Generation V2** from what survived on the internal
-disk; B2.10 proved the pipeline on chunk 000; B2.11 built chunks 001–035
-and closed the baseline; B2.12 read the whole corpus back out of the
-bucket into the derived index; B2.13 reconstructed the lost assembly
-harness and froze Plan A3's inputs. **V1 unavailable; V2 baseline
-COMPLETE; 36/36 chunks;
+**B2.14 — Plan A3 regenerated from the frozen V2 inputs and compared** is
+the current checkpoint on `feat/phase-b2-storage-abstraction`. **The BEK
+drive is permanently unavailable** and Generation V1 is history that
+creates no trust. B2.9X started **Generation V2** from what survived on the
+internal disk; B2.10 proved the pipeline on chunk 000; B2.11 built chunks
+001–035 and closed the baseline; B2.12 read the whole corpus back out of
+the bucket into the derived index; B2.13 reconstructed the lost assembly
+harness and froze Plan A3's inputs; B2.14 ran the unchanged planner over
+them. **V1 unavailable; V2 baseline COMPLETE; 36/36 chunks;
 38,146 trusted artifacts — 5,733 submissions catalogues and 32,413 filing
 documents — 37,141,434,863 bytes; manifest SHA-256
 `13722e021e2d4e03d13784c5c829320bad5b7dc74055378057bf8804d356086b`;
@@ -67,12 +67,20 @@ universe months → 16,194 `COVERED`, 242,269 open (166,075 `G1_SOLVABLE`,
 raw `UNKNOWN` floor 76,194); 279,772 candidates carrying 657,826 cover
 keys over exactly the solvable gaps; 32,413 held; deterministic across two
 in-process assemblies and a second invocation; 25 files mirrored as 50
-objects and read back (mirror now 1,174 objects, 0 conflicts).** The
-frozen resolution stands: 8,919 identities, 6,048 resolved (402 `STORED`,
-5,646 `SEC_TICKER_MAP`), 2,871 `UNRESOLVED`; the ticker map was fetched
-once, in B2.10, and never again. **Plan A3 is not yet regenerated**: B2.14
-loads the frozen package, runs the unchanged planner, and compares its
-digest to the historical `53e3f0ca…` (61,941 rows) — never forced. See
+objects and read back. Plan A3 V2 GENERATED, FROZEN and MIRRORED:
+`plans/generation_v2/a3/plan_a3_v2.jsonl`, **62,924 targets**, SHA-256
+`a3e7df1929d3160158334de7c163b09bf5e644f6a7c353a6e377b532871dcf7b`, 6.34
+GiB estimated, every one of the 166,075 solvable gaps reached, 156,531.6
+expected months, all validations zero, byte-identical on a second run —
+against the historical 61,941 / `53e3f0ca…`: **not reproduced** (+983
+targets, digest differs; the historical rows are lost and the writer's
+state at A3 time is unprovable, so the digest comparison is inconclusive
+on its own while the count difference is real). Mirror 1,192 objects, 0
+conflicts.** The frozen resolution stands: 8,919 identities, 6,048 resolved
+(402 `STORED`, 5,646 `SEC_TICKER_MAP`), 2,871 `UNRESOLVED`; the ticker map
+was fetched once, in B2.10, and never again. **Nothing has been downloaded
+against Plan A3 V2**; B2.14R reviews the difference before any expansion.
+See
 [A3 planning inputs](a3-planning-inputs.md),
 [B2.12](storage-layout.md#b212-the-derived-index),
 [B2.11](storage-layout.md#b211-the-baseline-rebuild),
@@ -556,6 +564,28 @@ convention, and none may be relaxed without an explicit instruction.
   a package frozen against another database, universe, resolution,
   manifest, index or fingerprint. B2.14 loads the package; it recomputes
   nothing.
+
+### B2.14 the regenerated plan
+
+- **The planner is run, never tuned.** `regenerate_a3` loads the frozen
+  package through `load_planning_inputs` — refusing a package whose sources
+  moved — and calls `plan_coverage_first(candidates)` with no limit, the
+  historical Plan A configuration. Nothing is reassembled (the command's
+  tests disable the database, the network and the assembly), no parameter
+  moves the count toward 61,941, and `plan.py` is byte-unchanged.
+- **A plan is validated against the package it was planned from.** Every
+  target is a frozen candidate, not held, unique on `(cik, accession)`, of a
+  qualifying form, carrying its candidate's byte estimate, and covering a
+  solvable gap; two runs must agree byte for byte. A plan that fails is not
+  written.
+- **A digest that differs is inconclusive; a count that differs is not.**
+  The historical `53e3f0ca…` is SHA-256 over `write_plan`'s JSONL, and the
+  writer survives — but its state when A3 was written cannot be proven and
+  the rows are lost, so the byte comparison alone says nothing about the
+  selection. The count and the identity fingerprints do. The comparison is
+  reported either way; the historical plan is never labelled invalid.
+- **The plan is frozen, not executed.** B2.14 ends at the mirrored plan;
+  no filing is fetched until the difference has been reviewed.
 
 ### Cross-cutting
 
@@ -1689,6 +1719,62 @@ Documented rather than fixed. Each is a deliberate stop, not a backlog item.
 
 Measured runs, kept because they are the evidence behind decisions above.
 
+### B2.14 Plan A3 regenerated — 2026-09-18
+
+- `evidence regenerate-a3 --expect-package-sha 83680ead… --database stage9k.db
+  --expect-universe-sha b8eaed3e… --expect-database-sha … --expect-manifest-sha
+  13722e02… --expect-index-sha 3deb46b7…`, 19:59–20:01 UTC: both database
+  digests unchanged before and after; the package re-hashed component by
+  component and bound to the live manifest, index, five fingerprints,
+  resolution and universe; 0 SEC requests, 0 evidence reads or writes.
+- Planner: `plan_coverage_first`, no limit, min marginal 1, plan stamp `v1`,
+  written by `write_plan`; algorithm files digested into the metadata and
+  byte-unchanged (`plan.py` `d6562cab…`, `reachability.py` `cd82fca6…`,
+  `join.py` `1a3e00d2…`, `coverage.py` `a0b5816f…`, `sample.py` `12abc44e…`,
+  `expand.py` `fb6a975e…`).
+- Result: **62,924 targets**, SHA-256
+  `a3e7df1929d3160158334de7c163b09bf5e644f6a7c353a6e377b532871dcf7b`; 4,174
+  CIKs, 62,875 accessions (49 co-registrant copies); 6,807,725,520 bytes
+  (6.34 GiB); safe potential 166,075 = every solvable gap, 4,213 of 4,213
+  identities reached; expected 156,531.554 (0.9425 of potential); floor
+  76,194; expected remaining 85,737.4 of 242,269 open; forms 8-K 61,160,
+  10-Q 1,249, 10-K 378, 20-F 97, 20-F/A 20, 40-F 18, 40-F/A 2; months per
+  target 2.639. Validation: 0 outside the pool, 0 held, 0 duplicates, 0
+  invalid forms, 0 without cover, 0 wrong estimates. Run 2: identical rows,
+  bytes, digest, metrics.
+- Historical: 61,941 / `53e3f0ca…`, ~6.6 GiB, 165,553 potential, 152,381
+  expected (0.9204), floor 76,029, 2.673 months per target. Row-count match
+  **no** (+983, +1.6%); digest match **no**;
+  `BYTE_DIGEST_COMPARISON_INCONCLUSIVE` for the bytes, a real difference for
+  the selection. Decomposition from the frozen package alone: +190 targets
+  from the 522 extra solvable months at historical packing, +793 from the
+  lower packing — which is a property of the V2 candidate pool (279,772 vs
+  ~269,5xx; catalogues two weeks fresher; the 800 and 1,008 V1 validation
+  filings unheld and eligible; 22,108 held-excluded vs V1's 33,384). The 135
+  declined mappings only remove demand (252 `G2_NO_CIK` months); the
+  one-month boundary is shared code and contributes nothing; V2's higher
+  yields (8-K 0.944 vs 0.922) raise the expectation, not the count. No row
+  cause is provable: the historical rows are lost.
+- Forensic fingerprints: ordered `a3e7df19…`; unordered targets
+  `0dc99399853198cdd1259a3f6964acb1b586d690bc94d4e5c05743ac344b2f6a`;
+  ordered identities `ae6c65f41d5e9a750a1748d98d4c4a7b0ac78f52dad0fd433ff99da3a0f01708`;
+  per-form `8a5daade94f8e1e1f7d5dda1885401355d246d4edb51cfc30315b3cb56ab9da4`;
+  per-CIK `f76135c794df72db484dd6fbc2c1dd814b37aa014e077a73da0d1291e768baec`.
+- Mirror: 9 files as 18 objects under `control/…/a3/`, all `MIRRORED`,
+  every one read back equal; 54 GET / 18 PUT / 18 HEAD / 18 LIST, all
+  control; credential audit 0.
+- `tests/integration/test_a3_regenerate.py`: **20 passed**, offline — the
+  planner running with the database, network and assembly disabled, two
+  runs byte-identical, a mutated component refused before the planner, a
+  moved source refused, the inconclusive-not-mismatch comparison, a target
+  outside the pool / already held / duplicated / uncovered / of a foreign
+  form or estimate each failing validation, the real plan passing,
+  regeneration stopping on an invalid plan, the writer's bytes for one
+  target pinned with their digest, the writer and the in-memory bytes
+  agreeing, fingerprints separating order from membership, every plan file
+  mirrored, and the command planning and mirroring without evidence
+  access, refusing a changed component and a moved index.
+
 ### B2.13 A3 planning inputs — 2026-09-18
 
 - `evidence build-a3-inputs --database stage9k.db --expect-universe-count 8919
@@ -2228,20 +2314,19 @@ under **80%**. It is what CI runs; run it rather than the individual tools.
 
 ## Next phase
 
-**B2.14 — regenerate Plan A3 from the frozen V2 inputs** follows: load
-`plans/generation_v2/a3_inputs/` through `load_planning_inputs` with the
-bindings proven against the live sources, run the unchanged planner over
-its candidates, write the plan, and *compare* its row count and digest to
-the historical 61,941 rows and
-`53e3f0ca98ac54068232c13f6b0c214e969ff6e6f204000d5a050c43be3bdcd9` — a
-match is reported, a difference is reported and explained against the V2
-input deltas recorded in B2.13, and the algorithm is never changed to reach
-the old hash. The comparison references (historical ~6.6 GiB, 165,553 safe
-potential months, 152,381 expected, raw floor 76,029) are references, not
-constraints. FTD archives are redownloaded separately. The one-month
-boundary difference between the classification and planning rules is
-documented in [A3 planning inputs](a3-planning-inputs.md) and is a decision
-for a later phase, not for B2.14.
+**B2.14R — forensic A3 difference review** follows: Plan A3 V2 (62,924
+targets, `a3e7df19…`) differs from the historical plan (61,941,
+`53e3f0ca…`) and nothing is downloaded until that difference has been
+reviewed against the frozen package — the candidate-pool, held-set and
+catalogue-freshness effects decomposed in B2.14, the 135 declined mappings,
+and the unheld V1 validation batches. The review decides whether V2's plan
+is the plan to execute; it does not change the planner to reach the old
+digest, and it does not import V1 held state. After review, B2.15 freezes
+expansion batches and runs a small live canary. FTD archives are
+redownloaded separately. The one-month boundary between the classification
+and planning rules remains documented in
+[A3 planning inputs](a3-planning-inputs.md) and is a decision for a later
+phase.
 
 Two pieces of work are *identified* but not authorised, and neither is to be
 started without being asked:
@@ -2308,7 +2393,7 @@ Not a backlog. These exclusions are deliberate.
 
 | | |
 | --- | --- |
-| Commit | The B2.13 commit containing this checkpoint, `feat: rebuild V2 A3 planning inputs`; parent `ebfbc1c` (B2.12, `feat: rebuild V2 SEC evidence index`). The package manifest records `repo_commit` `ebfbc1c` because it was built from the working tree that became this commit; the index's `meta.json` likewise records `1b407b6`. |
+| Commit | The B2.14 commit containing this checkpoint, `feat: regenerate V2 Plan A3`; parent `afe6a10` (B2.13, `feat: rebuild V2 A3 planning inputs`). The plan's `meta.json` records `repo_commit` `afe6a10` because it was built from the working tree that became this commit; the inputs package likewise records `ebfbc1c` and the index `1b407b6`. |
 | Branch | `feat/phase-b2-storage-abstraction` |
 | Migration head | `0031` — the research-universe layer (9K.7). Nothing since 9K.11 added one. |
 | Score version | `COMPOUNDER_V1_2` (unchanged by anything in Phase 8, 9A, 9B or 9C) |

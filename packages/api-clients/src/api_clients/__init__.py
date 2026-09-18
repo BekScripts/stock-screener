@@ -31,6 +31,7 @@ from api_clients.deep_research import (
     MockDeepResearch,
 )
 from api_clients.edgar import (
+    FILING_FORMS,
     SecEdgarFundamentals,
     facts_document_from_observations,
     filings_from_submissions,
@@ -100,6 +101,7 @@ __all__ = [
     "DEFAULT_MAX_OUTPUT_TOKENS",
     "DEFAULT_RESEARCH_MODEL",
     "DEFAULT_TIMEOUT_SECONDS",
+    "FILING_FORMS",
     "FTD_INDEX_URL",
     "MAX_SECTION_CHARS",
     "MIN_SECTION_CHARS",

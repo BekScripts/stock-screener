@@ -123,3 +123,91 @@ manifest's `timings` differ between invocations. 12.8 s per assembly.
 | conflicts | of 54,998 frozen `class_source_accession` rows (compared in the dashed form): 5,333 held in V2 and joining to the same identity with the same acceptance date, 785 held but not joining, 44,625 catalogued but not held by the six-per-security baseline, 4,255 absent from the V2 catalogue; 0 timestamp disagreements |
 | the 135 declined map matches | 264 universe rows, 252 open, all `G2_NO_CIK` |
 | mirror | 25 files as 50 objects, all `MIRRORED`, every one read back equal; no database or index mirrored |
+
+## Regenerating Plan A3 (B2.14)
+
+`stock-screener evidence regenerate-a3` loads the frozen package through
+`load_planning_inputs` — bound to the manifest, index, fingerprints and
+resolution on disk, and to the database when one is named — and runs the
+planner over `inputs.candidates`. Nothing is reassembled; the command's tests
+run it with the database, the network and the assembly disabled.
+
+### The historical configuration
+
+| | |
+| --- | --- |
+| entrypoint | `plan.plan_coverage_first(candidates)` — Plan A |
+| score | coverage: marginal month-ends, then form yield, then size, then filing date, then `(cik, accession)` |
+| limit | none — run to exhaustion, which 9L.2 showed is the minimum temporal cover |
+| minimum marginal | 1 |
+| writer | `plan.write_plan` — `expansion_plan_v1.{csv,jsonl,sha256}`, JSONL rows as `json.dumps(asdict(target), sort_keys=True)` + newline, digest SHA-256 over the JSONL bytes |
+| row stamp | `plan_version` `v1` (the writer's constant, unchanged since 9L.4's "stamping defect" note) |
+
+### What the historical digest can and cannot say
+
+`53e3f0ca…` (61,941 rows) is SHA-256 over the historical `expansion_plan_v3`
+JSONL bytes, produced by the writer above; that much the 9L.2 and 9L.4 records
+establish, and the writer survives byte-identically from the pre-B2 checkpoint
+`13d586b`. What cannot be established is that the writer and the stamped fields
+(`plan_version`, `selection_strategy`, the `reason` text) were identical at the
+moment A3 was written, because `plan.py` first entered git at that checkpoint,
+after 9L.5. The historical rows themselves are lost. So a digest that differs
+is `BYTE_DIGEST_COMPARISON_INCONCLUSIVE` on its own; only a row-count or
+identity-set difference is evidence about the selection.
+
+### Validation
+
+Every target must be in the frozen candidate pool, outside the frozen held set,
+unique on `(cik, accession)`, of a qualifying form, carry the candidate's own
+byte estimate, and cover at least one `G1_SOLVABLE` gap. The planner has no
+byte budget, so none is checked. Two runs must agree on targets, bytes, metrics
+and digest.
+
+### The plan package
+
+`<SEC_CONTROL_DIR>/plans/generation_v2/a3/`, mirrored file for file under
+`control/<generation>/a3/`: `plan_a3_v2.jsonl` (the writer's bytes),
+`plan_a3_v2.sha256`, the writer's own `expansion_plan_v1.{csv,jsonl,sha256}`,
+`plan_a3_v2.summary.json`, `plan_a3_v2.fingerprints.json` (ordered plan,
+unordered target set, ordered identity sequence, per-form, per-CIK),
+`plan_a3_v2.meta.json` (package digest and bindings, algorithm file digests,
+configuration, metrics, validation, determinism, comparison) and, last,
+`plan_a3_v2_complete.json`.
+
+### The live run — 2026-09-18
+
+Package `83680ead…` re-hashed component by component and bound to the live
+manifest, index, fingerprints, resolution and `stage9k.db` (universe `b8eaed3e…`
+re-proven read-only; both database digests unchanged before and after).
+
+| | V2 | historical |
+| --- | --- | --- |
+| targets | **62,924** | 61,941 (+983, +1.6%) |
+| digest | `a3e7df1929d3160158334de7c163b09bf5e644f6a7c353a6e377b532871dcf7b` | `53e3f0ca…` — inconclusive |
+| estimated download | 6,807,725,520 bytes, 6.34 GiB | ~6.6 GiB |
+| safe potential months | 166,075 (every solvable gap) | 165,553 |
+| expected months | 156,531.6 (0.9425 of potential) | 152,381 (0.9204) |
+| raw `UNKNOWN` floor | 76,194 | 76,029 |
+| expected remaining | 85,737.4 of 242,269 open | — |
+| months per target | 2.639 | 2.673 |
+| forms | 8-K 61,160 · 10-Q 1,249 · 10-K 378 · 20-F 97 · 20-F/A 20 · 40-F 18 · 40-F/A 2 | — |
+| identities reached | 4,213 of 4,213 with a solvable gap | — |
+| unique CIKs / accessions | 4,174 / 62,875 (49 co-registrant copies) | — |
+| validation | all zero | — |
+| determinism | run 2 identical: rows, bytes, digest, metrics | — |
+| verdict | `BYTE_DIGEST_COMPARISON_INCONCLUSIVE`; the count differs, so the selection differs | — |
+
+Where the +983 sits, from the frozen package alone: at the historical packing
+of 2.673 months per target the V2 potential of 166,075 would take 62,131
+targets (+190 from the 522 extra solvable months); the remaining +793 follows
+from V2's lower packing, 2.639 months per target, which is a property of which
+candidates exist and when they were filed — 279,772 candidates against the
+historical ~269,5xx, from catalogues harvested two weeks later, with the 800
+and 1,008 V1 validation filings unheld and so eligible again, and 22,108 of
+the window's filings excluded as held rather than V1's 33,384. The 135
+declined delisted mappings remove demand rather than add it: their 252 open
+months are `G2_NO_CIK` and have no candidate in V2, where V1 resolved them.
+The one-month classification/planning boundary is shared with V1's code and
+contributes no delta. Yield rates are the V2 corpus's (8-K 0.944 against
+0.922), which raises the expectation, not the count. None of these is a
+proven cause of a specific row; the historical rows are lost.
