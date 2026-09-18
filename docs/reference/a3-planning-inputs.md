@@ -211,3 +211,83 @@ The one-month classification/planning boundary is shared with V1's code and
 contributes no delta. Yield rates are the V2 corpus's (8-K 0.944 against
 0.922), which raises the expectation, not the count. None of these is a
 proven cause of a specific row; the historical rows are lost.
+
+## The forensic review (B2.14R)
+
+Read-only, over the frozen package, the frozen plan and the V2 index; the
+plan, the package and both databases were byte-identical before and after.
+Outputs under `<SEC_CONTROL_DIR>/plans/generation_v2/a3/forensics/`, mirrored
+file for file under `control/<generation>/a3/forensics/`.
+
+### What survived, and when things happened
+
+No V1 plan row or batch list survives anywhere in git, the docs, the fixtures
+or the control root; the stash holds B2.9R rescue tooling only. The
+comparators are the 9L.1–9L.5 aggregates recorded at checkpoint `13d586b`.
+The frozen universe was built 2026-09-04 15:56 UTC and `stage9k.db` has not
+been written since (proven), so V1 and V2 planned over identical gap demand.
+V2 catalogues were fetched 2026-09-16/17 (proven from the manifest). V1's
+baseline, batches and plan fall between 2026-08-30 and the 2026-09-07
+checkpoint date (inferred; the V1 manifest is lost).
+
+### Algorithm and configuration identity
+
+`plan.py`, `reachability.py`, `join.py`, `coverage.py` and `sample.py` are
+byte-identical to `13d586b`; `expand.py` differs only by the B2.3 storage
+refactor; `inputs.py` is the B2.13 reconstruction and not historical code.
+Strategy, score, limit, minimum marginal, plan stamp, form eligibility,
+reachability and the order key are proven the same. **The candidate window is
+proven different**: 9L.1 counted 292,866 qualifying filings "inside the
+universe's own window" and 269,521 not held, and V2's catalogues give
+291,623 and 269,566 under `filing_date` within `[2022-01-01, 2026-07-31]` —
+within 45 of the historical pool — whereas the B2.13 rule ("any filing whose
+90-day reach touches a window month-end") admits 10,257 filings from
+November–December 2021 and gives 279,772.
+
+### The ablation
+
+| Run | Change | Candidates | Targets | vs historical | Packing | Potential | Ordered digest |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 0 | none (frozen) | 279,772 | 62,924 | +983 | 2.639 | 166,075 | `a3e7df19…` |
+| 1 | V1 window: `filing_date >= 2022-01-01` | 269,566 | 61,628 | −313 | 2.670 | 164,572 | `0efa7d03…` |
+| 2, 3 | + V1 validation held set | — | not runnable: the batch lists are lost; bound ≤ 800 targets | | | | |
+
+Run 0 minus run 1 is exactly the frozen plan's 1,347 targets filed in 2021,
+less 51 replacements; every changed target belongs to one of the 3,503
+issuers with a 2021 candidate, and 1,503 January–February 2022 solvable
+months are unreachable under the V1 window. No combination was searched.
+
+### Why the digest cannot be a gate
+
+A faithful replay of the greedy selection reproduces the frozen plan and
+finds that 58,707 of 62,924 selections (93%) had another live candidate tied
+on all four scored components — same-day 8-Ks of different issuers, up to
+323 wide — decided by `(cik, accession)`. Because candidates of different
+issuers cover disjoint gaps, those ties change rank, not membership; but the
+rank is in every row, so any local change to the candidate set moves the
+ordered digest of every later row. With the V1 candidate set bounded but not
+listed and the writer's state at A3 time unprovable, the historical digest is
+a **count-only comparator**.
+
+### Safety, independently of V1
+
+657,826 candidate-to-gap edges, 0 future-invalid (every edge has `filing_date
+<= month_end <= filing_date + 90 days`); 3 edges where the SEC index's
+acceptance stamp postdates the credited month-end — index anomalies where the
+filing date precedes acceptance — none selected. 24 shared accessions as 49
+co-registrant rows, all with disjoint identity sets. 0 duplicates, 0 outside
+the pool, 0 held, 0 invalid forms, 0 without a solvable cover, 0 wrong
+estimates; every one of the 166,075 solvable gaps reached; 28 deterministic
+spot samples, 0 failures.
+
+### Verdict and the decision it leaves open
+
+**C — an input-assembly discrepancy, not source-state drift.** The frozen V2
+package admits candidates outside the historical candidate window. The
+admitted filings are PIT-valid under the planner's own rule and they reach
+1,503 months the historical window cannot; but B2.13 was a reconstruction of
+the historical harness, and on this one definition it did not reconstruct it.
+The fix is not applied here: either restrict candidates to the 9L window in
+`inputs.py`, or keep the extended window as a recorded policy change with its
+own inputs version — then rebuild the package and regenerate. Under the strict
+window the unchanged planner produces 61,628 targets, digest `0efa7d03…`.

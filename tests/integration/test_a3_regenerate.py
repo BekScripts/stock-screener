@@ -560,3 +560,45 @@ class TestTheCommand:
 
         assert result.exit_code == 1
         assert "other sources" in result.stdout
+
+
+class TestGreedySeparabilityAndCascade:
+    """Ties decide rank and a change cascades within one issuer: why a count cannot name rows."""
+
+    def test_same_day_filings_of_different_issuers_tie_and_are_ordered_by_identity(self) -> None:
+        ends = [month_end(date(2024, m, 1)) for m in range(1, 4)]
+        solvable = {(A, e) for e in ends} | {(B, e) for e in ends}
+        same_day = [
+            candidate(200, "0000000200-24-000001", date(2024, 1, 5), B, solvable),
+            candidate(100, "0000000100-24-000001", date(2024, 1, 5), A, solvable),
+        ]
+
+        forward = plan_coverage_first(same_day)
+        backward = plan_coverage_first(list(reversed(same_day)))
+
+        assert [t.cik for t in forward.targets] == [100, 200], "the lower CIK breaks the tie"
+        assert forward.targets == backward.targets, "input order never decides"
+
+    def test_adding_a_candidate_for_one_issuer_changes_only_that_issuer(self) -> None:
+        inputs = frozen_inputs()
+        solvable = {
+            (g.identity, g.month_end) for g in inputs.gaps if g.gap_class is GapClass.SOLVABLE
+        }
+        # Filed three days earlier than A's January 8-K, covering the same three
+        # months: it ties on every scored component and wins on filing date, so
+        # the January 8-K becomes redundant. Issuer B must not notice.
+        earlier = candidate(100, "0000000100-24-000000", date(2024, 1, 2), A, solvable)
+
+        before = plan_coverage_first(inputs.candidates)
+        after = plan_coverage_first([*inputs.candidates, earlier])
+
+        keys_before = {(t.cik, t.accession) for t in before.targets}
+        keys_after = {(t.cik, t.accession) for t in after.targets}
+        assert keys_before ^ keys_after == {
+            (100, "0000000100-24-000000"),
+            (100, "0000000100-24-000001"),
+        }
+        assert {k for k in keys_before if k[0] == 200} == {k for k in keys_after if k[0] == 200}
+        assert after.potential_months == before.potential_months
+        assert plan_fingerprints(before)["ordered"] != plan_fingerprints(after)["ordered"]
+        assert plan_fingerprints(before)["per_form"] == plan_fingerprints(after)["per_form"]
