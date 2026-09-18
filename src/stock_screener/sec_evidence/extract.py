@@ -354,6 +354,11 @@ def _symbol_provenance(parsed: bool, rows: Sequence[SecurityRow]) -> Provenance:
 def extract_catalogue(entry: Entry, payload: bytes) -> tuple[list[CatalogueRow], int, int]:
     """Read one stored submissions catalogue.
 
+    Tolerant by design: bytes that are not a JSON object read as an empty
+    catalogue. A caller that must tell "malformed" from "empty" — the derived
+    index build does — parses the document itself and hands the object to
+    `catalogue_from_document`, which is the same extraction over the same shape.
+
     Args:
         entry: The manifest record for the catalogue.
         payload: Its bytes.
@@ -366,9 +371,30 @@ def extract_catalogue(entry: Entry, payload: bytes) -> tuple[list[CatalogueRow],
         counting them is what stops a coverage claim overstating what is known.
     """
     try:
-        document: dict[str, Any] = json.loads(payload)
+        document: object = json.loads(payload)
     except (json.JSONDecodeError, UnicodeDecodeError):
         return [], 0, 0
+    if not isinstance(document, dict):
+        return [], 0, 0
+    return catalogue_from_document(entry, document)
+
+
+def catalogue_from_document(
+    entry: Entry, document: Mapping[str, Any]
+) -> tuple[list[CatalogueRow], int, int]:
+    """Read one already-parsed submissions catalogue.
+
+    The extraction `extract_catalogue` performs, over a JSON object the caller
+    has already decoded. The manifest's `cik` is authoritative where it is
+    recorded; the document's own is the fallback, never the override.
+
+    Args:
+        entry: The manifest record for the catalogue.
+        document: The decoded submissions JSON object.
+
+    Returns:
+        As `extract_catalogue`.
+    """
     cik = entry.cik or int(document.get("cik") or 0)
     filings = filings_from_submissions(document, cik)
 

@@ -307,13 +307,17 @@ Not everything under the control root is equally precious.
 | `checkpoints/` | **critical** | a sweep cannot prove which batches completed |
 | `plans/` | **critical** | the frozen target set (Plan A3 and its remainder) is gone |
 | `migration/` | **critical**, reserved | a future artifact migration cannot say what it moved |
-| `derived/` — `sec_evidence_index.db`, `corpus-fingerprint.json` | **rebuildable** | run the offline extraction again; nothing is lost |
+| `derived/` — `sec_evidence_index_v2.db`, its `.meta.json`, `.fingerprints.json`, `derived_index_complete.json`, `corpus-fingerprint.json` | **rebuildable** | run `evidence build-index` again; nothing is lost |
 
-`sec_evidence_index.db` is a reproducible derived artifact and not source
+`sec_evidence_index_v2.db` is a reproducible derived artifact and not source
 evidence: the manifest plus the artifact corpus is the source of truth, and the
 index is recomputed from them. It stays a local cache under `derived/` and is
-never uploaded or mirrored. The fingerprint describes the corpus an index was
-built from and is classified with the index.
+never uploaded or mirrored. What is mirrored, as immutable snapshots under
+`control/<generation>/derived/`, is the small metadata that describes a
+build — its bindings, table counts, semantic fingerprints and the digest of
+the index file — so a later phase can prove which index it read. See
+[B2.12](#b212-the-derived-index). The corpus fingerprint describes the
+corpus an index was built from and is classified with the index.
 
 ### Resolving the control root
 
@@ -1382,6 +1386,142 @@ reproduce them; it holds 38 fewer catalogues and 171 fewer documents
 because 135 delisted symbols that V1 resolved through the current ticker
 map are `UNRESOLVED` in V2 by policy, and because the SEC's catalogues
 have moved on.
+
+## B2.12 the derived index
+
+`stock-screener evidence build-index` reads the V2 corpus back out of the
+bucket into `derived/sec_evidence_index_v2.db` — the same tables, parser
+and row meaning as `build_index` (`filings`, `securities`, `catalogue`,
+`catalogue_stats`, `meta`; `PARSER_VERSION` `9L.1`), plus a build ledger.
+It requires `BASELINE_COMPLETE` for the manifest in hand and the mirrored
+marker to hash to the local one; it contacts the SEC never and writes to
+an artifact prefix never.
+
+### One download is the verification and the parse
+
+The manifest records every artifact's size and SHA-256, so the body fetched
+to be parsed is the body verified: `read_bytes`, compare the length, hash,
+compare the digest, then parse. No `digest()` pass, no HEAD. A build of
+38,146 artifacts costs 38,146 GETs plus the control reads. Bytes that do
+not reproduce the manifest are never parsed, never inserted and never
+ledgered; the build stops and the report names the artifact.
+
+### The ledger is the resume state
+
+`build_ledger` records, per trusted artifact, its key, the digest and size
+the manifest vouched for, and an outcome — `COMMITTED`, `FAILED` (the
+parser could not read verified bytes; the reason is kept) or `NOT_INDEXED`
+(a trusted kind the index does not consume, accounted without a download).
+An artifact's derived rows and its ledger row commit in one transaction,
+in batches of 250 by default, each artifact under a savepoint, so an
+interruption forfeits at most one batch and never leaves a half-recorded
+artifact. `build_state` holds the bindings — generation, manifest SHA-256,
+record and trusted counts, parser version, schema version (`B2.12/1`) and
+the input order — written before the first artifact. A resume compares all
+of them and every ledger row against the manifest, and refuses on any
+difference: a different manifest is a different corpus. `--fresh` discards
+an in-progress build deliberately; nothing discards evidence.
+
+The input order is frozen: submissions catalogues before filing documents,
+each kind by storage key. Filings take their acceptance stamps from the
+committed `catalogue` rows, read back once the last catalogue is durable,
+so a resumed build and a fresh one see exactly the same stamps. Where two
+catalogues stamp one accession differently the later stamp is kept and the
+disagreement counted.
+
+`--prefetch N` keeps up to N downloads in flight. It overlaps the waiting
+and nothing else: verification, parsing and every commit stay in the frozen
+order, and bodies in flight when a build stops are discarded and counted.
+`--stop-after N` stops cleanly after N artifacts and leaves the build
+resumable; `evidence status` reports an in-progress build.
+
+### Finalisation
+
+Only after every planned input is ledgered `COMMITTED` — a single `FAILED`
+row blocks it — the in-progress file is validated (`PRAGMA
+integrity_check`, no filing without a CIK and accession, no duplicate
+`(cik, accession)`, no security row without its filing, table counts equal
+to the ledger's), fingerprinted, and promoted by one rename from
+`sec_evidence_index_v2.building.db` to `sec_evidence_index_v2.db`. Three
+small files are then written beside it and mirrored as digest-addressed
+snapshots under `control/<generation>/derived/index-{meta,fingerprints,complete}/`,
+each read back:
+
+| File | Holds |
+| --- | --- |
+| `sec_evidence_index_v2.meta.json` | the bindings, the universe / resolution / baseline-marker digests, the repository commit, build start and completion, the index file's SHA-256 and size, table counts, fingerprints, the ledger tally, diagnostics, and this invocation's request accounting |
+| `sec_evidence_index_v2.fingerprints.json` | the semantic fingerprints alone |
+| `derived_index_complete.json` | the deterministic marker: generation, manifest SHA-256, parser and schema versions, trusted, planned, parsed, parse failures, the index SHA-256 and the fingerprints — no timestamp |
+
+### Semantic fingerprints
+
+SQLite file bytes are not the reproducibility contract; the rows are. Each
+fingerprint is SHA-256 over a table's rows serialised as compact JSON
+arrays, one per line, in a total order: `catalogue` by `(cik, accession)`,
+`catalogue_stats` by `cik`, `filings` by `url`, `securities` by every
+column (two rows of one filing may be identical), and `cover` — the raw
+evidence alone: `url, cik, accession, evidence_date, raw_title,
+raw_symbol, raw_exchange, member, no_trading_symbol` — so a change to
+normalisation or classification policy moves `securities` and leaves
+`cover` still. Autoincrement ids and build timestamps are never part of a
+row. Two builds of one corpus, interrupted or not, agree on every
+fingerprint; the file digest is reported as the digest of the artifact
+that was built, not as a semantic claim.
+
+### Files
+
+```text
+<SEC_CONTROL_DIR>/derived/
+├── sec_evidence_index_v2.building.db   in progress; absent once promoted
+├── sec_evidence_index_v2.db            the index — never mirrored
+├── sec_evidence_index_v2.meta.json     mirrored as derived/index-meta/…
+├── sec_evidence_index_v2.fingerprints.json   … derived/index-fingerprints/…
+└── derived_index_complete.json         … derived/index-complete/…
+```
+
+### The live run — 2026-09-18
+
+Four invocations, 12:19 to 14:47 UTC, each starting from
+`BASELINE_COMPLETE` verified locally and against its mirrored copy, and
+each verifying both frozen databases before and after (`02a6660b…`,
+`20a77d24…`, unchanged). No SEC request; no evidence `PUT` or `DELETE`.
+
+| Invocation | What it did | How it ended |
+| --- | --- | --- |
+| 1 | `--stop-after 40`, sequential: 40 catalogues, 41 GET, 14 s | stopped by request, resumable |
+| 2 | `--stop-after 300 --prefetch 8`: 300 more, 301 GET, 18 s | stopped by request, resumable |
+| 3 | `--prefetch 12`: 1,500 more catalogues in six batches | killed with `SIGTERM` in the seventh — boto3's default pool is 10 connections, and every request above it was being re-handshaked; SQLite rolled the hot journal back, the ledger stood at 1,840 and `integrity_check` was ok |
+| 4 | `--prefetch 8`: resumed at 1,840 without a download for any of them; 3,893 catalogues and 32,413 filings, 36,842,433,576 bytes, 2 h 21 min | `DERIVED INDEX COMPLETE`; metadata mirrored and read back |
+
+**The index.** `sec_evidence_index_v2.db`, 234,164,224 bytes, SHA-256
+`3deb46b746c5be7be0bef05949188dfaa6dca733f24fbb37e589cda0c670d68d`;
+`integrity_check` ok. 38,146 / 38,146 inputs `COMMITTED` — 5,733
+catalogues (50 naming no qualifying filing) and 32,413 filings (0 parse
+failures, all dated `ACCEPTED` from their own catalogue's stamp). Rows:
+`filings` 32,413, `securities` 43,001, `catalogue` 716,290,
+`catalogue_stats` 5,733, `build_ledger` 38,146. Form counts equal the
+manifest's exactly. Fingerprints: `catalogue`
+`98f66a2204054be3dfcb731d9f841d949c8d043bfc5290d5b040e34ec45eda30`,
+`catalogue_stats`
+`a809c94cdb1ff8889a7db14fb0e99a178c81d59d8828f55edc440510c57204b9`,
+`filings` `8fb487b3271500e780d9b0d333a766893bb10cd358e1bf6c224fc5d53696e680`,
+`securities`
+`98083e2ccb7bc67f95d741d55fb133e744a54609a99f88c0b6df205cea9f190d`,
+`cover` `a0c00e699b63a0fbab6f76d110e2f8c2730d180afd3df5b962636705af6e5ebe`.
+
+**Requests.** Invocation 4: 36,334 `GetObject` calls (36,306 bodies, one
+marker verify, 18 mirror reads, 9 reads retried after transport faults;
+36,394 HTTP attempts with the SDK's own retries), 6 `PUT`, 6 `HEAD`, 6
+`LIST` — the three snapshot pairs. Across all four, every one of the
+38,146 bodies was read once, plus at most 262 bodies invocation 3 had
+in flight or in its open batch when it was killed. Per stream: 0.571 s
+per GET, 1.7 MB/s; parse 120 s and SQLite 15 s in 8,469 s of wall time —
+the build is bounded by the bucket, not the parser.
+
+**V1, for context only:** 32,584 filings, 43,163 security rows, 718,265
+catalogue rows, ~229 MB. V2 holds 171 fewer filings, 162 fewer security
+rows and 1,975 fewer catalogue rows, in line with the baseline's 38 fewer
+catalogues and 171 fewer documents; the 234 MB carries the ledger.
 
 ## Future staging databases
 

@@ -19,6 +19,7 @@ import hashlib
 import json
 import sqlite3
 import tempfile
+import threading
 from contextlib import closing, contextmanager
 from datetime import UTC, date, datetime
 from pathlib import Path
@@ -147,9 +148,11 @@ from stock_screener.sec_evidence import (
     ARTIFACT_PREFIXES,
     CONTROL_SUBDIRECTORIES,
     DEFAULT_MIN_FREE_BYTES,
+    GENERATION_ID,
     Budget,
     Checkpoint,
     ChunkStage,
+    ControlMirror,
     ControlPlaneUnavailableError,
     ControlState,
     EvidenceControlRoot,
@@ -158,6 +161,8 @@ from stock_screener.sec_evidence import (
     LocalCapacity,
     LocalEvidenceStorage,
     Manifest,
+    MirrorConflictError,
+    RetryingReads,
     Selection,
     StorageBackend,
     StorageUnavailableError,
@@ -188,8 +193,18 @@ from stock_screener.sec_evidence import (
     submissions_targets,
     verify_digests_of,
 )
-from stock_screener.sec_evidence.baseline import marker_facts, run_baseline
+from stock_screener.sec_evidence.baseline import BASELINE_MARKER, marker_facts, run_baseline
 from stock_screener.sec_evidence.binding import BindingError, bind_source, read_only_url
+from stock_screener.sec_evidence.derived import (
+    DEFAULT_BATCH_SIZE,
+    INDEX_BUILDING_FILE,
+    IndexBuildError,
+    ResumeRefusedError,
+    bindings_for,
+    build_derived_index,
+    index_complete_facts,
+    mirror_index_metadata,
+)
 from stock_screener.sec_evidence.generation import (
     build_generation_plan,
     identity_plan,
@@ -1591,6 +1606,7 @@ def evidence_status_command() -> None:
         typer.echo(f"manifest         : {control_path / 'manifests' / 'evidence.jsonl'}")
         typer.echo(f"checkpoints      : {control_path / 'checkpoints'}")
         _echo_generation(control_path)
+        _echo_derived_index(control_path)
         if (
             control_state is not ControlState.UNCONFIGURED
             and path is not None
@@ -2238,6 +2254,163 @@ def _file_sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+@evidence_app.command("build-index")
+def evidence_build_index_command(
+    expect_manifest_sha: Annotated[
+        str | None,
+        typer.Option(help="The manifest digest the build must be bound to; anything else stops."),
+    ] = None,
+    expect_trusted: Annotated[
+        int | None, typer.Option(help="Trusted artifacts the manifest must vouch for.")
+    ] = None,
+    expect_database_sha: Annotated[
+        list[str] | None,
+        typer.Option(
+            help="PATH=SHA256 pairs verified before and after the build; drift is reported."
+        ),
+    ] = None,
+    batch_size: Annotated[
+        int, typer.Option(min=1, help="Artifacts per SQLite transaction.")
+    ] = DEFAULT_BATCH_SIZE,
+    stop_after: Annotated[
+        int | None,
+        typer.Option(
+            min=1, help="Stop cleanly after this many artifacts; the build resumes later."
+        ),
+    ] = None,
+    fresh: Annotated[
+        bool,
+        typer.Option(
+            "--fresh", help="Discard an in-progress build and start from the first artifact."
+        ),
+    ] = False,
+    prefetch: Annotated[
+        int,
+        typer.Option(
+            min=1,
+            help=(
+                "Downloads in flight at once. Overlaps the waiting only; verification, "
+                "parsing and every commit stay in the frozen input order."
+            ),
+        ),
+    ] = 8,
+    mirror: Annotated[
+        bool,
+        typer.Option(
+            "--mirror/--no-mirror",
+            help="Mirror the small build metadata to the control namespace on completion.",
+        ),
+    ] = True,
+) -> None:
+    """Build the V2 derived index from the trusted corpus, resumably.
+
+    Reads every trusted artifact the manifest names, once: the body is
+    verified against the manifest's size and digest and then parsed with the
+    existing extraction. Requires BASELINE_COMPLETE for the manifest in hand.
+    Never contacts the SEC; never writes to an artifact prefix.
+    """
+    settings = _bootstrap()
+    expected_digests = _parse_digest_pairs(expect_database_sha or [])
+    storage, control = _open_layout(settings)
+    manifest = Manifest(control.manifest_path)
+
+    def verify_databases(when: str) -> None:
+        for path, expected in expected_digests.items():
+            actual = _file_sha256(path)
+            if actual != expected:
+                typer.echo(
+                    f"STOPPED: database digest drift {when}: {path} is {actual[:16]}…, "
+                    f"expected {expected[:16]}…"
+                )
+                raise typer.Exit(code=1)
+        if expected_digests:
+            typer.echo(f"databases verified {when}: {len(expected_digests)} unchanged")
+
+    verify_databases("before the build")
+    bindings = bindings_for(manifest)
+    typer.echo(f"manifest sha     : {bindings.manifest_sha256}")
+    typer.echo(
+        f"trusted          : {bindings.trusted} ({bindings.submissions} submissions, "
+        f"{bindings.filings} filings, {bindings.logical_bytes:,} bytes)"
+    )
+    if expect_manifest_sha and bindings.manifest_sha256 != expect_manifest_sha.lower():
+        typer.echo("STOPPED: the manifest does not hash to --expect-manifest-sha")
+        raise typer.Exit(code=1)
+    if expect_trusted is not None and bindings.trusted != expect_trusted:
+        typer.echo(f"STOPPED: the manifest vouches for {bindings.trusted}, not {expect_trusted}")
+        raise typer.Exit(code=1)
+
+    marker = marker_facts(control)
+    if marker is None or marker.get("manifest_sha256") != bindings.manifest_sha256:
+        typer.echo("STOPPED: BASELINE_COMPLETE is absent or names a different manifest")
+        raise typer.Exit(code=1)
+    marker_path = control.plans / "generation_v2" / BASELINE_MARKER
+    typer.echo(
+        f"baseline         : {marker.get('stage')} — {marker.get('trusted')} trusted, "
+        f"marker sha256 {_file_sha256(marker_path)}"
+    )
+    counters: dict[str, int] = {}
+    counting = threading.Lock()  # fetches run on a pool; the tally must stay exact
+    observe = getattr(storage, "observe_requests", None)
+    if observe is not None:
+
+        def count(kind: str, operation: str) -> None:
+            name = f"{kind}:{operation}"
+            with counting:
+                counters[name] = counters.get(name, 0) + 1
+
+        observe(count)
+    reads = RetryingReads(storage)
+    control_mirror = ControlMirror(reads, GENERATION_ID)
+    try:
+        if not control_mirror.verify(marker_path, BASELINE_MARKER):
+            typer.echo("STOPPED: the mirrored BASELINE_COMPLETE marker differs from the local one")
+            raise typer.Exit(code=1)
+    except StorageUnavailableError as exc:
+        typer.echo(f"STOPPED: cannot read the control mirror: {exc}")
+        raise typer.Exit(code=1) from exc
+    typer.echo("baseline mirror  : verified")
+
+    facts: dict[str, object] = {
+        "universe_sha256": marker.get("universe_sha256"),
+        "resolution_sha256": marker.get("resolution_sha256"),
+        "baseline_marker_sha256": _file_sha256(marker_path),
+        "repo_commit": _repo_commit(),
+    }
+    try:
+        report = build_derived_index(
+            reads,
+            manifest,
+            derived_root(control),
+            batch_size=batch_size,
+            stop_after=stop_after,
+            fresh=fresh,
+            prefetch=prefetch,
+            progress=typer.echo,
+            facts=facts,
+        )
+    except ResumeRefusedError as exc:
+        typer.echo(f"STOPPED: {exc}")
+        raise typer.Exit(code=1) from exc
+    except IndexBuildError as exc:
+        typer.echo(f"STOPPED: {exc}")
+        raise typer.Exit(code=1) from exc
+    for line in report.summary():
+        typer.echo(line)
+    if report.complete and mirror:
+        try:
+            records = mirror_index_metadata(control_mirror, derived_root(control))
+        except (IndexBuildError, MirrorConflictError, StorageUnavailableError) as exc:
+            typer.echo(f"MIRROR FAILED: {exc}")
+            raise typer.Exit(code=1) from exc
+        for record in records:
+            typer.echo(f"  mirrored {record.key} ({record.outcome}) sha256 {record.sha256}")
+        control_mirror.write_ledger(control.plans / "generation_v2" / "mirror_ledger.jsonl")
+    typer.echo(f"  B2 requests: {dict(sorted(counters.items()))}; reads retried {reads.retried}")
+    verify_databases("after the build")
+    raise typer.Exit(code=0 if report.complete else 1)
+
+
 @evidence_app.command("sample")
 def evidence_sample_command(
     limit: Annotated[int, typer.Option(help="How many securities to print.")] = 100,
@@ -2705,6 +2878,22 @@ def _echo_generation(control_path: Path) -> None:
         )
     else:
         typer.echo("baseline         : not complete")
+
+
+def _echo_derived_index(control_path: Path) -> None:
+    """The derived index's state, from the completion marker or the in-progress file."""
+    derived = EvidenceControlRoot(path=control_path).derived
+    index = index_complete_facts(derived)
+    if index is not None:
+        typer.echo(
+            f"derived index    : {index.get('stage')} — {index.get('index_file')} "
+            f"sha256 {str(index.get('index_sha256'))[:16]}…, parsed {index.get('parsed')} "
+            f"of {index.get('planned')}, manifest {str(index.get('manifest_sha256'))[:16]}…"
+        )
+    elif (derived / INDEX_BUILDING_FILE).is_file():
+        typer.echo("derived index    : in progress (resumable); run `evidence build-index`")
+    else:
+        typer.echo("derived index    : not built")
 
 
 def _open_layout(settings: Settings) -> tuple[EvidenceStorage, EvidenceControlRoot]:
