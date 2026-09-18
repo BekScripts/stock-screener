@@ -198,18 +198,31 @@ from stock_screener.sec_evidence.binding import BindingError, bind_source, read_
 from stock_screener.sec_evidence.derived import (
     DEFAULT_BATCH_SIZE,
     INDEX_BUILDING_FILE,
+    INDEX_FILE,
     IndexBuildError,
     ResumeRefusedError,
     bindings_for,
     build_derived_index,
     index_complete_facts,
     mirror_index_metadata,
+    semantic_fingerprints,
 )
 from stock_screener.sec_evidence.generation import (
     build_generation_plan,
     identity_plan,
     v2_progress,
     write_generation_plan,
+)
+from stock_screener.sec_evidence.inputs import (
+    A3_INPUTS_COMPLETE_MARKER,
+    InputsBindings,
+    PackageError,
+    assemble_planning_inputs,
+    component_digests,
+    load_planning_inputs,
+    load_resolution,
+    mirror_package,
+    write_package,
 )
 from stock_screener.sec_evidence.migration import (
     SourceProbe,
@@ -2409,6 +2422,219 @@ def evidence_build_index_command(
     typer.echo(f"  B2 requests: {dict(sorted(counters.items()))}; reads retried {reads.retried}")
     verify_databases("after the build")
     raise typer.Exit(code=0 if report.complete else 1)
+
+
+@evidence_app.command("build-a3-inputs")
+def evidence_build_a3_inputs_command(
+    database: Annotated[
+        Path, typer.Option("--database", help="The frozen PIT database, opened read-only.")
+    ] = Path("stage9k.db"),
+    expect_universe_count: Annotated[
+        int, typer.Option(help="Identities the production universe must hold.")
+    ] = 8919,
+    expect_universe_sha: Annotated[
+        str | None, typer.Option(help="Refuse a universe whose digest differs.")
+    ] = None,
+    expect_database_sha: Annotated[
+        list[str] | None,
+        typer.Option(help="PATH=SHA256 pairs verified before and after; drift stops the run."),
+    ] = None,
+    expect_manifest_sha: Annotated[
+        str | None, typer.Option(help="The V2 manifest digest the inputs must bind to.")
+    ] = None,
+    expect_index_sha: Annotated[
+        str | None, typer.Option(help="The V2 derived index digest the inputs must bind to.")
+    ] = None,
+    output: Annotated[
+        Path | None,
+        typer.Option(help="Package directory. Default: <control>/plans/generation_v2/a3_inputs."),
+    ] = None,
+    mirror: Annotated[
+        bool,
+        typer.Option(
+            "--mirror/--no-mirror", help="Mirror the frozen package to the control namespace."
+        ),
+    ] = True,
+) -> None:
+    """Assemble and freeze the A3 planner's inputs from the V2 index and the frozen universe.
+
+    Reads the frozen PIT database, the frozen filer resolution, the V2 derived
+    index and the V2 manifest; computes PIT coverage, class-aware reachability,
+    the open gaps, the candidate pool, the held set and the per-form statistics;
+    writes them as a digested package and assembles them a second time to prove
+    the package deterministic. Never runs the planner, never contacts the SEC,
+    never writes evidence or the database.
+    """
+    settings = _bootstrap()
+    expected_digests = _parse_digest_pairs(expect_database_sha or [])
+    storage, control = _open_layout(settings)
+    if not database.is_file():
+        typer.echo(f"STOPPED: no database at {database}")
+        raise typer.Exit(code=1)
+
+    def verify_databases(when: str) -> None:
+        for path, expected in expected_digests.items():
+            actual = _file_sha256(path)
+            if actual != expected:
+                typer.echo(
+                    f"STOPPED: database digest drift {when}: {path} is {actual[:16]}…, "
+                    f"expected {expected[:16]}…"
+                )
+                raise typer.Exit(code=1)
+        if expected_digests:
+            typer.echo(f"databases verified {when}: {len(expected_digests)} unchanged")
+
+    verify_databases("before the build")
+    database_sha = expected_digests.get(database) or _file_sha256(database)
+
+    # --- V2 index and manifest bindings -----------------------------------
+    derived = derived_root(control)
+    marker = index_complete_facts(derived)
+    if marker is None:
+        typer.echo("STOPPED: no DERIVED_INDEX_COMPLETE marker; run `evidence build-index` first")
+        raise typer.Exit(code=1)
+    manifest = Manifest(control.manifest_path)
+    manifest_sha = _file_sha256(control.manifest_path)
+    index_path = derived / INDEX_FILE
+    index_sha = _file_sha256(index_path)
+    if marker.get("manifest_sha256") != manifest_sha or marker.get("index_sha256") != index_sha:
+        typer.echo(
+            "STOPPED: the derived-index marker does not describe the manifest and index on disk"
+        )
+        raise typer.Exit(code=1)
+    if expect_manifest_sha and manifest_sha != expect_manifest_sha.lower():
+        typer.echo("STOPPED: the manifest does not hash to --expect-manifest-sha")
+        raise typer.Exit(code=1)
+    if expect_index_sha and index_sha != expect_index_sha.lower():
+        typer.echo("STOPPED: the index does not hash to --expect-index-sha")
+        raise typer.Exit(code=1)
+    with closing(sqlite3.connect(f"file:{index_path}?mode=ro", uri=True)) as index:
+        prints = {name: value.sha256 for name, value in semantic_fingerprints(index).items()}
+    marker_prints = marker.get("fingerprints")
+    recorded = (
+        {name: str(facts["sha256"]) for name, facts in marker_prints.items()}
+        if isinstance(marker_prints, dict)
+        else {}
+    )
+    if prints != recorded:
+        typer.echo("STOPPED: the index's semantic fingerprints do not match its completion marker")
+        raise typer.Exit(code=1)
+    typer.echo(f"manifest sha     : {manifest_sha}")
+    typer.echo(f"index sha        : {index_sha}")
+    for name, sha in sorted(prints.items()):
+        typer.echo(f"  {name:<16} {sha}")
+
+    counters: dict[str, int] = {}
+    observe = getattr(storage, "observe_requests", None)
+    if observe is not None:
+
+        def count(kind: str, operation: str) -> None:
+            name = f"{kind}:{operation}"
+            counters[name] = counters.get(name, 0) + 1
+
+        observe(count)
+    reads = RetryingReads(storage)
+    control_mirror = ControlMirror(reads, GENERATION_ID)
+    try:
+        newest = control_mirror.newest_snapshot("derived/index-complete")
+    except StorageUnavailableError as exc:
+        typer.echo(f"STOPPED: cannot read the control mirror: {exc}")
+        raise typer.Exit(code=1) from exc
+    except MirrorConflictError as exc:
+        typer.echo(f"STOPPED: the mirrored derived-index marker is not the local one: {exc}")
+        raise typer.Exit(code=1) from exc
+    local_marker_sha = _file_sha256(derived / "derived_index_complete.json")
+    if newest is None or newest[0].get("sha256") != local_marker_sha:
+        typer.echo("STOPPED: the mirrored derived-index marker is not the local one")
+        raise typer.Exit(code=1)
+    typer.echo("index mirror     : verified")
+
+    # --- the frozen resolution and universe --------------------------------
+    resolution_path = control.plans / "generation_v2" / "filer_resolution_v1.jsonl"
+    try:
+        resolution, resolution_sha = load_resolution(resolution_path)
+    except PackageError as exc:
+        typer.echo(f"STOPPED: {exc}")
+        raise typer.Exit(code=1) from exc
+    typer.echo(f"resolution sha   : {resolution_sha} ({len(resolution)} identities)")
+
+    package_dir = output or control.plans / "generation_v2" / "a3_inputs"
+    engine = create_engine_from_url(read_only_url(database))
+    try:
+        with (
+            session_scope(build_session_factory(engine)) as session,
+            closing(sqlite3.connect(f"file:{index_path}?mode=ro", uri=True)) as index,
+        ):
+            try:
+                binding = bind_source(
+                    session,
+                    database,
+                    expect_count=expect_universe_count,
+                    expect_digest=expect_universe_sha,
+                )
+            except BindingError as exc:
+                typer.echo(f"STOPPED: {exc}")
+                raise typer.Exit(code=1) from exc
+            for line in binding.lines():
+                typer.echo(f"  {line}")
+            bindings = InputsBindings(
+                generation_id=GENERATION_ID,
+                database_path=str(database),
+                database_sha256=database_sha,
+                universe_count=binding.universe_count,
+                universe_sha256=binding.universe_digest,
+                resolution_sha256=resolution_sha,
+                manifest_sha256=manifest_sha,
+                index_sha256=index_sha,
+                fingerprints=prints,
+                repo_commit=_repo_commit(),
+            )
+            first = assemble_planning_inputs(
+                session, index, manifest, resolution, progress=typer.echo
+            )
+            package = write_package(package_dir, first, bindings)
+            typer.echo("assembling a second time to prove the package deterministic")
+            second = assemble_planning_inputs(session, index, manifest, resolution)
+            check_dir = package_dir.parent / f".{package_dir.name}.check"
+            write_package(check_dir, second, bindings)
+            again = component_digests(check_dir)
+            for stale in check_dir.iterdir():
+                stale.unlink()
+            check_dir.rmdir()
+    finally:
+        engine.dispose()
+
+    components = dict(package["components"])  # type: ignore[call-overload]  # JSON object
+    if again != components:
+        drift = sorted(name for name in components if again.get(name) != components[name])
+        typer.echo(f"STOPPED: the second assembly produced different components: {drift}")
+        raise typer.Exit(code=1)
+    typer.echo(f"second assembly  : identical ({len(components)} components)")
+    inputs, _ = load_planning_inputs(package_dir, expect=bindings)
+    typer.echo(
+        f"round trip       : {len(inputs.gaps)} gaps, {len(inputs.candidates)} candidates, "
+        f"{len(inputs.held)} held, {len(inputs.form_yield)} forms — {inputs.by_class()}"
+    )
+    typer.echo(f"package          : {package_dir}")
+    typer.echo(f"package sha      : {package['package_sha256']}")
+    for name, sha in components.items():
+        typer.echo(f"  {name:<28} {sha}")
+    for key, value in sorted(dict(first.summary).items()):
+        typer.echo(f"  {key:<40} {value}")
+    typer.echo(f"  timings {first.timings}")
+
+    if mirror:
+        try:
+            records = mirror_package(control_mirror, package_dir, generation_id=GENERATION_ID)
+        except (PackageError, MirrorConflictError, StorageUnavailableError) as exc:
+            typer.echo(f"MIRROR FAILED: {exc}")
+            raise typer.Exit(code=1) from exc
+        for record in records:
+            typer.echo(f"  mirrored {record.key} ({record.outcome}) sha256 {record.sha256}")
+        control_mirror.write_ledger(control.plans / "generation_v2" / "mirror_ledger.jsonl")
+    typer.echo(f"  B2 requests: {dict(sorted(counters.items()))}; reads retried {reads.retried}")
+    verify_databases("after the build")
+    typer.echo(f"A3 INPUTS COMPLETE — {A3_INPUTS_COMPLETE_MARKER} written; Plan A3 not run")
 
 
 @evidence_app.command("sample")

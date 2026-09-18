@@ -36,13 +36,15 @@ appears without the run or the test that produced it.
 
 ## Current phase
 
-**B2.12 — the V2 derived SEC evidence index** is the current checkpoint on
-`feat/phase-b2-storage-abstraction`. **The BEK drive is permanently
-unavailable** and Generation V1 is history that creates no trust. B2.9X
-started **Generation V2** from what survived on the internal disk; B2.10
-proved the pipeline on chunk 000; B2.11 built chunks 001–035 and closed
-the baseline; B2.12 read the whole corpus back out of the bucket into the
-derived index. **V1 unavailable; V2 baseline COMPLETE; 36/36 chunks;
+**B2.13 — V2 PIT coverage and the class-aware A3 planning inputs** is the
+current checkpoint on `feat/phase-b2-storage-abstraction`. **The BEK drive
+is permanently unavailable** and Generation V1 is history that creates no
+trust. B2.9X started **Generation V2** from what survived on the internal
+disk; B2.10 proved the pipeline on chunk 000; B2.11 built chunks 001–035
+and closed the baseline; B2.12 read the whole corpus back out of the
+bucket into the derived index; B2.13 reconstructed the lost assembly
+harness and froze Plan A3's inputs. **V1 unavailable; V2 baseline
+COMPLETE; 36/36 chunks;
 38,146 trusted artifacts — 5,733 submissions catalogues and 32,413 filing
 documents — 37,141,434,863 bytes; manifest SHA-256
 `13722e021e2d4e03d13784c5c829320bad5b7dc74055378057bf8804d356086b`;
@@ -56,13 +58,22 @@ the manifest before it was parsed, 0 parse failures, `integrity_check` ok;
 catalogue-stats rows; semantic fingerprints `catalogue 98f66a22…`,
 `filings 8fb487b3…`, `securities 98083e2c…`, `cover a0c00e69…`,
 `catalogue_stats a809c94c…`; metadata, fingerprints and the completion
-marker mirrored as snapshots and read back (mirror now 1,124 objects, 0
-conflicts).** The frozen resolution stands: 8,919 identities, 6,048
-resolved (402 `STORED`, 5,646 `SEC_TICKER_MAP`), 2,871 `UNRESOLVED`; the
-ticker map was fetched once, in B2.10, and never again. Plan A3 is **not
-yet regenerated**: it waits for B2.13 (V2 coverage, reachability and the
-`PlanningInputs` assembly) and B2.14 (regeneration and comparison to
-`53e3f0ca…`, never forced). See
+marker mirrored as snapshots and read back. A3 PlanningInputs V2 FROZEN:
+`plans/generation_v2/a3_inputs/`, package SHA-256
+`83680eadaa06317c10a0a26e68f5547a022207dc1bc1e5c1283a8427b5db3ce5`, bound
+to `stage9k.db` `20a77d24…`, universe `b8eaed3e…`, resolution `161429f5…`,
+manifest `13722e02…`, index `3deb46b7…` and its five fingerprints; 268,780
+universe months → 16,194 `COVERED`, 242,269 open (166,075 `G1_SOLVABLE`,
+raw `UNKNOWN` floor 76,194); 279,772 candidates carrying 657,826 cover
+keys over exactly the solvable gaps; 32,413 held; deterministic across two
+in-process assemblies and a second invocation; 25 files mirrored as 50
+objects and read back (mirror now 1,174 objects, 0 conflicts).** The
+frozen resolution stands: 8,919 identities, 6,048 resolved (402 `STORED`,
+5,646 `SEC_TICKER_MAP`), 2,871 `UNRESOLVED`; the ticker map was fetched
+once, in B2.10, and never again. **Plan A3 is not yet regenerated**: B2.14
+loads the frozen package, runs the unchanged planner, and compares its
+digest to the historical `53e3f0ca…` (61,941 rows) — never forced. See
+[A3 planning inputs](a3-planning-inputs.md),
 [B2.12](storage-layout.md#b212-the-derived-index),
 [B2.11](storage-layout.md#b211-the-baseline-rebuild),
 [B2.10](storage-layout.md#b210-the-rebuild-canary),
@@ -509,6 +520,42 @@ convention, and none may be relaxed without an explicit instruction.
   was redesigned for V2; provenance lives in `meta`, `build_state` and the
   companion metadata file. Exact V1 row counts are diagnostic, not an
   acceptance criterion.
+
+### B2.13 the A3 planning inputs
+
+- **The planner's inputs are assembled, never the planner changed.**
+  `sec_evidence/inputs.py` populates `plan.PlanningInputs` from surviving
+  contracts — `join_symbol`, `build_reachability`, `supported_months`,
+  `held_from_manifest`, the V2 index and the frozen universe — and
+  `plan.py`, `reachability.py`, `join.py`, `coverage.py`, `sample.py` and
+  `expand.py` are byte-unchanged. The command cannot run the planner
+  (`tests/integration/test_a3_inputs.py::TestTheCommand`).
+- **Two dated rules, each used where the code that owns it does.** A
+  universe month is *classified* by a filing accepted by the month's first
+  day (9K.7, read as frozen input); a month-end is *supported for planning*
+  by evidence dated on or before it and within 90 days (9L). Held evidence
+  is dated by its SEC acceptance date; an undownloaded candidate by its
+  catalogue filing date, as `plan.Candidate` documents. The one-month
+  boundary difference is reported (`covered_under_classification_rule`)
+  and not reconciled.
+- **Class-aware credit is the 9L.4 model, unchanged.** Observations are
+  common-stock cover rows joined `EXACT` to an identity at their own
+  acceptance date; issuer reach credits exactly the identities the record
+  shows carrying common stock; `MULTI_CLASS_UNASSIGNED` and
+  `IDENTITY_AMBIGUOUS` credit nothing; a sole tracked identity is
+  `SAFE_SINGLE` whatever its held rows say, by the frozen rule. No identity
+  is credited from CIK sharing.
+- **A month no listing observed is not covered by anything.** Held class
+  evidence for such a month is real and changes nothing; it is `G5_OTHER`,
+  non-actionable, never `COVERED` and never in a candidate's `covers`.
+- **The frozen universe is an input.** `ResearchUniverseMonth` is read,
+  compared and never written; `class_source_accession` is compared in the
+  dashed form the index uses and only in a diagnostic.
+- **The package is bound to its sources.** `load_planning_inputs`
+  recomputes every component digest, checks the package digest, and refuses
+  a package frozen against another database, universe, resolution,
+  manifest, index or fingerprint. B2.14 loads the package; it recomputes
+  nothing.
 
 ### Cross-cutting
 
@@ -1642,6 +1689,75 @@ Documented rather than fixed. Each is a deliberate stop, not a backlog item.
 
 Measured runs, kept because they are the evidence behind decisions above.
 
+### B2.13 A3 planning inputs — 2026-09-18
+
+- `evidence build-a3-inputs --database stage9k.db --expect-universe-count 8919
+  --expect-universe-sha b8eaed3e… --expect-database-sha … --expect-manifest-sha
+  13722e02… --expect-index-sha 3deb46b7…`, 18:39–18:42 UTC: both database
+  digests verified before and after (unchanged), the derived-index marker
+  verified against the manifest, the index, its recomputed fingerprints and
+  its mirrored copy, the frozen resolution against its companion; 0 SEC
+  requests, 0 evidence bodies read, 0 evidence writes. Assembly 12.8 s.
+- Two assemblies in one process and a second invocation into another
+  directory: every component byte-identical, package SHA-256
+  `83680eadaa06317c10a0a26e68f5547a022207dc1bc1e5c1283a8427b5db3ce5` three
+  times; only the manifest's `timings` differ. The package round-trips to
+  equal `PlanningInputs`.
+- Coverage: 268,780 months, 6,652 identities, 55 months; `DECIDED` 10,317,
+  `COVERED` 16,194 (12,345 under the stricter classification rule),
+  `OPEN` 242,269 = `G1_SOLVABLE` 166,075 + `G2_NO_CIK` 28,203 +
+  `G3_AMBIGUOUS` 12,085 (5,878 symbol not attaching, 5,807 not credited
+  under `SAFE_COMMON_CLASS`, 400 `IDENTITY_AMBIGUOUS`) + `G4_NO_CANDIDATE`
+  32,904 + `G5_OTHER` 3,002 (1,793 no listing observation, 1,209
+  `MULTI_CLASS_UNASSIGNED`). Raw `UNKNOWN` floor 76,194 against the
+  historical 76,029; solvable 166,075 against the historical 165,553 safe
+  potential months. Identity states at the month-end: 260,723 `EXACT`,
+  6,260 `AMBIGUOUS`, 1,758 `OTHER_OCCUPANT` (78 live identities), 39
+  `UNRESOLVED`.
+- Reachability: 42,204 symbol-bearing cover rows, 31,464 `EXACT` / 819
+  `AMBIGUOUS` / 9,921 `UNRESOLVED`; 28,849 common-stock rows joined; 6,048
+  tracked identities on 5,733 issuers: `SAFE_SINGLE` 5,471,
+  `SAFE_COMMON_CLASS` 201, `MULTI_CLASS_UNASSIGNED` 21, `IDENTITY_AMBIGUOUS`
+  40; 5,720 credited, 0 under `MULTI_CLASS_UNASSIGNED` or
+  `IDENTITY_AMBIGUOUS`; 222 multi-identity issuers with 537 identities, 249
+  credited; 142 sole identities whose held rows are all non-common remain
+  `SAFE_SINGLE` by the frozen rule.
+- Candidates: 716,290 catalogue rows → 301,880 that can reach a window
+  month-end → 279,772 after 22,108 held; 4,616 issuers; 235,630 carry a
+  cover key; 657,826 cover keys over exactly the 166,075 solvable gaps;
+  279,448 distinct accessions (324 co-registrant copies kept apart). Forms:
+  8-K 210,223, 10-Q 50,762, 10-K 18,504, 20-F 198, 20-F/A 40, 40-F 36,
+  40-F/A 9. Yield: 8-K 0.944, 10-Q 0.931, 10-K 0.883, 40-F 0.718, 20-F/A
+  0.653, 40-F/A 0.619, 20-F 0.588; mean bytes 8-K 41,625, 10-Q 2,121,395,
+  10-K 2,736,244, 20-F 5,460,753.
+- The 135 declined map matches: 264 universe rows, 252 open, all
+  `G2_NO_CIK`. All 2,871 unresolved identities: 29,674 rows, 28,203 open —
+  every `G2_NO_CIK` gap.
+- Conflicts (diagnostic; the frozen table untouched): of 54,998 rows with a
+  `class_source_accession`, 5,333 are held in V2 and join to the same
+  identity with the same acceptance date (0 timestamp disagreements), 785
+  held but not joining, 44,625 catalogued but not held by the
+  six-per-security baseline, 4,255 absent from the V2 catalogue.
+- Mirror: 25 files as 50 objects, all `MIRRORED`, every one read back equal
+  to the local file and its descriptor; mirror 1,174 objects; credential
+  audit over every log, package file and control file: 0.
+- `tests/integration/test_a3_inputs.py`: **37 passed**, offline — the PIT
+  cutoff forward and never backward, acceptance date over filing date, a
+  filing after the cutoff, a month without a listing observation, a decided
+  month, the dashed accession form, `SAFE_SINGLE` and solvable versus
+  no-candidate gaps, two genuine common classes both credited, an
+  unattributable issuer crediting nothing, the baby bond excluded while the
+  common line is credited, a symbol-less row never an observation, the
+  foreign filer, no-CIK gaps, ticker reuse covering each occupant from its
+  own filings only, the held set on `(cik, accession)` with co-registrants
+  apart, candidates excluding held and reaching only open solvable
+  month-ends, an out-of-window filing, measured yield and sizes, the status
+  partition, round trip, byte-identical double assembly, every source
+  binding and fingerprint enforced, tampered components and manifests
+  refused, the resolution companion, mirroring every file, and the command
+  freezing without planning, refusing a marker that does not describe the
+  index, and refusing a differing mirrored marker.
+
 ### B2.12 derived index rebuild — 2026-09-18
 
 - `evidence build-index --expect-manifest-sha 13722e02… --expect-trusted 38146
@@ -2112,17 +2228,20 @@ under **80%**. It is what CI runs; run it rather than the individual tools.
 
 ## Next phase
 
-**B2.13 — rebuild V2 PIT coverage and the class-aware A3 planning inputs**
-follows: coverage and reachability over `sec_evidence_index_v2.db`, and the
-`PlanningInputs` assembly that was never committed, reconstructed and
-frozen. Then B2.14 regenerates Plan A3 over V2 inputs and *compares* its
-digest to `53e3f0ca98ac54068232c13f6b0c214e969ff6e6f204000d5a050c43be3bdcd9`
-— a match is reported, a difference is reported, and the algorithm is never
-changed to reach the old hash. FTD archives are redownloaded separately.
-The V2 index is built (B2.12); nothing after it has started, and the
-`filing_acceptance` table in `stage9k.db` remains an untouched, read-only
-source for the PIT work that follows — the index's evidence dates come from
-the catalogues' own acceptance stamps.
+**B2.14 — regenerate Plan A3 from the frozen V2 inputs** follows: load
+`plans/generation_v2/a3_inputs/` through `load_planning_inputs` with the
+bindings proven against the live sources, run the unchanged planner over
+its candidates, write the plan, and *compare* its row count and digest to
+the historical 61,941 rows and
+`53e3f0ca98ac54068232c13f6b0c214e969ff6e6f204000d5a050c43be3bdcd9` — a
+match is reported, a difference is reported and explained against the V2
+input deltas recorded in B2.13, and the algorithm is never changed to reach
+the old hash. The comparison references (historical ~6.6 GiB, 165,553 safe
+potential months, 152,381 expected, raw floor 76,029) are references, not
+constraints. FTD archives are redownloaded separately. The one-month
+boundary difference between the classification and planning rules is
+documented in [A3 planning inputs](a3-planning-inputs.md) and is a decision
+for a later phase, not for B2.14.
 
 Two pieces of work are *identified* but not authorised, and neither is to be
 started without being asked:
@@ -2189,7 +2308,7 @@ Not a backlog. These exclusions are deliberate.
 
 | | |
 | --- | --- |
-| Commit | The B2.12 commit containing this checkpoint, `feat: rebuild V2 SEC evidence index`; parent `1b407b6` (B2.11, `feat: complete clean-room SEC baseline rebuild`). The index's `meta.json` records `repo_commit` `1b407b6` because it was built from the working tree that became this commit. |
+| Commit | The B2.13 commit containing this checkpoint, `feat: rebuild V2 A3 planning inputs`; parent `ebfbc1c` (B2.12, `feat: rebuild V2 SEC evidence index`). The package manifest records `repo_commit` `ebfbc1c` because it was built from the working tree that became this commit; the index's `meta.json` likewise records `1b407b6`. |
 | Branch | `feat/phase-b2-storage-abstraction` |
 | Migration head | `0031` — the research-universe layer (9K.7). Nothing since 9K.11 added one. |
 | Score version | `COMPOUNDER_V1_2` (unchanged by anything in Phase 8, 9A, 9B or 9C) |

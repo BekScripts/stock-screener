@@ -1523,6 +1523,16 @@ catalogue rows, ~229 MB. V2 holds 171 fewer filings, 162 fewer security
 rows and 1,975 fewer catalogue rows, in line with the baseline's 38 fewer
 catalogues and 171 fewer documents; the 234 MB carries the ledger.
 
+## B2.13 the A3 planning inputs
+
+`stock-screener evidence build-a3-inputs` assembles `plan.PlanningInputs`
+from the frozen PIT database, the frozen filer resolution, the V2 derived
+index and the V2 manifest, and freezes the result as a digested package
+under `plans/generation_v2/a3_inputs/`, mirrored file for file under
+`control/<generation>/a3-inputs/`. The contract, the dated rules, the
+package layout and the live run are in
+[A3 planning inputs](a3-planning-inputs.md). The planner is not run.
+
 ## Future staging databases
 
 A research staging database is 20–30 GB. **Create new ones under

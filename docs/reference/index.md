@@ -16,6 +16,7 @@ reference page, that sentence belongs in
 - [Project state](PROJECT_STATE.md) — the current checkpoint: phase, frozen decisions, schema, limits
 - [Configuration](configuration.md) — every setting the app reads
 - [Storage layout](storage-layout.md) — artifact contract, local control plane and B2.4 failure semantics
+- [A3 planning inputs](a3-planning-inputs.md) — the planner's input contract, the dated rules behind it, and the frozen V2 package
 - [Commands](commands.md) — every `make` target and CLI command
 - [Metrics](metrics.md) — every calculation, its formula, and when it is unavailable
 - [CompounderScore v1](compounder-score.md) — every scoring rule, penalty and status

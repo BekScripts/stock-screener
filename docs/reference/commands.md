@@ -132,6 +132,19 @@ Exit codes: `0` on success, `1` when `explain` has no stored score for the
 ticker or `research brief` has no scored company to build one from, `2` when a
 selected provider is missing its credentials.
 
+### SEC evidence, derived (B2.12–B2.13)
+
+The `evidence` group's derived-data commands read the trusted V2 corpus and
+frozen state and write only rebuildable output; neither contacts the SEC,
+writes an artifact prefix, or touches a database. Both verify the frozen
+databases they are told to (`--expect-database-sha PATH=SHA256`) before and
+after, and stop on any drift.
+
+| Command | Does |
+| --- | --- |
+| `evidence build-index` | Reads every trusted artifact the V2 manifest names — once, verifying its size and SHA-256 against the manifest before parsing — into `derived/sec_evidence_index_v2.db`, in bounded transactions with a ledger that makes an interrupted build resumable and refuses a different manifest. Requires `BASELINE_COMPLETE`. Mirrors the small build metadata on completion; never the index. `--prefetch` overlaps downloads only; `--stop-after` stops cleanly; `--fresh` discards an in-progress build. See [Storage layout](storage-layout.md#b212-the-derived-index). |
+| `evidence build-a3-inputs` | Assembles Plan A3's inputs — PIT coverage, class-aware reachability, gaps, candidates, the held set and per-form statistics — from the frozen PIT database, the frozen resolution, the V2 index and the V2 manifest; writes them as a digested package, assembles a second time to prove it deterministic, round-trips it, and mirrors it. Never runs the planner. Requires `DERIVED_INDEX_COMPLETE` and its mirrored marker. See [A3 planning inputs](a3-planning-inputs.md). |
+
 ## Scripts
 
 Standalone tools, run with `uv` and not part of the deployable.
