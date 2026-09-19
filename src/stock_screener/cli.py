@@ -216,6 +216,9 @@ from stock_screener.sec_evidence.generation import (
 )
 from stock_screener.sec_evidence.inputs import (
     A3_INPUTS_COMPLETE_MARKER,
+    A3_INPUTS_DIRECTORY,
+    A3_INPUTS_VERSION,
+    CANDIDATE_WINDOW_DEFINITION,
     InputsBindings,
     PackageError,
     assemble_planning_inputs,
@@ -224,6 +227,7 @@ from stock_screener.sec_evidence.inputs import (
     load_resolution,
     mirror_package,
     write_package,
+    write_supersession,
 )
 from stock_screener.sec_evidence.migration import (
     SourceProbe,
@@ -2457,7 +2461,32 @@ def evidence_build_a3_inputs_command(
     ] = None,
     output: Annotated[
         Path | None,
-        typer.Option(help="Package directory. Default: <control>/plans/generation_v2/a3_inputs."),
+        typer.Option(
+            help="Package directory. Default: <control>/plans/generation_v2/<inputs dir>."
+        ),
+    ] = None,
+    supersedes_package_sha: Annotated[
+        str | None,
+        typer.Option(help="Digest of the package this one supersedes; recorded, never touched."),
+    ] = None,
+    supersedes_package_dir: Annotated[
+        Path | None,
+        typer.Option(
+            help="The superseded package directory, to leave a SUPERSEDED.json beside it."
+        ),
+    ] = None,
+    supersedes_plan_sha: Annotated[
+        str | None, typer.Option(help="Digest of the plan built from the superseded package.")
+    ] = None,
+    supersedes_plan_dir: Annotated[
+        Path | None,
+        typer.Option(help="The superseded plan directory, to leave a SUPERSEDED.json beside it."),
+    ] = None,
+    supersession_reason: Annotated[
+        str | None, typer.Option(help="Why the old package is superseded.")
+    ] = None,
+    forensic_commit: Annotated[
+        str | None, typer.Option(help="The commit holding the forensic review that found it.")
     ] = None,
     mirror: Annotated[
         bool,
@@ -2568,7 +2597,17 @@ def evidence_build_a3_inputs_command(
         raise typer.Exit(code=1) from exc
     typer.echo(f"resolution sha   : {resolution_sha} ({len(resolution)} identities)")
 
-    package_dir = output or control.plans / "generation_v2" / "a3_inputs"
+    package_dir = output or control.plans / "generation_v2" / A3_INPUTS_DIRECTORY
+    supersedes: dict[str, object] | None = None
+    if supersedes_package_sha:
+        supersedes = {
+            "old_package_sha256": supersedes_package_sha.lower(),
+            "old_plan_sha256": supersedes_plan_sha.lower() if supersedes_plan_sha else None,
+            "forensic_verdict": "C" if forensic_commit else None,
+            "forensic_commit": forensic_commit,
+            "reason": supersession_reason,
+        }
+    typer.echo(f"inputs version   : {A3_INPUTS_VERSION} ({CANDIDATE_WINDOW_DEFINITION})")
     engine = create_engine_from_url(read_only_url(database))
     try:
         with (
@@ -2602,11 +2641,11 @@ def evidence_build_a3_inputs_command(
             first = assemble_planning_inputs(
                 session, index, manifest, resolution, progress=typer.echo
             )
-            package = write_package(package_dir, first, bindings)
+            package = write_package(package_dir, first, bindings, supersedes=supersedes)
             typer.echo("assembling a second time to prove the package deterministic")
             second = assemble_planning_inputs(session, index, manifest, resolution)
             check_dir = package_dir.parent / f".{package_dir.name}.check"
-            write_package(check_dir, second, bindings)
+            write_package(check_dir, second, bindings, supersedes=supersedes)
             again = component_digests(check_dir)
             for stale in check_dir.iterdir():
                 stale.unlink()
@@ -2627,6 +2666,18 @@ def evidence_build_a3_inputs_command(
     )
     typer.echo(f"package          : {package_dir}")
     typer.echo(f"package sha      : {package['package_sha256']}")
+    if supersedes is not None:
+        if str(package["package_sha256"]) == supersedes["old_package_sha256"]:
+            typer.echo("STOPPED: the new package digest equals the superseded one; nothing changed")
+            raise typer.Exit(code=1)
+        chain = write_supersession(
+            package_dir,
+            str(package["package_sha256"]),
+            old_package=supersedes_package_dir,
+            old_plan=supersedes_plan_dir,
+            facts=supersedes,
+        )
+        typer.echo(f"supersedes       : {chain['old_package_sha256']} → marked SUPERSEDED")
     for name, sha in components.items():
         typer.echo(f"  {name:<28} {sha}")
     for key, value in sorted(dict(first.summary).items()):
@@ -2652,7 +2703,7 @@ def evidence_regenerate_a3_command(
     package: Annotated[
         Path | None,
         typer.Option(
-            help="The frozen B2.13 package. Default: <control>/plans/generation_v2/a3_inputs."
+            help="The frozen inputs package. Default: <control>/plans/generation_v2/<inputs dir>."
         ),
     ] = None,
     expect_package_sha: Annotated[
@@ -2683,7 +2734,7 @@ def evidence_regenerate_a3_command(
     ] = None,
     output: Annotated[
         Path | None,
-        typer.Option(help="Plan directory. Default: <control>/plans/generation_v2/a3."),
+        typer.Option(help="Plan directory. Default: <control>/plans/generation_v2/a3_r1."),
     ] = None,
     mirror: Annotated[
         bool,
@@ -2705,8 +2756,8 @@ def evidence_regenerate_a3_command(
     settings = _bootstrap()
     expected_digests = _parse_digest_pairs(expect_database_sha or [])
     storage, control = _open_layout(settings)
-    package_dir = package or control.plans / "generation_v2" / "a3_inputs"
-    plan_dir = output or control.plans / "generation_v2" / "a3"
+    package_dir = package or control.plans / "generation_v2" / A3_INPUTS_DIRECTORY
+    plan_dir = output or control.plans / "generation_v2" / "a3_r1"
 
     def verify_databases(when: str) -> None:
         for path, expected in expected_digests.items():

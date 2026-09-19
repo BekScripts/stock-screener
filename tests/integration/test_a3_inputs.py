@@ -42,11 +42,17 @@ from stock_screener.cli import app
 from stock_screener.config import get_settings
 from stock_screener.sec_evidence import (
     A3_INPUTS_COMPLETE_MARKER,
+    A3_INPUTS_DIRECTORY,
     A3_INPUTS_MANIFEST,
+    A3_SUPERSESSION_RECORD,
     ARTIFACT_PREFIXES,
+    CANDIDATE_WINDOW_DEFINITION,
     COMPANY,
     COMPONENTS,
     HISTORICAL,
+    SUPERSEDED_SIDECAR,
+    WINDOW_END,
+    WINDOW_START,
     AssembledInputs,
     B2Configuration,
     B2EvidenceStorage,
@@ -65,6 +71,7 @@ from stock_screener.sec_evidence import (
     component_digests,
     dashed_accession,
     filing_key,
+    in_candidate_window,
     load_planning_inputs,
     load_resolution,
     mirror_package,
@@ -73,6 +80,7 @@ from stock_screener.sec_evidence import (
     package_sha256,
     semantic_fingerprints,
     write_package,
+    write_supersession,
 )
 from stock_screener.sec_evidence import plan as plan_module
 
@@ -197,6 +205,9 @@ def world(tmp_path: Path) -> Iterator[tuple[sessionmaker[Session], dict[str, tup
             session.add(_month(ids["BBBY"], "BBBY", month, venue="NYSE"))
         for month in UNIVERSE_MONTHS:
             session.add(_month(ids["GONE:historical"], "GONE", month, venue="NASDAQ"))
+        # January 2022, the first universe month: only a filing dated inside the
+        # window may be its candidate, whatever December 2021 could reach.
+        session.add(_month(ids["AAA"], "AAA", M(2022, 1, 1), venue="NASDAQ"))
         # One decided month, to prove it is never planned for.
         session.add(
             _month(
@@ -353,6 +364,11 @@ CATALOGUE: list[tuple[int, str, str, str]] = [
     (500, "0000000100-24-000003", "8-K", "2024-05-10"),  # the co-registrant copy
     (600, "0000000600-24-000002", "20-F", "2024-01-05"),
     (100, "0000000100-21-000001", "10-K", "2021-06-01"),  # cannot reach any window month
+    (100, "0000000100-21-000011", "8-K", "2021-11-15"),  # reaches Jan 2022; outside the window
+    (100, "0000000100-21-000012", "8-K", "2021-12-31"),  # reaches Jan-Feb 2022; outside the window
+    (100, "0000000100-22-000001", "8-K", "2022-01-01"),  # WINDOW_START itself: inside
+    (100, "0000000100-26-000731", "8-K", "2026-07-31"),  # WINDOW_END itself: inside
+    (100, "0000000100-26-000801", "8-K", "2026-08-01"),  # after WINDOW_END: outside
 ]
 
 
@@ -705,6 +721,61 @@ class TestCandidatesAndHeld:
 
         assert (100, "0000000100-21-000001") not in {c.key for c in out.inputs.candidates}
 
+
+class TestTheHistoricalCandidateWindow:
+    """Acquisition scope, not point-in-time: the 9L window, both ends inclusive."""
+
+    @pytest.mark.parametrize(
+        ("filed", "inside"),
+        [
+            (date(2021, 11, 15), False),
+            (date(2021, 12, 31), False),
+            (WINDOW_START, True),
+            (date(2024, 6, 15), True),
+            (WINDOW_END, True),
+            (date(2026, 8, 1), False),
+        ],
+    )
+    def test_the_window_is_inclusive_at_both_ends(self, filed: date, inside: bool) -> None:
+        assert in_candidate_window(filed) is inside
+
+    def test_the_window_constants_are_the_planners(self) -> None:
+        assert (date(2022, 1, 1), date(2026, 7, 31)) == (WINDOW_START, WINDOW_END)
+        assert CANDIDATE_WINDOW_DEFINITION == "HISTORICAL_9L_V1"
+
+    def test_november_and_december_2021_filings_never_become_candidates(
+        self, assembled: tuple[AssembledInputs, dict[str, tuple[str, int]]]
+    ) -> None:
+        """They reach January 2022 under the planning rule — and are still out of scope."""
+        out, ids = assembled
+        keys = {c.key for c in out.inputs.candidates}
+
+        assert (100, "0000000100-21-000011") not in keys
+        assert (100, "0000000100-21-000012") not in keys
+        assert (100, "0000000100-22-000001") in keys
+        assert (100, "0000000100-26-000731") in keys
+        assert (100, "0000000100-26-000801") not in keys
+        january = coverage_of(out, ids["AAA"])[M(2022, 1, 1)]
+        assert january.status == CoverageStatus.OPEN
+        assert january.gap_class == GapClass.SOLVABLE, "the 2022-01-01 filing reaches it"
+        cover = {
+            c.key for c in out.inputs.candidates if (ids["AAA"], date(2022, 1, 31)) in c.covers
+        }
+        assert cover == {(100, "0000000100-22-000001")}, "never the December filing"
+
+    def test_the_summary_accounts_for_every_catalogue_row_outside_the_window(
+        self, assembled: tuple[AssembledInputs, dict[str, tuple[str, int]]]
+    ) -> None:
+        out, _ = assembled
+        summary = out.summary
+
+        assert summary["candidate_window_definition"] == CANDIDATE_WINDOW_DEFINITION
+        assert summary["candidate_window"] == [WINDOW_START.isoformat(), WINDOW_END.isoformat()]
+        assert as_int(summary["catalogue_rows_in_window"]) + as_int(
+            summary["catalogue_rows_outside_window"]
+        ) == as_int(summary["catalogue_rows"])
+        assert summary["catalogue_rows_outside_window_2021_11_12"] == 2
+
     def test_form_yield_and_sizes_are_measured_from_held_documents(
         self, assembled: tuple[AssembledInputs, dict[str, tuple[str, int]]]
     ) -> None:
@@ -886,6 +957,95 @@ class TestTheFrozenPackage:
         assert COMPONENTS[-1] == "conflict_report_v2.json"
 
 
+def bindings_for_test(prints: dict[str, str]) -> InputsBindings:
+    return InputsBindings(
+        generation_id="SEC_EVIDENCE_GENERATION_V2",
+        database_path="stage.db",
+        database_sha256="db" * 32,
+        universe_count=11,
+        universe_sha256="un" * 32,
+        resolution_sha256="re" * 32,
+        manifest_sha256="ma" * 32,
+        index_sha256="ix" * 32,
+        fingerprints=prints,
+        repo_commit=None,
+    )
+
+
+class TestSupersession:
+    def test_a_package_built_under_another_window_definition_is_refused(
+        self,
+        assembled: tuple[AssembledInputs, dict[str, tuple[str, int]]],
+        tmp_path: Path,
+        index: Path,
+    ) -> None:
+        out, _ = assembled
+        with closing(sqlite3.connect(f"file:{index}?mode=ro", uri=True)) as db:
+            bindings = bindings_for_test(
+                {k: v.sha256 for k, v in semantic_fingerprints(db).items()}
+            )
+        write_package(tmp_path / "pkg", out, bindings)
+        widened = replace(bindings, candidate_window_definition="EXTENDED_90_DAY_REACH")
+
+        with pytest.raises(PackageError, match="candidate_window_definition"):
+            load_planning_inputs(tmp_path / "pkg", expect=widened)
+
+    def test_the_supersession_record_and_sidecars_never_touch_the_old_artifacts(
+        self,
+        assembled: tuple[AssembledInputs, dict[str, tuple[str, int]]],
+        tmp_path: Path,
+        index: Path,
+    ) -> None:
+        out, _ = assembled
+        with closing(sqlite3.connect(f"file:{index}?mode=ro", uri=True)) as db:
+            bindings = bindings_for_test(
+                {k: v.sha256 for k, v in semantic_fingerprints(db).items()}
+            )
+        old_package, old_plan = tmp_path / "a3_inputs", tmp_path / "a3"
+        old_package.mkdir()
+        old_plan.mkdir()
+        (old_package / "candidates_v2.jsonl").write_text("old\n")
+        (old_plan / "plan_a3_v2.jsonl").write_text("old plan\n")
+        facts = {
+            "old_package_sha256": "83" * 32,
+            "old_plan_sha256": "a3" * 32,
+            "forensic_verdict": "C",
+            "forensic_commit": "2a7d3b8",
+            "reason": "candidate-window reconstruction discrepancy",
+        }
+        manifest = write_package(tmp_path / "new", out, bindings, supersedes=facts)
+
+        record = write_supersession(
+            tmp_path / "new",
+            str(manifest["package_sha256"]),
+            old_package=old_package,
+            old_plan=old_plan,
+            facts=facts,
+        )
+
+        assert record["old_package_sha256"] == "83" * 32
+        assert record["new_package_sha256"] == manifest["package_sha256"]
+        assert A3_SUPERSESSION_RECORD in package_files(tmp_path / "new")
+        assert manifest["supersedes"] == facts
+        assert manifest["candidate_window_definition"] == CANDIDATE_WINDOW_DEFINITION
+        for old in (old_package, old_plan):
+            sidecar = json.loads((old / SUPERSEDED_SIDECAR).read_text())
+            assert "NOT_AUTHORIZED_FOR_EXPANSION" in sidecar["status"]
+        assert (old_package / "candidates_v2.jsonl").read_text() == "old\n"
+        assert (old_plan / "plan_a3_v2.jsonl").read_text() == "old plan\n"
+
+    def test_an_existing_sidecar_is_never_overwritten(self, tmp_path: Path) -> None:
+        old = tmp_path / "a3_inputs"
+        old.mkdir()
+        (old / SUPERSEDED_SIDECAR).write_text("first\n")
+
+        write_supersession(
+            tmp_path / "new", "00" * 32, old_package=old, old_plan=None, facts={"reason": "x"}
+        )
+
+        assert (old / SUPERSEDED_SIDECAR).read_text() == "first\n"
+
+
 B2_CONFIG = B2Configuration(
     endpoint_url="https://s3.us-west-004.backblazeb2.com",
     bucket="inputs-test-bucket",
@@ -924,9 +1084,9 @@ class TestTheMirror:
 
         records = mirror_package(mirror, tmp_path / "pkg", generation_id=GENERATION)
 
-        assert len(records) == len(package_files())
+        assert len(records) == len(package_files(tmp_path / "pkg"))
         assert {r.outcome for r in records} == {"MIRRORED"}
-        assert all(k.startswith(f"control/{GENERATION}/a3-inputs/") for k in client.objects)
+        assert all(k.startswith(f"control/{GENERATION}/a3-inputs-r1/") for k in client.objects)
         assert not any(k.split("/")[0] in ARTIFACT_PREFIXES for k in client.objects)
         for record in records:
             assert hashlib.sha256(client.objects[record.key][0]).hexdigest() == record.sha256
@@ -1057,16 +1217,16 @@ class TestTheCommand:
         assert result.exit_code == 0, result.stdout
         assert "A3 INPUTS COMPLETE" in result.stdout
         assert "second assembly  : identical" in result.stdout
-        package = control / "plans" / "generation_v2" / "a3_inputs"
-        assert all((package / name).is_file() for name in package_files())
-        assert not (package.parent / ".a3_inputs.check").exists()
+        package = control / "plans" / "generation_v2" / A3_INPUTS_DIRECTORY
+        assert all((package / name).is_file() for name in package_files(package))
+        assert not (package.parent / f".{A3_INPUTS_DIRECTORY}.check").exists()
         gets = [key for op, key in client.calls if op == "get_object"]
         assert not any(key.split("/")[0] in ARTIFACT_PREFIXES for key in gets)
         assert not any(
             key.split("/")[0] in ARTIFACT_PREFIXES for op, key in client.calls if op == "put_object"
         )
         assert not any(op.startswith("delete") for op, _ in client.calls)
-        assert any(k.startswith(f"control/{GENERATION}/a3-inputs/") for k in client.objects)
+        assert any(k.startswith(f"control/{GENERATION}/a3-inputs-r1/") for k in client.objects)
         assert "inputs-application-key" not in result.stdout
 
     def test_the_command_refuses_a_marker_that_does_not_describe_the_index(
@@ -1087,7 +1247,7 @@ class TestTheCommand:
 
         assert result.exit_code == 1
         assert "does not describe the manifest and index on disk" in result.stdout
-        assert not (control / "plans" / "generation_v2" / "a3_inputs").exists()
+        assert not (control / "plans" / "generation_v2" / A3_INPUTS_DIRECTORY).exists()
         assert not any(op == "put_object" for op, _ in client.calls)
 
     def test_the_command_refuses_when_the_mirrored_marker_differs(
@@ -1108,4 +1268,4 @@ class TestTheCommand:
 
         assert result.exit_code == 1
         assert "mirrored derived-index marker is not the local one" in result.stdout
-        assert not (control / "plans" / "generation_v2" / "a3_inputs").exists()
+        assert not (control / "plans" / "generation_v2" / A3_INPUTS_DIRECTORY).exists()

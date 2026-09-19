@@ -27,6 +27,7 @@ from stock_screener.config import get_settings
 from stock_screener.sec_evidence import (
     A3_EXPECTED_SHA256,
     A3_EXPECTED_TARGETS,
+    A3_INPUTS_DIRECTORY,
     A3_PLAN_COMPLETE_MARKER,
     A3_PLAN_FILE,
     A3_STRATEGY,
@@ -489,7 +490,7 @@ class TestTheCommand:
             summary={},
             timings={},
         )
-        write_package(control / "plans" / "generation_v2" / "a3_inputs", assembled, bound)
+        write_package(control / "plans" / "generation_v2" / A3_INPUTS_DIRECTORY, assembled, bound)
         client = fake_s3()
         monkeypatch.setenv("ENVIRONMENT", "test")
         monkeypatch.setenv("SEC_STORAGE_BACKEND", "b2")
@@ -523,7 +524,7 @@ class TestTheCommand:
         assert result.exit_code == 0, result.stdout
         assert "PLAN A3 V2 COMPLETE — 4 targets" in result.stdout
         assert "BYTE_DIGEST_COMPARISON_INCONCLUSIVE" in result.stdout
-        plan_dir = control / "plans" / "generation_v2" / "a3"
+        plan_dir = control / "plans" / "generation_v2" / "a3_r1"
         assert (plan_dir / A3_PLAN_FILE).is_file() and (
             plan_dir / A3_PLAN_COMPLETE_MARKER
         ).is_file()
@@ -536,7 +537,7 @@ class TestTheCommand:
         self, environment: tuple[Path, FakeS3Client]
     ) -> None:
         control, client = environment
-        target = control / "plans" / "generation_v2" / "a3_inputs" / "held_v2.jsonl"
+        target = control / "plans" / "generation_v2" / A3_INPUTS_DIRECTORY / "held_v2.jsonl"
         target.write_bytes(target.read_bytes() + b'{"cik":1,"accession":"x"}\n')
 
         result = CliRunner().invoke(app, ["evidence", "regenerate-a3"])
@@ -544,7 +545,7 @@ class TestTheCommand:
 
         assert result.exit_code == 1
         assert "changed since they were frozen" in result.stdout
-        assert not (control / "plans" / "generation_v2" / "a3").exists()
+        assert not (control / "plans" / "generation_v2" / "a3_r1").exists()
         assert not any(op == "put_object" for op, _ in client.calls)
 
     def test_the_command_refuses_an_index_that_moved(

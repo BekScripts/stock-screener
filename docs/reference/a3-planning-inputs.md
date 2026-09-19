@@ -29,7 +29,7 @@ auditable.
 | `Gap.identity_state` | `str` | How the symbol attaches to the identity at the month-end: `EXACT`, `AMBIGUOUS`, `UNRESOLVED`, or `OTHER_OCCUPANT` when the join names another security | `join_symbol(symbol, month_end)` | dated join, occupancy-aware | — | yes |
 | `Gap.universe_state` | `str` | What the frozen row recorded (`UNKNOWN` for every gap) | the universe row | — | — | yes |
 | `Gap.gap_class` | `GapClass` | `G1_SOLVABLE`, `G2_NO_CIK`, `G3_AMBIGUOUS`, `G4_NO_CANDIDATE`, `G5_OTHER` | derived (table below) | — | — | yes |
-| `candidates` | `tuple[Candidate, ...]` | Every catalogue filing that could support a window month-end and is not held | V2 index `catalogue` minus the held set | planning rule on `filing_date` | ordered `(cik, accession)` | yes |
+| `candidates` | `tuple[Candidate, ...]` | Every catalogue filing dated inside the research window, `WINDOW_START <= filing_date <= WINDOW_END` (both inclusive), and not held — `CANDIDATE_WINDOW_DEFINITION` `HISTORICAL_9L_V1` | V2 index `catalogue` minus the held set | acquisition scope: the window; then the planning rule on `filing_date` for what it may cover | ordered `(cik, accession)` | yes |
 | `Candidate.cik`, `accession` | `int`, `str` | The filing identity, `(cik, accession)` | the catalogue row | — | — | yes |
 | `Candidate.form` | `str` | One of `FILING_FORMS`; the catalogue holds nothing else | the catalogue row | — | — | yes |
 | `Candidate.filing_date` | `date` | The catalogue filing date. The acceptance stamp is planning metadata the planner does not rely on for an undownloaded document | the catalogue row | planning rule | — | yes |
@@ -65,7 +65,7 @@ Checked in that order. Only `G1_SOLVABLE` keys enter any candidate's `covers`.
 | Held evidence supporting a month (`COVERED`, `previous_observation`) | a cover row dated `evidence_date` supports month-end `M` when `evidence_date <= M` and `M - evidence_date <= CARRY_FORWARD_DAYS` (90); `evidence_date` is the SEC acceptance date (`ACCEPTED` for all 32,413 V2 filings) | `plan.supported_months` semantics, `extract.evidence_date_for` (Phase 9L) |
 | Security-class evidence | the cover row's `security_class` as parsed (`domain.classify_security`), attached to an identity by `join_symbol(symbol, evidence_date)`; only `COMMON_STOCK` rows with a symbol count as observations | `extract`, `join` |
 | Reachability (which identities a filing may be credited with) | `build_reachability` over the snapshot of joined observations: not date-aware by design — a planning heuristic that predicts what an unread filing may support and never produces a stored PIT verdict | `reachability` (Phase 9L.4) |
-| Candidate eligibility | `supported_months(filing_date)` intersects the window's month-ends; `(cik, accession)` not held | `plan` |
+| Candidate eligibility | `filing_date` inside `[WINDOW_START, WINDOW_END]`, both ends inclusive (`inputs.in_candidate_window`); `(cik, accession)` not held. Acquisition scope, not point-in-time: a December 2021 filing may support January 2022 under the planning rule and is still not a candidate | `plan` constants; `inputs` |
 | Acceptance fallback | none is needed: every V2 filing carries its own catalogue stamp; `stage9k.filing_acceptance` is untouched and unread | — |
 
 The classification rule and the planning rule differ by up to one month at a
@@ -76,8 +76,14 @@ and does not reconcile it; reconciling it would change the planner.
 
 ## The package
 
-`<SEC_CONTROL_DIR>/plans/generation_v2/a3_inputs/`, mirrored file for file as
-digest-addressed snapshots under `control/<generation>/a3-inputs/`.
+`<SEC_CONTROL_DIR>/plans/generation_v2/a3_inputs_r1/` (`A3_INPUTS_DIRECTORY`),
+mirrored file for file as digest-addressed snapshots under
+`control/<generation>/a3-inputs-r1/`. The first package, `a3_inputs/`
+(`B2.13/1`, mirrored under `a3-inputs/`), is superseded and kept: it carries an
+additive `SUPERSEDED.json`, and the new package's `supersession.json` names it.
+The manifest and marker record `inputs_version`, `candidate_window_definition`,
+the window's bounds and semantics, `assembly_sha256` (the assembly module's
+digest) and `supersedes`.
 
 | File | Rows / content | Order |
 | --- | --- | --- |
@@ -291,3 +297,46 @@ The fix is not applied here: either restrict candidates to the 9L window in
 `inputs.py`, or keep the extended window as a recorded policy change with its
 own inputs version — then rebuild the package and regenerate. Under the strict
 window the unchanged planner produces 61,628 targets, digest `0efa7d03…`.
+
+## The corrected package (B2.13R)
+
+Verdict C in B2.14R became one change: `inputs.in_candidate_window` restricts
+candidates to `WINDOW_START <= filing_date <= WINDOW_END`. The evidence for
+the definition: `plan.py` holds the constants (`2022-01-01`, `2026-07-31`,
+byte-identical since `13d586b`) and says "every qualifying filing inside that
+window"; 9L.1 counted 292,866 such filings and 269,521 not held; the V2
+catalogues give 291,623 and 269,566 under this rule. At the boundaries no
+filing is dated 2022-01-01 or 2021-12-31, so the start is inclusive by
+definition; 348 filings are dated 2026-07-31 and `supported_months` credits a
+filing with its own day's month-end, so the end is inclusive by the planner's
+own rule. `A3_INPUTS_VERSION` is `B2.13R/1`; a package built under any other
+`candidate_window_definition` is refused on load.
+
+### The live rebuild — 2026-09-18
+
+Assembled fresh through the repaired code (not by filtering the old package),
+bound to the same sources as B2.13, both database digests unchanged before
+and after, 0 SEC requests, 0 evidence reads or writes; two assemblies in one
+process and a second invocation into another directory: identical components,
+package `79f644f1f8af85422b68911ef5427e6150886294a8ae8b4da57a34e4c9a7622e`.
+
+| | superseded `83680ead…` | corrected `79f644f1…` | delta |
+| --- | --- | --- | --- |
+| catalogue rows in window | 301,880 (extended) | 291,623 | −10,257 |
+| held in window | 22,108 | 22,057 | −51 |
+| candidates | 279,772 | 269,566 | −10,206: 7,133 Nov 2021, 3,073 Dec 2021 (8-K 7,174, 10-Q 2,844, 10-K 181, 20-F 3, 20-F/A 1, 40-F 1, 40-F/A 2) over 3,503 issuers; 0 added; every common row identical |
+| candidates with a cover key | 235,630 | 227,642 | −7,988 |
+| cover keys | 657,826 | 647,373 | −10,453 |
+| `G1_SOLVABLE` | 166,075 | 164,572 | −1,503 (1,319 Jan 2022 + 184 Feb 2022 month-ends, 1,319 identities → `G4_NO_CANDIDATE`) |
+| `G4_NO_CANDIDATE` | 32,904 | 34,407 | +1,503 |
+| `G2` / `G3` / `G5` | 28,203 / 12,085 / 3,002 | same | 0 |
+| raw `UNKNOWN` floor | 76,194 | 77,697 | +1,503 |
+| held | 32,413 | 32,413 | 0 (reachability, held, yield, bytes and conflicts keep their digests) |
+| future-invalid edges | 0 | 0 | the same 3 SEC-index acceptance anomalies remain candidates |
+
+Component digests: coverage `1fc94fc1…`, reachability `0ff895b3…`, gaps
+`2037534d…`, candidates `56719b7d…`, held `4ac8220f…`, yield `4bc5064c…`,
+bytes `84c270fa…`, conflicts `49350662…`. Mirror: 27 files as 54 objects under
+`a3-inputs-r1/`, every one read back equal; the superseded package's 50
+objects untouched, plus a `SUPERSEDED.json` snapshot beside each of the old
+package and the old plan. Plan regeneration from this package is B2.14R2.

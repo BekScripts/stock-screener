@@ -30,6 +30,15 @@ The two rules differ by up to one month at a boundary. That difference is
 reported as a diagnostic (`covered_under_classification_rule`) and is not
 reconciled here: reconciling it would change the planner.
 
+## The candidate window is acquisition scope, not point-in-time
+
+A catalogue filing is a candidate only when its filing date lies inside the
+research window, both ends inclusive — the historical 9L definition, which
+the V2 catalogues reproduce to within 45 candidates. A December 2021 filing
+is PIT-valid for January 2022 under the planning rule and is still not a
+candidate; the first reconstruction admitted such filings and was superseded
+for it (B2.14R). See `in_candidate_window`.
+
 ## Class-aware credit, unchanged
 
 `reachability.build_reachability` decides, per issuer, which tracked
@@ -57,8 +66,9 @@ import json
 import time
 from collections import defaultdict
 from dataclasses import asdict, dataclass, field
-from datetime import date, timedelta
+from datetime import date
 from enum import StrEnum
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import structlog
@@ -92,7 +102,6 @@ from stock_screener.sec_evidence.targets import held_from_manifest
 if TYPE_CHECKING:
     import sqlite3
     from collections.abc import Callable, Iterable, Mapping, Sequence
-    from pathlib import Path
 
     from sqlalchemy.orm import Session
 
@@ -103,11 +112,16 @@ log = structlog.get_logger(__name__)
 
 __all__ = [
     "A3_INPUTS_COMPLETE_MARKER",
+    "A3_INPUTS_DIRECTORY",
     "A3_INPUTS_MANIFEST",
+    "A3_INPUTS_MIRROR_PREFIX",
     "A3_INPUTS_VERSION",
+    "A3_SUPERSESSION_RECORD",
+    "CANDIDATE_WINDOW_DEFINITION",
     "COMPANY",
     "COMPONENTS",
     "HISTORICAL",
+    "SUPERSEDED_SIDECAR",
     "AssembledInputs",
     "CoverageRow",
     "CoverageStatus",
@@ -117,8 +131,10 @@ __all__ = [
     "ReachRow",
     "ResolvedIdentity",
     "assemble_planning_inputs",
+    "assembly_sha256",
     "component_digests",
     "dashed_accession",
+    "in_candidate_window",
     "load_planning_inputs",
     "load_resolution",
     "mirror_package",
@@ -126,10 +142,27 @@ __all__ = [
     "package_sha256",
     "read_bindings",
     "write_package",
+    "write_supersession",
 ]
 
 #: Bumped when the package layout, a row schema, or an assembly rule changes.
-A3_INPUTS_VERSION = "B2.13/1"
+#: `B2.13/1` admitted candidates outside the historical window and is superseded.
+A3_INPUTS_VERSION = "B2.13R/1"
+
+#: The candidate-window definition this assembly reconstructs, recorded in every
+#: package so a package built under another definition is refused on load.
+#: `HISTORICAL_9L_V1`: a catalogue filing is a candidate only when its filing
+#: date lies inside the research window, `WINDOW_START <= filing_date <=
+#: WINDOW_END`, both ends inclusive — Phase 9L.1's "every qualifying filing
+#: inside the universe's own window" (292,866 documents; 269,521 not held),
+#: which the V2 catalogues reproduce to within 45 candidates under this rule
+#: and not under any wider one (B2.14R).
+CANDIDATE_WINDOW_DEFINITION = "HISTORICAL_9L_V1"
+
+#: The package directory and mirror prefix for this definition. The superseded
+#: `B2.13/1` package stays at `a3_inputs` / `a3-inputs`, untouched.
+A3_INPUTS_DIRECTORY = "a3_inputs_r1"
+A3_INPUTS_MIRROR_PREFIX = "a3-inputs-r1"
 
 #: The identity kinds, spelled as `plan.Gap.identity` spells them.
 COMPANY = "COMPANY"
@@ -148,6 +181,10 @@ COMPONENTS = (
 )
 A3_INPUTS_MANIFEST = "planning_inputs_manifest.json"
 A3_INPUTS_COMPLETE_MARKER = "a3_inputs_complete.json"
+#: The chain from a superseded package (and plan) to this one; in the new package.
+A3_SUPERSESSION_RECORD = "supersession.json"
+#: The additive sidecar left beside a superseded package or plan. Never overwrites.
+SUPERSEDED_SIDECAR = "SUPERSEDED.json"
 
 #: The reason the frozen resolution gives for a delisted symbol the current
 #: ticker map names but that policy declined to bridge (B2.10: 135 of them).
@@ -191,6 +228,7 @@ class InputsBindings:
         carry_forward_days: `plan.CARRY_FORWARD_DAYS`.
         window_start: `plan.WINDOW_START`, ISO.
         window_end: `plan.WINDOW_END`, ISO.
+        candidate_window_definition: `CANDIDATE_WINDOW_DEFINITION`.
     """
 
     generation_id: str
@@ -208,6 +246,7 @@ class InputsBindings:
     carry_forward_days: int = CARRY_FORWARD_DAYS
     window_start: str = WINDOW_START.isoformat()
     window_end: str = WINDOW_END.isoformat()
+    candidate_window_definition: str = CANDIDATE_WINDOW_DEFINITION
 
     def as_dict(self) -> dict[str, object]:
         """The bindings as plain JSON-ready values."""
@@ -536,13 +575,18 @@ def _form_statistics(
     return form_yield, form_bytes
 
 
-def _month_ends_in_window() -> frozenset[date]:
-    ends: set[date] = set()
-    cursor = WINDOW_START
-    while cursor <= WINDOW_END:
-        ends.add(month_end(cursor))
-        cursor = month_end(cursor) + timedelta(days=1)
-    return frozenset(ends)
+def in_candidate_window(filed_on: date) -> bool:
+    """Whether a catalogue filing date lies inside the historical A3 candidate window.
+
+    `WINDOW_START <= filed_on <= WINDOW_END`, both ends inclusive. This is an
+    *acquisition-scope* rule, not a point-in-time one: a filing from December
+    2021 may legitimately support January 2022 under `supported_months` (it
+    predates the month and is within the carry-forward bound), and it is still
+    not a candidate, because the historical plan was drawn only from filings
+    dated inside the research window. Widening the window is a policy change
+    with its own `CANDIDATE_WINDOW_DEFINITION`, never a quiet default.
+    """
+    return WINDOW_START <= filed_on <= WINDOW_END
 
 
 def assemble_planning_inputs(
@@ -650,17 +694,18 @@ def assemble_planning_inputs(
     for dates in common_dates.values():
         dates.sort()
     held = held_from_manifest(manifest)
-    window_ends = _month_ends_in_window()
 
-    # --- candidates: every catalogue filing that could support a window month ----
+    # --- candidates: every catalogue filing dated inside the historical window ----
     catalogue: dict[int, list[tuple[str, str, date]]] = defaultdict(list)
     catalogue_total = 0
+    outside_window: dict[str, int] = defaultdict(int)
     for cik, accession, form, filed in index.execute(
         "SELECT cik, accession, form, filing_date FROM catalogue ORDER BY cik, accession"
     ):
         catalogue_total += 1
         filed_on = date.fromisoformat(str(filed))
-        if not (set(supported_months(filed_on)) & window_ends):
+        if not in_candidate_window(filed_on):
+            outside_window[str(filed)[:7]] += 1
             continue
         catalogue[int(cik)].append((str(accession), str(form), filed_on))
     # Which month-ends each issuer's catalogue could reach, for gap classing.
@@ -833,6 +878,14 @@ def assemble_planning_inputs(
         resolution,
         model,
     )
+    summary["candidate_window_definition"] = CANDIDATE_WINDOW_DEFINITION
+    summary["candidate_window"] = [WINDOW_START.isoformat(), WINDOW_END.isoformat()]
+    in_window = sum(len(v) for v in catalogue.values())
+    summary["catalogue_rows_in_window"] = in_window
+    summary["catalogue_rows_outside_window"] = catalogue_total - in_window
+    summary["catalogue_rows_outside_window_2021_11_12"] = outside_window.get(
+        "2021-11", 0
+    ) + outside_window.get("2021-12", 0)
     return AssembledInputs(
         inputs=inputs,
         coverage=coverage,
@@ -1117,10 +1170,11 @@ def _stem(name: str) -> str:
     return name.rsplit(".", 1)[0]
 
 
-def package_files() -> list[str]:
+def package_files(directory: Path | None = None) -> list[str]:
     """Every file a complete package holds, in a fixed order.
 
-    Components, their digests, the JSONL summaries, the manifest and the marker.
+    Components, their digests, the JSONL summaries, the manifest and the marker;
+    the supersession record too, when the package in `directory` carries one.
     """
     names: list[str] = []
     for name in COMPONENTS:
@@ -1135,7 +1189,57 @@ def package_files() -> list[str]:
             f"{_stem(A3_INPUTS_COMPLETE_MARKER)}.sha256",
         ]
     )
+    if directory is not None and (directory / A3_SUPERSESSION_RECORD).is_file():
+        names.extend([A3_SUPERSESSION_RECORD, f"{_stem(A3_SUPERSESSION_RECORD)}.sha256"])
     return names
+
+
+def write_supersession(
+    directory: Path,
+    package_sha: str,
+    *,
+    old_package: Path | None,
+    old_plan: Path | None,
+    facts: Mapping[str, object],
+) -> dict[str, object]:
+    """Record which package (and plan) this one supersedes, and mark the old ones.
+
+    Writes `supersession.json` into the new package and an additive
+    `SUPERSEDED.json` beside each old artifact directory that exists — created
+    only when absent, never overwriting anything, deleting nothing.
+
+    Args:
+        directory: The new package directory.
+        package_sha: The new package's digest.
+        old_package: The superseded package directory, if present locally.
+        old_plan: The superseded plan directory, if present locally.
+        facts: The chain — old package and plan digests, the forensic verdict
+            and commit, the reason.
+
+    Returns:
+        The record written.
+    """
+    directory.mkdir(parents=True, exist_ok=True)
+    record: dict[str, object] = {
+        "stage": "A3_INPUTS_SUPERSESSION",
+        "new_package_sha256": package_sha,
+        "new_inputs_version": A3_INPUTS_VERSION,
+        "new_candidate_window_definition": CANDIDATE_WINDOW_DEFINITION,
+        "old_status": ["SUPERSEDED_INPUT_ASSEMBLY", "NOT_AUTHORIZED_FOR_EXPANSION"],
+        **dict(facts),
+    }
+    _write_json(directory / A3_SUPERSESSION_RECORD, record)
+    sidecar = {
+        "status": ["SUPERSEDED_INPUT_ASSEMBLY", "NOT_AUTHORIZED_FOR_EXPANSION"],
+        "superseded_by_package_sha256": package_sha,
+        "superseded_by_inputs_version": A3_INPUTS_VERSION,
+        "reason": facts.get("reason"),
+        "forensic_commit": facts.get("forensic_commit"),
+    }
+    for old in (old_package, old_plan):
+        if old is not None and old.is_dir() and not (old / SUPERSEDED_SIDECAR).exists():
+            _write_json(old / SUPERSEDED_SIDECAR, sidecar, companion=False)
+    return record
 
 
 def _gap_record(gap: Gap) -> dict[str, object]:
@@ -1178,8 +1282,17 @@ def package_sha256(digests: Mapping[str, str]) -> str:
     return digest.hexdigest()
 
 
+def assembly_sha256() -> str:
+    """SHA-256 of this module's source, recorded so a package names the code that built it."""
+    return hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
+
+
 def write_package(
-    directory: Path, assembled: AssembledInputs, bindings: InputsBindings
+    directory: Path,
+    assembled: AssembledInputs,
+    bindings: InputsBindings,
+    *,
+    supersedes: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
     """Write every component, the manifest and the completion marker.
 
@@ -1187,6 +1300,8 @@ def write_package(
         directory: The package directory; created if absent.
         assembled: What `assemble_planning_inputs` produced.
         bindings: Every source the assembly read.
+        supersedes: Provenance of the package this one replaces, recorded in
+            the manifest and the marker — the old package is never touched.
 
     Returns:
         The manifest that was written.
@@ -1253,6 +1368,15 @@ def write_package(
     package = package_sha256(digests)
     manifest: dict[str, object] = {
         "inputs_version": A3_INPUTS_VERSION,
+        "candidate_window_definition": CANDIDATE_WINDOW_DEFINITION,
+        "candidate_window": {
+            "start": WINDOW_START.isoformat(),
+            "end": WINDOW_END.isoformat(),
+            "date_field": "catalogue filing_date",
+            "semantics": "WINDOW_START <= filing_date <= WINDOW_END, both inclusive",
+        },
+        "assembly_sha256": assembly_sha256(),
+        "supersedes": dict(supersedes) if supersedes else None,
         "bindings": bindings.as_dict(),
         "components": {name: digests[name] for name in COMPONENTS},
         "package_sha256": package,
@@ -1273,6 +1397,8 @@ def write_package(
         {
             "stage": "A3_INPUTS_COMPLETE",
             "inputs_version": A3_INPUTS_VERSION,
+            "candidate_window_definition": CANDIDATE_WINDOW_DEFINITION,
+            "supersedes": dict(supersedes) if supersedes else None,
             "bindings": bindings.as_dict(),
             "components": {name: digests[name] for name in COMPONENTS},
             "package_sha256": package,
@@ -1423,7 +1549,7 @@ def load_planning_inputs(
 
 #: Everything the package holds is mirrored: the components, their digests,
 #: the manifest and the marker. Rebuildable, but B2.14 must not have to.
-_MIRROR_KIND = "a3-inputs"
+_MIRROR_KIND = A3_INPUTS_MIRROR_PREFIX
 
 
 def mirror_package(
@@ -1443,7 +1569,7 @@ def mirror_package(
         PackageError: If a mirrored file's newest snapshot is not the local file.
     """
     records = []
-    for name in package_files():
+    for name in package_files(directory):
         local = directory / name
         if not local.is_file():
             raise PackageError(f"{local} does not exist; nothing to mirror")

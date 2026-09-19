@@ -36,8 +36,9 @@ appears without the run or the test that produced it.
 
 ## Current phase
 
-**B2.14R — the forensic review of the V2 Plan A3 difference** is the
-current checkpoint on `feat/phase-b2-storage-abstraction`. **The BEK
+**B2.13R — the historical A3 candidate window restored and the
+PlanningInputs refrozen** is the current checkpoint on
+`feat/phase-b2-storage-abstraction`. **The BEK
 drive is permanently unavailable** and Generation V1 is history that
 creates no trust. B2.9X started **Generation V2** from what survived on the
 internal disk; B2.10 proved the pipeline on chunk 000; B2.11 built chunks
@@ -83,9 +84,21 @@ candidates; V2 under the same window: 291,623 / 269,566). With only that
 changed the unchanged planner gives 61,628 targets (−313, −0.5% vs
 historical), packing 2.670 vs 2.673. Every other difference is bounded and
 listed; the historical digest is a count-only comparator (93% of selections
-are `(cik, accession)` tie-breaks). Plan A3 V2 is **not yet authoritative**:
-the window definition is an open decision, the fix is unapplied, and
-nothing has been downloaded.** The frozen resolution stands: 8,919
+are `(cik, accession)` tie-breaks). B2.13R restored the historical window:
+`inputs.in_candidate_window` admits only `WINDOW_START <= filing_date <=
+WINDOW_END`, `CANDIDATE_WINDOW_DEFINITION` `HISTORICAL_9L_V1`,
+`A3_INPUTS_VERSION` `B2.13R/1`. **Corrected PlanningInputs FROZEN at
+`plans/generation_v2/a3_inputs_r1/`, package SHA-256
+`79f644f1f8af85422b68911ef5427e6150886294a8ae8b4da57a34e4c9a7622e`:
+269,566 candidates (−10,206, all November–December 2021), 164,572
+solvable gaps (−1,503 Jan/Feb 2022 → no candidate), floor 77,697, held
+32,413; deterministic across two assemblies and a second invocation;
+mirrored as 54 objects and read back. The B2.13 package `83680ead…` and
+the B2.14 plan `a3e7df19…` (62,924) are SUPERSEDED_INPUT_ASSEMBLY /
+NOT_AUTHORIZED_FOR_EXPANSION — kept locally and remotely with
+`SUPERSEDED.json` beside each, never deleted. Plan regeneration from the
+corrected package is B2.14R2; nothing has been downloaded.** The frozen
+resolution stands: 8,919
 identities, 6,048 resolved (402 `STORED`, 5,646 `SEC_TICKER_MAP`), 2,871
 `UNRESOLVED`; the ticker map was fetched once, in B2.10, and never again. See
 [A3 planning inputs](a3-planning-inputs.md),
@@ -571,6 +584,25 @@ convention, and none may be relaxed without an explicit instruction.
   a package frozen against another database, universe, resolution,
   manifest, index or fingerprint. B2.14 loads the package; it recomputes
   nothing.
+
+### B2.13R the candidate window restored
+
+- **A candidate is a catalogue filing dated inside the research window.**
+  `WINDOW_START <= filing_date <= WINDOW_END`, both inclusive — the 9L
+  definition that reproduces the 9L.1 inventory to within 45 candidates.
+  This is acquisition scope, not point-in-time: a December 2021 filing is
+  PIT-valid for January 2022 under the planning rule and is still not a
+  candidate. Widening the window is a policy change under its own
+  `CANDIDATE_WINDOW_DEFINITION`, never a quiet default.
+- **A package names its window and is refused under another.**
+  `candidate_window_definition` is a binding; `load_planning_inputs`
+  refuses a package whose definition differs from the caller's. The manifest
+  also records the bounds, the comparison semantics and `assembly_sha256`.
+- **Supersession is additive.** A corrected package is written to a new
+  directory and mirror prefix (`a3_inputs_r1` / `a3-inputs-r1`), carries a
+  `supersession.json` naming the old package and plan digests, the forensic
+  verdict and commit; the old artifacts gain a `SUPERSEDED.json` beside them
+  and lose nothing, locally or remotely.
 
 ### B2.14R the forensic review
 
@@ -1748,6 +1780,49 @@ Documented rather than fixed. Each is a deliberate stop, not a backlog item.
 
 Measured runs, kept because they are the evidence behind decisions above.
 
+### B2.13R corrected PlanningInputs — 2026-09-18
+
+- `evidence build-a3-inputs --database stage9k.db --expect-universe-sha
+  b8eaed3e… --expect-database-sha … --expect-manifest-sha 13722e02…
+  --expect-index-sha 3deb46b7… --supersedes-package-sha 83680ead…
+  --supersedes-plan-sha a3e7df19… --forensic-commit 2a7d3b84…`, 22:45 UTC:
+  both database digests unchanged before and after; every binding
+  re-proven (index and five fingerprints, mirrored derived-index marker,
+  resolution companion, universe); 0 SEC requests, 0 evidence reads or
+  writes; assembly 11.3 s.
+- Window evidence: `plan.WINDOW_START` 2022-01-01 / `WINDOW_END` 2026-07-31
+  (byte-identical since 13d586b); no catalogue filing dated 2022-01-01 or
+  2021-12-31; 348 dated 2026-07-31, which `supported_months` credits with
+  the 2026-07-31 month-end; inclusive both ends.
+- Corrected package `79f644f1f8af85422b68911ef5427e6150886294a8ae8b4da57a34e4c9a7622e`
+  (`B2.13R/1`, `HISTORICAL_9L_V1`): 291,623 window filings, 22,057 held in
+  window, **269,566 candidates** (9L.1: 269,521), 227,642 with a cover key,
+  647,373 cover keys over exactly the **164,572** solvable gaps; open
+  242,269 = G1 164,572 + G2 28,203 + G3 12,085 + G4 34,407 + G5 3,002;
+  floor 77,697; held 32,413. Removed from the superseded package: 10,206
+  candidates, all 2021 (Nov 7,133, Dec 3,073; 8-K 7,174, 10-Q 2,844, 10-K
+  181, foreign 7) over 3,503 issuers, 0 added, common rows identical;
+  1,503 months G1 → G4 (Jan 2022 1,319, Feb 2022 184; 1,319 identities).
+  Component digests: coverage 1fc94fc1…, reachability 0ff895b3…, gaps
+  2037534d…, candidates 56719b7d…, held 4ac8220f…, yield 4bc5064c…, bytes
+  84c270fa…, conflicts 49350662… — reachability, held, yield, bytes and
+  conflicts unchanged from the superseded package. 647,373 candidate-gap
+  edges, 0 future-invalid, the same 3 SEC-index acceptance anomalies.
+- Determinism: two in-process assemblies and a second invocation into
+  another directory — every component and the package digest identical;
+  manifest and marker differ only by `supersedes` and `timings`.
+- Mirror: 27 files as 54 objects under `control/…/a3-inputs-r1/`, all
+  `MIRRORED`, every one read back equal; the superseded package's 50
+  objects intact and still recoverable; `SUPERSEDED.json` mirrored beside
+  the old package and plan; mirror 1,282 objects; credential audit 0.
+- `tests/integration/test_a3_inputs.py` +12 (49 passed): the window
+  inclusive at both ends, the constants, November and December 2021
+  filings never candidates while 2022-01-01 and 2026-07-31 are, January
+  2022 reached only by an in-window filing, the summary accounting for
+  every out-of-window row, a package under another window definition
+  refused, the supersession record and sidecars written without touching
+  the old artifacts, an existing sidecar never overwritten.
+
 ### B2.14R forensic A3 difference review — 2026-09-18
 
 - Read-only over the frozen package (`83680ead…`), the frozen plan
@@ -2388,18 +2463,18 @@ under **80%**. It is what CI runs; run it rather than the individual tools.
 
 ## Next phase
 
-**The candidate-window decision** follows, before any expansion: B2.14R
-found that the B2.13 package admits November–December 2021 filings the
-historical harness excluded, and that with the historical window alone the
-unchanged planner lands within 0.5% of the historical count. Either restrict
-`inputs.py` to the 9L window (`filing_date` within `[WINDOW_START,
-WINDOW_END]`) or record the extended window as a deliberate policy under a
-new `A3_INPUTS_VERSION` — then rerun B2.13 and B2.14, and only then B2.15
-(freeze expansion batches, run a small live canary). Nothing is downloaded
-against either plan. FTD archives are redownloaded separately. The
-one-month boundary between the classification and planning rules remains
-documented in [A3 planning inputs](a3-planning-inputs.md) and is a decision
-for a later phase.
+**B2.14R2 — regenerate Plan A3 from the corrected frozen inputs** follows:
+`evidence regenerate-a3` over `a3_inputs_r1/` (`79f644f1…`), the unchanged
+planner, validated, run twice, written by the historical writer into
+`a3_r1/`, and compared to the historical 61,941 / `53e3f0ca…` — expected
+near the B2.14R counterfactual (61,628, `0efa7d03…`) but that was not
+production output and is not a target. Then B2.15 (freeze expansion
+batches, run a small live canary). The superseded plan `a3e7df19…` is never
+executed. FTD archives are redownloaded separately. The one-month boundary
+between the classification and planning rules remains documented in
+[A3 planning inputs](a3-planning-inputs.md) and is a decision for a later
+phase; widening the acquisition window is likewise a separate, versioned
+decision.
 
 Two pieces of work are *identified* but not authorised, and neither is to be
 started without being asked:
@@ -2466,7 +2541,7 @@ Not a backlog. These exclusions are deliberate.
 
 | | |
 | --- | --- |
-| Commit | The B2.14R commit containing this checkpoint, `test: validate V2 A3 forensic differences`; parent `83f8ae2` (B2.14, `feat: regenerate V2 Plan A3`). The plan's `meta.json` records `repo_commit` `afe6a10`, the inputs package `ebfbc1c`, the index `1b407b6` — each built from the working tree that became the next commit. |
+| Commit | The B2.13R commit containing this checkpoint, `fix: restore historical A3 candidate window`; parent `2a7d3b8` (B2.14R, `test: validate V2 A3 forensic differences`). The corrected package's manifest records `repo_commit` `2a7d3b8` because it was built from the working tree that became this commit; the superseded package records `ebfbc1c`, the superseded plan `afe6a10`, the index `1b407b6`. |
 | Branch | `feat/phase-b2-storage-abstraction` |
 | Migration head | `0031` — the research-universe layer (9K.7). Nothing since 9K.11 added one. |
 | Score version | `COMPOUNDER_V1_2` (unchanged by anything in Phase 8, 9A, 9B or 9C) |
