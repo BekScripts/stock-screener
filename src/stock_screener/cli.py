@@ -237,6 +237,7 @@ from stock_screener.sec_evidence.migration import (
 )
 from stock_screener.sec_evidence.rebuild import CanaryStopError, run_chunk
 from stock_screener.sec_evidence.regenerate import (
+    A3_AUTHORITATIVE_RECORD,
     A3_PLAN_COMPLETE_MARKER,
     PlanValidationError,
     algorithm_digests,
@@ -244,6 +245,7 @@ from stock_screener.sec_evidence.regenerate import (
     package_bindings_from_manifest,
     regenerate_a3,
     write_a3,
+    write_authorization,
 )
 from stock_screener.sec_evidence.targets import (
     TargetManifestError,
@@ -2736,6 +2738,36 @@ def evidence_regenerate_a3_command(
         Path | None,
         typer.Option(help="Plan directory. Default: <control>/plans/generation_v2/a3_r1."),
     ] = None,
+    expect_forensic_rows: Annotated[
+        int | None,
+        typer.Option(help="Rows an earlier forensic run over these inputs produced."),
+    ] = None,
+    expect_forensic_sha: Annotated[
+        str | None,
+        typer.Option(help="Ordered digest of that forensic run; a mismatch stops the run."),
+    ] = None,
+    authorize: Annotated[
+        bool,
+        typer.Option(
+            "--authorize/--no-authorize",
+            help=(
+                "Write authoritative_a3_plan.json once every gate has passed, "
+                "marking the plan AUTHORIZED_FOR_EXPANSION."
+            ),
+        ),
+    ] = False,
+    supersedes_package_sha: Annotated[
+        str | None, typer.Option(help="The superseded package digest, for the record.")
+    ] = None,
+    supersedes_plan_sha: Annotated[
+        str | None, typer.Option(help="The superseded plan digest, for the record.")
+    ] = None,
+    forensic_commit: Annotated[
+        str | None, typer.Option(help="The forensic review commit, for the record.")
+    ] = None,
+    correction_commit: Annotated[
+        str | None, typer.Option(help="The window-correction commit, for the record.")
+    ] = None,
     mirror: Annotated[
         bool,
         typer.Option(
@@ -2745,19 +2777,29 @@ def evidence_regenerate_a3_command(
 ) -> None:
     """Run the unchanged Plan A3 planner over the frozen V2 inputs and compare it to history.
 
-    Loads the B2.13 package through its own loader — nothing is reassembled —
+    Loads the frozen package through its own loader — nothing is reassembled —
     after proving the package binds to the manifest, the index and its
     fingerprints on disk (and to the database, when one is named). Runs
     coverage-first to exhaustion, validates every target against the package,
     runs again to prove determinism, writes the plan with the historical
     writer, and reports the count and digest against 61,941 and 53e3f0ca….
-    Never downloads anything.
+    A package or plan directory marked SUPERSEDED is refused. With a forensic
+    expectation, a plan that does not reproduce it stops before anything is
+    authorized or mirrored. Never downloads anything.
     """
     settings = _bootstrap()
     expected_digests = _parse_digest_pairs(expect_database_sha or [])
     storage, control = _open_layout(settings)
     package_dir = package or control.plans / "generation_v2" / A3_INPUTS_DIRECTORY
     plan_dir = output or control.plans / "generation_v2" / "a3_r1"
+    if (expect_forensic_rows is None) != (expect_forensic_sha is None):
+        typer.echo("STOPPED: --expect-forensic-rows and --expect-forensic-sha go together")
+        raise typer.Exit(code=1)
+    forensic = (
+        None
+        if expect_forensic_rows is None or expect_forensic_sha is None
+        else (expect_forensic_rows, expect_forensic_sha.lower())
+    )
 
     def verify_databases(when: str) -> None:
         for path, expected in expected_digests.items():
@@ -2841,7 +2883,7 @@ def evidence_regenerate_a3_command(
 
     # --- the run: load, plan, validate, plan again, compare ------------------
     try:
-        result = regenerate_a3(package_dir, expect=expect)
+        result = regenerate_a3(package_dir, expect=expect, forensic=forensic)
     except PackageError as exc:
         typer.echo(f"STOPPED: {exc}")
         raise typer.Exit(code=1) from exc
@@ -2854,13 +2896,17 @@ def evidence_regenerate_a3_command(
         raise typer.Exit(code=1)
     typer.echo(f"package sha      : {package_sha} (every component re-hashed)")
     algorithm = algorithm_digests(Path.cwd())
-    digests = write_a3(
-        plan_dir,
-        result,
-        generation_id=GENERATION_ID,
-        algorithm=algorithm,
-        repo_commit=_repo_commit(),
-    )
+    try:
+        digests = write_a3(
+            plan_dir,
+            result,
+            generation_id=GENERATION_ID,
+            algorithm=algorithm,
+            repo_commit=_repo_commit(),
+        )
+    except (PackageError, PlanValidationError) as exc:
+        typer.echo(f"STOPPED: {exc}")
+        raise typer.Exit(code=1) from exc
     typer.echo(f"plan             : {plan_dir / 'plan_a3_v2.jsonl'}")
     for name, sha in digests.items():
         typer.echo(f"  {name:<28} {sha}")
@@ -2874,6 +2920,33 @@ def evidence_regenerate_a3_command(
         typer.echo(f"  fingerprint {key:<20} {value}")
     for relative, sha in algorithm.items():
         typer.echo(f"  algorithm {relative:<48} {sha[:16]}…")
+    forensic_class = result.comparison.get("forensic_classification")
+    if forensic_class == "FORENSIC_PRODUCTION_MISMATCH":
+        typer.echo(
+            f"STOPPED: FORENSIC_PRODUCTION_MISMATCH — {len(result.plan.targets)} rows / "
+            f"{result.sha256[:16]}… against expected {expect_forensic_rows} / "
+            f"{str(expect_forensic_sha)[:16]}…; nothing authorized, nothing mirrored"
+        )
+        raise typer.Exit(code=1)
+    if authorize:
+        chain = {
+            "superseded_package_sha256": supersedes_package_sha,
+            "superseded_plan_sha256": supersedes_plan_sha,
+            "forensic_commit": forensic_commit,
+            "correction_commit": correction_commit,
+            "corrected_package_sha256": package_sha,
+            "authoritative_plan_sha256": result.sha256,
+            "repo_commit": _repo_commit(),
+        }
+        try:
+            record_sha = write_authorization(
+                plan_dir, result, generation_id=GENERATION_ID, chain=chain
+            )
+        except PlanValidationError as exc:
+            typer.echo(f"STOPPED: {exc}")
+            raise typer.Exit(code=1) from exc
+        typer.echo(f"  {A3_AUTHORITATIVE_RECORD:<28} {record_sha}")
+        typer.echo(f"  {'status':<28} AUTHORITATIVE_V2_A3_PLAN, AUTHORIZED_FOR_EXPANSION")
 
     if mirror:
         counters: dict[str, int] = {}
@@ -2887,7 +2960,12 @@ def evidence_regenerate_a3_command(
             observe(count)
         control_mirror = ControlMirror(RetryingReads(storage), GENERATION_ID)
         try:
-            records = mirror_plan(control_mirror, plan_dir, generation_id=GENERATION_ID)
+            records = mirror_plan(
+                control_mirror,
+                plan_dir,
+                generation_id=GENERATION_ID,
+                prefix=plan_dir.name.replace("_", "-"),
+            )
         except (PackageError, MirrorConflictError, StorageUnavailableError) as exc:
             typer.echo(f"MIRROR FAILED: {exc}")
             raise typer.Exit(code=1) from exc
@@ -2897,11 +2975,14 @@ def evidence_regenerate_a3_command(
         typer.echo(f"  B2 requests: {dict(sorted(counters.items()))}")
     verify_databases("after the run")
     verdict = "A3_REPRODUCED_EXACTLY" if result.exact else str(result.comparison["byte_comparison"])
+    if forensic_class is not None:
+        verdict = f"{forensic_class}; {verdict}"
     typer.echo(
         f"PLAN A3 V2 COMPLETE — {len(result.plan.targets)} targets, sha256 {result.sha256}; "
         f"historical {result.comparison['historical_rows']} / "
         f"{str(result.comparison['historical_sha256'])[:16]}…; {verdict}; "
-        f"{A3_PLAN_COMPLETE_MARKER} written; nothing downloaded"
+        f"{A3_PLAN_COMPLETE_MARKER} written"
+        f"{'; ' + A3_AUTHORITATIVE_RECORD + ' written' if authorize else ''}; nothing downloaded"
     )
 
 

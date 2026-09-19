@@ -266,6 +266,7 @@ from stock_screener.sec_evidence.rebuild import (
 )
 from stock_screener.sec_evidence.regenerate import (
     A3_ALGORITHM_FILES,
+    A3_AUTHORITATIVE_RECORD,
     A3_PLAN_COMPLETE_MARKER,
     A3_PLAN_FILE,
     A3_PLAN_META,
@@ -281,6 +282,7 @@ from stock_screener.sec_evidence.regenerate import (
     serialize_plan,
     validate_plan,
     write_a3,
+    write_authorization,
 )
 from stock_screener.sec_evidence.sample import (
     DEFAULT_QUOTAS,
@@ -338,6 +340,7 @@ from stock_screener.sec_evidence.wiring import (
 
 __all__ = [
     "A3_ALGORITHM_FILES",
+    "A3_AUTHORITATIVE_RECORD",
     "A3_EXPECTED_SHA256",
     "A3_EXPECTED_TARGETS",
     "A3_INPUTS_COMPLETE_MARKER",
@@ -614,6 +617,7 @@ __all__ = [
     "verify_digests_of",
     "verify_frozen_prerequisites",
     "write_a3",
+    "write_authorization",
     "write_generation_plan",
     "write_migration_plan",
     "write_package",

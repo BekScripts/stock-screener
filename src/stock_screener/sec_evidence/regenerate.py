@@ -41,6 +41,7 @@ from api_clients import FILING_FORMS
 from stock_screener.sec_evidence.generation import A3_EXPECTED_SHA256, A3_EXPECTED_TARGETS
 from stock_screener.sec_evidence.inputs import (
     A3_INPUTS_MANIFEST,
+    SUPERSEDED_SIDECAR,
     InputsBindings,
     PackageError,
     load_planning_inputs,
@@ -64,6 +65,7 @@ log = structlog.get_logger(__name__)
 
 __all__ = [
     "A3_ALGORITHM_FILES",
+    "A3_AUTHORITATIVE_RECORD",
     "A3_PLAN_COMPLETE_MARKER",
     "A3_PLAN_FILE",
     "A3_PLAN_META",
@@ -79,6 +81,7 @@ __all__ = [
     "serialize_plan",
     "validate_plan",
     "write_a3",
+    "write_authorization",
 ]
 
 #: The historical configuration: Plan A, coverage-first, run to exhaustion.
@@ -92,6 +95,8 @@ A3_PLAN_SUMMARY = "plan_a3_v2.summary.json"
 A3_PLAN_META = "plan_a3_v2.meta.json"
 A3_PLAN_FINGERPRINTS = "plan_a3_v2.fingerprints.json"
 A3_PLAN_COMPLETE_MARKER = "plan_a3_v2_complete.json"
+#: Written only when every gate has passed: the plan is the one to execute.
+A3_AUTHORITATIVE_RECORD = "authoritative_a3_plan.json"
 
 #: The source files the selection depends on, relative to the repository.
 #: `plan.py` is the algorithm and the writer; the rest shaped its inputs and
@@ -318,16 +323,24 @@ def algorithm_digests(repository: Path) -> dict[str, str]:
 
 
 def regenerate_a3(
-    package: Path, *, expect: InputsBindings | None = None, runs: int = 2
+    package: Path,
+    *,
+    expect: InputsBindings | None = None,
+    runs: int = 2,
+    forensic: tuple[int, str] | None = None,
 ) -> A3Result:
     """Load the frozen package, run Plan A3 as configured historically, validate, compare.
 
     Args:
-        package: The B2.13 package directory.
+        package: The frozen inputs package directory.
         expect: The bindings the caller has proven against the live sources.
             Any difference refuses the package before the planner runs.
         runs: How many times the planner runs. Every run after the first
             must reproduce the first byte for byte.
+        forensic: A `(rows, ordered sha256)` expectation from an earlier
+            forensic run over the same inputs, when there is one. Recorded
+            as `EXACT_FORENSIC_REPRODUCTION` or `FORENSIC_PRODUCTION_MISMATCH`
+            in the comparison; never used to change the run.
 
     Returns:
         The result, including the determinism and historical comparisons.
@@ -337,6 +350,8 @@ def regenerate_a3(
         PlanValidationError: If the plan fails a validation, or a repeated
             run does not reproduce the first.
     """
+    if (package / SUPERSEDED_SIDECAR).exists():
+        raise PackageError(f"{package} is marked SUPERSEDED; it cannot feed a plan")
     inputs, manifest = load_planning_inputs(package, expect=expect)
     plan = plan_coverage_first(inputs.candidates)
     validation = validate_plan(plan, inputs)
@@ -382,6 +397,15 @@ def regenerate_a3(
             else "BYTE_DIGEST_COMPARISON_INCONCLUSIVE"
         ),
     }
+    if forensic is not None:
+        rows_expected, sha_expected = forensic
+        comparison["forensic_rows"] = rows_expected
+        comparison["forensic_sha256"] = sha_expected
+        comparison["forensic_classification"] = (
+            "EXACT_FORENSIC_REPRODUCTION"
+            if len(plan.targets) == rows_expected and sha == sha_expected
+            else "FORENSIC_PRODUCTION_MISMATCH"
+        )
     log.info(
         "plan a3 regenerated",
         targets=len(plan.targets),
@@ -426,7 +450,13 @@ def write_a3(
 
     Returns:
         SHA-256 per file written, by name.
+
+    Raises:
+        PackageError: If the directory holds a plan marked SUPERSEDED.
+        PlanValidationError: If the historical writer did not produce the in-memory bytes.
     """
+    if (directory / SUPERSEDED_SIDECAR).exists():
+        raise PackageError(f"{directory} holds a SUPERSEDED plan; it is never overwritten")
     directory.mkdir(parents=True, exist_ok=True)
     _, jsonl_path, sha = write_plan(directory, result.plan)
     written = jsonl_path.read_bytes()
@@ -457,11 +487,20 @@ def write_a3(
         directory / A3_PLAN_FINGERPRINTS,
         {"generation_id": generation_id, "package_sha256": package_sha, **result.fingerprints},
     )
+    bindings = dict(result.package_manifest.get("bindings") or {})  # type: ignore[call-overload]
     digests[A3_PLAN_META] = _write_json(
         directory / A3_PLAN_META,
         {
             "generation_id": generation_id,
             "package_sha256": package_sha,
+            "plan_sha256": sha,
+            "candidate_window": {
+                "definition": bindings.get("candidate_window_definition"),
+                "start": bindings.get("window_start"),
+                "end": bindings.get("window_end"),
+                "date_field": "catalogue filing_date",
+                "semantics": "WINDOW_START <= filing_date <= WINDOW_END, both inclusive",
+            },
             "package_components": dict(result.package_manifest.get("components") or {}),  # type: ignore[call-overload]
             "package_bindings": dict(result.package_manifest.get("bindings") or {}),  # type: ignore[call-overload]
             "algorithm_files": dict(algorithm),
@@ -503,6 +542,70 @@ def write_a3(
     return digests
 
 
+def write_authorization(
+    directory: Path,
+    result: A3Result,
+    *,
+    generation_id: str,
+    chain: Mapping[str, object],
+) -> str:
+    """Record that this plan is the authoritative one, with its whole provenance chain.
+
+    Deterministic — no timestamp — so a rerun over the same plan mirrors as a
+    `MIRROR_HIT`. Refused unless the plan validated and every repeated run
+    reproduced the first: a plan that is not proven is not authorized.
+
+    Args:
+        directory: The plan directory.
+        result: The regeneration result.
+        generation_id: The evidence generation.
+        chain: Superseded package and plan digests, the forensic and
+            correction commits, and the corrected package digest.
+
+    Returns:
+        The record's SHA-256.
+
+    Raises:
+        PlanValidationError: If the plan did not validate or was not
+            reproduced, or a forensic expectation was given and not met.
+    """
+    if not result.validation.passed or not result.determinism.get("identical"):
+        raise PlanValidationError("an unvalidated or non-reproduced plan cannot be authorized")
+    if result.comparison.get("forensic_classification") == "FORENSIC_PRODUCTION_MISMATCH":
+        raise PlanValidationError("the plan does not reproduce the forensic expectation")
+    return _write_json(
+        directory / A3_AUTHORITATIVE_RECORD,
+        {
+            "stage": "AUTHORITATIVE_V2_A3_PLAN",
+            "status": ["AUTHORITATIVE_V2_A3_PLAN", "AUTHORIZED_FOR_EXPANSION"],
+            "generation_id": generation_id,
+            "plan_sha256": result.sha256,
+            "plan_rows": len(result.plan.targets),
+            "unordered_target_set_sha256": result.fingerprints["unordered_targets"],
+            "fingerprints": result.fingerprints,
+            "package_sha256": str(result.package_manifest.get("package_sha256")),
+            "candidate_window_definition": (
+                dict(result.package_manifest.get("bindings") or {}).get(  # type: ignore[call-overload]
+                    "candidate_window_definition"
+                )
+            ),
+            "estimated_bytes": result.plan.estimated_bytes,
+            "solvable_gaps": result.metrics["solvable_gaps"],
+            "safe_potential_months": result.metrics["safe_potential_months"],
+            "expected_months": result.metrics["expected_months"],
+            "historical": {
+                "rows": A3_EXPECTED_TARGETS,
+                "sha256": A3_EXPECTED_SHA256,
+                "row_delta": len(result.plan.targets) - A3_EXPECTED_TARGETS,
+                "classification": "COUNT_ONLY_COMPARATOR",
+            },
+            "forensic_classification": result.comparison.get("forensic_classification"),
+            "chain": dict(chain),
+            "validation": {"passed": result.validation.passed, **asdict(result.validation)},
+        },
+    )
+
+
 #: Every file the mirror carries, in order.
 A3_PLAN_FILES = (
     A3_PLAN_FILE,
@@ -518,19 +621,24 @@ A3_PLAN_FILES = (
 
 
 def mirror_plan(
-    mirror: ControlMirror, directory: Path, *, generation_id: str
+    mirror: ControlMirror, directory: Path, *, generation_id: str, prefix: str = "a3"
 ) -> Sequence[MirrorRecord]:
-    """Mirror every plan file as an immutable snapshot under `a3/`, and read each back.
+    """Mirror every plan file as an immutable snapshot under `<prefix>/`, and read each back.
+
+    The authoritative record is carried too when the directory holds one.
 
     Raises:
         PackageError: If a file is missing or its newest snapshot is not the local file.
     """
     records = []
-    for name in A3_PLAN_FILES:
+    names = [*A3_PLAN_FILES]
+    if (directory / A3_AUTHORITATIVE_RECORD).is_file():
+        names.append(A3_AUTHORITATIVE_RECORD)
+    for name in names:
         local = directory / name
         if not local.is_file():
             raise PackageError(f"{local} does not exist; nothing to mirror")
-        kind = f"a3/{name.replace('.', '-')}"
+        kind = f"{prefix}/{name.replace('.', '-')}"
         record, _ = mirror.mirror_snapshot(local, kind, generation_id=generation_id)
         newest = mirror.newest_snapshot(kind)
         if newest is None or newest[0].get("sha256") != record.sha256:

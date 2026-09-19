@@ -25,6 +25,7 @@ from typer.testing import CliRunner
 from stock_screener.cli import app
 from stock_screener.config import get_settings
 from stock_screener.sec_evidence import (
+    A3_AUTHORITATIVE_RECORD,
     A3_EXPECTED_SHA256,
     A3_EXPECTED_TARGETS,
     A3_INPUTS_DIRECTORY,
@@ -53,10 +54,11 @@ from stock_screener.sec_evidence import (
     supported_months,
     validate_plan,
     write_a3,
+    write_authorization,
     write_package,
 )
 from stock_screener.sec_evidence import inputs as inputs_module
-from stock_screener.sec_evidence.inputs import AssembledInputs
+from stock_screener.sec_evidence.inputs import SUPERSEDED_SIDECAR, AssembledInputs
 from stock_screener.sec_evidence.regenerate import A3_PLAN_FILES
 
 if TYPE_CHECKING:
@@ -434,6 +436,123 @@ class TestTheMirror:
         for record in records:
             assert hashlib.sha256(client.objects[record.key][0]).hexdigest() == record.sha256
 
+    def test_a_prefix_keeps_a_corrected_plan_apart_from_the_superseded_one(
+        self, package: Path, tmp_path: Path, fake_s3: type[FakeS3Client]
+    ) -> None:
+        result = regenerate_a3(package, expect=bindings())
+        write_a3(
+            tmp_path / "a3_r1", result, generation_id=GENERATION, algorithm={}, repo_commit=None
+        )
+        write_authorization(tmp_path / "a3_r1", result, generation_id=GENERATION, chain={})
+        client = fake_s3()
+        mirror = ControlMirror(B2EvidenceStorage(B2_CONFIG, client=client), GENERATION)
+
+        records = mirror_plan(mirror, tmp_path / "a3_r1", generation_id=GENERATION, prefix="a3-r1")
+
+        assert len(records) == len(A3_PLAN_FILES) + 1
+        assert all(k.startswith(f"control/{GENERATION}/a3-r1/") for k in client.objects)
+        assert not any(k.startswith(f"control/{GENERATION}/a3/") for k in client.objects)
+        assert any("/a3-r1/authoritative_a3_plan-json/" in k for k in client.objects)
+
+
+class TestTheForensicGate:
+    def test_a_matching_expectation_is_an_exact_reproduction(
+        self, package: Path, offline: None
+    ) -> None:
+        plain = regenerate_a3(package, expect=bindings())
+
+        gated = regenerate_a3(package, expect=bindings(), forensic=(4, plain.sha256))
+
+        assert gated.comparison["forensic_classification"] == "EXACT_FORENSIC_REPRODUCTION"
+        assert gated.sha256 == plain.sha256
+        assert gated.comparison["forensic_rows"] == 4
+
+    @pytest.mark.parametrize(
+        ("rows", "sha_of"),
+        [(3, "same"), (4, "other")],
+        ids=["row-count-differs", "digest-differs"],
+    )
+    def test_a_mismatch_is_named_and_never_forced(
+        self, package: Path, offline: None, rows: int, sha_of: str
+    ) -> None:
+        plain = regenerate_a3(package, expect=bindings())
+        sha = plain.sha256 if sha_of == "same" else "00" * 32
+
+        gated = regenerate_a3(package, expect=bindings(), forensic=(rows, sha))
+
+        assert gated.comparison["forensic_classification"] == "FORENSIC_PRODUCTION_MISMATCH"
+        assert gated.sha256 == plain.sha256
+        assert gated.serialized == plain.serialized
+
+    def test_no_expectation_records_no_classification(self, package: Path, offline: None) -> None:
+        result = regenerate_a3(package, expect=bindings())
+
+        assert "forensic_classification" not in result.comparison
+
+
+class TestAuthorization:
+    def test_the_record_is_deterministic_and_names_the_chain(
+        self, package: Path, tmp_path: Path
+    ) -> None:
+        result = regenerate_a3(package, expect=bindings())
+        write_a3(tmp_path / "p", result, generation_id=GENERATION, algorithm={}, repo_commit=None)
+        chain = {"superseded_plan_sha256": "aa" * 32, "forensic_commit": "2a7d3b8"}
+
+        first = write_authorization(tmp_path / "p", result, generation_id=GENERATION, chain=chain)
+        first_bytes = (tmp_path / "p" / A3_AUTHORITATIVE_RECORD).read_bytes()
+        second = write_authorization(tmp_path / "p", result, generation_id=GENERATION, chain=chain)
+
+        record = json.loads(first_bytes)
+        assert first == second == hashlib.sha256(first_bytes).hexdigest()
+        assert (tmp_path / "p" / A3_AUTHORITATIVE_RECORD).read_bytes() == first_bytes
+        assert record["status"] == ["AUTHORITATIVE_V2_A3_PLAN", "AUTHORIZED_FOR_EXPANSION"]
+        assert record["plan_sha256"] == result.sha256 and record["plan_rows"] == 4
+        assert record["chain"] == chain
+        assert record["historical"]["row_delta"] == 4 - A3_EXPECTED_TARGETS
+        assert record["validation"]["passed"] is True
+
+    def test_a_forensic_mismatch_is_refused(self, package: Path, tmp_path: Path) -> None:
+        result = regenerate_a3(package, expect=bindings(), forensic=(4, "00" * 32))
+
+        with pytest.raises(PlanValidationError, match="forensic expectation"):
+            write_authorization(tmp_path / "p", result, generation_id=GENERATION, chain={})
+        assert not (tmp_path / "p" / A3_AUTHORITATIVE_RECORD).exists()
+
+    def test_a_plan_that_did_not_reproduce_is_refused(self, package: Path, tmp_path: Path) -> None:
+        result = regenerate_a3(package, expect=bindings())
+        broken = replace(result, determinism={**result.determinism, "identical": False})
+
+        with pytest.raises(PlanValidationError, match="cannot be authorized"):
+            write_authorization(tmp_path / "p", broken, generation_id=GENERATION, chain={})
+
+
+class TestSupersededArtifactsAreNeverLoadedOrOverwritten:
+    def test_a_superseded_package_is_refused_before_it_is_read(
+        self, package: Path, offline: None, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        (package / SUPERSEDED_SIDECAR).write_text("{}", encoding="utf-8")
+
+        def never(*_: object, **__: object) -> object:
+            raise AssertionError("a superseded package was loaded")
+
+        monkeypatch.setattr("stock_screener.sec_evidence.regenerate.load_planning_inputs", never)
+
+        with pytest.raises(PackageError, match="marked SUPERSEDED"):
+            regenerate_a3(package, expect=bindings())
+
+    def test_a_superseded_plan_directory_is_never_written_over(
+        self, package: Path, tmp_path: Path
+    ) -> None:
+        result = regenerate_a3(package, expect=bindings())
+        old = tmp_path / "a3"
+        old.mkdir()
+        (old / SUPERSEDED_SIDECAR).write_text("{}", encoding="utf-8")
+        (old / A3_PLAN_FILE).write_bytes(b"the old plan\n")
+
+        with pytest.raises(PackageError, match="never overwritten"):
+            write_a3(old, result, generation_id=GENERATION, algorithm={}, repo_commit=None)
+        assert (old / A3_PLAN_FILE).read_bytes() == b"the old plan\n"
+
 
 class TestTheCommand:
     @pytest.fixture
@@ -530,8 +649,80 @@ class TestTheCommand:
         ).is_file()
         assert not any(key.split("/")[0] in ARTIFACT_PREFIXES for _op, key in client.calls)
         assert not any(op.startswith("delete") for op, _ in client.calls)
-        assert any(k.startswith(f"control/{GENERATION}/a3/") for k in client.objects)
+        assert any(k.startswith(f"control/{GENERATION}/a3-r1/") for k in client.objects)
+        assert not any(k.startswith(f"control/{GENERATION}/a3/") for k in client.objects)
+        assert not (plan_dir / A3_AUTHORITATIVE_RECORD).exists()
         assert "a3-application-key" not in result.stdout
+
+    def test_the_command_authorizes_only_an_exact_forensic_reproduction(
+        self, environment: tuple[Path, FakeS3Client]
+    ) -> None:
+        control, client = environment
+        plan_dir = control / "plans" / "generation_v2" / "a3_r1"
+        first = CliRunner().invoke(app, ["evidence", "regenerate-a3", "--no-mirror"])
+        get_settings.cache_clear()
+        assert first.exit_code == 0, first.stdout
+        sha = (plan_dir / "plan_a3_v2.sha256").read_text().split()[0]
+
+        mismatch = CliRunner().invoke(
+            app,
+            [
+                "evidence",
+                "regenerate-a3",
+                "--expect-forensic-rows",
+                "3",
+                "--expect-forensic-sha",
+                sha,
+                "--authorize",
+            ],
+        )
+        get_settings.cache_clear()
+        calls_after_mismatch = list(client.calls)
+        authorized_after_mismatch = (plan_dir / A3_AUTHORITATIVE_RECORD).exists()
+        match = CliRunner().invoke(
+            app,
+            [
+                "evidence",
+                "regenerate-a3",
+                "--expect-forensic-rows",
+                "4",
+                "--expect-forensic-sha",
+                sha,
+                "--authorize",
+                "--supersedes-plan-sha",
+                "aa" * 32,
+                "--forensic-commit",
+                "2a7d3b8",
+            ],
+        )
+        get_settings.cache_clear()
+
+        assert mismatch.exit_code == 1
+        assert "STOPPED: FORENSIC_PRODUCTION_MISMATCH" in mismatch.stdout
+        assert not any(op == "put_object" for op, _ in calls_after_mismatch)
+        assert not authorized_after_mismatch
+        assert match.exit_code == 0, match.stdout
+        assert "EXACT_FORENSIC_REPRODUCTION" in match.stdout
+        record = json.loads((plan_dir / A3_AUTHORITATIVE_RECORD).read_text())
+        assert record["status"] == ["AUTHORITATIVE_V2_A3_PLAN", "AUTHORIZED_FOR_EXPANSION"]
+        assert record["chain"]["superseded_plan_sha256"] == "aa" * 32
+        assert record["chain"]["forensic_commit"] == "2a7d3b8"
+        assert any("/a3-r1/authoritative_a3_plan-json/" in k for k in client.objects)
+
+    def test_the_command_wants_both_halves_of_a_forensic_expectation(
+        self, environment: tuple[Path, FakeS3Client]
+    ) -> None:
+        control, client = environment
+
+        result = CliRunner().invoke(
+            app, ["evidence", "regenerate-a3", "--expect-forensic-rows", "4"]
+        )
+        get_settings.cache_clear()
+
+        assert result.exit_code == 1
+        assert "go together" in result.stdout
+        assert not (control / "plans" / "generation_v2" / "a3_r1").exists()
+        assert not client.calls
 
     def test_the_command_refuses_a_package_whose_component_changed(
         self, environment: tuple[Path, FakeS3Client]

@@ -1533,6 +1533,18 @@ under `plans/generation_v2/a3_inputs/`, mirrored file for file under
 package layout and the live run are in
 [A3 planning inputs](a3-planning-inputs.md). The planner is not run.
 
+## B2.13R–B2.14R2 the corrected inputs and the authoritative plan
+
+The corrected package lives under `plans/generation_v2/a3_inputs_r1/`,
+mirrored under `control/<generation>/a3-inputs-r1/`; the authoritative plan
+under `plans/generation_v2/a3_r1/`, mirrored under
+`control/<generation>/a3-r1/` with `authoritative_a3_plan.json` beside the
+plan files. The superseded `a3_inputs/` and `a3/` directories and their
+`a3-inputs/` and `a3/` mirror prefixes are kept, each with a
+`SUPERSEDED.json`, and are refused by the regeneration code rather than
+merely avoided. The plan is recoverable from the control namespace alone.
+See [A3 planning inputs](a3-planning-inputs.md#the-authoritative-plan-b214r2).
+
 ## Future staging databases
 
 A research staging database is 20–30 GB. **Create new ones under

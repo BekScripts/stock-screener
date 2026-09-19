@@ -36,8 +36,8 @@ appears without the run or the test that produced it.
 
 ## Current phase
 
-**B2.13R — the historical A3 candidate window restored and the
-PlanningInputs refrozen** is the current checkpoint on
+**B2.14R2 — Plan A3 regenerated from the corrected frozen inputs and
+authorized for expansion** is the current checkpoint on
 `feat/phase-b2-storage-abstraction`. **The BEK
 drive is permanently unavailable** and Generation V1 is history that
 creates no trust. B2.9X started **Generation V2** from what survived on the
@@ -96,8 +96,20 @@ solvable gaps (−1,503 Jan/Feb 2022 → no candidate), floor 77,697, held
 mirrored as 54 objects and read back. The B2.13 package `83680ead…` and
 the B2.14 plan `a3e7df19…` (62,924) are SUPERSEDED_INPUT_ASSEMBLY /
 NOT_AUTHORIZED_FOR_EXPANSION — kept locally and remotely with
-`SUPERSEDED.json` beside each, never deleted. Plan regeneration from the
-corrected package is B2.14R2; nothing has been downloaded.** The frozen
+`SUPERSEDED.json` beside each, never deleted. AUTHORITATIVE V2 PLAN A3:
+`plans/generation_v2/a3_r1/plan_a3_v2.jsonl`, **61,628 targets**, SHA-256
+`0efa7d038e063099dff86ff6e74ea9a2aab61feed62c45f29829511eba9b9507`,
+6,599,925,841 bytes estimated, every one of the 164,572 solvable gaps
+reached, 155,114.5 expected months, all validations zero, byte-identical
+on a second run, `EXACT_FORENSIC_REPRODUCTION` of the B2.14R run 1
+(61,628 / `0efa7d03…`), −313 against the historical 61,941 (count-only
+comparator; the digest is not a gate); no target dated before 2022-01-01;
+`authoritative_a3_plan.json` written (`AUTHORITATIVE_V2_A3_PLAN`,
+`AUTHORIZED_FOR_EXPANSION`) with the supersession chain; 10 files as 20
+objects mirrored under `control/…/a3-r1/` and read back; recovered from
+B2 alone and re-planned to the same digest —
+`A3_PLAN_RECOVERY_SUFFICIENT = YES`. B2.14R2: APPROVED_FOR_EXPANSION.
+Nothing has been downloaded; expansion is B2.15.** The frozen
 resolution stands: 8,919
 identities, 6,048 resolved (402 `STORED`, 5,646 `SEC_TICKER_MAP`), 2,871
 `UNRESOLVED`; the ticker map was fetched once, in B2.10, and never again. See
@@ -603,6 +615,34 @@ convention, and none may be relaxed without an explicit instruction.
   `supersession.json` naming the old package and plan digests, the forensic
   verdict and commit; the old artifacts gain a `SUPERSEDED.json` beside them
   and lose nothing, locally or remotely.
+
+### B2.14R2 the authoritative plan
+
+- **A forensic expectation is a gate, never a target.** `regenerate-a3`
+  takes the rows and ordered digest an earlier forensic run produced over
+  the same inputs and classifies the production result
+  `EXACT_FORENSIC_REPRODUCTION` or `FORENSIC_PRODUCTION_MISMATCH`; a
+  mismatch stops the command before authorization or mirroring. The
+  expectation is compared after the run and read by nothing in it; the
+  planner, its configuration and the package are unchanged.
+- **Authorization is a record written after every gate.**
+  `authoritative_a3_plan.json` names the plan digest, rows and fingerprints,
+  the package digest and its window definition, the count-only historical
+  comparison, and the chain superseded package → superseded plan →
+  forensic commit → correction commit → corrected package → this plan.
+  `write_authorization` refuses a plan that did not validate, did not
+  reproduce, or missed its forensic expectation. The record has no
+  timestamp, so a rerun over the same plan mirrors as a hit.
+- **Superseded artifacts are refused by code, not avoided by care.** A
+  package or plan directory carrying `SUPERSEDED.json` is refused by
+  `regenerate_a3` and `write_a3`; the mirror prefix follows the plan
+  directory (`a3_r1` → `a3-r1/`), so the superseded `a3/` objects are never
+  written to. The superseded plan `a3e7df19…` is never executed.
+- **The authoritative plan must be recoverable from B2 alone.** With the
+  local package, index, databases and assembly refused, the package is
+  recovered from its newest control snapshots and the unchanged planner
+  reproduces the mirrored plan digest. Recovery that needs the working tree
+  is not recovery.
 
 ### B2.14R the forensic review
 
@@ -1780,6 +1820,72 @@ Documented rather than fixed. Each is a deliberate stop, not a backlog item.
 
 Measured runs, kept because they are the evidence behind decisions above.
 
+### B2.14R2 authoritative Plan A3 — 2026-09-18
+
+- `evidence regenerate-a3 --package …/a3_inputs_r1 --expect-package-sha
+  79f644f1… --database stage9k.db --expect-universe-count 8919
+  --expect-universe-sha b8eaed3e… --expect-database-sha … (both)
+  --expect-manifest-sha 13722e02… --expect-index-sha 3deb46b7… --output
+  …/a3_r1 --expect-forensic-rows 61628 --expect-forensic-sha 0efa7d03…
+  --authorize --supersedes-package-sha 83680ead… --supersedes-plan-sha
+  a3e7df19… --forensic-commit 2a7d3b84… --correction-commit daa1d36a…
+  --mirror`, 01:21 UTC 2026-09-19: both database digests unchanged before
+  and after; universe re-proven read-only; package re-hashed component by
+  component; 0 SEC requests, 0 evidence reads or writes, 0 deletes; planner
+  ~7 s for two runs. (A first invocation was refused by the universe
+  binding because a shell substitution passed an 8-character digest;
+  nothing was written.)
+- Frozen systems verified before the run: `plan.py` d6562cab…,
+  `reachability.py` cd82fca6…, `join.py` 1a3e00d2…, `coverage.py`
+  a0b5816f…, `sample.py` 12abc44e… (all last changed 13d586b), `expand.py`
+  fb6a975e… (1b56b86); `WINDOW_START` 2022-01-01, `WINDOW_END` 2026-07-31,
+  `CARRY_FORWARD_DAYS` 90, `PLAN_VERSION` v1; `stash@{0}` untouched.
+- Plan `0efa7d038e063099dff86ff6e74ea9a2aab61feed62c45f29829511eba9b9507`:
+  **61,628 targets**, 4,167 CIKs, 61,583 accessions, 6,599,925,841 bytes
+  (6.147 GiB); 8-K 59,937, 10-Q 1,176, 10-K 380, 20-F 96, 20-F/A 19, 40-F
+  18, 40-F/A 2; solvable 164,572 reached 164,572, unreached 0; expected
+  155,114.479 months, floor 77,697, expected remaining 87,154.5 of 242,269;
+  target months 2022-01-31 … 2026-07-31; filing dates 2022-01-03 …
+  2026-07-21; validation seven zeros; run 2 identical. Fingerprints:
+  unordered `42d92d38…`, identities `3c5344ef…`, per-form `6bcfeb66…`,
+  per-CIK `68cc8173…`. Files: csv 22dfdfff…, summary c0a109a8…,
+  fingerprints c01c038a…, meta d153da40…, complete 9e5ccc18…,
+  authorization 2efb042f….
+- `EXACT_FORENSIC_REPRODUCTION`: rows and digest equal to B2.14R run 1.
+  Historical: −313 (61,941), `BYTE_DIGEST_COMPARISON_INCONCLUSIVE`,
+  count-only comparator, not forced. Versus the superseded `a3e7df19…`:
+  61,577 in both, 1,347 only old — exactly its 2021-filed targets — 51 only
+  new; 0 targets filed 2021 in the authoritative plan.
+- Independent audit over all 61,628 rows: every target a frozen candidate,
+  not held, qualifying form, in window, estimate equal to its candidate's;
+  every cover key `G1_SOLVABLE`, month-end ≥ filing date and ≤ 90 days
+  after; all 164,572 solvable gaps claimed; ranks contiguous; 0 duplicates.
+  Edges: 647,373 candidate-gap (0 future-invalid), 182,727 selected-plan
+  (0 future-invalid); identity violations 0 (every covered gap's CIK is the
+  target's); 45 co-registrant copies, 0 collapsed, 0 accession-only dedup
+  errors. Spot audit seeded from the plan digest: 320 samples over top,
+  middle, bottom, 8-K, 10-Q, 10-K, 20-F, 40-F, co-registrant, one-month
+  marginal and high-marginal strata, 0 failures; plus a 200-row sample
+  (seed 20260918) recorded with covered months.
+- Mirror: 10 files as 20 objects under `control/…/a3-r1/`, all `MIRRORED`,
+  read back equal; 1,302 control objects; superseded `a3/` (`a3e7df19…`,
+  `SUPERSEDED.json`) and `a3_inputs/` byte-identical after. Recovery from
+  B2 alone (`sqlite3.connect`, the engine factory and the assembly refused):
+  27 package files from the newest `a3-inputs-r1/` snapshots → package
+  `79f644f1…` → two planner runs → 61,628 / `0efa7d03…` = mirrored plan =
+  mirrored authorization record. `A3_PLAN_RECOVERY_SUFFICIENT = YES`; 74
+  control GETs, 76 lists, 0 puts, 0 evidence-prefix keys. Credential scan
+  over 18 files (plan directory, descriptors, ledger, docs, logs): 0.
+- `tests/integration/test_a3_regenerate.py` +12 (34 passed): the forensic
+  gate classifies a match, a row mismatch and a digest mismatch without
+  changing the plan; the authorization record is deterministic, names the
+  chain, and is refused on a mismatch or a non-reproduced run; a superseded
+  package is refused before it is read and a superseded plan directory is
+  never written over; the mirror prefix keeps `a3-r1/` apart from `a3/` and
+  carries the record; the command authorizes only an exact reproduction,
+  stops on a mismatch with nothing put, and wants both halves of an
+  expectation.
+
 ### B2.13R corrected PlanningInputs — 2026-09-18
 
 - `evidence build-a3-inputs --database stage9k.db --expect-universe-sha
@@ -2463,14 +2569,14 @@ under **80%**. It is what CI runs; run it rather than the individual tools.
 
 ## Next phase
 
-**B2.14R2 — regenerate Plan A3 from the corrected frozen inputs** follows:
-`evidence regenerate-a3` over `a3_inputs_r1/` (`79f644f1…`), the unchanged
-planner, validated, run twice, written by the historical writer into
-`a3_r1/`, and compared to the historical 61,941 / `53e3f0ca…` — expected
-near the B2.14R counterfactual (61,628, `0efa7d03…`) but that was not
-production output and is not a target. Then B2.15 (freeze expansion
-batches, run a small live canary). The superseded plan `a3e7df19…` is never
-executed. FTD archives are redownloaded separately. The one-month boundary
+**B2.15 — freeze expansion batches from the authoritative plan and run a
+small live canary** follows: batches are cut from
+`plans/generation_v2/a3_r1/plan_a3_v2.jsonl` (`0efa7d03…`, 61,628
+targets) and nothing else, each batch's target list frozen and mirrored
+before a byte is fetched, and the first batch small enough to be audited
+by hand. The superseded plan `a3e7df19…` is never executed; the
+authoritative record `authoritative_a3_plan.json` is what execution binds
+to. FTD archives are redownloaded separately. The one-month boundary
 between the classification and planning rules remains documented in
 [A3 planning inputs](a3-planning-inputs.md) and is a decision for a later
 phase; widening the acquisition window is likewise a separate, versioned
@@ -2541,7 +2647,7 @@ Not a backlog. These exclusions are deliberate.
 
 | | |
 | --- | --- |
-| Commit | The B2.13R commit containing this checkpoint, `fix: restore historical A3 candidate window`; parent `2a7d3b8` (B2.14R, `test: validate V2 A3 forensic differences`). The corrected package's manifest records `repo_commit` `2a7d3b8` because it was built from the working tree that became this commit; the superseded package records `ebfbc1c`, the superseded plan `afe6a10`, the index `1b407b6`. |
+| Commit | The B2.14R2 commit containing this checkpoint, `feat: authorize corrected V2 Plan A3`; parent `daa1d36` (B2.13R, `fix: restore historical A3 candidate window`). The authoritative plan's meta and authorization record name `repo_commit` `daa1d36` because they were written from the working tree that became this commit; the corrected package records `2a7d3b8`, the superseded package `ebfbc1c`, the superseded plan `afe6a10`, the index `1b407b6`. |
 | Branch | `feat/phase-b2-storage-abstraction` |
 | Migration head | `0031` — the research-universe layer (9K.7). Nothing since 9K.11 added one. |
 | Score version | `COMPOUNDER_V1_2` (unchanged by anything in Phase 8, 9A, 9B or 9C) |

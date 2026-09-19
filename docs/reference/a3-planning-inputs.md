@@ -340,3 +340,90 @@ bytes `84c270fa…`, conflicts `49350662…`. Mirror: 27 files as 54 objects und
 `a3-inputs-r1/`, every one read back equal; the superseded package's 50
 objects untouched, plus a `SUPERSEDED.json` snapshot beside each of the old
 package and the old plan. Plan regeneration from this package is B2.14R2.
+
+## The authoritative plan (B2.14R2)
+
+`evidence regenerate-a3` over the corrected package, with three additions to
+the command and none to the planner:
+
+- **A forensic expectation is a gate, not a target.** `--expect-forensic-rows`
+  and `--expect-forensic-sha` name what an earlier forensic run over the same
+  inputs produced; the result is classified `EXACT_FORENSIC_REPRODUCTION`
+  when rows and ordered digest both match and `FORENSIC_PRODUCTION_MISMATCH`
+  otherwise, recorded in the comparison. A mismatch stops the command before
+  anything is authorized or mirrored. Nothing about the run reads the
+  expectation.
+- **Authorization is a record, written last.** `--authorize` writes
+  `authoritative_a3_plan.json` — status `AUTHORITATIVE_V2_A3_PLAN`,
+  `AUTHORIZED_FOR_EXPANSION`; the plan digest, row count and fingerprints;
+  the package digest and its window definition; the historical comparison
+  (count-only); and the chain from `--supersedes-package-sha`,
+  `--supersedes-plan-sha`, `--forensic-commit`, `--correction-commit` to the
+  corrected package and this plan. It has no timestamp, so a rerun mirrors as
+  a hit. `write_authorization` refuses a plan that did not validate, did not
+  reproduce on its second run, or missed a forensic expectation it was given.
+- **Superseded artifacts are refused, not avoided.** `regenerate_a3` refuses
+  a package directory carrying `SUPERSEDED.json`; `write_a3` refuses a plan
+  directory carrying one. The mirror prefix follows the plan directory
+  (`a3_r1` → `control/<generation>/a3-r1/`), so the superseded `a3/` objects
+  are never written to.
+
+`plan_a3_v2.meta.json` now also carries `plan_sha256` and the explicit
+`candidate_window` (definition, bounds, date field, semantics) from the
+package's bindings.
+
+### The live run — 2026-09-18
+
+Package `79f644f1…` re-hashed component by component and bound to the live
+manifest `13722e02…`, index `3deb46b7…` and its fingerprints, resolution
+`161429f5…` and `stage9k.db` (universe `b8eaed3e…`, 8,919, re-proven
+read-only); both database digests unchanged before and after; 0 SEC
+requests, 0 evidence reads or writes.
+
+| | authoritative `a3_r1` | forensic run 1 (B2.14R) | superseded `a3` | historical |
+| --- | --- | --- | --- | --- |
+| targets | **61,628** | 61,628 | 62,924 | 61,941 (−313, −0.5%) |
+| ordered digest | `0efa7d038e063099dff86ff6e74ea9a2aab61feed62c45f29829511eba9b9507` | same | `a3e7df19…` | `53e3f0ca…` — count-only comparator |
+| unordered target set | `42d92d38…` | — | — | — |
+| estimated download | 6,599,925,841 bytes, 6.147 GiB | same | 6,807,725,520 | ~6.6 GiB |
+| solvable gaps reached | 164,572 of 164,572 | same | 166,075 of 166,075 | 165,553 |
+| expected months | 155,114.5 | same | 156,531.6 | 152,381 |
+| raw `UNKNOWN` floor | 77,697 | same | 76,194 | 76,029 |
+| months per target | 2.670 | 2.670 | 2.639 | 2.673 |
+| forms | 8-K 59,937 · 10-Q 1,176 · 10-K 380 · 20-F 96 · 20-F/A 19 · 40-F 18 · 40-F/A 2 | — | 8-K 61,160 · 10-Q 1,249 · 10-K 378 · … | — |
+| unique CIKs / accessions | 4,167 / 61,583 | — | 4,174 / 62,875 | — |
+| filing dates | 2022-01-03 … 2026-07-21 | — | includes 1,347 filed 2021 | — |
+| validation | all seven zero | — | all zero | — |
+| determinism | run 2 identical: rows, bytes, digest | — | identical | — |
+| classification | `EXACT_FORENSIC_REPRODUCTION` | — | `SUPERSEDED` | `BYTE_DIGEST_COMPARISON_INCONCLUSIVE` |
+
+Against the superseded plan: 61,577 targets in both; the 1,347 only in the
+old plan are exactly its 2021-filed targets; 51 targets are new, the
+cascade the forensic review predicted where a 2021 filing had taken a
+month. No target in the authoritative plan is dated before 2022-01-01.
+
+Independent audit over every row (not the command's own validation): each
+target is a frozen candidate, not held, of a qualifying form, dated inside
+the window, carrying its candidate's estimate; every cover key is a
+`G1_SOLVABLE` gap whose month-end is on or after the filing date and within
+90 days of it; the 61,628 targets together claim all 164,572 solvable gaps;
+ranks are contiguous; 0 duplicates; 182,727 selected-plan edges, none
+future-invalid; every covered gap belongs to the target's CIK (45
+co-registrant copies, none collapsed). A spot audit seeded from the plan
+digest — 320 samples over top, middle, bottom, each form, co-registrant,
+one-month and high-marginal strata — found 0 failures, and a 200-row sample
+(seed 20260918) is recorded with each target's covered months.
+
+Mirror: 10 files as 20 objects under `control/…/a3-r1/`, every one
+`MIRRORED` and read back equal; 1,302 control objects; the superseded
+`a3/` and `a3-inputs/` objects untouched. **Recovery from B2 alone:**
+with `sqlite3.connect`, the engine factory and the assembly refused, the
+package's 27 files were recovered from the newest `a3-inputs-r1/`
+snapshots into a temp directory (package `79f644f1…` re-hashed), the
+unchanged planner run over them twice, and the result — 61,628 rows,
+`0efa7d03…` — equals the mirrored plan and the mirrored authorization
+record: `A3_PLAN_RECOVERY_SUFFICIENT = YES`. 74 control GETs, 76 lists, 0
+puts, 0 evidence-prefix keys.
+
+The plan is `AUTHORITATIVE_V2_A3_PLAN` and `AUTHORIZED_FOR_EXPANSION`.
+Nothing has been downloaded; expansion is B2.15.
