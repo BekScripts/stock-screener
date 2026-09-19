@@ -208,6 +208,14 @@ from stock_screener.sec_evidence.derived import (
     mirror_index_metadata,
     semantic_fingerprints,
 )
+from stock_screener.sec_evidence.expansion import (
+    EXPANSION_BATCH_SIZE,
+    EXPANSION_DIR,
+    EXPANSION_MARKER,
+    ExpansionRefusedError,
+    load_authorized_plan,
+    run_expansion,
+)
 from stock_screener.sec_evidence.generation import (
     build_generation_plan,
     identity_plan,
@@ -2984,6 +2992,171 @@ def evidence_regenerate_a3_command(
         f"{A3_PLAN_COMPLETE_MARKER} written"
         f"{'; ' + A3_AUTHORITATIVE_RECORD + ' written' if authorize else ''}; nothing downloaded"
     )
+
+
+@evidence_app.command("expand-a3")
+def evidence_expand_a3_command(
+    live: Annotated[
+        bool,
+        typer.Option(
+            "--live",
+            help=(
+                "Required. Fetches the authorized filing documents from the SEC and writes "
+                "production evidence to the configured bucket, batch after batch."
+            ),
+        ),
+    ] = False,
+    plan: Annotated[
+        Path | None,
+        typer.Option(
+            help="The authorized plan directory. Default: <control>/plans/generation_v2/a3_r1."
+        ),
+    ] = None,
+    expect_plan_sha: Annotated[
+        str, typer.Option(help="The plan digest execution is authorized for. Required.")
+    ] = "",
+    expect_plan_rows: Annotated[int, typer.Option(help="Rows the plan must hold.")] = 61628,
+    expect_package_sha: Annotated[
+        str | None, typer.Option(help="The inputs package the record must bind to.")
+    ] = None,
+    expect_record_sha: Annotated[
+        str | None, typer.Option(help="The authorization record's own digest.")
+    ] = None,
+    expect_baseline_marker_sha: Annotated[
+        str, typer.Option(help="The B2.11 BASELINE_COMPLETE marker digest. Required.")
+    ] = "",
+    expect_baseline_manifest_sha: Annotated[
+        str, typer.Option(help="The baseline manifest digest the marker must name. Required.")
+    ] = "",
+    expect_baseline_trusted: Annotated[
+        int, typer.Option(help="Trusted artifacts the baseline must hold.")
+    ] = 38146,
+    expect_database_sha: Annotated[
+        list[str] | None,
+        typer.Option(help="PATH=SHA256 pairs verified before, at every milestone and after."),
+    ] = None,
+    batch_size: Annotated[int, typer.Option(min=1, help="Targets per frozen batch.")] = (
+        EXPANSION_BATCH_SIZE
+    ),
+    workers: Annotated[
+        int, typer.Option(min=1, max=8, help="Bucket-side operations in flight per batch.")
+    ] = 4,
+    max_requests: Annotated[int, typer.Option(help="SEC HTTP attempts allowed per batch.")] = 2500,
+    max_bytes: Annotated[int, typer.Option(help="Source bytes allowed per batch.")] = 4 * 1024**3,
+    stop_after_batches: Annotated[
+        int | None, typer.Option(min=1, help="Stop cleanly after this many batches; resumable.")
+    ] = None,
+) -> None:
+    """Execute the authorized Plan A3 into the bucket, batch by batch, resumably.
+
+    Authority is the record beside the plan plus the exact digests given
+    here; a superseded or unauthorized directory is refused. The baseline
+    marker is re-proven locally and as mirrored, the plan is cut into frozen
+    batches that are mirrored before any request, and every target goes
+    through the V2 chain — SEC GET, B2 PUT, HEAD, body GET, manifest — with
+    the manifest appended only after the remote body verified. Completed
+    batches are skipped on a rerun. After the last batch every A3 artifact is
+    downloaded and hashed again, the namespace walked, the final manifest
+    snapshot and A3_EXPANSION_COMPLETE mirrored, and recovery proven from the
+    bucket alone. Never plans; never refreshes a catalogue or the ticker map.
+    """
+    settings = _bootstrap()
+    if storage_backend(settings) is not StorageBackend.B2:
+        typer.echo("STOPPED: the expansion requires SEC_STORAGE_BACKEND=b2")
+        raise typer.Exit(code=1)
+    if not live:
+        typer.echo(
+            "refusing without --live: this fetches SEC documents and writes production "
+            "evidence to the bucket for every authorized target"
+        )
+        raise typer.Exit(code=1)
+    for name, value in (
+        ("--expect-plan-sha", expect_plan_sha),
+        ("--expect-baseline-marker-sha", expect_baseline_marker_sha),
+        ("--expect-baseline-manifest-sha", expect_baseline_manifest_sha),
+    ):
+        if len(value) != 64:
+            typer.echo(f"STOPPED: {name} is required and must be a full SHA-256")
+            raise typer.Exit(code=1)
+    expected_digests = _parse_digest_pairs(expect_database_sha or [])
+    storage, control = _open_layout(settings)
+    plan_dir = plan or control.plans / "generation_v2" / "a3_r1"
+
+    def verify_databases(batch: int) -> None:
+        for path, expected in expected_digests.items():
+            actual = _file_sha256(path)
+            if actual != expected:
+                raise ExpansionRefusedError(
+                    f"database digest drift at batch {batch:03d}: {path} is {actual[:16]}…, "
+                    f"expected {expected[:16]}…"
+                )
+        if expected_digests:
+            when = "before the run" if batch < 0 else f"at batch {batch:03d}"
+            typer.echo(f"databases verified {when}: {len(expected_digests)} unchanged")
+
+    try:
+        verify_databases(-1)
+        authorized = load_authorized_plan(
+            plan_dir,
+            expect_plan_sha256=expect_plan_sha,
+            expect_rows=expect_plan_rows,
+            expect_package_sha256=expect_package_sha,
+            expect_record_sha256=expect_record_sha,
+        )
+    except ExpansionRefusedError as exc:
+        typer.echo(f"STOPPED: {exc}")
+        raise typer.Exit(code=1) from exc
+    typer.echo(f"plan             : {plan_dir} — {len(authorized.targets)} targets")
+    typer.echo(f"plan sha         : {authorized.plan_sha256}")
+    typer.echo(f"record sha       : {authorized.record_sha256}")
+    typer.echo(f"package sha      : {authorized.package_sha256}")
+    typer.echo(f"forms            : {authorized.forms}")
+    index_path = derived_root(control) / INDEX_FILE
+    if not index_path.is_file():
+        typer.echo(f"STOPPED: no derived index at {index_path}")
+        raise typer.Exit(code=1)
+    with closing(sqlite3.connect(f"file:{index_path}?mode=ro", uri=True)) as catalogue:
+        report = run_expansion(
+            RetryingReads(storage),
+            control,
+            lambda budget: _sec_documents(settings, budget),
+            authorized,
+            catalogue,
+            expect_baseline_marker_sha256=expect_baseline_marker_sha,
+            expect_baseline_manifest_sha256=expect_baseline_manifest_sha,
+            expect_baseline_trusted=expect_baseline_trusted,
+            budget_factory=lambda: Budget(max_requests=max_requests, max_bytes=max_bytes),
+            batch_size=batch_size,
+            workers=workers,
+            progress=typer.echo,
+            milestone_hook=verify_databases,
+            stop_after_batches=stop_after_batches,
+        )
+    typer.echo(f"  stage                    {report.stage}")
+    typer.echo(f"  batches                  {report.completed_batches}/{report.batches} complete")
+    typer.echo(f"  B2 requests              {report.counters}")
+    typer.echo(f"  mirror                   {report.mirror}")
+    if report.terminal:
+        typer.echo(f"  terminal                 {report.terminal}")
+    if report.recovery:
+        typer.echo(f"  recovery                 {report.recovery}")
+    if report.final_manifest_sha256:
+        typer.echo(f"  final manifest sha       {report.final_manifest_sha256}")
+    if report.marker_sha256:
+        typer.echo(f"  {EXPANSION_MARKER:<24} {report.marker_sha256}")
+    if report.failure:
+        typer.echo(f"STOPPED ({report.verdict}): {report.failure}")
+        for url in report.failed_targets[:10]:
+            typer.echo(f"  target: {url}")
+        raise typer.Exit(code=1)
+    if report.passed:
+        typer.echo(
+            f"A3 EXPANSION COMPLETE — {len(authorized.targets)} targets trusted; "
+            f"{plan_dir / EXPANSION_DIR / EXPANSION_MARKER} mirrored"
+        )
+    else:
+        typer.echo(f"A3 EXPANSION NOT COMPLETE — stage {report.stage}; resumable")
+    raise typer.Exit(code=0)
 
 
 @evidence_app.command("sample")

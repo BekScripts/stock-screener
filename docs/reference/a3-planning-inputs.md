@@ -426,4 +426,122 @@ record: `A3_PLAN_RECOVERY_SUFFICIENT = YES`. 74 control GETs, 76 lists, 0
 puts, 0 evidence-prefix keys.
 
 The plan is `AUTHORITATIVE_V2_A3_PLAN` and `AUTHORIZED_FOR_EXPANSION`.
-Nothing has been downloaded; expansion is B2.15.
+Its execution is B2.15.
+
+## Executing the plan (B2.15)
+
+`evidence expand-a3` consumes the authorized plan. It does not plan: the
+module never calls the assembly or the planner, and the only decision it
+makes about what to fetch is to refuse anything that is not the authorized
+plan.
+
+### Authority
+
+`load_authorized_plan` refuses a directory carrying `SUPERSEDED.json`, one
+without `authoritative_a3_plan.json`, a record whose status is not both
+`AUTHORITATIVE_V2_A3_PLAN` and `AUTHORIZED_FOR_EXPANSION`, a record naming
+another plan digest, a plan that does not hash to the digest the caller
+demanded, and a record or package digest that differs from the ones given.
+The newest file, the largest plan and the most recent directory are not
+authority; the record plus exact digests are.
+
+### Frozen batches
+
+The plan is cut into consecutive batches in plan order (1,000 targets;
+61,628 → 62 batches, the last of 628). Each batch is a JSONL file of its
+targets — rank, `(cik, accession)`, form, date, document, URL — with a
+record binding it to the plan, the package and the authorization record;
+`batch_set.json` lists all of them under one digest. Files that exist must
+be byte-identical on a rerun: membership is never recomputed. Every batch
+file is mirrored under `control/<generation>/a3-expansion-r1/batches/` and
+read back before the first request.
+
+### The chain, per target
+
+```text
+authorized target → SEC GET → bytes, SHA-256 → B2 PUT → HEAD
+    → body GET → remote SHA == fetched SHA → manifest append → checkpoint
+```
+
+The SEC side is sequential through the existing rate-limited, retrying
+client; the bucket side of up to `--workers` targets is in flight at once,
+because a PUT and its read-back are independent per object. The manifest
+is appended by one thread, in plan order, only after that target's remote
+body has been read back and hashed — neither the PUT response, the HEAD,
+the ETag nor the metadata digest is trusted for that. A batch is
+`BATCH_COMPLETE` only when every target is trusted; a request that fails
+is retried in a second pass over the same targets, never replaced, and
+what still fails stops the run: an `HTTP 404`/`410` as verdict C naming
+the targets, anything else as verdict B, resumable. A 401/403/429 on the
+final attempt stops before the next request.
+
+### Resume, and objects nobody recorded
+
+The checkpoint (`execution/expansion_checkpoint.json`, snapshotted to the
+mirror after every batch) binds to the generation, the baseline manifest
+and marker digests, the package, plan, record and batch-set digests, and
+lists the completed batches; a checkpoint bound to anything else is
+refused. A completed batch is skipped without a storage call. Inside a
+batch, a target the manifest already trusts costs one HEAD (the object is
+there at the recorded size) and no SEC request. An object at a target's
+key with no manifest row — an interrupted PUT — is fetched again from the
+SEC and the remote body read back; it is adopted, without a PUT, only when
+both hash the same and are the same length, and the manifest row records
+the fetched provenance and says so. Other bytes at that key stop the run
+as verdict D; nothing is overwritten.
+
+### Milestones and the terminal gate
+
+Every tenth batch the production prefixes are listed and compared with
+the trusted set (no bodies), the caller's database digests re-verified,
+and the manifest snapshotted to the mirror. After the last batch every A3
+artifact is downloaded and hashed against its record — the expansion
+only; the baseline's 37.1 GB terminal verification is inherited from
+B2.11 through its marker — then the whole namespace is listed and
+reconciled, the final manifest snapshotted with stage
+`A3_EXPANSION_COMPLETE` and its parent baseline digest, the deterministic
+`a3_expansion_complete.json` written and mirrored, and recovery proven
+from the bucket alone: baseline marker, corrected package, authorization
+record, the superseded plan's sidecar (so recovery can tell `a3e7df19…`
+from `0efa7d03…`), batch set and files, checkpoint, final snapshot,
+marker and the evidence inventory. Only then is the checkpoint `COMPLETE`.
+
+### The live run — 2026-09-19
+
+`evidence expand-a3 --live` with every digest bound: plan `0efa7d03…`
+(61,628 rows), record `2efb042f…`, package `79f644f1…`, baseline marker
+`6c25b3c3…` naming manifest `13722e02…` and 38,146 trusted, both database
+digests verified before, at every milestone and after. 62 batches frozen
+(set `2590ff77…`) and mirrored before the first request; 61,628 targets
+resolved from the index, none unresolved.
+
+Two invocations. The first ran 28 batches (07:59–09:57 UTC) and stopped
+as verdict B when the HEAD verifying one PUT timed out — the backend has
+no retry on the write path, so `_store_and_verify` gained a bounded one
+(the next attempt asks the bucket whether the object is there and is the
+SEC body) with two regression tests, `make check` green, plan and
+database digests re-proven. The second invocation (10:04–13:32 UTC)
+resumed batch 028 with 365 cache hits (one HEAD each, no SEC request),
+adopted the one object the interrupted PUT had left — the SEC body was
+fetched again and matched it byte for byte, no re-PUT — and ran the
+remaining 33 batches to `EXPANSION_HARVEST_COMPLETE`.
+
+| | |
+| --- | --- |
+| targets / trusted / failed | 61,628 / 61,628 / 0 (0 `FAILED` rows; 0 rows for anything outside the plan) |
+| by form, planned = trusted | 8-K 59,937 · 10-Q 1,176 · 10-K 380 · 20-F 96 · 20-F/A 19 · 40-F 18 · 40-F/A 2 |
+| new downloads / cache hits / adopted | 61,262 + 365 (run 1) / 365 / 1 |
+| SEC attempts / retries / refusals | 61,264 / 1 / 0 (401/403/429: 0) |
+| bytes: planned estimate / actual | 6,599,925,841 / **5,528,340,425** (the estimate is a per-form catalogue mean) |
+| B2 evidence, both runs | PUT 61,628 · HEAD 123,622 · GET 123,256 (61,628 read-backs + 61,628 terminal) · LIST 24 · DELETE 0 |
+| batches | 62; 180–344 s, median 234 s; 4 h 09 m of batch time; 5 h 27 m wall including the stop and the terminal pass |
+| milestones 009–059 | objects = trusted at 48,146 · 58,146 · 68,146 · 78,146 · 88,146 · 98,146; 0 orphans, 0 missing |
+| terminal A3 verification | 61,628 downloaded and hashed: 0 digest mismatches, 0 size mismatches, 0 read failures |
+| final namespace | 99,774 objects = 99,774 trusted records; 0 orphan objects, 0 orphan records, 0 missing, 0 path violations, 0 zero-byte, 0 duplicate URLs; submissions 5,733 · filings 94,041 · fulltext 0; 42,669,775,288 logical bytes |
+| final manifest | `a5653f1ca065bddf50a8354faedde56df044f738efc6c0e92c17dd2cfc92c029`, 99,774 records, snapshotted with stage `A3_EXPANSION_COMPLETE` and parent `13722e02…`; the `BASELINE_COMPLETE` snapshot preserved |
+| marker | `a3_expansion_complete.json` `af88cc247002cddf752a28967211ab82b953b3992814f769b71f301ad4ce0813`, mirrored and read back |
+| control mirror | 322 objects under `a3-expansion-r1/` (124 batch files, the set, 62 summaries, 67 checkpoint snapshots, the marker); 0 conflicts |
+| recovery from the bucket alone | baseline, corrected inputs, authoritative plan, superseded plan distinguishable, batch plans, completed state, final manifest, marker, evidence inventory — all YES: `A3_EXPANSION_RECOVERY_SUFFICIENT = YES` |
+
+The baseline's 37.1 GB was not downloaded again; its verification is
+inherited from B2.11 through the marker the expansion is bound to.

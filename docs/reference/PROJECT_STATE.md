@@ -36,8 +36,8 @@ appears without the run or the test that produced it.
 
 ## Current phase
 
-**B2.14R2 — Plan A3 regenerated from the corrected frozen inputs and
-authorized for expansion** is the current checkpoint on
+**B2.15 — the authoritative V2 Plan A3 expansion executed to B2 and
+COMPLETE** is the current checkpoint on
 `feat/phase-b2-storage-abstraction`. **The BEK
 drive is permanently unavailable** and Generation V1 is history that
 creates no trust. B2.9X started **Generation V2** from what survived on the
@@ -109,7 +109,20 @@ comparator; the digest is not a gate); no target dated before 2022-01-01;
 objects mirrored under `control/…/a3-r1/` and read back; recovered from
 B2 alone and re-planned to the same digest —
 `A3_PLAN_RECOVERY_SUFFICIENT = YES`. B2.14R2: APPROVED_FOR_EXPANSION.
-Nothing has been downloaded; expansion is B2.15.** The frozen
+A3 EXPANSION COMPLETE: V2 baseline COMPLETE (38,146 trusted, manifest
+`13722e02…`) + corrected PlanningInputs `79f644f1…` + authoritative A3
+`0efa7d03…` (61,628) → **61,628 new A3 filings trusted, 0 failed**, every
+one fetched from the SEC, PUT, read back and hashed before its manifest
+row; final corpus **99,774 trusted** (submissions 5,733 · filings 94,041 ·
+fulltext 0; 42,669,775,288 logical bytes); final manifest
+`a5653f1ca065bddf50a8354faedde56df044f738efc6c0e92c17dd2cfc92c029`
+(99,774 records; parent baseline `13722e02…`, snapshotted with stage
+`A3_EXPANSION_COMPLETE`, the `BASELINE_COMPLETE` snapshot preserved); A3
+terminal remote verification PASS (61,628 bodies, 0 mismatches); full
+namespace 99,774 objects = 99,774 records, 0 orphans, 0 missing;
+`a3_expansion_complete.json` `af88cc24…` mirrored; A3 recovery PROVEN
+(`A3_EXPANSION_RECOVERY_SUFFICIENT = YES`). Historical V1 (61,941 /
+`53e3f0ca…`) is historical only. Next: B2.16.** The frozen
 resolution stands: 8,919
 identities, 6,048 resolved (402 `STORED`, 5,646 `SEC_TICKER_MAP`), 2,871
 `UNRESOLVED`; the ticker map was fetched once, in B2.10, and never again. See
@@ -615,6 +628,45 @@ convention, and none may be relaxed without an explicit instruction.
   `supersession.json` naming the old package and plan digests, the forensic
   verdict and commit; the old artifacts gain a `SUPERSEDED.json` beside them
   and lose nothing, locally or remotely.
+
+### B2.15 the expansion
+
+- **Execution authority is the record plus exact digests.** `expand-a3`
+  refuses a plan directory carrying `SUPERSEDED.json`, one without
+  `authoritative_a3_plan.json`, a record not marked
+  `AUTHORIZED_FOR_EXPANSION`, a record naming another plan, or a plan that
+  does not hash to `--expect-plan-sha`. The newest file or directory is
+  never authority. The superseded plan `a3e7df19…` is never executed.
+- **Batches are frozen once, mirrored before the first request.** Plan
+  order, 1,000 per batch, each with its content digest and a record
+  binding it to the plan, package and authorization record; one digest
+  over the set. A file that exists must be byte-identical: membership is
+  never recomputed on resume.
+- **The manifest learns of an artifact only after its remote body read
+  back.** Per target: SEC GET → PUT → HEAD → body GET → equal digests →
+  manifest append, in plan order. The PUT response, the HEAD, the ETag and
+  the metadata digest vouch for nothing. The SEC side is sequential through
+  the existing rate-limited client; only the bucket side runs bounded in
+  parallel.
+- **A failed target keeps its identity.** Retried in a second pass over the
+  same targets, never replaced; a persistent `404`/`410` stops the run as
+  verdict C naming the targets; a refusal (401/403/429) stops before the
+  next request; a transport fault stops as B, resumable. No target is
+  skipped silently.
+- **An unrecorded object is adopted only as the SEC's bytes.** An object at
+  a target's key with no manifest row is fetched again from the SEC and the
+  remote body read back; equal length and digest → adopted without a PUT,
+  and the row says so; other bytes → verdict D, nothing overwritten. A
+  transport fault on the PUT or its verifying HEAD is retried, bounded,
+  through the same question — is the object there, and is it the SEC body.
+- **The baseline is inherited, not rehashed.** The final state binds to the
+  B2.11 marker, the baseline manifest digest, the authorization record and
+  the expansion delta; the terminal body verification covers the A3
+  artifacts only. Structural reconciliation is a LIST, never a HEAD per
+  object.
+- **Filing identity is `(cik, accession)`.** Co-registrant copies are
+  distinct keys and distinct rows; nothing deduplicates on the accession,
+  the URL or the document digest.
 
 ### B2.14R2 the authoritative plan
 
@@ -1820,6 +1872,77 @@ Documented rather than fixed. Each is a deliberate stop, not a backlog item.
 
 Measured runs, kept because they are the evidence behind decisions above.
 
+### B2.15 A3 expansion — 2026-09-19
+
+- `evidence expand-a3 --live --plan …/a3_r1 --expect-plan-sha 0efa7d03…
+  --expect-plan-rows 61628 --expect-package-sha 79f644f1…
+  --expect-record-sha 2efb042f… --expect-baseline-marker-sha 6c25b3c3…
+  --expect-baseline-manifest-sha 13722e02… --expect-baseline-trusted 38146
+  --expect-database-sha … (both) --batch-size 1000 --workers 4
+  --max-requests 2500 --max-bytes 4294967296`; the first invocation at
+  07:59 UTC started from the baseline manifest exactly (`13722e02…`,
+  38,146 rows); baseline marker re-proven locally and as mirrored; package
+  manifest and authorization record read back from the mirror; 61,628
+  targets resolved from the V2 index, 0 unresolved; 62 batches frozen (set
+  `2590ff77…`; 61 × 1,000 + 628) and mirrored before the first request.
+- Two invocations. Run 1 (07:59–09:57) completed batches 000–027 and
+  stopped as verdict B on a `ReadTimeoutError` in the HEAD verifying one
+  PUT (`filings/0000101829/000010182924000022/rtx-20240717.htm`), 365
+  targets of batch 028 already settled. Fix under §50: bounded retry on the
+  bucket side of a target — the next attempt asks whether the object is
+  there and is the SEC body (adopt), re-PUTs if absent, stops as D on other
+  bytes; two regression tests; `make check` 3,824 passed; plan and database
+  digests re-proven before resuming. Run 2 (10:04–13:32): batch 028 resumed
+  with 365 cache hits (one HEAD each, 0 SEC requests), the interrupted
+  object adopted after the SEC body matched it byte for byte (no re-PUT),
+  634 new; batches 029–061 clean; `EXPANSION_HARVEST_COMPLETE` 12:25.
+- Accounting: 61,628 planned / 61,628 trusted / 0 failed / 0 pending;
+  61,627 new downloads + 1 adopted; 365 cache hits on resume; 0 `FAILED`
+  rows in the manifest; 0 rows outside the plan; 45 co-registrant copies
+  distinct. Forms planned = trusted: 8-K 59,937 · 10-Q 1,176 · 10-K 380 ·
+  20-F 96 · 20-F/A 19 · 40-F 18 · 40-F/A 2. SEC: 61,264 filing GETs, 1
+  retry, 0 × 401/403/429, 0 ticker-map, 0 submissions, 0 search. Bytes:
+  planned estimate 6,599,925,841, actual 5,528,340,425 (the estimate is a
+  per-form catalogue mean). B2 evidence, both runs: PUT 61,628 · HEAD
+  123,622 · GET 123,256 (one read-back per PUT + 61,628 terminal) · LIST
+  24 · DELETE 0; control PUT 336 / GET 819 / HEAD 336 / LIST 9.
+- Milestones 009, 019, 029, 039, 049, 059: objects = trusted (48,146 …
+  98,146), 0 orphans, 0 missing, both databases unchanged, manifest
+  snapshot mirrored each time. Batches 180–344 s (median 234 s), 4 h 09 m
+  of batch time; 5 h 27 m wall including the stop and the terminal pass.
+- Terminal: 61,628 A3 artifacts downloaded and hashed — 0 digest
+  mismatches, 0 size mismatches, 0 read failures, 5,528,340,425 bytes; the
+  baseline's 37.1 GB not downloaded again. Full namespace LIST: 99,774
+  objects = 99,774 trusted records, 0 orphan objects, 0 orphan records, 0
+  missing, 0 path violations, 0 zero-byte, 0 duplicate URLs; no HEAD per
+  object. Final manifest `a5653f1c…` (99,774 records, 42,669,775,288
+  logical bytes) snapshotted as `A3_EXPANSION_COMPLETE` with parent
+  `13722e02…`; marker `a3_expansion_complete.json` `af88cc24…` mirrored and
+  read back; 322 objects under `a3-expansion-r1/`, 0 conflicts.
+- Recovery from the bucket alone: baseline, corrected inputs, authoritative
+  plan, superseded plan distinguishable (`a3e7df19…` sidecar
+  `NOT_AUTHORIZED_FOR_EXPANSION`, `0efa7d03…` record
+  `AUTHORIZED_FOR_EXPANSION`), batch plans, completed state, final
+  manifest, marker, evidence inventory — `A3_EXPANSION_RECOVERY_SUFFICIENT
+  = YES`. Credential scan over 198 files (execution directory, descriptors,
+  ledger, manifest, docs, logs): 0. Databases `02a6660b…` / `20a77d24…`
+  unchanged before, at every milestone, after, and before the commit.
+- `tests/integration/test_a3_expansion.py` (26): authorized-plan
+  acceptance; refusals for a superseded directory, a missing record, a
+  record without `AUTHORIZED_FOR_EXPANSION`, a plan-digest mismatch, a
+  record naming another plan, a record-digest mismatch, moved plan bytes;
+  deterministic batch partitioning and never-regenerated membership;
+  end-to-end COMPLETE with marker, snapshot and recovery; co-registrant
+  identity; no manifest row before the remote body verified; an unrecorded
+  object adopted only as the SEC bytes, other bytes stopping as D; a
+  transport fault after the PUT recovered by reading back, a persistent one
+  stopping as B without a row; verdict C on a persistent 404 naming the
+  target; a transient failure retried in-batch; a refusal stopping before
+  the next request; resume skipping completed batches and not re-fetching
+  trusted targets; a checkpoint bound to other inputs refused; the command
+  refusing without `--live` or the digests, executing to COMPLETE, and
+  refusing a superseded directory.
+
 ### B2.14R2 authoritative Plan A3 — 2026-09-18
 
 - `evidence regenerate-a3 --package …/a3_inputs_r1 --expect-package-sha
@@ -2569,14 +2692,13 @@ under **80%**. It is what CI runs; run it rather than the individual tools.
 
 ## Next phase
 
-**B2.15 — freeze expansion batches from the authoritative plan and run a
-small live canary** follows: batches are cut from
-`plans/generation_v2/a3_r1/plan_a3_v2.jsonl` (`0efa7d03…`, 61,628
-targets) and nothing else, each batch's target list frozen and mirrored
-before a byte is fetched, and the first batch small enough to be audited
-by hand. The superseded plan `a3e7df19…` is never executed; the
-authoritative record `authoritative_a3_plan.json` is what execution binds
-to. FTD archives are redownloaded separately. The one-month boundary
+**B2.16 — rebuild the post-A3 derived index and materialize the final
+PIT evidence** follows: the derived index is rebuilt from the final
+manifest `a5653f1c…` (99,774 trusted artifacts) the way B2.12 built it
+from the baseline — one GET per artifact, bytes and digest verified
+against the manifest before parsing — and the point-in-time evidence the
+A3 filings now support is materialized from it. The superseded plan
+`a3e7df19…` stays superseded; nothing is re-planned or re-fetched. FTD archives are redownloaded separately. The one-month boundary
 between the classification and planning rules remains documented in
 [A3 planning inputs](a3-planning-inputs.md) and is a decision for a later
 phase; widening the acquisition window is likewise a separate, versioned
@@ -2647,11 +2769,11 @@ Not a backlog. These exclusions are deliberate.
 
 | | |
 | --- | --- |
-| Commit | The B2.14R2 commit containing this checkpoint, `feat: authorize corrected V2 Plan A3`; parent `daa1d36` (B2.13R, `fix: restore historical A3 candidate window`). The authoritative plan's meta and authorization record name `repo_commit` `daa1d36` because they were written from the working tree that became this commit; the corrected package records `2a7d3b8`, the superseded package `ebfbc1c`, the superseded plan `afe6a10`, the index `1b407b6`. |
+| Commit | The B2.15 commit containing this checkpoint, `feat: complete V2 A3 evidence expansion`; parent `1fbf188` (B2.14R2, `feat: authorize corrected V2 Plan A3`). The authoritative plan's meta and authorization record name `repo_commit` `daa1d36`; the corrected package records `2a7d3b8`, the superseded package `ebfbc1c`, the superseded plan `afe6a10`, the index `1b407b6`. |
 | Branch | `feat/phase-b2-storage-abstraction` |
 | Migration head | `0031` — the research-universe layer (9K.7). Nothing since 9K.11 added one. |
 | Score version | `COMPOUNDER_V1_2` (unchanged by anything in Phase 8, 9A, 9B or 9C) |
 | Feature version | `MARKET_FEATURES_V1` |
 | Signal version | `MARKET_SIGNALS_V1` |
 | Primary database | untouched by 8A–8J and 9A–9L.5; all work ran against staging copies |
-| Checkpoint date | 2026-09-18 |
+| Checkpoint date | 2026-09-19 |

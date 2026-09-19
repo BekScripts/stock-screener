@@ -1545,6 +1545,19 @@ plan files. The superseded `a3_inputs/` and `a3/` directories and their
 merely avoided. The plan is recoverable from the control namespace alone.
 See [A3 planning inputs](a3-planning-inputs.md#the-authoritative-plan-b214r2).
 
+## B2.15 the A3 expansion
+
+The authorized plan's execution state lives under
+`plans/generation_v2/a3_r1/execution/` — `batches/` (the frozen batch
+files and records), `batch_set.json`, `summaries/`, the expansion
+checkpoint and `a3_expansion_complete.json` — mirrored under
+`control/<generation>/a3-expansion-r1/`. The evidence itself goes to the
+ordinary `filings/<cik>/<accession>/<document>` keys; there is no A3
+evidence namespace. The final manifest snapshot (stage
+`A3_EXPANSION_COMPLETE`) sits beside the preserved `BASELINE_COMPLETE`
+snapshot under `manifests/`. See
+[A3 planning inputs](a3-planning-inputs.md#executing-the-plan-b215).
+
 ## Future staging databases
 
 A research staging database is 20–30 GB. **Create new ones under
