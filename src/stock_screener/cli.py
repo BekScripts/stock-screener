@@ -212,6 +212,7 @@ from stock_screener.sec_evidence.expansion import (
     EXPANSION_BATCH_SIZE,
     EXPANSION_DIR,
     EXPANSION_MARKER,
+    EXPANSION_MIRROR_PREFIX,
     ExpansionRefusedError,
     load_authorized_plan,
     run_expansion,
@@ -234,6 +235,7 @@ from stock_screener.sec_evidence.inputs import (
     load_planning_inputs,
     load_resolution,
     mirror_package,
+    package_sha256,
     write_package,
     write_supersession,
 )
@@ -242,6 +244,26 @@ from stock_screener.sec_evidence.migration import (
     a3_accounting,
     build_plan,
     write_migration_plan,
+)
+from stock_screener.sec_evidence.pit_final import (
+    PIT_DIR,
+    PitError,
+    load_pre_coverage,
+    materialize_pit,
+    mirror_pit_package,
+    write_pit_package,
+)
+from stock_screener.sec_evidence.post_a3 import (
+    POST_A3_COMPLETE_MARKER,
+    POST_A3_INDEX_FILE,
+    PostA3Bindings,
+    PostA3Error,
+    baseline_paths,
+    build_post_a3_index,
+    delta_entries,
+    mirror_post_a3_metadata,
+    post_a3_complete_facts,
+    verify_baseline_index,
 )
 from stock_screener.sec_evidence.rebuild import CanaryStopError, run_chunk
 from stock_screener.sec_evidence.regenerate import (
@@ -3157,6 +3179,478 @@ def evidence_expand_a3_command(
     else:
         typer.echo(f"A3 EXPANSION NOT COMPLETE — stage {report.stage}; resumable")
     raise typer.Exit(code=0)
+
+
+@evidence_app.command("build-post-a3-index")
+def evidence_build_post_a3_index_command(
+    expect_manifest_sha: Annotated[
+        str, typer.Option(help="The final manifest digest the build must be bound to. Required.")
+    ] = "",
+    expect_trusted: Annotated[
+        int, typer.Option(help="Artifacts the final manifest must vouch for.")
+    ] = 99774,
+    expect_baseline_index_sha: Annotated[
+        str, typer.Option(help="The B2.12 index digest the build starts from. Required.")
+    ] = "",
+    expect_baseline_manifest_sha: Annotated[
+        str,
+        typer.Option(help="The baseline manifest digest the B2.12 index was built from. Required."),
+    ] = "",
+    expect_baseline_trusted: Annotated[
+        int, typer.Option(help="Baseline trusted artifacts.")
+    ] = 38146,
+    expect_baseline_filings: Annotated[int, typer.Option(help="Baseline trusted filings.")] = 32413,
+    expect_baseline_submissions: Annotated[
+        int, typer.Option(help="Baseline trusted catalogues.")
+    ] = 5733,
+    plan: Annotated[
+        Path | None, typer.Option(help="The authorized plan directory. Default: …/a3_r1.")
+    ] = None,
+    expect_plan_sha: Annotated[
+        str, typer.Option(help="The authorized plan digest the delta must equal. Required.")
+    ] = "",
+    expect_plan_rows: Annotated[int, typer.Option(help="Rows the plan must hold.")] = 61628,
+    expect_a3_marker_sha: Annotated[
+        str, typer.Option(help="The A3 completion marker digest. Required.")
+    ] = "",
+    expect_database_sha: Annotated[
+        list[str] | None,
+        typer.Option(help="PATH=SHA256 pairs verified before and after; drift stops the run."),
+    ] = None,
+    batch_size: Annotated[int, typer.Option(min=1, help="Artifacts per transaction.")] = 250,
+    prefetch: Annotated[int, typer.Option(min=1, max=8, help="Downloads in flight.")] = 8,
+    stop_after: Annotated[
+        int | None, typer.Option(min=1, help="Stop cleanly after this many artifacts.")
+    ] = None,
+    fresh: Annotated[
+        bool, typer.Option("--fresh", help="Discard an in-progress build and start again.")
+    ] = False,
+    mirror: Annotated[
+        bool, typer.Option("--mirror/--no-mirror", help="Mirror the small metadata.")
+    ] = True,
+) -> None:
+    """Build the post-A3 derived index: the verified B2.12 index plus exactly the A3 delta.
+
+    Re-proves the B2.12 index (digest, metadata, marker, fingerprints,
+    integrity) and the A3 completion marker locally and as mirrored, derives
+    the delta from the final manifest and the baseline ledger and requires it
+    to equal the authorized plan, copies the baseline index, proves the copy,
+    then reads only the delta's artifacts — one GET each, length and digest
+    checked before parsing — through the unchanged extraction. Resumable;
+    bound to every input. Finishes with validation, semantic fingerprints,
+    the baseline invariance proof and an atomic promotion. Never fetches SEC,
+    never writes evidence, never rereads the baseline corpus.
+    """
+    settings = _bootstrap()
+    for name, value in (
+        ("--expect-manifest-sha", expect_manifest_sha),
+        ("--expect-baseline-index-sha", expect_baseline_index_sha),
+        ("--expect-baseline-manifest-sha", expect_baseline_manifest_sha),
+        ("--expect-plan-sha", expect_plan_sha),
+        ("--expect-a3-marker-sha", expect_a3_marker_sha),
+    ):
+        if len(value) != 64:
+            typer.echo(f"STOPPED: {name} is required and must be a full SHA-256")
+            raise typer.Exit(code=1)
+    expected_digests = _parse_digest_pairs(expect_database_sha or [])
+    storage, control = _open_layout(settings)
+    manifest = Manifest(control.manifest_path)
+    plan_dir = plan or control.plans / "generation_v2" / "a3_r1"
+    derived = derived_root(control)
+
+    def verify_databases(when: str) -> None:
+        for path, expected in expected_digests.items():
+            actual = _file_sha256(path)
+            if actual != expected:
+                typer.echo(
+                    f"STOPPED: database digest drift {when}: {path} is {actual[:16]}…, "
+                    f"expected {expected[:16]}…"
+                )
+                raise typer.Exit(code=1)
+        if expected_digests:
+            typer.echo(f"databases verified {when}: {len(expected_digests)} unchanged")
+
+    verify_databases("before the build")
+    # --- the final manifest and the A3 marker, locally and as mirrored -------
+    manifest_sha = _file_sha256(control.manifest_path)
+    if manifest_sha != expect_manifest_sha.lower():
+        typer.echo(f"STOPPED: the manifest hashes to {manifest_sha[:16]}…, not as expected")
+        raise typer.Exit(code=1)
+    trusted = [e for e in manifest.latest_by_url().values() if e.is_stored]
+    if len(trusted) != expect_trusted:
+        typer.echo(f"STOPPED: the manifest vouches for {len(trusted)}, not {expect_trusted}")
+        raise typer.Exit(code=1)
+    marker_path = plan_dir / EXPANSION_DIR / EXPANSION_MARKER
+    if not marker_path.is_file() or _file_sha256(marker_path) != expect_a3_marker_sha.lower():
+        typer.echo("STOPPED: the A3 completion marker is absent or does not hash as expected")
+        raise typer.Exit(code=1)
+    a3_marker = json.loads(marker_path.read_text(encoding="utf-8"))
+    problems = [
+        name
+        for name, value in (
+            ("stage", "A3_EXPANSION_COMPLETE"),
+            ("final_manifest_sha256", manifest_sha),
+            ("baseline_manifest_sha256", expect_baseline_manifest_sha.lower()),
+            ("plan_sha256", expect_plan_sha.lower()),
+            ("trusted_expansion_count", expect_plan_rows),
+            ("terminal_expansion_verified", expect_plan_rows),
+            ("final_trusted_count", expect_trusted),
+        )
+        if a3_marker.get(name) != value
+    ]
+    if problems:
+        typer.echo(f"STOPPED: the A3 completion marker does not bind: {problems}")
+        raise typer.Exit(code=1)
+    reads = RetryingReads(storage)
+    control_mirror = ControlMirror(reads, GENERATION_ID)
+    try:
+        if not control_mirror.verify(marker_path, f"{EXPANSION_MIRROR_PREFIX}/{EXPANSION_MARKER}"):
+            typer.echo("STOPPED: the mirrored A3 completion marker differs from the local one")
+            raise typer.Exit(code=1)
+        newest = control_mirror.newest_snapshot("manifests")
+    except StorageUnavailableError as exc:
+        typer.echo(f"STOPPED: cannot read the control mirror: {exc}")
+        raise typer.Exit(code=1) from exc
+    if newest is None or newest[0].get("sha256") != manifest_sha:
+        typer.echo("STOPPED: the newest mirrored manifest snapshot is not the final manifest")
+        raise typer.Exit(code=1)
+    typer.echo(
+        f"final manifest   : {manifest_sha} ({len(trusted)} trusted; mirrored snapshot equal)"
+    )
+    typer.echo(f"A3 marker        : {expect_a3_marker_sha} (local == mirrored)")
+
+    # --- the baseline index, re-proven ---------------------------------------
+    try:
+        baseline = verify_baseline_index(
+            derived,
+            expect_sha256=expect_baseline_index_sha,
+            expect_manifest_sha256=expect_baseline_manifest_sha,
+            expect_trusted=expect_baseline_trusted,
+            expect_filings=expect_baseline_filings,
+            expect_submissions=expect_baseline_submissions,
+        )
+    except PostA3Error as exc:
+        typer.echo(f"STOPPED (baseline index conflict): {exc}")
+        raise typer.Exit(code=1) from exc
+    typer.echo(
+        f"baseline index   : {baseline.sha256} integrity {baseline.integrity_check}, "
+        f"tables {baseline.table_counts}"
+    )
+    for name, print_ in baseline.fingerprints.items():
+        typer.echo(f"  baseline fingerprint {name:<16} rows {print_.rows:>7} {print_.sha256}")
+
+    # --- the delta, bound to the plan ------------------------------------------
+    try:
+        authorized = load_authorized_plan(
+            plan_dir, expect_plan_sha256=expect_plan_sha, expect_rows=expect_plan_rows
+        )
+    except ExpansionRefusedError as exc:
+        typer.echo(f"STOPPED: {exc}")
+        raise typer.Exit(code=1) from exc
+    delta = delta_entries(
+        manifest, baseline_paths(baseline.path), [t.key for t in authorized.targets]
+    )
+    typer.echo(
+        f"delta            : {len(delta.entries)} filings beyond the baseline "
+        f"({delta.final_filings} final minus {delta.baseline_filings} baseline); "
+        f"missing {len(delta.missing)}, extras {len(delta.extras)}, duplicates {delta.duplicates}, "
+        f"co-registrant rows {delta.co_registrant_rows}"
+    )
+    if not delta.exact or len(delta.entries) != expect_plan_rows:
+        typer.echo("STOPPED: the manifest delta is not the authorized plan")
+        raise typer.Exit(code=1)
+    bindings = PostA3Bindings(
+        generation_id=GENERATION_ID,
+        final_manifest_sha256=manifest_sha,
+        final_trusted=len(trusted),
+        final_filings=delta.final_filings,
+        final_submissions=sum(1 for e in trusted if e.request_kind == "SUBMISSIONS"),
+        baseline_index_sha256=baseline.sha256,
+        baseline_manifest_sha256=expect_baseline_manifest_sha.lower(),
+        plan_sha256=authorized.plan_sha256,
+        a3_marker_sha256=expect_a3_marker_sha.lower(),
+        delta_count=len(delta.entries),
+    )
+    counters: dict[str, int] = {}
+    counting = threading.Lock()
+    observe = getattr(storage, "observe_requests", None)
+    if observe is not None:
+
+        def count(kind: str, operation: str) -> None:
+            name = f"{kind}:{operation}"
+            with counting:
+                counters[name] = counters.get(name, 0) + 1
+
+        observe(count)
+    facts: dict[str, object] = {
+        "authorization_record_sha256": authorized.record_sha256,
+        "package_sha256": authorized.package_sha256,
+        "repo_commit": _repo_commit(),
+    }
+    try:
+        report = build_post_a3_index(
+            reads,
+            delta,
+            derived,
+            baseline=baseline,
+            bindings=bindings,
+            batch_size=batch_size,
+            prefetch=prefetch,
+            stop_after=stop_after,
+            fresh=fresh,
+            progress=typer.echo,
+            facts=facts,
+        )
+    except PostA3Error as exc:
+        typer.echo(f"STOPPED: {exc}")
+        raise typer.Exit(code=1) from exc
+    for line in report.build.summary():
+        typer.echo(line)
+    if report.complete:
+        typer.echo(
+            f"  baseline copied {report.baseline_copied}, copy verified {report.copy_verified}"
+        )
+        typer.echo(f"  added rows {report.added}")
+        for name, facts_ in report.invariance.items():
+            typer.echo(
+                f"  invariance {name:<16} rows {facts_['rows']:>7} "
+                f"{'CHANGED' if facts_['changed'] else 'unchanged'} {str(facts_['after'])[:16]}…"
+            )
+        typer.echo(f"  {POST_A3_COMPLETE_MARKER:<32} {report.marker_sha256}")
+        if mirror:
+            try:
+                records = mirror_post_a3_metadata(control_mirror, derived)
+            except (PostA3Error, MirrorConflictError, StorageUnavailableError) as exc:
+                typer.echo(f"MIRROR FAILED: {exc}")
+                raise typer.Exit(code=1) from exc
+            for record in records:
+                typer.echo(f"  mirrored {record.key} ({record.outcome}) sha256 {record.sha256}")
+            control_mirror.write_ledger(control.plans / "generation_v2" / "mirror_ledger.jsonl")
+    typer.echo(f"  B2 requests: {dict(sorted(counters.items()))}; reads retried {reads.retried}")
+    verify_databases("after the build")
+    if report.failure:
+        typer.echo(f"STOPPED: {report.failure}")
+        raise typer.Exit(code=1)
+    typer.echo(
+        f"POST-A3 INDEX {'COMPLETE' if report.complete else 'NOT COMPLETE — resumable'} — "
+        f"{derived / POST_A3_INDEX_FILE}"
+    )
+    raise typer.Exit(code=0 if report.complete else 1)
+
+
+@evidence_app.command("materialize-pit")
+def evidence_materialize_pit_command(
+    database: Annotated[
+        Path, typer.Option("--database", help="The frozen PIT database, opened read-only.")
+    ] = Path("stage9k.db"),
+    expect_universe_count: Annotated[
+        int, typer.Option(help="Identities the universe must hold.")
+    ] = 8919,
+    expect_universe_sha: Annotated[
+        str | None, typer.Option(help="Refuse a universe whose digest differs.")
+    ] = None,
+    expect_index_sha: Annotated[
+        str, typer.Option(help="The post-A3 index digest to materialize from. Required.")
+    ] = "",
+    expect_manifest_sha: Annotated[
+        str, typer.Option(help="The final manifest digest. Required.")
+    ] = "",
+    package: Annotated[
+        Path | None, typer.Option(help="The corrected pre-A3 package. Default: …/a3_inputs_r1.")
+    ] = None,
+    expect_package_sha: Annotated[
+        str, typer.Option(help="The corrected package digest. Required.")
+    ] = "",
+    plan: Annotated[
+        Path | None, typer.Option(help="The authorized plan directory. Default: …/a3_r1.")
+    ] = None,
+    expect_plan_sha: Annotated[
+        str, typer.Option(help="The authorized plan digest. Required.")
+    ] = "",
+    expect_database_sha: Annotated[
+        list[str] | None,
+        typer.Option(help="PATH=SHA256 pairs verified before and after; drift stops the run."),
+    ] = None,
+    output: Annotated[
+        Path | None, typer.Option(help="Package directory. Default: …/post_a3_pit.")
+    ] = None,
+    runs: Annotated[int, typer.Option(min=1, help="Materializations; all must agree.")] = 2,
+    mirror: Annotated[
+        bool, typer.Option("--mirror/--no-mirror", help="Mirror the small package files.")
+    ] = True,
+) -> None:
+    """Measure what A3 resolved: the frozen assembly over the post-A3 index against the pre-A3 rows.
+
+    Binds to the post-A3 index and its completion marker, the final
+    manifest, the corrected package's coverage rows and the authorized plan;
+    runs the unchanged B2.13 assembly `--runs` times and requires identical
+    fingerprints; writes the outcome package and mirrors its small files.
+    `ResearchUniverseMonth` is read only. Never plans, never fetches.
+    """
+    settings = _bootstrap()
+    for name, value in (
+        ("--expect-index-sha", expect_index_sha),
+        ("--expect-manifest-sha", expect_manifest_sha),
+        ("--expect-package-sha", expect_package_sha),
+        ("--expect-plan-sha", expect_plan_sha),
+    ):
+        if len(value) != 64:
+            typer.echo(f"STOPPED: {name} is required and must be a full SHA-256")
+            raise typer.Exit(code=1)
+    expected_digests = _parse_digest_pairs(expect_database_sha or [])
+    storage, control = _open_layout(settings)
+    generation_dir = control.plans / "generation_v2"
+    package_dir = package or generation_dir / A3_INPUTS_DIRECTORY
+    plan_dir = plan or generation_dir / "a3_r1"
+    out_dir = output or generation_dir / PIT_DIR
+    derived = derived_root(control)
+    index_path = derived / POST_A3_INDEX_FILE
+
+    def verify_databases(when: str) -> None:
+        for path, expected in expected_digests.items():
+            actual = _file_sha256(path)
+            if actual != expected:
+                typer.echo(
+                    f"STOPPED: database digest drift {when}: {path} is {actual[:16]}…, "
+                    f"expected {expected[:16]}…"
+                )
+                raise typer.Exit(code=1)
+        if expected_digests:
+            typer.echo(f"databases verified {when}: {len(expected_digests)} unchanged")
+
+    verify_databases("before the run")
+    manifest_sha = _file_sha256(control.manifest_path)
+    if manifest_sha != expect_manifest_sha.lower():
+        typer.echo("STOPPED: the manifest does not hash to --expect-manifest-sha")
+        raise typer.Exit(code=1)
+    if not index_path.is_file():
+        typer.echo(f"STOPPED: no post-A3 index at {index_path}")
+        raise typer.Exit(code=1)
+    index_sha = _file_sha256(index_path)
+    if index_sha != expect_index_sha.lower():
+        typer.echo(f"STOPPED: the post-A3 index hashes to {index_sha[:16]}…, not as expected")
+        raise typer.Exit(code=1)
+    complete = post_a3_complete_facts(derived)
+    if (
+        complete is None
+        or complete.get("index_sha256") != index_sha
+        or complete.get("final_manifest_sha256") != manifest_sha
+    ):
+        typer.echo("STOPPED: POST_A3_INDEX_COMPLETE is absent or names another index or manifest")
+        raise typer.Exit(code=1)
+    try:
+        recorded = package_bindings_from_manifest(package_dir)
+        digests = component_digests(package_dir)
+        package_sha = package_sha256(digests)
+    except (OSError, KeyError, TypeError, ValueError, PackageError) as exc:
+        typer.echo(f"STOPPED: cannot read the corrected package: {exc}")
+        raise typer.Exit(code=1) from exc
+    if package_sha != expect_package_sha.lower():
+        typer.echo(f"STOPPED: the package digest is {package_sha[:16]}…, not as expected")
+        raise typer.Exit(code=1)
+    try:
+        pre_rows, pre_sha = load_pre_coverage(package_dir)
+        authorized = load_authorized_plan(plan_dir, expect_plan_sha256=expect_plan_sha)
+        resolution, resolution_sha = load_resolution(generation_dir / "filer_resolution_v1.jsonl")
+    except (PitError, ExpansionRefusedError, PackageError) as exc:
+        typer.echo(f"STOPPED: {exc}")
+        raise typer.Exit(code=1) from exc
+    if resolution_sha != recorded.resolution_sha256:
+        typer.echo("STOPPED: the resolution does not hash as the package records")
+        raise typer.Exit(code=1)
+    typer.echo(f"post-A3 index    : {index_sha}")
+    typer.echo(f"final manifest   : {manifest_sha}")
+    typer.echo(
+        f"package          : {package_sha} "
+        f"(pre-A3 coverage {pre_sha[:16]}…, {len(pre_rows)} months)"
+    )
+    typer.echo(f"plan             : {authorized.plan_sha256} ({len(authorized.targets)} targets)")
+    if not database.is_file():
+        typer.echo(f"STOPPED: no database at {database}")
+        raise typer.Exit(code=1)
+    manifest = Manifest(control.manifest_path)
+    engine = create_engine_from_url(read_only_url(database))
+    results = []
+    try:
+        with session_scope(build_session_factory(engine)) as session:
+            try:
+                binding = bind_source(
+                    session,
+                    database,
+                    expect_count=expect_universe_count,
+                    expect_digest=expect_universe_sha or recorded.universe_sha256,
+                )
+            except BindingError as exc:
+                typer.echo(f"STOPPED: {exc}")
+                raise typer.Exit(code=1) from exc
+            typer.echo(
+                f"universe         : {binding.universe_count} identities, {binding.universe_digest}"
+            )
+            with closing(sqlite3.connect(f"file:{index_path}?mode=ro", uri=True)) as index:
+                for run in range(1, runs + 1):
+                    try:
+                        results.append(
+                            materialize_pit(
+                                session,
+                                index,
+                                manifest,
+                                resolution,
+                                pre_rows,
+                                authorized.targets,
+                                progress=typer.echo if run == 1 else None,
+                            )
+                        )
+                    except PitError as exc:
+                        typer.echo(f"STOPPED (D): {exc}")
+                        raise typer.Exit(code=1) from exc
+                    typer.echo(f"run {run}: fingerprints {results[-1].fingerprints}")
+    finally:
+        engine.dispose()
+    first = results[0]
+    for number, other in enumerate(results[1:], start=2):
+        if other.fingerprints != first.fingerprints:
+            typer.echo(f"STOPPED: run {number} does not reproduce run 1")
+            raise typer.Exit(code=1)
+    bindings: dict[str, object] = {
+        "generation_id": GENERATION_ID,
+        "post_a3_index_sha256": index_sha,
+        "final_manifest_sha256": manifest_sha,
+        "baseline_manifest_sha256": complete.get("baseline_manifest_sha256"),
+        "baseline_index_sha256": complete.get("baseline_index_sha256"),
+        "package_sha256": package_sha,
+        "pre_a3_coverage_sha256": pre_sha,
+        "plan_sha256": authorized.plan_sha256,
+        "universe_sha256": binding.universe_digest,
+        "resolution_sha256": resolution_sha,
+        "runs": runs,
+    }
+    written = write_pit_package(out_dir, first, bindings=bindings)
+    for name, sha in written.items():
+        typer.echo(f"  {name:<32} {sha}")
+    for key, item in first.summary.items():
+        if not isinstance(item, dict):
+            typer.echo(f"  {key:<40} {item}")
+    typer.echo(f"  transitions {first.transitions}")
+    typer.echo(f"  by gap {first.by_gap}")
+    typer.echo(f"  by year {first.by_year}")
+    typer.echo(f"  identities { ({k: v for k, v in first.by_identity.items() if k != 'rows'}) }")
+    if mirror:
+        control_mirror = ControlMirror(RetryingReads(storage), GENERATION_ID)
+        try:
+            records = mirror_pit_package(control_mirror, out_dir, generation_id=GENERATION_ID)
+        except (PitError, MirrorConflictError, StorageUnavailableError) as exc:
+            typer.echo(f"MIRROR FAILED: {exc}")
+            raise typer.Exit(code=1) from exc
+        for record in records:
+            typer.echo(f"  mirrored {record.key} ({record.outcome}) sha256 {record.sha256}")
+        control_mirror.write_ledger(generation_dir / "mirror_ledger.jsonl")
+    verify_databases("after the run")
+    typer.echo(
+        f"PIT FINAL COMPLETE — {first.summary['pre_open']} previously open, "
+        f"{first.summary['newly_resolved']} newly resolved, "
+        f"{first.summary['still_open']} still open; "
+        f"{runs} runs identical; {out_dir}"
+    )
 
 
 @evidence_app.command("sample")

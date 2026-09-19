@@ -1558,6 +1558,18 @@ evidence namespace. The final manifest snapshot (stage
 snapshot under `manifests/`. See
 [A3 planning inputs](a3-planning-inputs.md#executing-the-plan-b215).
 
+## B2.16 the post-A3 index and the PIT package
+
+`derived/sec_evidence_index_v2_post_a3.db` is the final derived index —
+the B2.12 index (kept, byte-unchanged, beside it) plus the A3 delta — with
+its `.meta.json`, `.fingerprints.json` and `post_a3_index_complete.json`
+mirrored under `control/<generation>/post-a3-derived/`; the index itself
+is rebuildable and not mirrored. `plans/generation_v2/post_a3_pit/` holds
+the measured outcome — row files (month outcomes, target realization) and
+small summaries — with the small files mirrored under
+`post-a3-derived/pit/`. See
+[A3 planning inputs](a3-planning-inputs.md#the-post-a3-index-b216).
+
 ## Future staging databases
 
 A research staging database is 20–30 GB. **Create new ones under

@@ -545,3 +545,152 @@ remaining 33 batches to `EXPANSION_HARVEST_COMPLETE`.
 
 The baseline's 37.1 GB was not downloaded again; its verification is
 inherited from B2.11 through the marker the expansion is bound to.
+
+## The post-A3 index (B2.16)
+
+`evidence build-post-a3-index` builds the final derived index without
+reading the baseline corpus again. The B2.12 index is re-proven first —
+file digest, metadata, completion marker, SQLite integrity and every
+semantic fingerprint recomputed and compared — and refused as a conflict
+if any of it disagrees; it is then copied, the copy re-proven the same
+way, and only the delta is parsed into the copy. The B2.12 index file is
+never opened for writing.
+
+The delta is the final manifest's trusted filings whose keys the baseline
+build did not ledger, and it must equal the authorized plan's
+`(cik, accession)` identities exactly — missing, extra and duplicate
+identities are counted and any of them refuses the build. Dates, listing
+order and modification times play no part. Each delta artifact is one
+GET; its length and digest are checked against the manifest before the
+parser sees a byte; the parse is the B2.12 extraction unchanged; the
+build ledger gains a row per artifact inside bounded transactions, so a
+resume skips what it committed and refuses a build bound to any other
+input (the state table holds every digest and the delta itself).
+
+Finalization runs the B2.12 structural checks over the whole index, the
+semantic fingerprints over the whole index, and the same fingerprint
+queries restricted to the rows that are not the delta's — `filings`,
+`securities` and `cover` by URL, the catalogue tables whole — which must
+reproduce the B2.12 fingerprints digit for digit before the index is
+promoted to `sec_evidence_index_v2_post_a3.db`. The small metadata,
+fingerprints and `post_a3_index_complete.json` are mirrored under
+`control/<generation>/post-a3-derived/`; the index itself is rebuildable
+from the manifest, the bucket and that metadata, and is not mirrored.
+
+## What A3 resolved (B2.16)
+
+`evidence materialize-pit` runs the unchanged B2.13 assembly — the same
+identity join, reachability, held set and 90-day rule — over the post-A3
+index and compares every universe month with the standing the corrected
+package froze before acquisition. A month open before and covered after
+is `RESOLVED`; open both times is `STILL_OPEN` with its gap class
+re-measured (an A3 filing that yielded nothing turns the candidate it was
+into no candidate); covered before and open after would be `REGRESSED`
+and is counted, never assumed away. `DECIDED` months are frozen verdicts
+and are not in the comparison.
+
+Attribution is the model's own: the assembly names, for a covered month,
+the newest common-stock observation on or before the month-end that
+joined to the identity — the *source* — and that is what the outcome row
+records, with whether it is an A3 filing. Separately, *participation*
+counts the A3 observations for the identity inside the month's window; it
+is a set, not a cause. Per target the package records what the filing
+emitted (cover rows, rows with a symbol, common-stock rows), how many
+months it is the source of, and how many it participates in, beside the
+planner's predicted potential and yield-adjusted months. Every resolved
+month's realized edge is rechecked: the source date is on or before the
+month-end and within 90 days, and the source is an observation that
+joined `EXACT` to that identity; a violation stops the materialization as
+a defect. The package is written twice from the frozen index and must
+fingerprint identically; the expected 155,114.479 is printed beside the
+observed count and gates nothing.
+
+### The live run — 2026-09-19
+
+**Index.** `evidence build-post-a3-index` bound to the final manifest
+`a5653f1c…` (99,774 trusted; its newest mirrored snapshot equal), the A3
+marker `af88cc24…` (local and mirrored), the B2.12 index `3deb46b7…`
+(metadata, marker, integrity `ok`, all five fingerprints recomputed and
+equal) and the plan `0efa7d03…`; both database digests unchanged before
+and after. Delta: 61,628 filings beyond the baseline ledger (94,041 −
+32,413), 0 missing, 0 extra, 0 duplicate, 45 co-registrant rows. One
+invocation, 58.6 minutes, 0 resumes: 61,628 GETs, 5,528,340,425 bytes, 0
+byte or digest mismatches, 0 missing, 0 storage failures, 0 read retries;
+61,628 parsed, 0 failed; forms 8-K 59,937 · 10-Q 1,176 · 10-K 380 · 20-F
+96 · 20-F/A 19 · 40-F 18 · 40-F/A 2 (= the plan). Rows: filings 32,413 →
+94,041 (+61,628); securities 43,001 → 124,479 (+81,478); catalogue
+716,290 and catalogue_stats 5,733 unchanged (+0); build ledger 99,774.
+Structured fields: `Security12bTitle` 42,849 → 124,050, `TradingSymbol`
+42,207 → 122,824, `SecurityExchangeName` 42,691 → 123,699; co-registrant
+accessions 17 → 39 (surplus rows 29 → 75: the plan's 45 plus one A3 copy of
+an accession the baseline held under another CIK); 21 acceptance-stamp
+conflicts between co-registrant catalogues, the later stamp kept as
+before. Baseline invariance: catalogue `98f66a22…`, catalogue_stats
+`a809c94c…`, filings (32,413 rows) `8fb487b3…`, securities (43,001)
+`98083e2c…`, cover `a0c00e69…` — all unchanged. Fingerprints of the whole
+index: filings 94,041 `0aebbf30…`, securities 124,479 `ee19167a…`, cover
+124,479 `b84800d4…`. `integrity_check` ok; 0 duplicate filing identities.
+Index `sec_evidence_index_v2_post_a3.db`, 344,674,304 bytes,
+`e6ce97d6bf8ecb1f3586fd3e7afa71a687a39bc7648fa3e45b877d181447abef`;
+marker `post_a3_index_complete.json` `d91ff18d…`; metadata, fingerprints
+and marker mirrored under `post-a3-derived/` (6 objects), 0 conflicts. The
+B2.12 index is byte-unchanged.
+
+**PIT.** `evidence materialize-pit` over that index, bound to the corrected
+package `79f644f1…` (pre-A3 coverage `1fc94fc1…`, 268,780 months), the
+plan, the universe `b8eaed3e…` and the resolution; two runs, every
+fingerprint identical; ~12 s per assembly.
+
+| | pre-A3 (frozen) | post-A3 (observed) |
+| --- | --- | --- |
+| universe months | 268,780 | 268,780 |
+| `DECIDED` / `COVERED` / `OPEN` | 10,317 / 16,194 / **242,269** | 10,317 / 171,814 / **86,649** |
+| newly resolved | — | **155,620** (64.23% of the open months) |
+| regressed (covered → open) | — | 0 |
+| predicted solvable 164,572 | | 155,040 resolved (94.21%), 9,532 still open |
+| predicted unsolvable 77,697 | | 580 resolved anyway, 77,117 still open |
+| expected solved | 155,114.479 | actual 155,620: +505.5, ×1.0033; actual / predicted-solvable 0.9456 |
+
+Transitions: G1 → RESOLVED 155,040 · G1 → G1 8,439 · G1 → G4 1,093 (the
+only candidates were A3 filings that yielded no common-stock cover) ·
+G2 → RESOLVED 535 · G2 → G2 27,668 · G3 → RESOLVED 33 · G3 → G1 48 ·
+G3 → G4 13 · G3 → G3 11,991 · G4 → RESOLVED 12 · G4 → G4 34,395 ·
+G5 → G5 3,002. The 580 predicted-unsolvable months that resolved are
+model-consistent, not a defect: coverage joins a cover row's *symbol* to
+an identity at the row's date, while a gap's class was derived from the
+identity's *resolved issuer* — an A3 filing under some CIK naming the
+symbol of an unresolved identity (535, `G2`), of an identity whose issuer
+reach was ambiguous (33, `G3`), or a month no filing of the identity's own
+issuer reached (12, `G4`) covers it under the unchanged rule. Still-open
+months after A3 by class: G1 8,487 · G2 27,668 · G3 11,991 · G4 35,501 ·
+G5 3,002. No month-end join state changed (0 identity-state transitions).
+
+By year (open before → resolved / still open): 2022 54,901 → 32,275 /
+22,626 · 2023 54,351 → 34,974 / 19,377 · 2024 54,827 → 36,949 / 17,878 ·
+2025 57,010 → 38,936 / 18,074 · 2026 (frozen horizon) 21,180 → 12,486 /
+8,694. Identities with an open month 6,524: improved 4,028 (fully resolved
+1,255, partially 2,773), no improvement 2,496; months resolved per
+identity 0: 2,496 · 1–3: 166 · 4–6: 146 · 7–12: 215 · 13+: 3,501; the
+1,048 `NO_CIK` identities keep 27,668 open months and gained 535.
+
+Every one of the 155,620 resolved months has an A3 filing as its source
+(0 baseline sources); realized edges checked 155,620, future-invalid 0,
+source-identity violations 0. Participation: 138,692 resolved months have
+exactly one A3 observation in their window, 16,879 two, 49 three or more.
+Of the 61,628 targets, 59,813 emitted cover rows, 58,540 a common-stock
+row, 58,050 participate in at least one newly resolved month and 58,030
+are the source of at least one; 1,815 emitted no cover rows; 490 emitted
+common-stock cover that benefited no month. Months-as-source per target:
+0: 3,598 · 1: 5,728 · 2: 9,162 · 3: 41,859 · 4: 902 · ≥5: 379 — sum
+155,620 against 164,572 predicted potential months. By form (parsed /
+common-stock cover / participating): 8-K 59,937 / 57,086 / 56,611 · 10-Q
+1,176 / 1,037 / 1,033 · 10-K 380 / 312 / 308 · 20-F 96 / 76 / 71 · 20-F/A
+19 / 15 / 13 · 40-F 18 / 13 / 13 · 40-F/A 2 / 1 / 1.
+
+Package `plans/generation_v2/post_a3_pit/`: month outcomes 242,269 rows
+`a955a2b7…`, target realization 61,628 rows `eda53706…`, gap transitions
+`7b073478…` (12 rows), identity summary 6,524 rows `c8b79f26…`, summary
+`0a0c55cd…`; `pit_final_complete.json` `e5f3bbbd…`; the six small files
+mirrored under `post-a3-derived/pit/`, 0 conflicts. Existing consumers
+(`coverage`, `join`, `sample`, `reachability`, `expand`) run against the
+new index unchanged. No A4 was planned.

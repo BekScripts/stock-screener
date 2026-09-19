@@ -36,8 +36,8 @@ appears without the run or the test that produced it.
 
 ## Current phase
 
-**B2.15 — the authoritative V2 Plan A3 expansion executed to B2 and
-COMPLETE** is the current checkpoint on
+**B2.16 — the post-A3 derived index built and the final V2 PIT evidence
+materialized** is the current checkpoint on
 `feat/phase-b2-storage-abstraction`. **The BEK
 drive is permanently unavailable** and Generation V1 is history that
 creates no trust. B2.9X started **Generation V2** from what survived on the
@@ -122,7 +122,26 @@ terminal remote verification PASS (61,628 bodies, 0 mismatches); full
 namespace 99,774 objects = 99,774 records, 0 orphans, 0 missing;
 `a3_expansion_complete.json` `af88cc24…` mirrored; A3 recovery PROVEN
 (`A3_EXPANSION_RECOVERY_SUFFICIENT = YES`). Historical V1 (61,941 /
-`53e3f0ca…`) is historical only. Next: B2.16.** The frozen
+`53e3f0ca…`) is historical only. POST-A3 DERIVED INDEX COMPLETE:
+`derived/sec_evidence_index_v2_post_a3.db`, 344,674,304 bytes, SHA-256
+`e6ce97d6bf8ecb1f3586fd3e7afa71a687a39bc7648fa3e45b877d181447abef` — the
+verified B2.12 index (`3deb46b7…`, byte-unchanged and kept) plus exactly
+the 61,628 A3 filings, each one GET verified against the manifest before
+parsing, 0 parse failures; filings 94,041, securities 124,479, catalogue
+716,290; the baseline's rows fingerprint as B2.12 recorded; fingerprints
+filings `0aebbf30…`, securities `ee19167a…`, cover `b84800d4…`; marker
+`post_a3_index_complete.json` `d91ff18d…` mirrored. ACTUAL PIT
+MATERIALIZATION COMPLETE (`plans/generation_v2/post_a3_pit/`, two
+identical runs): of the **242,269** months open before A3, **155,620
+newly resolved (64.23%)**, **86,649 remain open**, 0 regressed; predicted
+solvable 164,572 → 155,040 resolved (94.21%), 9,532 still open; predicted
+unsolvable 77,697 → 580 resolved anyway (535 `G2_NO_CIK`, 33 `G3`, 12
+`G4`), 77,117 still open; **expected solved 155,114.479 (diagnostic) vs
+actual 155,620: +505.5, ×1.0033**; every resolved month has an A3 source,
+0 future-invalid edges, 0 identity violations. Still open by class: G1
+8,487 · G2 27,668 · G3 11,991 · G4 35,501 · G5 3,002. Next: B2.17 (audit
+the final coverage and decide whether any further acquisition is
+justified); no A4 has been planned.** The frozen
 resolution stands: 8,919
 identities, 6,048 resolved (402 `STORED`, 5,646 `SEC_TICKER_MAP`), 2,871
 `UNRESOLVED`; the ticker map was fetched once, in B2.10, and never again. See
@@ -628,6 +647,42 @@ convention, and none may be relaxed without an explicit instruction.
   `supersession.json` naming the old package and plan digests, the forensic
   verdict and commit; the old artifacts gain a `SUPERSEDED.json` beside them
   and lose nothing, locally or remotely.
+
+### B2.16 the post-A3 index and the measured outcome
+
+- **The final index is the verified baseline plus exactly the delta.** The
+  B2.12 index is re-proven (digest, metadata, marker, integrity, every
+  fingerprint) and copied; the copy is re-proven; only the delta is parsed
+  into it. The B2.12 file is never opened for writing and the baseline
+  corpus is never read again. Any disagreement is a conflict, never a
+  reason to fall back to a full rebuild silently.
+- **The delta is the manifest beyond the baseline ledger, and it must be
+  the plan.** Missing, extra and duplicate identities are counted and any
+  of them refuses the build; dates, listing order and modification times
+  identify nothing.
+- **One read is the verification and the parse.** Length and digest are
+  checked against the manifest on the bytes the parser consumes; bytes
+  that disagree yield no rows and no ledger entry. The extraction is
+  B2.12's, unchanged.
+- **Adding the delta changes no baseline row.** The B2.12 fingerprint
+  queries over the non-delta rows must reproduce the B2.12 fingerprints
+  before the index is promoted.
+- **The outcome is observed, never fitted.** `materialize-pit` runs the
+  unchanged B2.13 assembly over the post-A3 index and compares month by
+  month with the frozen pre-A3 rows; `RESOLVED`, `STILL_OPEN` (class
+  re-measured) and `REGRESSED` are all counted. The planner's 155,114.479
+  is printed beside the observed count and gates nothing.
+- **Attribution is the model's source rule; participation is a set.** A
+  covered month's source is the assembly's newest common-stock
+  observation; which other A3 filings fall inside the window is reported
+  separately and never called a cause. Every realized edge is rechecked
+  for the temporal and identity rules; a violation is a defect.
+- **`ResearchUniverseMonth` is read, never written.** The materialization
+  is a derived package under `plans/generation_v2/post_a3_pit/`; its small
+  files are mirrored under `post-a3-derived/pit/`; the row files are
+  rebuildable and are not.
+- **No A4.** Measurement ends the phase; a further acquisition is a
+  reviewed decision, not a consequence of residual gaps.
 
 ### B2.15 the expansion
 
@@ -1872,6 +1927,74 @@ Documented rather than fixed. Each is a deliberate stop, not a backlog item.
 
 Measured runs, kept because they are the evidence behind decisions above.
 
+### B2.16 post-A3 index and final PIT materialization — 2026-09-19
+
+- `evidence build-post-a3-index --expect-manifest-sha a5653f1c…
+  --expect-trusted 99774 --expect-baseline-index-sha 3deb46b7…
+  --expect-baseline-manifest-sha 13722e02… --expect-baseline-trusted 38146
+  --expect-baseline-filings 32413 --expect-baseline-submissions 5733
+  --expect-plan-sha 0efa7d03… --expect-plan-rows 61628
+  --expect-a3-marker-sha af88cc24… --expect-database-sha … (both)
+  --batch-size 250 --prefetch 8`, 14:39–15:39 UTC, one invocation, 0
+  resumes: final manifest equal to its newest mirrored snapshot; A3 marker
+  local == mirrored; B2.12 index re-proven (digest, metadata, marker,
+  integrity ok, five fingerprints); delta 61,628 = 94,041 − 32,413, 0
+  missing / 0 extra / 0 duplicate, 45 co-registrant rows; baseline copied
+  and re-proven; 61,628 GETs, 5,528,340,425 bytes, 0 mismatches, 0 missing,
+  0 storage failures, 0 retries; parsed 61,628, failed 0; forms = the
+  plan; the 37.1 GB baseline not read. Rows added: filings +61,628,
+  securities +81,478, catalogue +0, catalogue_stats +0. Baseline
+  invariance: all five subset fingerprints unchanged. Whole-index
+  fingerprints: filings 94,041 `0aebbf30…`, securities 124,479
+  `ee19167a…`, cover `b84800d4…`, catalogue `98f66a22…`, catalogue_stats
+  `a809c94c…`. Index `e6ce97d6…` (344,674,304 bytes); marker `d91ff18d…`;
+  6 control objects mirrored; B2: 61,646 GETs (61,628 evidence), 6 control
+  PUT/HEAD/LIST, 0 evidence PUT/DELETE, 0 SEC; both databases unchanged.
+- `evidence materialize-pit --expect-index-sha e6ce97d6…
+  --expect-manifest-sha a5653f1c… --expect-package-sha 79f644f1…
+  --expect-plan-sha 0efa7d03… --expect-universe-sha b8eaed3e… --runs 2`,
+  15:40 UTC: pre-A3 coverage `1fc94fc1…` (268,780 months) proven against
+  the package manifest; two assemblies (~12 s each) with identical
+  fingerprints — month outcomes 242,269 rows `a955a2b7…`, gap transitions
+  `7b073478…`, identity summary 6,524 rows `c8b79f26…`, target realization
+  61,628 rows `eda53706…`, summary `0a0c55cd…`.
+- Outcome: 242,269 open → 155,620 resolved (64.23%), 86,649 still open, 0
+  regressed; predicted solvable 164,572 → 155,040 / 9,532; predicted
+  unsolvable 77,697 → 580 / 77,117; expected 155,114.479 vs actual 155,620
+  (+505.5, ×1.0033; actual / predicted-solvable 0.9456). Transitions:
+  G1→RESOLVED 155,040, G1→G1 8,439, G1→G4 1,093, G2→RESOLVED 535, G2→G2
+  27,668, G3→RESOLVED 33, G3→G1 48, G3→G4 13, G3→G3 11,991, G4→RESOLVED
+  12, G4→G4 34,395, G5→G5 3,002. The 580 predicted-unsolvable resolutions
+  follow from the unchanged rule (symbol-joined observations cover an
+  identity whose gap class came from its resolved issuer). By year
+  (resolved / still open): 2022 32,275 / 22,626 · 2023 34,974 / 19,377 ·
+  2024 36,949 / 17,878 · 2025 38,936 / 18,074 · 2026 12,486 / 8,694.
+  Identities: 6,524 with open months, 4,028 improved (1,255 fully, 2,773
+  partially), 2,496 unchanged; `NO_CIK` 1,048 identities keep 27,668 open
+  months. Realized edges 155,620 checked, 0 future-invalid, 0 identity
+  violations, 0 identity-state transitions. Targets: 59,813 emitted cover
+  rows, 58,540 common-stock cover, 58,030 the source of ≥1 resolved month,
+  1,815 no cover rows, 490 cover without benefit; months-as-source sum
+  155,620 vs 164,572 predicted potential. Consumers `coverage`, `join`,
+  `sample`, `reachability`, `expand` run against the new index. Recovery
+  from the bucket alone: final manifest snapshot, baseline marker, B2.12
+  metadata/marker, A3 authorization and marker, post-A3 metadata,
+  fingerprints and marker, PIT summary, fingerprints and marker, corrected
+  package — all read back and equal: `POST_A3_DERIVED_RECOVERY_SUFFICIENT
+  = YES`. Credential scan over 32 files: 0. No A4.
+- `tests/integration/test_post_a3_index.py` (14) and
+  `tests/integration/test_pit_final.py` (6): the baseline re-proven and
+  refused on a wrong digest, another manifest or moved rows; the delta
+  equal to the plan with missing and extra identities named and refused;
+  only the delta read and the baseline file untouched; co-registrant rows
+  kept apart; mismatching bytes yielding no rows; resume skipping committed
+  artifacts and fingerprinting like one pass; a resume bound to other
+  inputs refused; a completed index not rebuilt without `--fresh`; the
+  baseline invariance; the measured outcome on a hand-checkable world
+  (transitions reconcile, source and participation, re-measured classes,
+  determinism, a mismatched universe refused, the package round trip and
+  mirror, pre-coverage loaded only when it hashes as recorded).
+
 ### B2.15 A3 expansion — 2026-09-19
 
 - `evidence expand-a3 --live --plan …/a3_r1 --expect-plan-sha 0efa7d03…
@@ -2692,13 +2815,15 @@ under **80%**. It is what CI runs; run it rather than the individual tools.
 
 ## Next phase
 
-**B2.16 — rebuild the post-A3 derived index and materialize the final
-PIT evidence** follows: the derived index is rebuilt from the final
-manifest `a5653f1c…` (99,774 trusted artifacts) the way B2.12 built it
-from the baseline — one GET per artifact, bytes and digest verified
-against the manifest before parsing — and the point-in-time evidence the
-A3 filings now support is materialized from it. The superseded plan
-`a3e7df19…` stays superseded; nothing is re-planned or re-fetched. FTD archives are redownloaded separately. The one-month boundary
+**B2.17 — audit the final PIT coverage and decide whether any further
+evidence acquisition is justified** follows: the measured outcome
+(155,620 resolved, 86,649 still open — 8,487 with an unheld candidate,
+27,668 without a CIK, 11,991 ambiguous, 35,501 with no candidate, 3,002
+other) is reviewed for residual gaps, the realized A3 yield, remaining
+candidate availability and cost against benefit. No A4 exists; any further
+acquisition is a reviewed decision under its own inputs version, never a
+consequence of residual gaps. The superseded plan `a3e7df19…` stays
+superseded; nothing is re-planned or re-fetched. FTD archives are redownloaded separately. The one-month boundary
 between the classification and planning rules remains documented in
 [A3 planning inputs](a3-planning-inputs.md) and is a decision for a later
 phase; widening the acquisition window is likewise a separate, versioned
@@ -2769,7 +2894,7 @@ Not a backlog. These exclusions are deliberate.
 
 | | |
 | --- | --- |
-| Commit | The B2.15 commit containing this checkpoint, `feat: complete V2 A3 evidence expansion`; parent `1fbf188` (B2.14R2, `feat: authorize corrected V2 Plan A3`). The authoritative plan's meta and authorization record name `repo_commit` `daa1d36`; the corrected package records `2a7d3b8`, the superseded package `ebfbc1c`, the superseded plan `afe6a10`, the index `1b407b6`. |
+| Commit | The B2.16 commit containing this checkpoint, `feat: materialize final V2 PIT evidence`; parent `c4d82af` (B2.15, `feat: complete V2 A3 evidence expansion`). The authoritative plan's meta and authorization record name `repo_commit` `daa1d36`; the corrected package records `2a7d3b8`, the superseded package `ebfbc1c`, the superseded plan `afe6a10`, the index `1b407b6`. |
 | Branch | `feat/phase-b2-storage-abstraction` |
 | Migration head | `0031` — the research-universe layer (9K.7). Nothing since 9K.11 added one. |
 | Score version | `COMPOUNDER_V1_2` (unchanged by anything in Phase 8, 9A, 9B or 9C) |
