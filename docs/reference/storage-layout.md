@@ -1569,6 +1569,11 @@ the measured outcome — row files (month outcomes, target realization) and
 small summaries — with the small files mirrored under
 `post-a3-derived/pit/`. See
 [A3 planning inputs](a3-planning-inputs.md#the-post-a3-index-b216).
+`plans/generation_v2/pit_audit/` holds the B2.17 residual audit — the
+per-month classification, the `FORENSIC_ONLY` residual plan (never
+mirrored, never authorized) and the small summaries mirrored under
+`pit-audit/`. See
+[A3 planning inputs](a3-planning-inputs.md#the-residual-audit-b217).
 
 ## Future staging databases
 

@@ -245,7 +245,15 @@ from stock_screener.sec_evidence.migration import (
     build_plan,
     write_migration_plan,
 )
+from stock_screener.sec_evidence.pit_audit import (
+    AUDIT_DIR,
+    AuditError,
+    audit_pit,
+    mirror_audit,
+    write_audit,
+)
 from stock_screener.sec_evidence.pit_final import (
+    PIT_COMPLETE_MARKER,
     PIT_DIR,
     PitError,
     load_pre_coverage,
@@ -3650,6 +3658,230 @@ def evidence_materialize_pit_command(
         f"{first.summary['newly_resolved']} newly resolved, "
         f"{first.summary['still_open']} still open; "
         f"{runs} runs identical; {out_dir}"
+    )
+
+
+@evidence_app.command("audit-pit")
+def evidence_audit_pit_command(
+    database: Annotated[
+        Path, typer.Option("--database", help="The frozen PIT database, opened read-only.")
+    ] = Path("stage9k.db"),
+    expect_universe_count: Annotated[
+        int, typer.Option(help="Identities the universe must hold.")
+    ] = 8919,
+    expect_universe_sha: Annotated[
+        str | None, typer.Option(help="Refuse a universe whose digest differs.")
+    ] = None,
+    expect_index_sha: Annotated[str, typer.Option(help="The post-A3 index digest. Required.")] = "",
+    expect_manifest_sha: Annotated[
+        str, typer.Option(help="The final manifest digest. Required.")
+    ] = "",
+    expect_pit_marker_sha: Annotated[
+        str, typer.Option(help="The PIT completion marker digest. Required.")
+    ] = "",
+    package: Annotated[
+        Path | None, typer.Option(help="The corrected pre-A3 package. Default: …/a3_inputs_r1.")
+    ] = None,
+    expect_package_sha: Annotated[
+        str, typer.Option(help="The corrected package digest. Required.")
+    ] = "",
+    plan: Annotated[
+        Path | None, typer.Option(help="The authorized plan directory. Default: …/a3_r1.")
+    ] = None,
+    expect_plan_sha: Annotated[
+        str, typer.Option(help="The authorized plan digest. Required.")
+    ] = "",
+    expect_database_sha: Annotated[
+        list[str] | None,
+        typer.Option(help="PATH=SHA256 pairs verified before and after; drift stops the run."),
+    ] = None,
+    output: Annotated[
+        Path | None, typer.Option(help="Audit directory. Default: …/pit_audit.")
+    ] = None,
+    runs: Annotated[int, typer.Option(min=1, help="Audits; all must agree.")] = 2,
+    mirror: Annotated[
+        bool, typer.Option("--mirror/--no-mirror", help="Mirror the small audit files.")
+    ] = True,
+) -> None:
+    """Audit what remains open after A3 and measure — never take — the residual SEC opportunity.
+
+    Re-proves the B2.16 materialization from its fingerprints, runs the
+    unchanged assembly over the post-A3 index, classifies every residual
+    month by what blocks it, builds the A3 marginal curve as a prefix union,
+    and runs the unchanged planner over the post-A3 candidates as a
+    FORENSIC_ONLY counterfactual. Runs `--runs` times with identical
+    fingerprints required. No SEC request, no evidence write, no A4.
+    """
+    settings = _bootstrap()
+    for name, value in (
+        ("--expect-index-sha", expect_index_sha),
+        ("--expect-manifest-sha", expect_manifest_sha),
+        ("--expect-pit-marker-sha", expect_pit_marker_sha),
+        ("--expect-package-sha", expect_package_sha),
+        ("--expect-plan-sha", expect_plan_sha),
+    ):
+        if len(value) != 64:
+            typer.echo(f"STOPPED: {name} is required and must be a full SHA-256")
+            raise typer.Exit(code=1)
+    expected_digests = _parse_digest_pairs(expect_database_sha or [])
+    storage, control = _open_layout(settings)
+    generation_dir = control.plans / "generation_v2"
+    package_dir = package or generation_dir / A3_INPUTS_DIRECTORY
+    plan_dir = plan or generation_dir / "a3_r1"
+    pit_dir = generation_dir / PIT_DIR
+    out_dir = output or generation_dir / AUDIT_DIR
+    index_path = derived_root(control) / POST_A3_INDEX_FILE
+
+    def verify_databases(when: str) -> None:
+        for path, expected in expected_digests.items():
+            actual = _file_sha256(path)
+            if actual != expected:
+                typer.echo(
+                    f"STOPPED: database digest drift {when}: {path} is {actual[:16]}…, "
+                    f"expected {expected[:16]}…"
+                )
+                raise typer.Exit(code=1)
+        if expected_digests:
+            typer.echo(f"databases verified {when}: {len(expected_digests)} unchanged")
+
+    verify_databases("before the audit")
+    manifest_sha = _file_sha256(control.manifest_path)
+    if manifest_sha != expect_manifest_sha.lower():
+        typer.echo("STOPPED: the manifest does not hash to --expect-manifest-sha")
+        raise typer.Exit(code=1)
+    if not index_path.is_file() or _file_sha256(index_path) != expect_index_sha.lower():
+        typer.echo("STOPPED: the post-A3 index is absent or does not hash as expected")
+        raise typer.Exit(code=1)
+    marker_path = pit_dir / PIT_COMPLETE_MARKER
+    if not marker_path.is_file() or _file_sha256(marker_path) != expect_pit_marker_sha.lower():
+        typer.echo("STOPPED: the PIT completion marker is absent or does not hash as expected")
+        raise typer.Exit(code=1)
+    pit_marker = json.loads(marker_path.read_text(encoding="utf-8"))
+    if (
+        pit_marker.get("post_a3_index_sha256") != expect_index_sha.lower()
+        or pit_marker.get("final_manifest_sha256") != manifest_sha
+        or pit_marker.get("plan_sha256") != expect_plan_sha.lower()
+    ):
+        typer.echo("STOPPED: the PIT marker binds to another index, manifest or plan")
+        raise typer.Exit(code=1)
+    try:
+        recorded = package_bindings_from_manifest(package_dir)
+        package_sha = package_sha256(component_digests(package_dir))
+    except (OSError, KeyError, TypeError, ValueError, PackageError) as exc:
+        typer.echo(f"STOPPED: cannot read the corrected package: {exc}")
+        raise typer.Exit(code=1) from exc
+    if package_sha != expect_package_sha.lower():
+        typer.echo(f"STOPPED: the package digest is {package_sha[:16]}…, not as expected")
+        raise typer.Exit(code=1)
+    try:
+        authorized = load_authorized_plan(plan_dir, expect_plan_sha256=expect_plan_sha)
+        resolution, resolution_sha = load_resolution(generation_dir / "filer_resolution_v1.jsonl")
+    except (ExpansionRefusedError, PackageError) as exc:
+        typer.echo(f"STOPPED: {exc}")
+        raise typer.Exit(code=1) from exc
+    if resolution_sha != recorded.resolution_sha256:
+        typer.echo("STOPPED: the resolution does not hash as the package records")
+        raise typer.Exit(code=1)
+    manifest = Manifest(control.manifest_path)
+    plan_bytes = {
+        (int(e.cik or 0), str(e.accession)): int(e.bytes or 0)
+        for e in manifest.latest_by_url().values()
+        if e.is_stored and e.request_kind == "FILING" and e.cik is not None
+    }
+    expected_solved = float(str(pit_marker.get("expected_solved")))
+    typer.echo(f"post-A3 index    : {expect_index_sha.lower()}")
+    typer.echo(f"final manifest   : {manifest_sha}")
+    typer.echo(f"PIT marker       : {expect_pit_marker_sha.lower()}")
+    typer.echo(f"package          : {package_sha}")
+    typer.echo(f"plan             : {authorized.plan_sha256} ({len(authorized.targets)} targets)")
+    if not database.is_file():
+        typer.echo(f"STOPPED: no database at {database}")
+        raise typer.Exit(code=1)
+    engine = create_engine_from_url(read_only_url(database))
+    results = []
+    try:
+        with session_scope(build_session_factory(engine)) as session:
+            try:
+                binding = bind_source(
+                    session,
+                    database,
+                    expect_count=expect_universe_count,
+                    expect_digest=expect_universe_sha or recorded.universe_sha256,
+                )
+            except BindingError as exc:
+                typer.echo(f"STOPPED: {exc}")
+                raise typer.Exit(code=1) from exc
+            typer.echo(
+                f"universe         : {binding.universe_count} identities, {binding.universe_digest}"
+            )
+            with closing(sqlite3.connect(f"file:{index_path}?mode=ro", uri=True)) as index:
+                for run in range(1, runs + 1):
+                    try:
+                        results.append(
+                            audit_pit(
+                                session,
+                                index,
+                                manifest,
+                                resolution,
+                                pit_dir,
+                                authorized.targets,
+                                plan_bytes,
+                                expected_solved=expected_solved,
+                                progress=typer.echo if run == 1 else None,
+                            )
+                        )
+                    except AuditError as exc:
+                        typer.echo(f"STOPPED (E): {exc}")
+                        raise typer.Exit(code=1) from exc
+                    typer.echo(f"run {run}: fingerprints {results[-1].fingerprints}")
+    finally:
+        engine.dispose()
+    first = results[0]
+    for number, other in enumerate(results[1:], start=2):
+        if other.fingerprints != first.fingerprints:
+            typer.echo(f"STOPPED: run {number} does not reproduce run 1")
+            raise typer.Exit(code=1)
+    bindings: dict[str, object] = {
+        "generation_id": GENERATION_ID,
+        "post_a3_index_sha256": expect_index_sha.lower(),
+        "final_manifest_sha256": manifest_sha,
+        "pit_marker_sha256": expect_pit_marker_sha.lower(),
+        "package_sha256": package_sha,
+        "plan_sha256": authorized.plan_sha256,
+        "universe_sha256": binding.universe_digest,
+        "resolution_sha256": resolution_sha,
+        "runs": runs,
+    }
+    written = write_audit(out_dir, first, bindings=bindings)
+    for name, sha in written.items():
+        typer.echo(f"  {name:<40} {sha}")
+    for section in ("reproduction", "planning", "classes", "sufficiency", "no_cik", "exhausted"):
+        typer.echo(f"  {section}: {getattr(first, section)}")
+    typer.echo(f"  transitions: {first.transitions}")
+    typer.echo(f"  utility: { ({k: v for k, v in first.utility.items() if k != 'by_form'}) }")
+    typer.echo(f"  utility by form: {first.utility['by_form']}")
+    typer.echo(f"  curve: {first.curve}")
+    typer.echo(f"  opportunity: {first.opportunity}")
+    typer.echo(f"  by year: {first.by_year}")
+    typer.echo(f"  identities: { ({k: v for k, v in first.identities.items() if k != 'rows'}) }")
+    typer.echo(f"  concentration: {first.concentration}")
+    typer.echo(f"  decision: {first.decision}")
+    if mirror:
+        control_mirror = ControlMirror(RetryingReads(storage), GENERATION_ID)
+        try:
+            records = mirror_audit(control_mirror, out_dir, generation_id=GENERATION_ID)
+        except (AuditError, MirrorConflictError, StorageUnavailableError) as exc:
+            typer.echo(f"MIRROR FAILED: {exc}")
+            raise typer.Exit(code=1) from exc
+        for record in records:
+            typer.echo(f"  mirrored {record.key} ({record.outcome}) sha256 {record.sha256}")
+        control_mirror.write_ledger(generation_dir / "mirror_ledger.jsonl")
+    verify_databases("after the audit")
+    typer.echo(
+        f"PIT AUDIT COMPLETE — {first.decision['remaining_months']} residual months; "
+        f"SEC may help {first.sufficiency['SEC_MORE_MAY_HELP']}; forensic plan "
+        f"{first.decision['forensic_documents_required']} targets "
+        f"(NOT_AUTHORIZED_FOR_ACQUISITION); {runs} runs identical; {out_dir}"
     )
 
 

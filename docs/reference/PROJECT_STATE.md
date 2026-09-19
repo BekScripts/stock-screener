@@ -36,8 +36,8 @@ appears without the run or the test that produced it.
 
 ## Current phase
 
-**B2.16 — the post-A3 derived index built and the final V2 PIT evidence
-materialized** is the current checkpoint on
+**B2.17 — the final PIT coverage audited and V2 SEC evidence acquisition
+frozen** is the current checkpoint on
 `feat/phase-b2-storage-abstraction`. **The BEK
 drive is permanently unavailable** and Generation V1 is history that
 creates no trust. B2.9X started **Generation V2** from what survived on the
@@ -139,9 +139,24 @@ unsolvable 77,697 → 580 resolved anyway (535 `G2_NO_CIK`, 33 `G3`, 12
 `G4`), 77,117 still open; **expected solved 155,114.479 (diagnostic) vs
 actual 155,620: +505.5, ×1.0033**; every resolved month has an A3 source,
 0 future-invalid edges, 0 identity violations. Still open by class: G1
-8,487 · G2 27,668 · G3 11,991 · G4 35,501 · G5 3,002. Next: B2.17 (audit
-the final coverage and decide whether any further acquisition is
-justified); no A4 has been planned.** The frozen
+8,487 · G2 27,668 · G3 11,991 · G4 35,501 · G5 3,002. B2.17 RESIDUAL AUDIT
+(`plans/generation_v2/pit_audit/`, two identical runs): of the 86,649
+residual months, `SEC_MORE_MAY_HELP` 8,487 (9.8%; reachable by 12,320
+unheld candidates; the unchanged planner would need 3,640 documents and
+~2.0 GB at 2,332 months per 1,000 documents and 4,453 per GB, against A3's
+2,525 and 30,225 — a FORENSIC_ONLY plan, NOT_AUTHORIZED_FOR_ACQUISITION),
+`IDENTITY_DATA_REQUIRED` 41,004 (47.3%: no CIK 27,668, identity/ticker
+ambiguity 6,338, class ambiguity 6,998), `NON_SEC_EVIDENCE_REQUIRED`
+30,860 (35.6%; 25,689 residual months belong to 813 foreign 20-F/40-F
+filers whose annual filings reach three month-ends a year),
+`SEC_MORE_UNLIKELY_TO_HELP` 4,505 (5.2%; held filings in reach with no
+usable cover), `STRUCTURALLY_UNRESOLVABLE_UNDER_CURRENT_MODEL` 1,793
+(2.1%; no listing observation). A3's final decile delivered 988 months per
+1,000 documents and 5,406 per GB against deciles 1–7 at 2,800–3,100 and
+53,000–86,000. **Verdict A: no further SEC acquisition justified — V2 SEC
+EVIDENCE ACQUISITION FROZEN.** Further SEC acquisition: NOT JUSTIFIED. No
+A4 exists. Next: B2.18 (freeze the PIT dataset and establish the
+backtest-readiness contract).** The frozen
 resolution stands: 8,919
 identities, 6,048 resolved (402 `STORED`, 5,646 `SEC_TICKER_MAP`), 2,871
 `UNRESOLVED`; the ticker map was fetched once, in B2.10, and never again. See
@@ -647,6 +662,36 @@ convention, and none may be relaxed without an explicit instruction.
   `supersession.json` naming the old package and plan digests, the forensic
   verdict and commit; the old artifacts gain a `SUPERSEDED.json` beside them
   and lose nothing, locally or remotely.
+
+### B2.17 the residual audit and the acquisition freeze
+
+- **V2 SEC evidence acquisition is frozen.** The final corpus is 99,774
+  trusted artifacts under manifest `a5653f1c…`; the final PIT state is the
+  B2.16 materialization over the post-A3 index `e6ce97d6…`. No further
+  SEC filing acquisition is justified by the residual, and none is planned:
+  the residual counterfactual (`residual_sec_forensic_plan.jsonl`, 3,640
+  targets) is `FORENSIC_ONLY` / `NOT_AUTHORIZED_FOR_ACQUISITION` and never
+  becomes an A4 by default. A future acquisition is a reviewed decision
+  under its own inputs version.
+- **A residual month is classified by the assembly's own reason, once.**
+  `audit-pit` gives each of the 86,649 months one audit class and one
+  sufficiency category derived from the reason the unchanged assembly
+  states, plus diagnostic flags; `SEC_MORE_MAY_HELP` is granted only to a
+  month an existing unheld, in-window candidate reaches under the frozen
+  semantics — never to speculation.
+- **Utility is participation and prefix union, never causal credit.** The
+  A3 marginal curve is the union of resolved months supported by the first
+  N targets in plan order; a document's utility is the months it
+  participates in. No month is attributed to one document.
+- **The remaining gap is mostly not a filings problem.** 47.3% needs
+  identity data (historical CIK, security-class continuity, symbol
+  occupancy), 35.6% needs evidence a qualifying SEC filing cannot supply
+  within 90 days (foreign annual filers, funds), 2.1% the model refuses by
+  design (no listing observation); 9.8% is SEC-reachable, on the declining
+  part of the curve. Those numbers, not a threshold, are the decision.
+- **The audit changes nothing.** `ResearchUniverseMonth`, the index, the
+  PIT package, the plan and the planner are read only; the audit's rows
+  are rebuildable; only its small summaries are mirrored.
 
 ### B2.16 the post-A3 index and the measured outcome
 
@@ -1927,6 +1972,66 @@ Documented rather than fixed. Each is a deliberate stop, not a backlog item.
 
 Measured runs, kept because they are the evidence behind decisions above.
 
+### B2.17 residual PIT audit — 2026-09-19
+
+- `evidence audit-pit --expect-index-sha e6ce97d6… --expect-manifest-sha
+  a5653f1c… --expect-pit-marker-sha e5f3bbbd… --expect-package-sha
+  79f644f1… --expect-plan-sha 0efa7d03… --expect-universe-sha b8eaed3e…
+  --runs 2`, 18:37 UTC: both databases unchanged before and after; the
+  B2.16 package re-proven from its fingerprints (242,269 rows, 0
+  duplicates, 155,620 + 86,649, 0 regressed, 0 future-invalid); two runs,
+  every fingerprint identical; 0 SEC requests, 0 evidence reads or writes;
+  8 small files mirrored under `pit-audit/` (16 objects), read back equal;
+  the residual rows and the forensic plan not mirrored.
+- Planning realization (exact cells): solvable→resolved 155,040 ·
+  solvable→unresolved 9,532 · unsolvable→resolved 580 · unsolvable→unresolved
+  77,117 = 242,269; realization 94.21%, surprise 0.75%; expected 155,114.479
+  vs actual 155,620 (+505.5, +0.33%). Transition matrix G1/G2/G3/G4/G5 →
+  RESOLVED/G1/G2/G3/G4/G5 recorded in `pit_residual_summary.json`.
+- Residual 86,649 — final classes G1 8,487 · G2 27,668 · G3 11,991 · G4
+  35,501 · G5 3,002; audit classes R2 27,668 · R3 30,860 · R4 4,505 · R5
+  6,998 · R6 1,793 · R7 6,338 · R9 8,487 (R1/R8/R10/R11 0); sufficiency
+  SEC_MORE_MAY_HELP 8,487 · SEC_MORE_UNLIKELY_TO_HELP 4,505 ·
+  IDENTITY_DATA_REQUIRED 41,004 · NON_SEC_EVIDENCE_REQUIRED 30,860 ·
+  STRUCTURALLY_UNRESOLVABLE 1,793 · UNKNOWN 0. NO_CIK: 1,046 unresolved
+  identities hold 27,668 residual months; the 135 declined current-map
+  matches: 7 identities, 252 months open before and after (upper bound
+  only). 18,953 residual months have a held qualifying filing in reach;
+  4,505 of those filings carry no common-stock cover. The 60
+  `HELD_COVER_NAMES_SYMBOL_BUT_DID_NOT_JOIN` months were checked by hand:
+  the cover rows joined `AMBIGUOUS` at their own date (2025–26 new
+  listings), the month-end join `EXACT` — conservative occupancy, not a
+  defect.
+- A3 utility: 61,628 documents, 5,528,340,425 bytes; 58,540 with
+  common-stock cover, 58,050 participating, 1,815 no cover rows, 490 cover
+  without benefit, 3,578 zero utility; 2,525 months per 1,000 documents,
+  30,225 per GB; 8-K 2.81 months per document and 78,851 per GB against
+  10-K 2.43 / 1,139 and 20-F 2.01 / 579. Prefix union: 10% 19,236 (3,121
+  per 1,000) · 25% 45,233 · 50% 89,136 · 75% 132,949 · 90% 149,533 · 100%
+  155,620; deciles 1–7 2,800–3,100 per 1,000 documents, decile 8 2,550,
+  decile 9 1,558, decile 10 988 (6,087 months for 1.21 GB, 5,406 per GB).
+- Residual opportunity: 207,938 unheld in-window candidates, 12,320 reach
+  8,487 residual months (28,256 edges, 0 future-invalid); forensic plan
+  3,640 targets (8-K 2,772 · 10-Q 609 · 10-K 256 · 20-F 3), 2,046,364,597
+  estimated bytes, 2.33 months per target, 2,332 per 1,000 documents,
+  4,453 per estimated GB, availability UNKNOWN_UNTIL_EXECUTION; 78,162
+  months (90.2%) would remain. By year (resolution): 2022 58.8% · 2023
+  64.3% · 2024 67.4% · 2025 68.3% · 2026 59.0%. LIVE 71.4% resolved (60,439
+  residual), DELISTED 14.7% (26,210 residual); foreign 20-F/40-F filers
+  0.35% (25,689 residual, 29.6% of the residual). Concentration: top 10
+  identities 0.63%, top 50 3.2%, top 100 6.3%, top 500 31.0%. Recovery
+  from the bucket alone (final manifest, post-A3 metadata, PIT package,
+  PlanningInputs, A3 record, audit marker/decision/opportunity):
+  `PIT_AUDIT_RECOVERY_SUFFICIENT = YES`. Credential scan over 30 files: 0.
+- `tests/integration/test_pit_final.py` +8 (14): reproduction and
+  reconciliation, the planning matrix summing to every open month, one
+  class per residual month from the assembly's reasons (R4, R6, R9 on the
+  hand-built world), the opportunity measured by the unchanged planner and
+  never authorized, the prefix-union curve and participation utility, two
+  audits fingerprinting identically, the package marking the forensic plan
+  and mirroring only small files, outcomes refused when they do not
+  reproduce their fingerprint.
+
 ### B2.16 post-A3 index and final PIT materialization — 2026-09-19
 
 - `evidence build-post-a3-index --expect-manifest-sha a5653f1c…
@@ -2815,15 +2920,15 @@ under **80%**. It is what CI runs; run it rather than the individual tools.
 
 ## Next phase
 
-**B2.17 — audit the final PIT coverage and decide whether any further
-evidence acquisition is justified** follows: the measured outcome
-(155,620 resolved, 86,649 still open — 8,487 with an unheld candidate,
-27,668 without a CIK, 11,991 ambiguous, 35,501 with no candidate, 3,002
-other) is reviewed for residual gaps, the realized A3 yield, remaining
-candidate availability and cost against benefit. No A4 exists; any further
-acquisition is a reviewed decision under its own inputs version, never a
-consequence of residual gaps. The superseded plan `a3e7df19…` stays
-superseded; nothing is re-planned or re-fetched. FTD archives are redownloaded separately. The one-month boundary
+**B2.18 — freeze the PIT dataset and establish the backtest-readiness
+contract** follows: the final V2 PIT state (the B2.16 materialization over
+the post-A3 index, with the B2.17 residual classification beside it) is
+frozen as the historical dataset strategy research reads, and the contract
+that makes it backtest-ready — what a month's standing means, which months
+are admissible evidence and which are not, how the residual is labelled —
+is written down. It is not another SEC ingestion project: V2 SEC evidence
+acquisition is frozen, no A4 exists, and any further acquisition would be a
+reviewed decision under its own inputs version. FTD archives are redownloaded separately. The one-month boundary
 between the classification and planning rules remains documented in
 [A3 planning inputs](a3-planning-inputs.md) and is a decision for a later
 phase; widening the acquisition window is likewise a separate, versioned
@@ -2894,7 +2999,7 @@ Not a backlog. These exclusions are deliberate.
 
 | | |
 | --- | --- |
-| Commit | The B2.16 commit containing this checkpoint, `feat: materialize final V2 PIT evidence`; parent `c4d82af` (B2.15, `feat: complete V2 A3 evidence expansion`). The authoritative plan's meta and authorization record name `repo_commit` `daa1d36`; the corrected package records `2a7d3b8`, the superseded package `ebfbc1c`, the superseded plan `afe6a10`, the index `1b407b6`. |
+| Commit | The B2.17 commit containing this checkpoint, `feat: audit final V2 PIT coverage`; parent `20c07c0` (B2.16, `feat: materialize final V2 PIT evidence`). The authoritative plan's meta and authorization record name `repo_commit` `daa1d36`; the corrected package records `2a7d3b8`, the superseded package `ebfbc1c`, the superseded plan `afe6a10`, the index `1b407b6`. |
 | Branch | `feat/phase-b2-storage-abstraction` |
 | Migration head | `0031` — the research-universe layer (9K.7). Nothing since 9K.11 added one. |
 | Score version | `COMPOUNDER_V1_2` (unchanged by anything in Phase 8, 9A, 9B or 9C) |

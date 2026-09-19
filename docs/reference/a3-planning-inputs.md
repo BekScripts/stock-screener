@@ -694,3 +694,142 @@ Package `plans/generation_v2/post_a3_pit/`: month outcomes 242,269 rows
 mirrored under `post-a3-derived/pit/`, 0 conflicts. Existing consumers
 (`coverage`, `join`, `sample`, `reachability`, `expand`) run against the
 new index unchanged. No A4 was planned.
+
+## The residual audit (B2.17)
+
+`evidence audit-pit` asks what the 86,649 months still open after A3 *are*,
+without touching the model. It re-proves the B2.16 package from its own
+fingerprints (242,269 rows, no duplicates, 155,620 + 86,649, 0 regressed,
+0 future-invalid), runs the unchanged assembly over the post-A3 index once
+more for the reasons, the reach and the post-A3 candidates, and gives each
+residual month one primary audit class from the reason the assembly
+itself states, one sufficiency category that follows from the class, and
+diagnostic flags:
+
+| assembly reason | audit class | sufficiency |
+| --- | --- | --- |
+| `G1` — an unheld qualifying filing reaches the month | `R9_POTENTIALLY_RESOLVABLE_WITH_EXISTING_UNHELD_SEC_FILINGS` | `SEC_MORE_MAY_HELP` — the only class counted as such |
+| `G2` — no resolved CIK | `R2_NO_HISTORICAL_CIK` (flag `DECLINED_CURRENT_MAP_MATCH` for the 135) | `IDENTITY_DATA_REQUIRED` |
+| `G3` — symbol does not attach at the month-end, or the issuer's reach is ambiguous | `R7_TICKER_OR_IDENTITY_AMBIGUITY` | `IDENTITY_DATA_REQUIRED` |
+| `G3` — identity not credited by the issuer's filings; `G5` — issuer reach `MULTI_CLASS_UNASSIGNED` | `R5_SECURITY_CLASS_AMBIGUITY` | `IDENTITY_DATA_REQUIRED` |
+| `G5` — no listing observation this month | `R6_EXCHANGE_EVIDENCE_MISSING` | `STRUCTURALLY_UNRESOLVABLE_UNDER_CURRENT_MODEL` |
+| `G4` — held qualifying filings within 90 days carry no common-stock cover | `R4_ELIGIBLE_FILINGS_NO_USEFUL_COVER_EVIDENCE` | `SEC_MORE_UNLIKELY_TO_HELP` |
+| `G4` — held filings in reach name other symbols / this symbol without joining | `R5` / `R7` | `IDENTITY_DATA_REQUIRED` |
+| `G4` — no qualifying filing of the issuer within 90 days | `R3_NO_ELIGIBLE_SEC_FILINGS` | `NON_SEC_EVIDENCE_REQUIRED` |
+
+The A3 marginal curve is a prefix *union* in plan order of the resolved
+months each target's evidence supports (its `EXACT` common-stock
+observations inside a month's 90-day window) — no month is credited to one
+document. The residual opportunity is the post-A3 candidate set (unheld,
+in-window, reaching a post-A3 `G1` month) and the unchanged planner run
+over it; the result is written as `residual_sec_forensic_plan.jsonl` with
+`FORENSIC_ONLY` / `NOT_AUTHORIZED_FOR_ACQUISITION` in every row and a
+status sidecar, and is not mirrored. Two audits must fingerprint
+identically.
+
+### The live audit — 2026-09-19
+
+Bound to the post-A3 index `e6ce97d6…`, manifest `a5653f1c…`, PIT marker
+`e5f3bbbd…`, package `79f644f1…`, plan `0efa7d03…`, universe `b8eaed3e…`;
+two runs, all fingerprints identical; both databases unchanged.
+
+**Planning realization.** Predicted solvable 164,572 → 155,040 resolved /
+9,532 not (94.21%); predicted unsolvable 77,697 → 580 resolved / 77,117
+not (0.75%); the four cells sum to 242,269. Expected 155,114.479, actual
+155,620, +505.5 (+0.33%). Transitions: G1 → RESOLVED 155,040 · G1 8,439 ·
+G4 1,093; G2 → RESOLVED 535 · G2 27,668; G3 → RESOLVED 33 · G1 48 · G4 13
+· G3 11,991; G4 → RESOLVED 12 · G4 34,395; G5 → G5 3,002.
+
+**The residual, 86,649.** Final classes: G1 8,487 · G2 27,668 · G3 11,991 ·
+G4 35,501 · G5 3,002. Audit classes: R9 8,487 · R2 27,668 · R3 30,860 · R4
+4,505 · R5 6,998 · R7 6,338 · R6 1,793 (R1, R8, R10, R11: 0). Sufficiency:
+`SEC_MORE_MAY_HELP` **8,487 (9.8%)** · `SEC_MORE_UNLIKELY_TO_HELP` 4,505
+(5.2%) · `IDENTITY_DATA_REQUIRED` **41,004 (47.3%)** ·
+`NON_SEC_EVIDENCE_REQUIRED` **30,860 (35.6%)** ·
+`STRUCTURALLY_UNRESOLVABLE_UNDER_CURRENT_MODEL` 1,793 (2.1%) · `UNKNOWN` 0.
+Flags: `FOREIGN_ISSUER` 25,689 · `IDENTITY_NOT_CREDITED_BY_ISSUER_FILINGS`
+5,713 · `MONTH_JOIN_AMBIGUOUS` 4,284 · `HELD_FILINGS_WITHOUT_COVER_ROWS`
+3,251 · `LISTING_NOT_OBSERVED_THIS_MONTH` 1,793 · `MONTH_JOIN_OTHER_OCCUPANT`
+1,556 · `HELD_COVER_ROWS_WITHOUT_COMMON_SYMBOL` 1,254 ·
+`ISSUER_REACH_MULTI_CLASS_UNASSIGNED` 1,209 · `ISSUER_REACH_IDENTITY_AMBIGUOUS`
+400 · `DECLINED_CURRENT_MAP_MATCH` 252 · `HELD_COVER_NAMES_OTHER_SYMBOLS` 76
+· `HELD_COVER_NAMES_SYMBOL_BUT_DID_NOT_JOIN` 60 (the cover row joined
+`AMBIGUOUS` at its own date — newly listed 2025–26 issuers whose symbol the
+record cannot yet attribute then — while the month-end join is `EXACT`: the
+occupancy-aware join being conservative, not a defect) · `MONTH_JOIN_UNRESOLVED`
+38.
+
+**NO_CIK.** 2,871 unresolved identities in the resolution; 1,046 of them
+have residual months — 27,668, all `R2`; A3 resolved 535 of their months
+through other issuers' symbol-joined filings. The 135 declined current-map
+matches: 7 identities carry 252 open months, none resolved by A3, 252
+residual — an upper bound (`UPPER_BOUND_ONLY`) on what independently
+proven identity could recover.
+
+**Filings exhausted.** 18,953 residual months have at least one held
+qualifying filing within 90 days (1,842 identities; forms 8-K 14,144 ·
+20-F 2,913 · 10-Q 1,596 · 10-K 729 · 40-F 388 · 20-F/A 247 · 40-F/A 33);
+4,505 of them have held filings carrying no common-stock cover at all.
+
+**A3 utility.** 61,628 documents, 5,528,340,425 bytes; 59,813 with cover
+rows, 58,540 with common-stock cover, 58,050 participating in ≥1 resolved
+month, 1,815 with no cover rows, 490 with cover but no benefit, 3,578 with
+zero utility. 2,525 resolved months per 1,000 documents; 30,225 per GB.
+By form (downloaded / common cover / participating / months supported per
+document / per GB): 8-K 59,937 / 57,086 / 56,611 / 2.81 / 78,851 · 10-Q
+1,176 / 1,037 / 1,033 / 2.65 / 1,709 · 10-K 380 / 312 / 308 / 2.43 / 1,139
+· 20-F 96 / 76 / 71 / 2.01 / 579 · 20-F/A 19 / 15 / 13 / 1.79 / 897 · 40-F
+18 / 13 / 13 / 2.00 / 7,063 · 40-F/A 2 / 1 / 1 / 1.50 / 43,755.
+
+**Marginal curve (prefix union).** 10%: 6,163 docs, 0.39 GB, 19,236 months
+(12.4%), 3,121 per 1,000 docs, 52,708 per GB · 25%: 45,233 (29.1%), 2,936 ·
+50%: 89,136 (57.3%), 2,893 · 75%: 132,949 (85.4%), 2,876 · 90%: 149,533
+(96.1%), 2,696 · 100%: 155,620, 2,525 per 1,000, 30,225 per GB. Deciles 1–7
+add 17,200–19,200 months each (2,800–3,100 per 1,000 docs, 53,000–86,000
+per GB); decile 8 adds 15,711 (1.59 GB, 10,598 per GB); decile 9 adds
+9,605 (1,558 per 1,000, 11,136 per GB); **decile 10 adds 6,087 (3.9% of
+the total) for 1.21 GB (21.9% of the bytes): 988 per 1,000 documents,
+5,406 per GB** — a third of the average per document, a tenth of the
+average per GB.
+
+**Residual SEC opportunity (`RESIDUAL_OPPORTUNITY_AUDIT`, not A4).** Of
+207,938 unheld in-window candidates, 12,320 (8-K 8,958 · 10-Q 2,425 · 10-K
+934 · 20-F 3; 1,095 issuers) reach 8,487 residual months — 9.8% of the
+residual, 3.5% of the original 242,269 — with marginal-month density 1:
+3,033 · 2–3: 9,241 · 4–6: 46; 28,256 candidate edges, 0 future-invalid.
+The unchanged planner over them: **3,640 targets** (8-K 2,772 · 10-Q 609 ·
+10-K 256 · 20-F 3), 2,046,364,597 estimated bytes, 2.33 months per target,
+7,978 yield-adjusted; 2,332 months per 1,000 documents (below A3's 2,525
+average, above its final decile's 988) and 4,453 months per estimated GB
+(A3 actual 30,225; A3 final decile 5,406). Availability
+`UNKNOWN_UNTIL_EXECUTION`. After that theoretical acquisition 78,162 months
+(90.2% of the residual) would remain.
+
+**Where the residual is.** By year (open → resolved / residual): 2022
+54,901 → 32,275 / 22,626 (58.8%) · 2023 54,351 → 34,974 / 19,377 (64.3%) ·
+2024 54,827 → 36,949 / 17,878 (67.4%) · 2025 57,010 → 38,936 / 18,074
+(68.3%) · 2026 21,180 → 12,486 / 8,694 (59.0%). LIVE identities 5,287:
+211,558 → 151,119 / 60,439 (71.4%); DELISTED 1,237: 30,711 → 4,501 /
+26,210 (14.7%). Foreign issuers (catalogue entirely 20-F/40-F) 813:
+25,778 → 89 / 25,689 (0.35%) — 29.6% of the residual, almost all
+`NON_SEC_EVIDENCE_REQUIRED` or `SEC_MORE_UNLIKELY_TO_HELP`: an annual 20-F
+reaches at most three month-ends a year under the 90-day rule and its 6-Ks
+are not qualifying filings. Identities: 6,524 with open months — 1,255
+fully resolved, 2,773 partially, 2,496 with no improvement (all months
+still open); among the 5,269 with residual months: 1 open month 1,056 ·
+2–3 1,134 · 4–6 467 · 7–12 471 · 13+ 2,141. Concentration is low: top 10
+identities 0.63% of the residual, top 50 3.2%, top 100 6.3%, top 500
+31.0%; the top ten are all 55-month identities — six foreign ADRs (LYG,
+MUFG, NGG, NOK, NTB, NVO), two closed-end funds that file no qualifying
+form (MCI, MPV), two identity-blocked (MGRB, MOG.A).
+
+**Decision.** Remaining 86,649; SEC-reachable 8,487 (9.8%) at 3,640
+documents and ~2.0 GB, projected 2,332 per 1,000 documents and 4,453 per
+GB — roughly the efficiency of A3's ninth decile per document and a
+seventh of A3's average per GB; identity work would address 41,004 (47.3%);
+another evidence source 30,860 (35.6%); 1,793 (2.1%) cannot be admitted
+by the model; 4,505 (5.2%) have their filings already held and empty.
+Verdict **A — freeze V2 PIT evidence; no further SEC acquisition
+justified**: the SEC-reachable share is small and would be acquired on the
+declining part of the curve, and 90% of what remains is not a filings
+problem. The forensic plan is not authorized; the next phase is B2.18.
