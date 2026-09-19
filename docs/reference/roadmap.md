@@ -1,3 +1,13 @@
+> **Status (2026-09-19).** The evidence and data foundation this direction
+> rests on is complete and frozen (`SEC_EVIDENCE_GENERATION_V2`), and the
+> historical research contract is written (`PIT_RESEARCH_DATASET_V2` under
+> `BACKTEST_DATA_CONTRACT_V1`). The next program is **R1 — strategy research
+> and backtesting** over that contract; portfolio construction, paper
+> trading, supervised live and constrained autonomous execution follow it in
+> that order and none of them is started. Everything below remains
+> aspiration, not commitment; nothing in it overrides *Things explicitly not
+> to change* in PROJECT_STATE.
+
 Where I think we're ultimately going
 
 Your end product isn't really a "stock screener."

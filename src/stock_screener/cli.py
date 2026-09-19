@@ -55,6 +55,18 @@ from stock_screener.backtest import (
     sample,
     survivorship_audit,
 )
+from stock_screener.backtest_contract import (
+    CONTRACT_DIR,
+    CONTRACT_VERSION,
+    DATASET_ID,
+    ContractBindings,
+    ContractError,
+    build_contract,
+    fingerprint_dataset,
+    load_contract,
+    mirror_contract,
+    write_contract,
+)
 from stock_screener.config import Settings, get_settings
 from stock_screener.deep_research import (
     PreparationError,
@@ -246,6 +258,7 @@ from stock_screener.sec_evidence.migration import (
     write_migration_plan,
 )
 from stock_screener.sec_evidence.pit_audit import (
+    AUDIT_COMPLETE_MARKER,
     AUDIT_DIR,
     AuditError,
     audit_pit,
@@ -277,6 +290,7 @@ from stock_screener.sec_evidence.rebuild import CanaryStopError, run_chunk
 from stock_screener.sec_evidence.regenerate import (
     A3_AUTHORITATIVE_RECORD,
     A3_PLAN_COMPLETE_MARKER,
+    A3_PLAN_FILE,
     PlanValidationError,
     algorithm_digests,
     mirror_plan,
@@ -3882,6 +3896,215 @@ def evidence_audit_pit_command(
         f"SEC may help {first.sufficiency['SEC_MORE_MAY_HELP']}; forensic plan "
         f"{first.decision['forensic_documents_required']} targets "
         f"(NOT_AUTHORIZED_FOR_ACQUISITION); {runs} runs identical; {out_dir}"
+    )
+
+
+@evidence_app.command("freeze-backtest-contract")
+def evidence_freeze_backtest_contract_command(
+    database: Annotated[
+        Path, typer.Option("--database", help="The frozen research database, opened read-only.")
+    ] = Path("stage9k.db"),
+    expect_database_sha: Annotated[
+        str, typer.Option(help="The research database digest the contract binds to. Required.")
+    ] = "",
+    expect_universe_count: Annotated[
+        int, typer.Option(help="Identities the universe must hold.")
+    ] = 8919,
+    expect_universe_sha: Annotated[
+        str, typer.Option(help="The frozen universe digest. Required.")
+    ] = "",
+    expect_manifest_sha: Annotated[
+        str, typer.Option(help="The final evidence manifest digest. Required.")
+    ] = "",
+    expect_index_sha: Annotated[str, typer.Option(help="The post-A3 index digest. Required.")] = "",
+    expect_pit_marker_sha: Annotated[
+        str, typer.Option(help="The PIT completion marker digest. Required.")
+    ] = "",
+    expect_audit_marker_sha: Annotated[
+        str, typer.Option(help="The residual audit marker digest. Required.")
+    ] = "",
+    expect_package_sha: Annotated[
+        str, typer.Option(help="The corrected planning-inputs digest. Required.")
+    ] = "",
+    expect_plan_sha: Annotated[
+        str, typer.Option(help="The authorized A3 plan digest. Required.")
+    ] = "",
+    also_verify: Annotated[
+        list[str] | None,
+        typer.Option(help="Extra PATH=SHA256 pairs verified before and after (production DB)."),
+    ] = None,
+    output: Annotated[
+        Path | None,
+        typer.Option(help="Contract directory. Default: <control>/contracts/backtest_v1."),
+    ] = None,
+    fingerprint_runs: Annotated[
+        int, typer.Option(min=1, help="Times the dataset is fingerprinted; all must agree.")
+    ] = 1,
+    mirror: Annotated[
+        bool, typer.Option("--mirror/--no-mirror", help="Mirror the contract files.")
+    ] = True,
+) -> None:
+    """Freeze PIT_RESEARCH_DATASET_V2 and write BACKTEST_DATA_CONTRACT_V1.
+
+    Re-hashes every local binding (universe, evidence manifest, post-A3 index,
+    PIT and audit markers, planning inputs, plan, the research database),
+    fingerprints the canonical projections of every table a historical
+    observation is built from, writes the contract files deterministically,
+    proves the written contract loads under its own bindings and refuses
+    under altered ones, and mirrors the files. Reads only; no network beyond
+    the control mirror.
+    """
+    settings = _bootstrap()
+    for name, value in (
+        ("--expect-database-sha", expect_database_sha),
+        ("--expect-universe-sha", expect_universe_sha),
+        ("--expect-manifest-sha", expect_manifest_sha),
+        ("--expect-index-sha", expect_index_sha),
+        ("--expect-pit-marker-sha", expect_pit_marker_sha),
+        ("--expect-audit-marker-sha", expect_audit_marker_sha),
+        ("--expect-package-sha", expect_package_sha),
+        ("--expect-plan-sha", expect_plan_sha),
+    ):
+        if len(value) != 64:
+            typer.echo(f"STOPPED: {name} is required and must be a full SHA-256")
+            raise typer.Exit(code=1)
+    extra = _parse_digest_pairs(also_verify or [])
+    storage, control = _open_layout(settings)
+    generation_dir = control.plans / "generation_v2"
+    out_dir = output or control.path / CONTRACT_DIR
+    checks = {
+        "research database": (database, expect_database_sha),
+        "evidence manifest": (control.manifest_path, expect_manifest_sha),
+        "post-A3 index": (derived_root(control) / POST_A3_INDEX_FILE, expect_index_sha),
+        "PIT marker": (generation_dir / PIT_DIR / PIT_COMPLETE_MARKER, expect_pit_marker_sha),
+        "audit marker": (
+            generation_dir / AUDIT_DIR / AUDIT_COMPLETE_MARKER,
+            expect_audit_marker_sha,
+        ),
+        "plan": (generation_dir / "a3_r1" / A3_PLAN_FILE, expect_plan_sha),
+        **{f"extra {p}": (p, sha) for p, sha in extra.items()},
+    }
+
+    def verify_all(when: str) -> None:
+        for label, (path, expected) in checks.items():
+            if not path.is_file():
+                typer.echo(f"STOPPED: {label} is absent at {path}")
+                raise typer.Exit(code=1)
+            actual = _file_sha256(path)
+            if actual != expected.lower():
+                typer.echo(
+                    f"STOPPED: {label} hashes to {actual[:16]}…, not {expected[:16]}… ({when})"
+                )
+                raise typer.Exit(code=1)
+        typer.echo(f"bindings verified {when}: {len(checks)} files unchanged")
+
+    verify_all("before")
+    try:
+        package_sha = package_sha256(component_digests(generation_dir / A3_INPUTS_DIRECTORY))
+    except (OSError, PackageError, KeyError, ValueError) as exc:
+        typer.echo(f"STOPPED: cannot read the corrected package: {exc}")
+        raise typer.Exit(code=1) from exc
+    if package_sha != expect_package_sha.lower():
+        typer.echo(f"STOPPED: the package digest is {package_sha[:16]}…, not as expected")
+        raise typer.Exit(code=1)
+    pit_summary = json.loads(
+        (generation_dir / PIT_DIR / "pit_final_summary.json").read_text(encoding="utf-8")
+    )
+    audit_summary = json.loads(
+        (generation_dir / AUDIT_DIR / "pit_residual_summary.json").read_text(encoding="utf-8")
+    )
+    pit_marker = json.loads(
+        (generation_dir / PIT_DIR / PIT_COMPLETE_MARKER).read_text(encoding="utf-8")
+    )
+    if (
+        pit_marker.get("post_a3_index_sha256") != expect_index_sha.lower()
+        or pit_marker.get("final_manifest_sha256") != expect_manifest_sha.lower()
+        or pit_marker.get("plan_sha256") != expect_plan_sha.lower()
+    ):
+        typer.echo("STOPPED: the PIT marker binds to another index, manifest or plan")
+        raise typer.Exit(code=1)
+    engine = create_engine_from_url(read_only_url(database))
+    try:
+        with session_scope(build_session_factory(engine)) as session:
+            try:
+                binding = bind_source(
+                    session,
+                    database,
+                    expect_count=expect_universe_count,
+                    expect_digest=expect_universe_sha,
+                )
+            except BindingError as exc:
+                typer.echo(f"STOPPED: {exc}")
+                raise typer.Exit(code=1) from exc
+    finally:
+        engine.dispose()
+    typer.echo(f"universe         : {binding.universe_count} identities, {binding.universe_digest}")
+    prints_runs: list[dict[str, dict[str, object]]] = []
+    with closing(sqlite3.connect(f"file:{database}?mode=ro", uri=True)) as db:
+        for run in range(1, fingerprint_runs + 1):
+            prints_runs.append(fingerprint_dataset(db, progress=typer.echo if run == 1 else None))
+    for number, other in enumerate(prints_runs[1:], start=2):
+        if other != prints_runs[0]:
+            typer.echo(f"STOPPED: fingerprint run {number} does not reproduce run 1")
+            raise typer.Exit(code=1)
+    bindings = ContractBindings(
+        dataset_id=DATASET_ID,
+        contract_version=CONTRACT_VERSION,
+        universe_sha256=binding.universe_digest,
+        evidence_manifest_sha256=expect_manifest_sha.lower(),
+        post_a3_index_sha256=expect_index_sha.lower(),
+        pit_marker_sha256=expect_pit_marker_sha.lower(),
+        planning_inputs_sha256=package_sha,
+        a3_plan_sha256=expect_plan_sha.lower(),
+        pit_audit_marker_sha256=expect_audit_marker_sha.lower(),
+        database_sha256=expect_database_sha.lower(),
+        fingerprints=prints_runs[0],
+    )
+    first = build_contract(
+        bindings, pit_summary=pit_summary, audit_summary=audit_summary, repo_commit=_repo_commit()
+    )
+    second = build_contract(
+        bindings, pit_summary=pit_summary, audit_summary=audit_summary, repo_commit=_repo_commit()
+    )
+    if first != second:
+        typer.echo("STOPPED: the contract is not deterministic")
+        raise typer.Exit(code=1)
+    digests = write_contract(out_dir, first)
+    for name, sha in digests.items():
+        typer.echo(f"  {name:<38} {sha}")
+    try:
+        load_contract(out_dir, expect=bindings)
+        try:
+            load_contract(out_dir, expect=replace(bindings, universe_sha256="00" * 32))
+        except ContractError:
+            typer.echo("  fail-closed: a contract loaded under other bindings is refused")
+        else:
+            typer.echo("STOPPED: the contract loaded under other bindings")
+            raise typer.Exit(code=1)
+    except ContractError as exc:
+        typer.echo(f"STOPPED: the written contract does not load under its own bindings: {exc}")
+        raise typer.Exit(code=1) from exc
+    summary = first["backtest_readiness_summary.json"]
+    typer.echo(f"  readiness verdict: {summary['readiness_verdict']}; blocked {summary['blocked']}")
+    typer.echo(f"  ready {summary['ready']}")
+    typer.echo(f"  ready with limitation {summary['ready_with_limitation']}")
+    typer.echo(
+        f"  partial {summary['partial']}; not required {summary['not_required_for_first_baseline']}"
+    )
+    if mirror:
+        control_mirror = ControlMirror(RetryingReads(storage), GENERATION_ID)
+        try:
+            records = mirror_contract(control_mirror, out_dir, generation_id=GENERATION_ID)
+        except (ContractError, MirrorConflictError, StorageUnavailableError) as exc:
+            typer.echo(f"MIRROR FAILED: {exc}")
+            raise typer.Exit(code=1) from exc
+        for record in records:
+            typer.echo(f"  mirrored {record.key} ({record.outcome}) sha256 {record.sha256}")
+        control_mirror.write_ledger(generation_dir / "mirror_ledger.jsonl")
+    verify_all("after")
+    typer.echo(
+        f"BACKTEST CONTRACT COMPLETE — {DATASET_ID} under {CONTRACT_VERSION}; "
+        f"{len(prints_runs[0])} fingerprints; {out_dir}"
     )
 
 

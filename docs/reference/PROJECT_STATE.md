@@ -36,9 +36,9 @@ appears without the run or the test that produced it.
 
 ## Current phase
 
-**B2.17 — the final PIT coverage audited and V2 SEC evidence acquisition
-frozen** is the current checkpoint on
-`feat/phase-b2-storage-abstraction`. **The BEK
+**B2.18 — the V2 PIT dataset frozen and the backtest-readiness contract
+established; the SEC/PIT evidence program is CLOSED** is the current
+checkpoint on `feat/phase-b2-storage-abstraction`. **The BEK
 drive is permanently unavailable** and Generation V1 is history that
 creates no trust. B2.9X started **Generation V2** from what survived on the
 internal disk; B2.10 proved the pipeline on chunk 000; B2.11 built chunks
@@ -155,8 +155,19 @@ usable cover), `STRUCTURALLY_UNRESOLVABLE_UNDER_CURRENT_MODEL` 1,793
 1,000 documents and 5,406 per GB against deciles 1–7 at 2,800–3,100 and
 53,000–86,000. **Verdict A: no further SEC acquisition justified — V2 SEC
 EVIDENCE ACQUISITION FROZEN.** Further SEC acquisition: NOT JUSTIFIED. No
-A4 exists. Next: B2.18 (freeze the PIT dataset and establish the
-backtest-readiness contract).** The frozen
+A4 exists. SEC/PIT EVIDENCE PROGRAM: CLOSED / FROZEN — generation
+`SEC_EVIDENCE_GENERATION_V2`; final evidence 99,774 trusted (94,041
+filings, 5,733 submissions), manifest `a5653f1c…`; final PIT 155,620
+previously-open months resolved, 86,649 residual, 0 regressions, 0
+future-invalid. RESEARCH DATASET: `PIT_RESEARCH_DATASET_V2`; BACKTEST
+CONTRACT: `BACKTEST_DATA_CONTRACT_V1` at `contracts/backtest_v1/`,
+mirrored under `backtest-contract/`, fail-closed on the universe, manifest,
+index, PIT and audit markers, planning inputs, plan, database and the
+dataset fingerprints; readiness verdict
+READY_WITH_DOCUMENTED_LIMITATIONS with one blocker (sector/industry: current
+labels only); first safe research class: monthly cross-sectional, signal at
+the month's last close, execution at the next session's open. NEXT PROGRAM:
+R1 — STRATEGY RESEARCH & BACKTESTING.** The frozen
 resolution stands: 8,919
 identities, 6,048 resolved (402 `STORED`, 5,646 `SEC_TICKER_MAP`), 2,871
 `UNRESOLVED`; the ticker map was fetched once, in B2.10, and never again. See
@@ -662,6 +673,50 @@ convention, and none may be relaxed without an explicit instruction.
   `supersession.json` naming the old package and plan digests, the forensic
   verdict and commit; the old artifacts gain a `SUPERSEDED.json` beside them
   and lose nothing, locally or remotely.
+
+### B2.18 the research dataset and the backtest contract
+
+- **The evidence program is closed.** `SEC_EVIDENCE_GENERATION_V2` is the
+  last evidence generation; no baseline expansion, A3 continuation, A4,
+  ticker-map refresh or submissions refresh for the frozen window, and no
+  retrospective use of September 2026 information. Reopening acquisition
+  takes an independently reviewed correctness defect. The residual plan
+  stays `FORENSIC_ONLY` / `NOT_AUTHORIZED_FOR_ACQUISITION`.
+- **Three names, three concepts.** `SEC_EVIDENCE_GENERATION_V2` (evidence)
+  → `PIT_RESEARCH_DATASET_V2` (the frozen research dataset) →
+  `BACKTEST_DATA_CONTRACT_V1` (the rules and digests a backtest binds to).
+  None is overloaded for another.
+- **A backtest binds or refuses.** `load_contract(expect=)` refuses a
+  contract whose dataset id, contract version, universe, evidence manifest,
+  post-A3 index, PIT marker, planning inputs, plan, audit marker, database
+  digest or dataset fingerprints differ from the caller's, or whose files
+  do not hash as its completion marker recorded. No research code may run
+  against whatever database is present.
+- **The contract states rules the code already enforces, and names their
+  owners.** `as_of` is the close (`pit.decision_time`); availability is an
+  acceptance instant for companies and `filed_date < as_of` for historical
+  securities (a documented lag); execution is the next session's open;
+  forward returns are labels; missing is not zero; identity is
+  `(kind, identity_id)`; current exchange/sector/statement profile are
+  `CURRENT_APPLIED_BACKWARD` and sector is `BLOCKED`. The contract adds no
+  semantics.
+- **Labels never enter features.** `domain.scoring`, `domain.signals`,
+  `domain.metrics`, `domain.eligibility`, `stock_screener.scoring`,
+  `stock_screener.signals`, `pit.metrics`, `pit.capture`,
+  `backtest.scores` and `backtest.historical` may not import
+  `domain.outcomes` or `ForwardReturnRepository`; a static test holds it and
+  a canary proves a future bar moves the label and not the feature.
+- **Every research run emits a manifest** (`backtest_run_manifest_schema.json`):
+  dataset and contract ids, the fingerprints it bound, strategy version and
+  commit, rebalance and execution rules, cost and terminal-leg assumptions,
+  date ranges, parameters, variants tried and the selection criterion, the
+  benchmark, output fingerprints. A result names the population it was
+  selected from.
+- **READY does not mean every strategy.** It means the first safe class —
+  monthly cross-sectional, close signal, next-open execution, long-only,
+  delisted names included with a stated terminal-leg policy — is explicitly
+  defined and honest. Intraday, sector-neutral, consolidated-liquidity and
+  regime-overlay research are not supported yet and the contract says so.
 
 ### B2.17 the residual audit and the acquisition freeze
 
@@ -1972,6 +2027,76 @@ Documented rather than fixed. Each is a deliberate stop, not a backlog item.
 
 Measured runs, kept because they are the evidence behind decisions above.
 
+### B2.18 research dataset frozen and backtest contract written — 2026-09-19
+
+- `evidence freeze-backtest-contract --database stage9k.db
+  --expect-database-sha 20a77d24… --expect-universe-sha b8eaed3e…
+  --expect-manifest-sha a5653f1c… --expect-index-sha e6ce97d6…
+  --expect-pit-marker-sha e5f3bbbd… --expect-audit-marker-sha ae49ae16…
+  --expect-package-sha 79f644f1… --expect-plan-sha 0efa7d03…
+  --also-verify compounder_radar.db=02a6660b… --fingerprint-runs 2`, 20:05–20:19
+  UTC: seven bound files re-hashed before and after; the universe re-proven
+  read-only; the dataset fingerprinted twice with identical results; the
+  contract built twice with identical content; the written contract loaded
+  under its own bindings and refused under altered ones; 8 files mirrored
+  under `backtest-contract/` (16 objects) and read back; 0 SEC requests, 0
+  evidence reads or writes; both databases unchanged.
+- Dataset fingerprints (`backtest_dataset_manifest.json`): historical_universe
+  268,780 `19b86e63…` · universe_membership 20,412 `2e0e81a7…` ·
+  security_identifiers 3,482 `1e1d21a8…` · fundamental_observations 5,782,076
+  `4c564ec5…` · filing_acceptance 5,889,860 `bd5cafe4…` ·
+  historical_observations 321,534 `862ef3ce…` · price_history 6,817,179
+  `0205e3b6…` · historical_prices 1,466,908 `c53a806e…` · benchmark_prices
+  1,531 `f900e279…` · corporate_actions 82,321 `cc041593…` · delistings 5,796
+  `4709b426…` · feature_observations 5,789,830 `0531abf4…` ·
+  signal_observations 6,153,527 `79730d0d…` · forward_return_labels
+  31,324,895 `a997311a…`; PIT evidence state carried as the B2.16 package
+  fingerprints (month outcomes 242,269 `a955a2b7…`).
+- Contract files: data contract `f7efb001…`, dataset manifest `85de2089…`,
+  readiness matrix `f47adaf8…`, time semantics `dedc8a2e…`, feature/label
+  separation `526d320e…`, run-manifest schema `15ab5429…`, readiness summary
+  `47b5dc2b…`, completion marker `14a45f77…`.
+- Readiness: READY_WITH_DOCUMENTED_LIMITATIONS. READY: sec_pit_evidence,
+  market_signals, forward_returns. READY_WITH_DOCUMENTED_LIMITATION:
+  historical_universe (MEMBER always INFERRED), fundamental_features
+  (historical securities select by `filed_date <= as_of`; research applies
+  `filed_date < as_of`), compounder_score (exchange/sector/statement profile
+  from the current row), price_history (single venue, adjusted, from 2020-02
+  for companies), corporate_actions (spinoffs unsupported),
+  liquidity (one-directional floors), delisting_treatment (INTERRUPTED
+  carries no number; 291 of 3,150 terminal values). BLOCKED: sector_industry
+  (current labels only, 623/5,769; minimum fix: a dated sector source or
+  research declares sector NOT USED). PARTIAL: transaction_costs (no spread,
+  no consolidated ADV). NOT_REQUIRED_FOR_FIRST_BASELINE: portfolio_constraints.
+- Audits recorded in the contract: label layer imported by none of the ten
+  feature/scoring modules (static test); latest-value queries in historical
+  paths are RECORD_EXTENT (`MAX(price_history.date)` to adjudicate delistings
+  and bound membership) or bounded by `as_of`; current metadata reaches only
+  eligibility (`CURRENT_APPLIED_BACKWARD`); 69 contaminated live rows
+  reported, never merged. Universe: 5,287 LIVE and 1,237 DELISTED identities
+  with open months; 655,095 of 31,324,895 label rows and 119,516 of 5,789,830
+  feature rows belong to historical securities — the dataset is not today's
+  roster applied backward, and the delisted names' lower coverage (2,569 of
+  3,150 with bars; 402 with a CIK) is stated, not removed. Same-day filings:
+  a 15:55 ET acceptance is admitted at the close, a 17:30 one at the next
+  session, and an OPEN decision admits neither (canary).
+- Recovery from the bucket alone: which contract applies, which dataset is
+  frozen, which generation it derives from, what is allowed at decision
+  time, what is forbidden, which hashes define the dataset, which
+  limitations exist, and the evidence lineage — all read back and equal:
+  `BACKTEST_CONTRACT_RECOVERY_SUFFICIENT = YES`. Credential scan over 24
+  files: 0.
+- `tests/integration/test_backtest_contract.py` (26): deterministic build
+  naming every file; fail-closed load on every binding and on a tampered
+  file; the readiness matrix naming a fix for every blocker; the run-manifest
+  schema requiring the bindings and the selection population; canonical
+  fingerprints covering every layer; the mirror; and the canaries — future
+  filing (instant-level, same-day, OPEN vs CLOSE, next session), restatement,
+  future price (label moves, feature does not), forward label (static import
+  guard over ten modules), ticker reuse (two occupants of BBBY), CIK/class
+  (SAFE_COMMON_CLASS credits the common line only), delisted security (months
+  kept without a companies row), missingness.
+
 ### B2.17 residual PIT audit — 2026-09-19
 
 - `evidence audit-pit --expect-index-sha e6ce97d6… --expect-manifest-sha
@@ -2920,15 +3045,18 @@ under **80%**. It is what CI runs; run it rather than the individual tools.
 
 ## Next phase
 
-**B2.18 — freeze the PIT dataset and establish the backtest-readiness
-contract** follows: the final V2 PIT state (the B2.16 materialization over
-the post-A3 index, with the B2.17 residual classification beside it) is
-frozen as the historical dataset strategy research reads, and the contract
-that makes it backtest-ready — what a month's standing means, which months
-are admissible evidence and which are not, how the residual is labelled —
-is written down. It is not another SEC ingestion project: V2 SEC evidence
-acquisition is frozen, no A4 exists, and any further acquisition would be a
-reviewed decision under its own inputs version. FTD archives are redownloaded separately. The one-month boundary
+**R1.0 — build the leakage-safe backtest harness and run the first frozen
+strategy baselines** follows: a harness that binds to
+`BACKTEST_DATA_CONTRACT_V1` through `load_contract` and refuses otherwise,
+reconstructs the first safe research class (monthly cross-sectional,
+signal at the month's last close, execution at the next session's open,
+long-only) over `PIT_RESEARCH_DATASET_V2`, applies `filed_date < as_of` to
+historical securities, states its terminal-leg and transaction-cost
+scenarios explicitly, emits the run manifest with the population a result
+was selected from, and compares against a named passive benchmark. It is
+strategy research over frozen data — no evidence acquisition, no A4, no
+change to the PIT, identity or scoring semantics, and no promotion of
+`MARKET_SIGNALS_V2` without its own decision. FTD archives are redownloaded separately. The one-month boundary
 between the classification and planning rules remains documented in
 [A3 planning inputs](a3-planning-inputs.md) and is a decision for a later
 phase; widening the acquisition window is likewise a separate, versioned
@@ -2977,6 +3105,13 @@ Not a backlog. These exclusions are deliberate.
   `ResearchUniverseMonth`, PIT identity semantics, Plan A3, forward returns,
   price history and database schema frozen. No BEK access, no credentials
   created, no corpus migration. B2.7 adds `boto3` as the one cloud SDK.
+- **The SEC/PIT evidence program is closed (B2.18).** No SEC evidence
+  acquisition — no baseline expansion, A3 continuation or A4, no ticker-map
+  or submissions refresh for the frozen window — without an independently
+  reviewed correctness defect. `residual_sec_forensic_plan.jsonl` is never
+  executed. `PIT_RESEARCH_DATASET_V2` and `BACKTEST_DATA_CONTRACT_V1` are
+  read through `load_contract`; research code that bypasses the contract's
+  bindings is a defect.
 - any scoring file, without a new `score_version` and a doc change in the same
   commit
 - a Phase 3 enum or class — `deep-research` imports them, never extends them
@@ -2999,7 +3134,7 @@ Not a backlog. These exclusions are deliberate.
 
 | | |
 | --- | --- |
-| Commit | The B2.17 commit containing this checkpoint, `feat: audit final V2 PIT coverage`; parent `20c07c0` (B2.16, `feat: materialize final V2 PIT evidence`). The authoritative plan's meta and authorization record name `repo_commit` `daa1d36`; the corrected package records `2a7d3b8`, the superseded package `ebfbc1c`, the superseded plan `afe6a10`, the index `1b407b6`. |
+| Commit | The B2.18 commit containing this checkpoint, `feat: freeze V2 PIT backtest contract`; parent `6af4e5c` (B2.17, `feat: audit final V2 PIT coverage`). The authoritative plan's meta and authorization record name `repo_commit` `daa1d36`; the corrected package records `2a7d3b8`, the superseded package `ebfbc1c`, the superseded plan `afe6a10`, the index `1b407b6`. |
 | Branch | `feat/phase-b2-storage-abstraction` |
 | Migration head | `0031` — the research-universe layer (9K.7). Nothing since 9K.11 added one. |
 | Score version | `COMPOUNDER_V1_2` (unchanged by anything in Phase 8, 9A, 9B or 9C) |

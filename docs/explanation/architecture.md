@@ -245,6 +245,37 @@ business. Numbers found in filing text are scoped to the claim citing that
 excerpt rather than pooled across the brief. The full workflow, guardrails and
 limitations are in the [Phase 3 brief](../reference/project-phases/phase3.md).
 
+## Where the project stands, and what comes next
+
+The data foundation is complete and frozen. Every later stage reads it
+through the backtest data contract and none of them changes it.
+
+```text
+Evidence / data foundation ........ COMPLETE  (SEC_EVIDENCE_GENERATION_V2, frozen)
+        ↓
+Historical research contract ...... COMPLETE  (PIT_RESEARCH_DATASET_V2, BACKTEST_DATA_CONTRACT_V1)
+        ↓
+Strategy research ................. R1 — next
+        ↓
+Portfolio construction
+        ↓
+Paper trading
+        ↓
+Supervised live
+        ↓
+Constrained autonomous execution
+```
+
+The contract is the boundary between the two halves. Above it, research
+code binds to the dataset's digests or refuses to run, sees only what was
+knowable at the decision close, executes at the next session's open, keeps
+forward returns as labels it may not import into features, and emits a
+run manifest that names the population a result was selected from. Below
+it, nothing is acquired, mutated or re-planned: the residual gaps are an
+accepted property of the dataset, and reopening evidence acquisition takes a
+reviewed correctness defect, not a wish for a larger sample. See
+[Backtest data contract](../reference/backtest-contract.md).
+
 ## Decisions
 
 Significant, hard-to-reverse choices are recorded in [ADRs](../adr/index.md).
