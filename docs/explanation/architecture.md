@@ -255,7 +255,7 @@ Evidence / data foundation ........ COMPLETE  (SEC_EVIDENCE_GENERATION_V2, froze
         ↓
 Historical research contract ...... COMPLETE  (PIT_RESEARCH_DATASET_V2, BACKTEST_DATA_CONTRACT_V1)
         ↓
-Strategy research ................. R1 — next
+Strategy research ................. R1 — active (R1.0: harness + frozen baselines)
         ↓
 Portfolio construction
         ↓

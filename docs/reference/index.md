@@ -18,6 +18,7 @@ reference page, that sentence belongs in
 - [Storage layout](storage-layout.md) — artifact contract, local control plane and B2.4 failure semantics
 - [A3 planning inputs](a3-planning-inputs.md) — the planner's input contract, the dated rules behind it, the frozen V2 package, the forensic review, the corrected package and the authoritative Plan A3 V2
 - [Backtest data contract](backtest-contract.md) — `PIT_RESEARCH_DATASET_V2` under `BACKTEST_DATA_CONTRACT_V1`: what a historical decision may see, the identity and time semantics, the dataset fingerprints, the readiness matrix and the first safe research class
+- [R1 backtest harness](backtest-harness.md) — the leakage-safe monthly harness over that dataset: the decision calendar, the frozen split, the cross-section funnel, `TERMINAL_LEG_POLICY_V1`, the preregistered baselines and what they are read under
 - [Commands](commands.md) — every `make` target and CLI command
 - [Metrics](metrics.md) — every calculation, its formula, and when it is unavailable
 - [CompounderScore v1](compounder-score.md) — every scoring rule, penalty and status

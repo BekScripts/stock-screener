@@ -36,9 +36,43 @@ appears without the run or the test that produced it.
 
 ## Current phase
 
-**B2.18 — the V2 PIT dataset frozen and the backtest-readiness contract
-established; the SEC/PIT evidence program is CLOSED** is the current
-checkpoint on `feat/phase-b2-storage-abstraction`. **The BEK
+**R1.0 — the leakage-safe backtest harness built and the first frozen
+baselines executed** is the current checkpoint, on
+`feat/r1-backtest-harness`, branched from `feat/phase-b2-storage-abstraction`
+at `06357c5` (tagged `pit-research-dataset-v2`).
+
+| | |
+| --- | --- |
+| B2 evidence / PIT | **FROZEN** — `SEC_EVIDENCE_GENERATION_V2`, acquisition closed at B2.17 |
+| R1 | **ACTIVE** |
+| Backtest harness | **COMPLETE** — `stock_screener.backtest_harness`, bound to `BACKTEST_DATA_CONTRACT_V1`, fail-closed, no `--force` |
+| Frozen research split | `RESEARCH_SPLIT_V1`, SHA-256 `b58283be55428b1a…` — DEV 2022-01…2023-12 (24), VAL 2024 (12), HOLDOUT 2025-01…2026-03 (15), no overlap |
+| Preregistration | `r1_0_preregistration.json`, SHA-256 `8a19f0fdc91f92fa…`, written and hashed before any performance |
+| Baselines executed | `BASELINE_PASSIVE_V1`, `BASELINE_UNIVERSE_EQUAL_WEIGHT_V1`, `COMPOUNDER_DECILES_V1` (diagnostic), `COMPOUNDER_TOP_DECILE_V1`, each gross and under `SIMPLE_10BPS_PER_SIDE_V1` |
+| Holdout | evaluated once, after `first_holdout_access` proved the preregistration on disk hashed as presented |
+| Next | **R1.1 — interpret baseline signal quality and define the first hypothesis-driven strategy experiment** |
+
+The run: 51 monthly decision dates (2022-01-31 … 2026-03-31), a valuation
+window of 1,065 sessions (2022-02-01 … 2026-04-30), 164,193 universe
+observations of which 39,001 reached `EXECUTABLE`, 51 rebalances per
+portfolio, zero accounting violations, zero empty cross-sections, 33 terminal
+legs resolved by identity (30 settled, 3 unknown), six schema-valid run
+manifests, and 37 semantic fingerprints identical across two independent
+executions. **Research results, not product conclusions:** over the whole
+window and gross, SPY returned +68.2% (CAGR 13.10%, Sharpe 0.79, max drawdown
+−22.1%); the equal-weighted point-in-time universe +43.5% (CAGR 8.94%, Sharpe
+0.52, −24.0%); the frozen top-decile `COMPOUNDER_V1_2` portfolio +117.7%
+(CAGR 20.24%, Sharpe 0.92, −25.8%, annual turnover 3.90×). At the
+preregistered 20-session horizon the decile means rise from +0.56% (D1) to
++1.31% (D10); `D10 − D1` averaged over 51 monthly cross-sections is +0.84
+percentage points with a standard error of 0.51 pp (t = 1.66, bootstrap CI
+[−0.15, +1.79] pp), and the mean monthly rank IC is +0.025 (t = 1.76, CI
+[−0.003, +0.053]), weakest in the holdout at +0.011. The direction is
+consistent and the evidence is weak; R1.1 interprets it.
+
+The preceding checkpoint, **B2.18 — the V2 PIT dataset frozen and the
+backtest-readiness contract established; the SEC/PIT evidence program is
+CLOSED**, stands unchanged on `feat/phase-b2-storage-abstraction`. **The BEK
 drive is permanently unavailable** and Generation V1 is history that
 creates no trust. B2.9X started **Generation V2** from what survived on the
 internal disk; B2.10 proved the pipeline on chunk 000; B2.11 built chunks
@@ -673,6 +707,65 @@ convention, and none may be relaxed without an explicit instruction.
   `supersession.json` naming the old package and plan digests, the forensic
   verdict and commit; the old artifacts gain a `SUPERSEDED.json` beside them
   and lose nothing, locally or remotely.
+
+### R1.0 the backtest harness and the first frozen baselines
+
+- **R1 evaluates the frozen systems; it does not revise them.**
+  `COMPOUNDER_V1_2`, `MARKET_SIGNALS_V1`, `ResearchUniverseMonth`, the PIT
+  identity and availability semantics, price history and the forward-return
+  labels are inputs to this phase and are unchanged by it. A weak result is a
+  result, not a reason to move a rule.
+- **A research run binds or refuses.** `backtest_harness.verify_bindings`
+  re-hashes the research database, the contract file and the two frozen
+  point-in-time files, then loads `BACKTEST_DATA_CONTRACT_V1` through
+  `load_contract`, which refuses any binding that has moved. There is no
+  `--force`, and a test asserts the parameter does not exist.
+- **The research universe is read, never recomputed.** A security is in month
+  `M` when the frozen universe holds the identity-month and either the Phase
+  9K build classified it `ELIGIBLE` or the B2.16 materialisation records the
+  month `COVERED`. One rule is deliberately stronger than the frozen files':
+  the establishing filing must have been accepted **strictly before** the
+  decision session, because coverage was computed against the calendar month
+  end and an acceptance date says nothing about the hour.
+- **`CLOSE_SIGNAL_NEXT_SESSION_OPEN`.** The signal is the close of the
+  month's last benchmark session; the fill is the open of the next. There is
+  no same-close execution, no intraday model, and the only future price a
+  decision uses is the execution session's open — a test proves changing any
+  later bar changes nothing at all.
+- **The decision path reads no label.** `crosssection`, `portfolio` and
+  `universe` do not import the forward-return layer; a static test holds it,
+  and a canary changes a stored label and asserts every cross-section row is
+  byte-identical.
+- **Nothing is dropped silently.** Every identity the universe admits is a row
+  carrying the stage it reached and why it stopped. A missing execution price
+  is recorded as `NO_EXECUTION_PRICE` and never backfilled from a previous
+  close, a later price or zero.
+- **`TERMINAL_LEG_POLICY_V1`.** A stated consideration settles the position on
+  its effective date; a reported wind-up settles at zero; an unknown terminal
+  value is carried at the last observed close, flagged, and reported beside a
+  floor NAV that values every such leg at nothing. A falling price is never
+  read as a settlement.
+- **The split and the preregistration precede the results.**
+  `research_split_v1.json` is written before the first score is reconstructed;
+  `r1_0_preregistration.json` is written and hashed before any performance is
+  evaluated; and `first_holdout_access` refuses to record an access event
+  unless the preregistration on disk hashes to what the caller presents.
+- **No optimisation happened, and the record says so.** `variants_tried` is 1,
+  `parameter_sweeps` is empty and `selection_criterion` is `NONE` on every run
+  manifest and in the research ledger. No threshold, top-N, horizon, weight or
+  cost level was searched; one cost sensitivity
+  (`SIMPLE_10BPS_PER_SIDE_V1`) was preregistered because the repository holds
+  no frozen cost convention.
+- **No sector logic.** Sector history is `BLOCKED`, so no ranking, cap, limit
+  or attribution uses it; a test scans every harness module for a sector or
+  industry reference. The frozen `COMPOUNDER_V1_2` reads an undated
+  classification internally and that is recorded per observation as
+  `classification_is_current`, not removed.
+- **`MARKET_SIGNALS_V1` is deferred, not used as a ranking.**
+  `MARKET_SIGNALS_V1_REQUIRES_R1_1_HYPOTHESIS_DEFINITION`: it emits
+  multi-label setups, a three-state tradability verdict and peer percentiles,
+  and defines no canonical standalone scalar ranking. Its tradability verdict
+  *is* the frozen readiness rule every portfolio here honours.
 
 ### B2.18 the research dataset and the backtest contract
 
@@ -2027,6 +2120,65 @@ Documented rather than fixed. Each is a deliberate stop, not a backlog item.
 
 Measured runs, kept because they are the evidence behind decisions above.
 
+### R1.0 backtest harness built and first frozen baselines executed — 2026-09-23
+
+- `backtest run-baselines --database stage9k.db --verify-fingerprints
+  --runs 2 --workers 8 --mirror` with all eleven `--expect-*` digests: the
+  research database re-hashed to `20a77d24…` before and after, the contract
+  file to `f7efb001…`, `pit_coverage_v2.jsonl` to `1fc94fc1…` and
+  `pit_month_outcomes.jsonl` to `a955a2b7…`; all fourteen dataset projections
+  recomputed and matched (`historical_universe 19b86e63…`,
+  `price_history 0205e3b6…`, `historical_prices c53a806e…`,
+  `signal_observations 79730d0d…`, `forward_return_labels a997311a…`, and the
+  other nine); `load_contract` accepted the bindings.
+- 51 decision dates derived from readiness (2022-01-31 … 2026-03-31);
+  valuation window 2022-02-01 … 2026-04-30, 1,065 sessions. The holdout ends
+  at 2026-03 because point-in-time features exist for both identity classes
+  only through that month; the boundary was set before any performance.
+- Funnel over 250,537 frozen universe rows: 164,193 admitted (157,526 COMPANY,
+  6,667 HISTORICAL) → 163,850 feature-ready → 74,829 scored → 74,193 rankable
+  → 39,003 tradable → **39,001 executable** (38,609 COMPANY, 392 HISTORICAL).
+  Every exclusion carries a reason and is counted.
+- Gross, whole window: `BASELINE_PASSIVE_V1` +68.2% (CAGR 13.10%, vol 17.5%,
+  Sharpe 0.79, Sortino 0.78, max DD −22.1%, Calmar 0.59);
+  `BASELINE_UNIVERSE_EQUAL_WEIGHT_V1` +43.5% (CAGR 8.94%, Sharpe 0.52, max DD
+  −24.0%, 766.1 average holdings, annual turnover 1.38×, benchmark-relative
+  −24.65 pp); `COMPOUNDER_TOP_DECILE_V1` +117.7% (CAGR 20.24%, Sharpe 0.92,
+  max DD −25.8%, Calmar 0.78, 76.1 average holdings, annual turnover 3.90×,
+  benchmark-relative +49.58 pp). Under `SIMPLE_10BPS_PER_SIDE_V1`: +42.0% and
+  +110.9%.
+- By split, gross: development +5.2% / +21.3% (equal-weight / top-decile)
+  against SPY +10.0%; validation +15.5% / +33.9% against +26.2%; holdout
+  +18.2% / +34.1% against +21.1%.
+- `COMPOUNDER_DECILES_V1`: 39,001 observations, 51 cross-sections, all cut. At
+  20 sessions, D1 … D10 means +0.56, +0.60, +0.26, +0.39, +0.28, +0.38, +0.37,
+  +0.91, +1.12, +1.31 percentage points, with mean score rising 25.4 → 67.1.
+  `D10 − D1` pooled +0.75 pp; averaged over months +0.84 pp, standard error
+  0.51 pp, t = 1.66, bootstrap CI [−0.15, +1.79] pp, positive in 58.8% of
+  months. Mean monthly rank IC +0.025 (median +0.028, std 0.102, t = 1.76, CI
+  [−0.003, +0.053], positive in 62.7% of months); by split +0.026 development,
+  +0.042 validation, **+0.011 holdout**.
+- Accounting: zero violations, zero cash violations, zero empty
+  cross-sections, zero selected securities without an execution price, 2
+  observations excluded at `NO_EXECUTION_PRICE`. 33 terminal legs resolved by
+  identity — 30 settled at a stated consideration, 3 unknown; valuing every
+  unknown leg at nothing costs the equal-weight path 0.19 pp and the
+  top-decile path nothing. 121 buy orders on the equal-weight baseline were
+  clamped by the cash guard (unsaleable carried positions plus floating-point
+  residue), leaving 10 selections unfilled out of 39,001.
+- Determinism: two independent executions, 37 semantic fingerprints identical,
+  including trades, holdings, NAV, metrics, diagnostics and both audits.
+- Audits: the hash-seeded spot audit re-derived 24 decisions across three
+  sampled months (2023-11, 2024-12, 2025-05) with zero failures, reproducing
+  each score to the digit; the bias audit shows historical identities at 4.1%
+  of the universe and 1.0% of the executable set, with realised holdings at
+  1.1% (equal-weight) and 1.7% (top-decile) — under-represented, reported, not
+  corrected for.
+- Outputs under `.evidence/research/r1_0/`; 19 compact files mirrored as
+  snapshots under `control/PIT_RESEARCH_DATASET_V2/research/r1-0/` and read
+  back. Both databases byte-identical before and after; no migration; no SEC
+  request; no evidence write.
+
 ### B2.18 research dataset frozen and backtest contract written — 2026-09-19
 
 - `evidence freeze-backtest-contract --database stage9k.db
@@ -3045,18 +3197,26 @@ under **80%**. It is what CI runs; run it rather than the individual tools.
 
 ## Next phase
 
-**R1.0 — build the leakage-safe backtest harness and run the first frozen
-strategy baselines** follows: a harness that binds to
-`BACKTEST_DATA_CONTRACT_V1` through `load_contract` and refuses otherwise,
-reconstructs the first safe research class (monthly cross-sectional,
-signal at the month's last close, execution at the next session's open,
-long-only) over `PIT_RESEARCH_DATASET_V2`, applies `filed_date < as_of` to
-historical securities, states its terminal-leg and transaction-cost
-scenarios explicitly, emits the run manifest with the population a result
-was selected from, and compares against a named passive benchmark. It is
-strategy research over frozen data — no evidence acquisition, no A4, no
-change to the PIT, identity or scoring semantics, and no promotion of
-`MARKET_SIGNALS_V2` without its own decision. FTD archives are redownloaded separately. The one-month boundary
+**R1.1 — interpret the baseline signal quality and define the first
+hypothesis-driven strategy experiment** follows. R1.0 built the harness and
+executed the preregistered baselines; R1.1 reads what they produced and
+decides what is worth testing next. It is interpretation and hypothesis
+definition, not optimisation: the prohibitions R1.0 ran under stay in force
+until a new version is declared and preregistered in its own right — no
+parameter search, no threshold or top-N search, no signal combination, no
+sector logic, and no second look at the holdout under a definition that has
+been changed after seeing it.
+
+`MARKET_SIGNALS_V1` is the named open question R1.0 hands forward. It is
+`MARKET_SIGNALS_V1_REQUIRES_R1_1_HYPOTHESIS_DEFINITION`: its tradability
+verdict is already the frozen readiness rule every R1.0 portfolio honours, but
+it defines no canonical standalone ranking, so any use of it as a signal is a
+hypothesis R1.1 must state before it is run. Promoting `MARKET_SIGNALS_V2` (the
+corrected peer policy) remains a separate, deliberate decision that nothing in
+R1.0 took.
+
+No evidence acquisition, no A4, no change to the PIT, identity or scoring
+semantics. FTD archives are redownloaded separately. The one-month boundary
 between the classification and planning rules remains documented in
 [A3 planning inputs](a3-planning-inputs.md) and is a decision for a later
 phase; widening the acquisition window is likewise a separate, versioned
@@ -3112,6 +3272,15 @@ Not a backlog. These exclusions are deliberate.
   executed. `PIT_RESEARCH_DATASET_V2` and `BACKTEST_DATA_CONTRACT_V1` are
   read through `load_contract`; research code that bypasses the contract's
   bindings is a defect.
+- **The R1.0 research protocol (R1.0).** `research_split_v1.json` and
+  `r1_0_preregistration.json` are frozen: their boundaries, strategy
+  definitions, execution rule, cost assumption, terminal-leg policy, metric
+  set and benchmark are not edited after the fact, and a changed definition is
+  a new strategy version with its own preregistration. The holdout is not
+  re-read under a definition altered after seeing it. No parameter, threshold,
+  top-N, horizon or cost-level search; no signal combination; no sector logic;
+  no second cost level reported in place of the preregistered one. Negative
+  results stay in `research_ledger.jsonl`.
 - any scoring file, without a new `score_version` and a doc change in the same
   commit
 - a Phase 3 enum or class — `deep-research` imports them, never extends them
@@ -3134,11 +3303,11 @@ Not a backlog. These exclusions are deliberate.
 
 | | |
 | --- | --- |
-| Commit | The B2.18 commit containing this checkpoint, `feat: freeze V2 PIT backtest contract`; parent `6af4e5c` (B2.17, `feat: audit final V2 PIT coverage`). The authoritative plan's meta and authorization record name `repo_commit` `daa1d36`; the corrected package records `2a7d3b8`, the superseded package `ebfbc1c`, the superseded plan `afe6a10`, the index `1b407b6`. |
-| Branch | `feat/phase-b2-storage-abstraction` |
+| Commit | The R1.0 commit containing this checkpoint, `feat: establish R1 backtest harness and baselines`; parent `06357c5` (B2.18, `feat: freeze V2 PIT backtest contract`), tagged `pit-research-dataset-v2`. The authoritative plan's meta and authorization record name `repo_commit` `daa1d36`; the corrected package records `2a7d3b8`, the superseded package `ebfbc1c`, the superseded plan `afe6a10`, the index `1b407b6`. |
+| Branch | `feat/r1-backtest-harness`, branched from `feat/phase-b2-storage-abstraction` at `06357c5` |
 | Migration head | `0031` — the research-universe layer (9K.7). Nothing since 9K.11 added one. |
 | Score version | `COMPOUNDER_V1_2` (unchanged by anything in Phase 8, 9A, 9B or 9C) |
 | Feature version | `MARKET_FEATURES_V1` |
 | Signal version | `MARKET_SIGNALS_V1` |
-| Primary database | untouched by 8A–8J and 9A–9L.5; all work ran against staging copies |
-| Checkpoint date | 2026-09-19 |
+| Primary database | untouched by 8A–8J, 9A–9L.5, B2 and R1.0; all work ran against staging copies |
+| Checkpoint date | 2026-09-23 |

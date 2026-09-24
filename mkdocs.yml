@@ -60,6 +60,7 @@ nav:
       - Point-in-time metrics: reference/point-in-time.md
       - Backtest readiness: reference/backtest-readiness.md
       - Backtest data contract: reference/backtest-contract.md
+      - R1 backtest harness: reference/backtest-harness.md
       - Security identity: reference/security-identity.md
       - Listing evidence: reference/listing-evidence.md
       - Storage layout: reference/storage-layout.md

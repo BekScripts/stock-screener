@@ -17,7 +17,9 @@ from __future__ import annotations
 import csv
 import hashlib
 import json
+import shutil
 import sqlite3
+import subprocess
 import tempfile
 import threading
 from contextlib import closing, contextmanager
@@ -67,6 +69,14 @@ from stock_screener.backtest_contract import (
     mirror_contract,
     write_contract,
 )
+from stock_screener.backtest_harness import (
+    MIRROR_GENERATION,
+    RESEARCH_DIR,
+    mirror_r1_0,
+    run_r1_0,
+    verify_bindings,
+)
+from stock_screener.backtest_harness import BindingError as HarnessBindingError
 from stock_screener.config import Settings, get_settings
 from stock_screener.deep_research import (
     PreparationError,
@@ -5321,6 +5331,248 @@ def _emit_ranking(rows: Sequence[RankingRow], output: Path | None, *, label: str
     if output is not None:
         written = write_rankings_csv(rows, output)
         typer.echo(f"Wrote {written} rows to {output}")
+
+
+backtest_app = typer.Typer(
+    name="backtest",
+    help=(
+        "R1 strategy research over the frozen PIT_RESEARCH_DATASET_V2: verify the "
+        "contract, freeze the split, preregister the baselines, and execute them."
+    ),
+    no_args_is_help=True,
+)
+app.add_typer(backtest_app)
+
+
+@backtest_app.command("run-baselines")
+def backtest_run_baselines_command(
+    database: Annotated[
+        Path, typer.Option("--database", help="The frozen research database, opened read-only.")
+    ] = Path("stage9k.db"),
+    expect_database_sha: Annotated[
+        str, typer.Option(help="The research database digest the run binds to. Required.")
+    ] = "",
+    expect_universe_sha: Annotated[
+        str, typer.Option(help="The frozen universe digest. Required.")
+    ] = "",
+    expect_manifest_sha: Annotated[
+        str, typer.Option(help="The final evidence manifest digest. Required.")
+    ] = "",
+    expect_index_sha: Annotated[str, typer.Option(help="The post-A3 index digest. Required.")] = "",
+    expect_pit_marker_sha: Annotated[
+        str, typer.Option(help="The PIT completion marker digest. Required.")
+    ] = "",
+    expect_audit_marker_sha: Annotated[
+        str, typer.Option(help="The residual audit marker digest. Required.")
+    ] = "",
+    expect_package_sha: Annotated[
+        str, typer.Option(help="The corrected planning-inputs digest. Required.")
+    ] = "",
+    expect_plan_sha: Annotated[
+        str, typer.Option(help="The authorized A3 plan digest. Required.")
+    ] = "",
+    expect_contract_sha: Annotated[
+        str, typer.Option(help="The backtest contract file digest. Required.")
+    ] = "",
+    expect_coverage_sha: Annotated[
+        str, typer.Option(help="The frozen pre-A3 PIT coverage file digest. Required.")
+    ] = "",
+    expect_outcomes_sha: Annotated[
+        str, typer.Option(help="The frozen post-A3 month outcomes digest. Required.")
+    ] = "",
+    verify_fingerprints: Annotated[
+        bool,
+        typer.Option(
+            "--verify-fingerprints/--no-verify-fingerprints",
+            help="Recompute every dataset projection and compare it to the contract.",
+        ),
+    ] = False,
+    runs: Annotated[
+        int, typer.Option(min=1, max=2, help="Executions. Two proves determinism.")
+    ] = 2,
+    stride: Annotated[
+        int, typer.Option(min=1, help="Take every nth decision month. One is the whole calendar.")
+    ] = 1,
+    workers: Annotated[
+        int, typer.Option(min=1, max=16, help="Processes building the cross-sections.")
+    ] = 1,
+    output: Annotated[
+        Path | None,
+        typer.Option(help="Research root. Default: <control>/research/r1_0."),
+    ] = None,
+    mirror: Annotated[
+        bool, typer.Option("--mirror/--no-mirror", help="Mirror the compact metadata.")
+    ] = True,
+) -> None:
+    """Execute R1.0: verify, freeze, preregister, run the baselines, record.
+
+    Fail-closed by construction. Every frozen digest is re-proven before the
+    first score is reconstructed, the split and the preregistration are written
+    before any performance exists, and the holdout is not evaluated until the
+    preregistration on disk hashes to what the run presents. There is no
+    override: a binding that does not match ends the command.
+    """
+    settings = _bootstrap()
+    for name, value in (
+        ("--expect-database-sha", expect_database_sha),
+        ("--expect-universe-sha", expect_universe_sha),
+        ("--expect-manifest-sha", expect_manifest_sha),
+        ("--expect-index-sha", expect_index_sha),
+        ("--expect-pit-marker-sha", expect_pit_marker_sha),
+        ("--expect-audit-marker-sha", expect_audit_marker_sha),
+        ("--expect-package-sha", expect_package_sha),
+        ("--expect-plan-sha", expect_plan_sha),
+        ("--expect-contract-sha", expect_contract_sha),
+        ("--expect-coverage-sha", expect_coverage_sha),
+        ("--expect-outcomes-sha", expect_outcomes_sha),
+    ):
+        if len(value) != 64:
+            typer.echo(f"STOPPED: {name} is required and must be a full SHA-256")
+            raise typer.Exit(code=1)
+
+    storage, control = _open_layout(settings)
+    generation_dir = control.plans / "generation_v2"
+    contract_dir = control.path / CONTRACT_DIR
+    research_dir = output or control.path / RESEARCH_DIR
+
+    actual_database = _file_sha256(database)
+    if actual_database != expect_database_sha.lower():
+        typer.echo(f"STOPPED: {database} hashes to {actual_database[:16]}…; refusing to run")
+        raise typer.Exit(code=1)
+    actual_contract = _file_sha256(contract_dir / "backtest_data_contract_v1.json")
+    if actual_contract != expect_contract_sha.lower():
+        typer.echo(f"STOPPED: the contract hashes to {actual_contract[:16]}…; refusing to run")
+        raise typer.Exit(code=1)
+    typer.echo(f"database verified : {actual_database[:16]}… ({database})")
+    typer.echo(f"contract verified : {actual_contract[:16]}…")
+
+    manifest = json.loads(
+        (contract_dir / "backtest_dataset_manifest.json").read_text(encoding="utf-8")
+    )
+    fingerprints = dict(manifest.get("fingerprints") or {})
+    if verify_fingerprints:
+        with closing(sqlite3.connect(f"file:{database}?mode=ro", uri=True)) as db:
+            measured = fingerprint_dataset(db, progress=typer.echo)
+        drift = sorted(
+            name
+            for name, held in fingerprints.items()
+            if measured.get(name, {}).get("sha256") != held.get("sha256")
+        )
+        if drift:
+            typer.echo(f"STOPPED: the dataset no longer fingerprints as the contract: {drift}")
+            raise typer.Exit(code=1)
+        typer.echo(f"dataset verified  : {len(measured)} projections match the contract")
+
+    expect = ContractBindings(
+        dataset_id=DATASET_ID,
+        contract_version=CONTRACT_VERSION,
+        universe_sha256=expect_universe_sha.lower(),
+        evidence_manifest_sha256=expect_manifest_sha.lower(),
+        post_a3_index_sha256=expect_index_sha.lower(),
+        pit_marker_sha256=expect_pit_marker_sha.lower(),
+        planning_inputs_sha256=expect_package_sha.lower(),
+        a3_plan_sha256=expect_plan_sha.lower(),
+        pit_audit_marker_sha256=expect_audit_marker_sha.lower(),
+        database_sha256=actual_database,
+        fingerprints=fingerprints,
+    )
+    try:
+        bindings = verify_bindings(
+            contract_dir,
+            generation_dir,
+            expect=expect,
+            expect_coverage_sha=expect_coverage_sha,
+            expect_outcomes_sha=expect_outcomes_sha,
+            database_path=database,
+        )
+    except HarnessBindingError as exc:
+        typer.echo(f"STOPPED: {exc}")
+        raise typer.Exit(code=1) from exc
+    typer.echo(f"contract accepted : {bindings.dataset_id} / {bindings.contract_version}")
+
+    commit = subprocess.run(
+        ["git", "rev-parse", "HEAD"],  # noqa: S607
+        capture_output=True,
+        text=True,
+        check=False,
+    ).stdout.strip()
+    if len(commit) != 40:
+        typer.echo("STOPPED: cannot determine the code commit; a run manifest requires it")
+        raise typer.Exit(code=1)
+
+    results = []
+    for index in range(runs):
+        target = research_dir if index == 0 else research_dir.with_name(research_dir.name + "_r2")
+        if index == 1:
+            shutil.rmtree(target, ignore_errors=True)
+        typer.echo(f"--- run {index + 1} of {runs} into {target} ---")
+        result = run_r1_0(
+            target,
+            settings,
+            bindings,
+            generation_dir,
+            contract_dir,
+            contract_sha256=actual_contract,
+            code_commit=commit,
+            stride=stride,
+            workers=workers,
+            progress=typer.echo,
+        )
+        results.append(result)
+
+    first = results[0]
+    if len(results) > 1:
+        differences = sorted(
+            name
+            for name in set(first.fingerprints) | set(results[1].fingerprints)
+            if first.fingerprints.get(name) != results[1].fingerprints.get(name)
+        )
+        if differences:
+            typer.echo(f"STOPPED: the two runs disagree on {differences}")
+            raise typer.Exit(code=1)
+        typer.echo(f"determinism       : {len(first.fingerprints)} fingerprints identical")
+
+    if first.violations:
+        for problem in first.violations:
+            typer.echo(f"ACCOUNTING VIOLATION: {problem}")
+        raise typer.Exit(code=1)
+    if first.manifest_problems:
+        for strategy, problems in first.manifest_problems.items():
+            typer.echo(f"MANIFEST INVALID {strategy}: {problems}")
+        raise typer.Exit(code=1)
+    typer.echo(
+        f"run manifests    : {len(first.manifests)} strategies + "
+        f"{len(first.cost_manifests)} cost sensitivities, all schema-valid"
+    )
+
+    after = _file_sha256(database)
+    if after != actual_database:
+        typer.echo(f"STOPPED: {database} changed during the run")
+        raise typer.Exit(code=1)
+    typer.echo(f"database unchanged: {after[:16]}…")
+
+    if mirror:
+        control_mirror = ControlMirror(storage, MIRROR_GENERATION)
+        try:
+            records = mirror_r1_0(control_mirror, research_dir)
+        except (MirrorConflictError, StorageUnavailableError) as exc:
+            typer.echo(f"STOPPED: the mirror refused: {exc}")
+            raise typer.Exit(code=1) from exc
+        typer.echo(f"mirrored          : {len(records)} files under {control_mirror.prefix}")
+
+    summary = first.summary
+    typer.echo("")
+    typer.echo(f"decision dates    : {summary['decision_dates']}")
+    typer.echo(f"universe          : {summary['sample']['universe_observations']}")
+    typer.echo(f"executable        : {summary['sample']['executable']}")
+    for name, body in sorted(summary["results"].items()):
+        window_metrics = body if "total_return" in body else body["window"]
+        typer.echo(
+            f"{name:<34} total {_percent(window_metrics['total_return'])} "
+            f"cagr {_percent(window_metrics['cagr'])} "
+            f"maxdd {_percent(window_metrics['max_drawdown'])}"
+        )
+    typer.echo(f"outputs           : {research_dir}")
 
 
 def _percent(value: float | None) -> str:
