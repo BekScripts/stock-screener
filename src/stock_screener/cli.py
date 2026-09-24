@@ -315,6 +315,16 @@ from stock_screener.sec_evidence.targets import (
     load_manifest,
     resolve_documents,
 )
+from stock_screener.signal_review import (
+    MIRROR_GENERATION as R1_MIRROR_GENERATION,
+)
+from stock_screener.signal_review import (
+    REVIEW_DIR,
+    ReviewBindingError,
+    mirror_r1_1,
+    r1_0_directory,
+    review_r1_0,
+)
 from stock_screener.signals import derive_market_signals
 
 if TYPE_CHECKING:
@@ -5573,6 +5583,143 @@ def backtest_run_baselines_command(
             f"maxdd {_percent(window_metrics['max_drawdown'])}"
         )
     typer.echo(f"outputs           : {research_dir}")
+
+
+@backtest_app.command("review-signal")
+def backtest_review_signal_command(
+    database: Annotated[
+        Path, typer.Option("--database", help="The frozen research database, opened read-only.")
+    ] = Path("stage9k.db"),
+    expect_database_sha: Annotated[
+        str, typer.Option(help="The research database digest. Required.")
+    ] = "",
+    expect_contract_sha: Annotated[
+        str, typer.Option(help="The backtest contract file digest. Required.")
+    ] = "",
+    expect_r1_0_marker_sha: Annotated[
+        str, typer.Option(help="The R1.0 completion marker digest. Required.")
+    ] = "",
+    expect_split_sha: Annotated[
+        str, typer.Option(help="The frozen research split digest. Required.")
+    ] = "",
+    expect_preregistration_sha: Annotated[
+        str, typer.Option(help="The R1.0 preregistration digest. Required.")
+    ] = "",
+    runs: Annotated[
+        int, typer.Option(min=1, max=2, help="Executions. Two proves determinism.")
+    ] = 2,
+    output: Annotated[
+        Path | None, typer.Option(help="Review root. Default: <control>/research/r1_1.")
+    ] = None,
+    mirror: Annotated[
+        bool, typer.Option("--mirror/--no-mirror", help="Mirror the compact metadata.")
+    ] = True,
+) -> None:
+    """Interpret the R1.0 baseline and record one hypothesis, or none.
+
+    Reads only. Every R1.0 artifact is re-hashed against the fingerprints R1.0
+    recorded before a single statistic is computed, and a mismatch ends the
+    command. No strategy is executed, no parameter is searched, and the R1.2
+    specification is written only if its hypothesis survived its premises.
+    """
+    settings = _bootstrap()
+    for name, value in (
+        ("--expect-database-sha", expect_database_sha),
+        ("--expect-contract-sha", expect_contract_sha),
+        ("--expect-r1-0-marker-sha", expect_r1_0_marker_sha),
+        ("--expect-split-sha", expect_split_sha),
+        ("--expect-preregistration-sha", expect_preregistration_sha),
+    ):
+        if len(value) != 64:
+            typer.echo(f"STOPPED: {name} is required and must be a full SHA-256")
+            raise typer.Exit(code=1)
+
+    storage, control = _open_layout(settings)
+    contract_dir = control.path / CONTRACT_DIR
+    r1_0 = r1_0_directory(control.path)
+    review_dir = output or control.path / REVIEW_DIR
+
+    before = _file_sha256(database)
+    if before != expect_database_sha.lower():
+        typer.echo(f"STOPPED: {database} hashes to {before[:16]}…; refusing to run")
+        raise typer.Exit(code=1)
+    contract_sha = _file_sha256(contract_dir / "backtest_data_contract_v1.json")
+    if contract_sha != expect_contract_sha.lower():
+        typer.echo(f"STOPPED: the contract hashes to {contract_sha[:16]}…; refusing to run")
+        raise typer.Exit(code=1)
+    typer.echo(f"database verified : {before[:16]}… ({database})")
+    typer.echo(f"contract verified : {contract_sha[:16]}…")
+
+    commit = subprocess.run(
+        ["git", "rev-parse", "HEAD"],  # noqa: S607
+        capture_output=True,
+        text=True,
+        check=False,
+    ).stdout.strip()
+    if len(commit) != 40:
+        typer.echo("STOPPED: cannot determine the code commit; the hypothesis record needs it")
+        raise typer.Exit(code=1)
+
+    results = []
+    for index in range(runs):
+        target = review_dir if index == 0 else review_dir.with_name(review_dir.name + "_r2")
+        if index == 1:
+            shutil.rmtree(target, ignore_errors=True)
+        typer.echo(f"--- run {index + 1} of {runs} into {target} ---")
+        try:
+            result = review_r1_0(
+                target,
+                r1_0,
+                database,
+                expect_marker_sha=expect_r1_0_marker_sha,
+                expect_split_sha=expect_split_sha,
+                expect_preregistration_sha=expect_preregistration_sha,
+                code_commit=commit,
+                progress=typer.echo,
+            )
+        except ReviewBindingError as exc:
+            typer.echo(f"STOPPED: {exc}")
+            raise typer.Exit(code=1) from exc
+        results.append(result)
+
+    first = results[0]
+    if len(results) > 1:
+        differences = sorted(
+            name
+            for name in set(first.fingerprints) | set(results[1].fingerprints)
+            if first.fingerprints.get(name) != results[1].fingerprints.get(name)
+        )
+        if differences:
+            typer.echo(f"STOPPED: the two runs disagree on {differences}")
+            raise typer.Exit(code=1)
+        typer.echo(f"determinism       : {len(first.fingerprints)} fingerprints identical")
+
+    after = _file_sha256(database)
+    if after != before:
+        typer.echo(f"STOPPED: {database} changed during the review")
+        raise typer.Exit(code=1)
+    typer.echo(f"database unchanged: {after[:16]}…")
+
+    if mirror:
+        control_mirror = ControlMirror(storage, R1_MIRROR_GENERATION)
+        try:
+            records = mirror_r1_1(control_mirror, review_dir)
+        except (MirrorConflictError, StorageUnavailableError) as exc:
+            typer.echo(f"STOPPED: the mirror refused: {exc}")
+            raise typer.Exit(code=1) from exc
+        typer.echo(f"mirrored          : {len(records)} files under {control_mirror.prefix}")
+
+    typer.echo("")
+    typer.echo(f"classification    : {first.classification['classification']}")
+    if first.classification["failed_conditions"]:
+        typer.echo(f"failed conditions : {first.classification['failed_conditions']}")
+    typer.echo(
+        f"hypothesis        : {first.hypothesis['hypothesis_id']} {first.hypothesis['status']}"
+    )
+    for name, verdict in sorted(first.hypothesis["premise_verdicts"].items()):
+        typer.echo(f"  {name:<34} {verdict}")
+    typer.echo(f"R1.2 specification: {'written, not executed' if first.spec else 'NOT WRITTEN'}")
+    typer.echo(f"outputs           : {review_dir}")
 
 
 def _percent(value: float | None) -> str:

@@ -45,6 +45,7 @@ from stock_screener.backtest_harness.crosssection import (
 )
 from stock_screener.backtest_harness.diagnostics import (
     DECILES,
+    HORIZONS,
     MIN_DECILE_CROSS_SECTION,
     PRIMARY_HORIZON,
     DecileStat,
@@ -122,6 +123,7 @@ __all__ = [
     "DECILES",
     "EXECUTION_RULE",
     "GROSS",
+    "HORIZONS",
     "MIN_DECILE_CROSS_SECTION",
     "MIRROR_GENERATION",
     "MIRROR_PREFIX",

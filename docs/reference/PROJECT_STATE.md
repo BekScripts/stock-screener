@@ -36,10 +36,40 @@ appears without the run or the test that produced it.
 
 ## Current phase
 
-**R1.0 — the leakage-safe backtest harness built and the first frozen
-baselines executed** is the current checkpoint, on
-`feat/r1-backtest-harness`, branched from `feat/phase-b2-storage-abstraction`
-at `06357c5` (tagged `pit-research-dataset-v2`).
+**R1.1 — the baseline signal interpreted and one hypothesis-driven experiment
+specified** is the current checkpoint, on `feat/r1-backtest-harness`, branched
+from `feat/phase-b2-storage-abstraction` at `06357c5` (tagged
+`pit-research-dataset-v2`).
+
+| | |
+| --- | --- |
+| B2 evidence / PIT | **FROZEN / COMPLETE** |
+| R1.0 | **COMPLETE** — harness and four preregistered baselines |
+| R1.1 | **COMPLETE** — interpretation only; no strategy executed |
+| Compounder evidence status | **`STRONG_ENOUGH_FOR_HYPOTHESIS_TEST`** — all eight rubric conditions met. Not a statement that the effect is established: both headline t-statistics are below 2 |
+| R1.0 holdout | **VALID FOR R1.0 ONLY**; `HOLDOUT_ALREADY_OBSERVED` for any hypothesis derived afterwards. No untouched historical holdout exists in the frozen dataset |
+| H1 | `H1_MEDIUM_HORIZON_SELECTION` — **accepted for one experiment**, all five premises `SUPPORTED` |
+| Next | **R1.2 — test the preregistered `COMPOUNDER_QUARTERLY_TOP_DECILE_V1`**, specified and *not* executed |
+
+What R1.1 found, in one paragraph. The frozen score's cross-sectional signal
+strengthens monotonically with horizon — mean monthly rank IC +0.017 at one
+session, +0.025 at twenty, +0.063 at a hundred and twenty — and top-decile
+membership is sticky, with a month-to-month rank correlation of 0.909 and 71.5%
+of the top decile still there a month later, 46.0% three months later. That
+combination is what `H1` rests on. Against it: the monthly `D10 − D1` averages
++0.84 pp with a t-statistic of 1.66 and a bootstrap interval of
+[−0.15, +1.79] pp; 2026's three months are negative on both headline measures;
+and in the R1.0 holdout `D10 − D1` collapses to +0.01 pp with only a third of
+months positive. That collapse is explained rather than explained away: the
+holdout's decile profile is **U-shaped**, both tails beating the middle, so the
+long-short contrast cancels while `D10 − cross-section mean` — the quantity a
+long-only portfolio actually earns — holds at +0.55 pp/month. Both measures and
+the full ten-decile profile are published for every block. Turnover is 88.7%
+ranking churn, which is what makes a lower-frequency test worth running, and
+the analytic per-side cost break-even against SPY is 77.9 bps.
+
+The preceding checkpoint, **R1.0 — the leakage-safe backtest harness built and
+the first frozen baselines executed**, stands unchanged.
 
 | | |
 | --- | --- |
@@ -707,6 +737,48 @@ convention, and none may be relaxed without an explicit instruction.
   `supersession.json` naming the old package and plan digests, the forensic
   verdict and commit; the old artifacts gain a `SUPERSEDED.json` beside them
   and lose nothing, locally or remotely.
+
+### R1.1 the signal review and the one hypothesis
+
+- **R1.0's outputs are immutable inputs.** `bind_r1_0` re-derives every R1.0
+  fingerprint — document digests from the bytes, ledger digests from the parsed
+  rows, the cross-section digest from its seven-field projection — and refuses
+  on any mismatch before a single statistic is computed. R1.1 changed nothing
+  in the R1.0 record and executed no strategy.
+- **Two contrasts, both reported, neither alone.** `D10 - D1` is what a
+  long-short book earns and is a fair summary only of a monotone profile;
+  `D10 - cross-section mean` is what a long-only top-decile portfolio is
+  exposed to. Every block publishes both plus the full ten-decile profile and
+  its shape (`RISING`, `U_SHAPED`, `FLAT`). The second measure was added during
+  R1.1 after the holdout's U-shape was observed; **the classification rubric
+  was not changed to use it.**
+- **The rubric precedes the diagnostics.** `review.RUBRIC` holds eight
+  conditions written as code before the leave-one-out, concentration,
+  persistence and cost results existed. Statistical significance is
+  deliberately not among them, because the question is whether one further
+  preregistered experiment is warranted — not whether the effect is
+  established.
+- **The already-observed interval is named as such.**
+  `R1_0_HOLDOUT_STATUS: VALID_FOR_R1_0_PREREGISTERED_STRATEGIES` and
+  `NEW_DERIVED_HYPOTHESES: HOLDOUT_ALREADY_OBSERVED`. No untouched historical
+  holdout exists in the frozen dataset and none is manufactured by re-cutting
+  the split. Genuine confirmation requires observations that did not exist when
+  a hypothesis was frozen, a paper period under exactly its rules, or an
+  independently frozen future extension.
+- **A specification cannot exist without a hypothesis.** `experiment_spec`
+  raises unless the hypothesis reached `ACCEPTED_FOR_ONE_EXPERIMENT`, so R1.2's
+  rules cannot become a strategy somebody simply wanted to try. The spec fixes
+  one frequency, one selection fraction, one weighting, one execution rule and
+  one cost level, and carries falsification criteria fixed in advance.
+- **Two sections are skipped rather than invented.** The score-change
+  diagnostic is `SKIPPED` because the frozen system defines no canonical notion
+  of a score change; the regime diagnostic is
+  `REGIME_DIAGNOSTIC_NOT_AVAILABLE` because no frozen point-in-time market
+  state exists. Sector remains forbidden, and market capitalisation is not used
+  as a size control because the contract records it as a lower bound.
+- **`MARKET_SIGNALS_V1` was documented, not tested.** Its output semantics are
+  written down and three candidate future questions listed. No scalarisation,
+  no combination with the Compounder score, no performance test.
 
 ### R1.0 the backtest harness and the first frozen baselines
 
@@ -2120,6 +2192,66 @@ Documented rather than fixed. Each is a deliberate stop, not a backlog item.
 
 Measured runs, kept because they are the evidence behind decisions above.
 
+### R1.1 Compounder baseline signal interpreted, one experiment specified — 2026-09-24
+
+- `backtest review-signal --database stage9k.db --runs 2 --mirror` with all
+  five `--expect-*` digests: the database re-hashed to `20a77d24…`, the
+  contract to `f7efb001…`, the R1.0 completion marker to `544555c6…`, the split
+  to `b58283be…` and the preregistration to `8a19f0fd…`; **18 R1.0 fingerprints
+  re-derived and matched** before any statistic was computed. Two runs, 13
+  fingerprints identical, 13 files mirrored under
+  `control/PIT_RESEARCH_DATASET_V2/research/r1-1/`, both databases unchanged.
+  No strategy executed.
+- Recomputing R1.0's own diagnostics reproduced them exactly — overall mean
+  monthly rank IC +0.02515 against R1.0's recorded +0.0251 — which is the
+  cross-check that the review reads the same record.
+- **Signal by split** (D10−D1 / D10−cross-section mean / rank IC): development
+  +0.87 / +0.61 / +0.026 pp; validation +1.56 / +1.06 / +0.042; **R1.0 holdout
+  +0.06 / +0.55 / +0.011**. The holdout's decile profile is `U_SHAPED` — D1
+  +1.65%, a trough of +0.28% at D6, D10 +1.72% — which is why the long-short
+  contrast collapses there while the long-only measure does not.
+- **By year** (D10−D1 / rank IC / positive-IC months): 2022 +1.27 pp / +0.006 /
+  7 of 12; 2023 +0.66 / +0.046 / 7 of 12; 2024 +1.62 / +0.042 / 10 of 12; 2025
+  +0.38 / +0.015 / 7 of 12; **2026 (3 months) −1.47 pp / −0.006 / 1 of 3**.
+- **By horizon**, both measures and the IC rise monotonically: rank IC +0.017
+  (1 session), +0.023 (5), +0.025 (20), +0.037 (60), +0.063 (120); D10−D1
+  +0.11, +0.08, +0.84, +2.65, +5.75 pp. The 60- and 120-session windows overlap
+  about two and five later monthly decisions and are flagged as non-independent
+  wherever they are quoted.
+- **Robustness.** Leave-one-month-out: both headline means stay positive in all
+  51 removals (D10−D1 ranges +0.71 to +1.02 pp; IC +0.021 to +0.030).
+  Leave-one-year-out: positive in all 5 removals (+0.60 to +0.98 pp).
+- **Persistence.** Month-to-month rank correlation 0.909; top-decile retention
+  71.5% at one month and 46.0% at three.
+- **Concentration.** Profit $120,671.94, attributed identity by identity with a
+  reconciliation residual of −2.8e−10. Largest contributor 5.6%; top 5 20.4%;
+  top 10 30.8%; top 25 56.5%; top 50 86.4% (of 578 identities, 307 winners).
+  Best month 18.4% of profit, best three 44.1%, best five 66.5%.
+- **Turnover** is 88.7% ranking churn — 47.0% entrants, 41.7% exits, 11.1%
+  resizing, 0.1% terminal — which is the fact that makes a lower-frequency
+  experiment worth running.
+- **Cost.** Realised traded notional over NAV sums to 33.16 (7.85× a year). The
+  analytic model reproduces the one level R1.0 ran to within 0.3 pp on a +110%
+  return, and gives a per-side break-even against SPY of **77.9 bps**. Spread,
+  impact, capacity and latency are not in that number.
+- **Path.** The strategy never closed below its starting relative level, but
+  spent 736 sessions below a prior relative peak; worst relative drawdown
+  −13.5% on 2025-03-10; 310 of 813 rolling twelve-month windows behind SPY.
+- **Population.** 164,193 universe observations → 39,001 executable (23.8%).
+  By class: COMPANY 24.5% reach executable, HISTORICAL **5.9%** — the attrition
+  is at score-readiness (25.8% vs 46.4%) and tradability, not at universe
+  construction. Historical identities are 12 of 578 contributors and 0.07% of
+  profit.
+- **Limitations quantified.** The undated-classification exposure covers 99.0%
+  of executable observations, 98.3% of top-decile selections and 98.2% of
+  portfolio weight-months. The score floor holds 23 observations across 10
+  identities and 14 months (MARA 7, WULF 3, RXRX 3, SOFI 3, LCID 2, and five
+  once each), all `SCORED` — a scale floor, not a parser defect.
+- **Verdict.** `STRONG_ENOUGH_FOR_HYPOTHESIS_TEST` on all eight rubric
+  conditions; `H1_MEDIUM_HORIZON_SELECTION` accepted with all five premises
+  `SUPPORTED`; `COMPOUNDER_QUARTERLY_TOP_DECILE_V1` specified
+  (`1b30916d7b131ce8…`) and **not executed**.
+
 ### R1.0 backtest harness built and first frozen baselines executed — 2026-09-23
 
 - `backtest run-baselines --database stage9k.db --verify-fingerprints
@@ -3197,27 +3329,29 @@ under **80%**. It is what CI runs; run it rather than the individual tools.
 
 ## Next phase
 
-**R1.1 — interpret the baseline signal quality and define the first
-hypothesis-driven strategy experiment** follows. R1.0 built the harness and
-executed the preregistered baselines; R1.1 reads what they produced and
-decides what is worth testing next. It is interpretation and hypothesis
-definition, not optimisation: the prohibitions R1.0 ran under stay in force
-until a new version is declared and preregistered in its own right — no
-parameter search, no threshold or top-N search, no signal combination, no
-sector logic, and no second look at the holdout under a definition that has
-been changed after seeing it.
+**R1.2 — test the preregistered `COMPOUNDER_QUARTERLY_TOP_DECILE_V1`** follows.
+Its rules are frozen in `.evidence/research/r1_1/r1_2_experiment_spec.json`
+(SHA-256 `1b30916d7b131ce8…`) and must not be edited: quarter-end signal, the
+frozen `COMPOUNDER_V1_2` descending, top 10%, equal weight, execution at the
+next benchmark session's open, calendar quarter ends only, no sector logic, no
+leverage, no shorting, the same `SIMPLE_10BPS_PER_SIDE_V1` sensitivity and the
+same `TERMINAL_LEG_POLICY_V1`.
 
-`MARKET_SIGNALS_V1` is the named open question R1.0 hands forward. It is
-`MARKET_SIGNALS_V1_REQUIRES_R1_1_HYPOTHESIS_DEFINITION`: its tradability
-verdict is already the frozen readiness rule every R1.0 portfolio honours, but
-it defines no canonical standalone ranking, so any use of it as a signal is a
-hypothesis R1.1 must state before it is run. Promoting `MARKET_SIGNALS_V2` (the
-corrected peer policy) remains a separate, deliberate decision that nothing in
-R1.0 took.
+Quarterly was chosen because the 60-session horizon is approximately one
+quarter and the frozen diagnostics separate far more strongly at 60 and 120
+sessions than at 1 and 5. It is **one hypothesis-derived test point, not an
+optimum**, and no other frequency, fraction, weighting or cost level may be
+tried alongside it. Falsification criteria are already fixed in the hypothesis
+record and are not to be revised after seeing the result.
+
+R1.2 reports its result over 2025-01 … 2026-03 in full and never describes that
+interval as untouched confirmation, because R1.0 read it. Genuine confirmation
+waits for data that did not exist when the specification was frozen.
 
 No evidence acquisition, no A4, no change to the PIT, identity or scoring
-semantics. FTD archives are redownloaded separately. The one-month boundary
-between the classification and planning rules remains documented in
+semantics, and no promotion of `MARKET_SIGNALS_V2` without its own decision.
+FTD archives are redownloaded separately. The one-month boundary between the
+classification and planning rules remains documented in
 [A3 planning inputs](a3-planning-inputs.md) and is a decision for a later
 phase; widening the acquisition window is likewise a separate, versioned
 decision.
@@ -3272,6 +3406,12 @@ Not a backlog. These exclusions are deliberate.
   executed. `PIT_RESEARCH_DATASET_V2` and `BACKTEST_DATA_CONTRACT_V1` are
   read through `load_contract`; research code that bypasses the contract's
   bindings is a defect.
+- **The R1.1 hypothesis and the R1.2 specification (R1.1).**
+  `r1_1_hypothesis.json` and `r1_2_experiment_spec.json` are frozen. Their
+  rules, thresholds and falsification criteria are not edited after the fact,
+  and R1.2 does not try a second frequency, fraction, weighting or cost level
+  alongside the one they name. The 2025-01…2026-03 interval is never described
+  as untouched confirmation of anything derived after R1.0 read it.
 - **The R1.0 research protocol (R1.0).** `research_split_v1.json` and
   `r1_0_preregistration.json` are frozen: their boundaries, strategy
   definitions, execution rule, cost assumption, terminal-leg policy, metric
@@ -3303,11 +3443,11 @@ Not a backlog. These exclusions are deliberate.
 
 | | |
 | --- | --- |
-| Commit | The R1.0 commit containing this checkpoint, `feat: establish R1 backtest harness and baselines`; parent `06357c5` (B2.18, `feat: freeze V2 PIT backtest contract`), tagged `pit-research-dataset-v2`. The authoritative plan's meta and authorization record name `repo_commit` `daa1d36`; the corrected package records `2a7d3b8`, the superseded package `ebfbc1c`, the superseded plan `afe6a10`, the index `1b407b6`. |
+| Commit | The R1.1 commit containing this checkpoint, `feat: add R1 Compounder signal diagnostics`; parent `196690d` (R1.0, `feat: establish R1 backtest harness and baselines`), whose own parent `06357c5` is tagged `pit-research-dataset-v2`. The authoritative plan's meta and authorization record name `repo_commit` `daa1d36`; the corrected package records `2a7d3b8`, the superseded package `ebfbc1c`, the superseded plan `afe6a10`, the index `1b407b6`. |
 | Branch | `feat/r1-backtest-harness`, branched from `feat/phase-b2-storage-abstraction` at `06357c5` |
 | Migration head | `0031` — the research-universe layer (9K.7). Nothing since 9K.11 added one. |
 | Score version | `COMPOUNDER_V1_2` (unchanged by anything in Phase 8, 9A, 9B or 9C) |
 | Feature version | `MARKET_FEATURES_V1` |
 | Signal version | `MARKET_SIGNALS_V1` |
-| Primary database | untouched by 8A–8J, 9A–9L.5, B2 and R1.0; all work ran against staging copies |
-| Checkpoint date | 2026-09-23 |
+| Primary database | untouched by 8A–8J, 9A–9L.5, B2, R1.0 and R1.1; all work ran against staging copies |
+| Checkpoint date | 2026-09-24 |

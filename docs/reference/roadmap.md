@@ -1,9 +1,11 @@
-> **Status (2026-09-23).** The evidence and data foundation this direction
+> **Status (2026-09-24).** The evidence and data foundation this direction
 > rests on is complete and frozen (`SEC_EVIDENCE_GENERATION_V2`), and the
 > historical research contract is written (`PIT_RESEARCH_DATASET_V2` under
 > `BACKTEST_DATA_CONTRACT_V1`). **R1 — strategy research and backtesting** is
 > now active: R1.0 built the leakage-safe monthly harness and ran the first
-> preregistered baselines over that contract. Portfolio construction, paper
+> preregistered baselines, and R1.1 interpreted them and specified one
+> hypothesis-driven experiment (R1.2) without executing it. Portfolio
+> construction, paper
 > trading, supervised live and constrained autonomous execution follow it in
 > that order and none of them is started. Everything below remains
 > aspiration, not commitment; nothing in it overrides *Things explicitly not
