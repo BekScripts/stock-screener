@@ -131,6 +131,7 @@ __all__ = [
     "R1Result",
     "mirror_r1_0",
     "run_r1_0",
+    "terminal_legs",
 ]
 
 PHASE = "R1.0"
@@ -279,7 +280,7 @@ def _chunk(
     return rows, coverage
 
 
-def _terminal_legs(
+def terminal_legs(
     session: Session, keys: Sequence[tuple[str, int]]
 ) -> dict[tuple[str, int], TerminalLeg]:
     """Resolve, by identity, what a holder of each historical security received."""
@@ -548,7 +549,7 @@ def run_r1_0(
         engine = create_engine(f"sqlite:///{database}")
         try:
             with Session(engine) as orm:
-                legs = _terminal_legs(orm, executable_keys)
+                legs = terminal_legs(orm, executable_keys)
         finally:
             engine.dispose()
         for item in coverage:

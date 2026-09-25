@@ -36,10 +36,42 @@ appears without the run or the test that produced it.
 
 ## Current phase
 
-**R1.1 — the baseline signal interpreted and one hypothesis-driven experiment
-specified** is the current checkpoint, on `feat/r1-backtest-harness`, branched
-from `feat/phase-b2-storage-abstraction` at `06357c5` (tagged
+**R1.2 — the preregistered quarterly experiment executed and H1 judged by its
+own criteria** is the current checkpoint, on `feat/r1-backtest-harness`,
+branched from `feat/phase-b2-storage-abstraction` at `06357c5` (tagged
 `pit-research-dataset-v2`).
+
+| | |
+| --- | --- |
+| B2 | **COMPLETE / FROZEN** |
+| R1.0 | **COMPLETE** — harness and four preregistered baselines |
+| R1.1 | **COMPLETE** — interpretation; one experiment specified, not run |
+| R1.2 | **COMPLETE** — that experiment executed unchanged |
+| `H1_MEDIUM_HORIZON_SELECTION` | **PARTIALLY SUPPORTED** (`PARTIALLY_SUPPORTED_BY_R1_2`) — criteria 1, 2, 4 and 5 met; **criterion 3 not met** |
+| `COMPOUNDER_QUARTERLY_TOP_DECILE_V1` | historical experiment complete; spec `1b30916d…` executed verbatim, no variant tried |
+| Independent confirmation | **NOT YET** — H1 was formed after R1.0 read 2025-01…2026-03, so no part of R1.2 is out-of-sample |
+| Current-classification limitation | **MATERIAL / UNRESOLVED** — 99.0% of executable observations, 98.4% of selections, 98.3% of portfolio weight |
+| Next | **R1.3 — review the failed turnover premise and decide whether H1 is worth prospective observation** |
+
+What R1.2 found. Over 17 quarter ends (2022-03-31 … 2026-03-31) and 1,023
+sessions, the quarterly portfolio returned **+126.5% gross** (CAGR 22.3%,
+Sharpe 0.98, max drawdown −24.2%) against SPY's +67.6% on the same sessions,
+and against R1.0's own monthly top-decile ledger sliced to those sessions
+(+103.5%, CAGR 19.1%, Sharpe 0.88, max drawdown −25.9%). Quarterly beat matched
+monthly by 23.1 pp of total return with a shallower drawdown, and its per-side
+cost break-even roughly doubled from 77.9 bps to **156.9 bps**. The medium-horizon
+premise held: `D10 − D1` at the frozen 60-session horizon is +2.02 pp with a
+rank association of +0.48, rising to +6.43 pp at 120 sessions.
+
+**The premise that failed is the one the hypothesis was named for.** Annual
+turnover fell from 3.90× to **2.25×** — a 42.2% reduction, short of the ≥50%
+the frozen criterion required — because per-rebalance turnover *rose* from 0.33
+to 0.56 as the ranking drifts further over three months than over one. The
+threshold was not moved. One other measurement is worth naming: the validation
+block is the single block with a negative benchmark-relative return (−7.3 pp),
+so criterion 4 passed at exactly its threshold of two blocks out of three.
+
+The preceding checkpoint, **R1.1**, stands unchanged.
 
 | | |
 | --- | --- |
@@ -737,6 +769,38 @@ convention, and none may be relaxed without an explicit instruction.
   `supersession.json` naming the old package and plan digests, the forensic
   verdict and commit; the old artifacts gain a `SUPERSEDED.json` beside them
   and lose nothing, locally or remotely.
+
+### R1.2 the quarterly experiment and what it settled
+
+- **The executor is held to the frozen specification, not to its own memory.**
+  `EXPECTED_RULES` lists what R1.2 is about to apply and `bind_experiment`
+  refuses unless every entry matches `r1_2_experiment_spec.json` verbatim. It
+  also refuses a spec that tests more than one frequency, fraction, weighting,
+  execution rule or cost level, that carries a sweep, that is already marked
+  executed, or whose hypothesis was not accepted.
+- **The comparison is the same sessions, not the same calendar.** A quarter's
+  last benchmark session is also that month's last session, so every quarterly
+  decision date is one of R1.0's monthly decision dates. The quarterly
+  cross-sections are therefore **sliced from R1.0's frozen ledger** rather than
+  recomputed, and the monthly comparator
+  (`R1_0_MONTHLY_TOP_DECILE_MATCHED_WINDOW`) is R1.0's own NAV and trade
+  ledgers restricted to the quarterly window. Nothing is re-simulated; a test
+  asserts the comparator contains no simulation call.
+- **No aggregate rule was invented.** The frozen specification states five
+  falsification criteria and no way of combining them, so R1.2 reports each
+  individually and reduces them only to the unavoidable all/none/mixed summary,
+  recording in the artifact that this applies no weights and treats no
+  criterion as decisive.
+- **A failed premise is a result, not a prompt to re-specify.** Criterion 3
+  failed on its frozen threshold and the threshold stands. No second frequency
+  was tried, and none may be tried before R1.3 reviews why the premise failed.
+- **2025-01…2026-03 is still not confirmation.** Every R1.2 artifact carries
+  `independent_out_of_sample_confirmation: false` and
+  `REPORTABLE_BUT_CONTAMINATED_FOR_NEW_HYPOTHESIS_CONFIRMATION`. No replacement
+  holdout was manufactured by re-cutting the split.
+- **Benchmark-relative return is called benchmark-relative return.** Not alpha,
+  and not attributed to any sector: historical sector remains blocked and a
+  test scans every module in the package for a sector reference.
 
 ### R1.1 the signal review and the one hypothesis
 
@@ -2192,6 +2256,62 @@ Documented rather than fixed. Each is a deliberate stop, not a backlog item.
 
 Measured runs, kept because they are the evidence behind decisions above.
 
+### R1.2 preregistered quarterly experiment executed — 2026-09-24
+
+- `backtest run-quarterly --database stage9k.db --runs 2 --mirror` with all
+  eight `--expect-*` digests: database `20a77d24…`, contract `f7efb001…`,
+  experiment spec `1b30916d…`, hypothesis `a64268ef…`, R1.1 marker `fb1dc4df…`,
+  R1.0 marker `544555c6…`, split `b58283be…`, preregistration `8a19f0fd…`. All
+  13 frozen rules matched the executor; 18 R1.0 fingerprints re-derived
+  underneath. Two runs, **15 fingerprints identical**, 9 files mirrored under
+  `control/PIT_RESEARCH_DATASET_V2/research/r1-2/`, both databases unchanged,
+  run manifest schema-valid, zero accounting violations, profit reconciled to
+  −7.3e−11.
+- 17 quarter ends 2022-03-31 … 2026-03-31 (8 development, 4 validation, 5
+  observed-holdout); valuation window 2022-04-01 … 2026-04-30, 1,023 sessions;
+  56,562 universe rows sliced from R1.0, 13,533 executable (23.9%), 1,347
+  positions selected over 17 rebalances across 503 identities, 22 of them
+  historical. No quarter held cash; no selected name went unpriced.
+- **Quarterly gross:** +126.5% total, CAGR 22.3%, volatility 23.3%, Sharpe
+  0.98, Sortino 0.95, max drawdown −24.2%, Calmar 0.93, average holdings 78.2,
+  cash utilisation 99.9%, annual turnover 2.254×. Under
+  `SIMPLE_10BPS_PER_SIDE_V1`: +122.7%, a cost drag of 3.9 pp.
+- **SPY over the same sessions:** +67.6%, CAGR 13.6%, Sharpe 0.83, max drawdown
+  −21.3%. Benchmark-relative +58.9 pp.
+- **Matched monthly comparator** (R1.0's frozen ledger sliced to those
+  sessions, 50 rebalances): +103.5%, CAGR 19.1%, Sharpe 0.88, max drawdown
+  −25.9%, annual turnover 3.795×, net-10bps +97.5%. **Quarterly minus monthly:**
+  total +23.1 pp, CAGR +3.2 pp, Sharpe +0.10, max drawdown +1.7 pp (shallower),
+  turnover −1.54×, cost drag −2.1 pp, holdings +1.1.
+- **Blocks** (quarterly / SPY / relative): development +28.9% / +19.2% / +9.8 pp
+  over 8 rebalances; validation +1.0% / +8.3% / **−7.3 pp** over 4;
+  observed-holdout +74.1% / +29.9% / +44.1 pp over 5 — the last labelled
+  `CONTAMINATED_FOR_H1_CONFIRMATION`.
+- **Years** (quarterly / SPY): 2022 partial −9.3% / −14.5%; 2023 +22.9% /
+  +26.2%; 2024 +26.3% / +24.9%; 2025 +40.6% / +17.7%; 2026 partial +14.5% /
+  +5.7%.
+- **Quarter-end signal** (D10−D1 / D10−cross-section mean / rank IC / decile
+  association): 20 sessions −0.10 pp / +0.45 pp / +0.020 / +0.27; **60 sessions
+  (primary) +2.02 pp (t 1.28) / +2.55 pp / +0.036 / +0.479**; 120 sessions
+  +6.43 pp (t 3.72) / +6.14 pp / +0.067 / +0.721. The profile is `U_SHAPED` at
+  every horizon, and the 120-session window overlaps adjacent quarters.
+- **Turnover decomposition:** 93.8% ranking churn (entrants 50.5%, exits
+  43.3%), resizing 6.0%, terminal 0.2%. Quarter-to-quarter retention 45.8%;
+  mean holding duration 1.73 quarters, maximum 14.
+- **Concentration:** largest contributor 4.9%, top 5 21.2%, top 10 34.3%, top 25
+  61.3%, top 50 90.4%. Per-side cost break-even **156.9 bps** against the
+  monthly 77.9 bps.
+- **Path:** worst relative drawdown −13.9% on 2023-11-09; 706 sessions below a
+  prior relative peak; 315 of 771 rolling twelve-month windows behind SPY.
+- **H1 criteria:** C1 met (+0.0202 > 0); C2 met (+0.479 > 0); **C3 not met
+  (2.254× against the ≤1.95× threshold)**; C4 met (2 of 3 blocks positive, at
+  the threshold); C5 met (21.2% < 50%). Outcome
+  `PARTIALLY_SUPPORTED_BY_R1_2`. The specification states no aggregate rule and
+  none was invented.
+- Current-classification limitation on the quarterly sample: 99.0% of
+  executable observations, 98.4% of selections, 98.3% of portfolio weight.
+  Three terminal legs settled, none unknown.
+
 ### R1.1 Compounder baseline signal interpreted, one experiment specified — 2026-09-24
 
 - `backtest review-signal --database stage9k.db --runs 2 --mirror` with all
@@ -3329,24 +3449,33 @@ under **80%**. It is what CI runs; run it rather than the individual tools.
 
 ## Next phase
 
-**R1.2 — test the preregistered `COMPOUNDER_QUARTERLY_TOP_DECILE_V1`** follows.
-Its rules are frozen in `.evidence/research/r1_1/r1_2_experiment_spec.json`
-(SHA-256 `1b30916d7b131ce8…`) and must not be edited: quarter-end signal, the
-frozen `COMPOUNDER_V1_2` descending, top 10%, equal weight, execution at the
-next benchmark session's open, calendar quarter ends only, no sector logic, no
-leverage, no shorting, the same `SIMPLE_10BPS_PER_SIDE_V1` sensitivity and the
-same `TERMINAL_LEG_POLICY_V1`.
+**R1.3 — review the failed turnover premise and decide whether H1 is worth
+prospective observation** follows. R1.2 left H1 `PARTIALLY_SUPPORTED_BY_R1_2`:
+four of five preregistered criteria held, and the one that failed is the one the
+hypothesis was named for. Turnover fell 42.2% where the frozen criterion asked
+for half, because per-rebalance turnover rises with the gap between rebalances —
+the ranking drifts more over a quarter than over a month, so a quarter of the
+rebalances does not mean a quarter of the trading.
 
-Quarterly was chosen because the 60-session horizon is approximately one
-quarter and the frozen diagnostics separate far more strongly at 60 and 120
-sessions than at 1 and 5. It is **one hypothesis-derived test point, not an
-optimum**, and no other frequency, fraction, weighting or cost level may be
-tried alongside it. Falsification criteria are already fixed in the hypothesis
-record and are not to be revised after seeing the result.
+R1.3's job is to understand that, not to route around it. **It must not test
+another frequency.** Specifically it may not try two, four, six or twelve
+months, may not add a buffer, hysteresis or minimum-holding rule, and may not
+re-specify the top decile — each of those would be the parameter search the
+whole R1 protocol exists to avoid, and each would be chosen with R1.2's result
+already in view.
 
-R1.2 reports its result over 2025-01 … 2026-03 in full and never describes that
-interval as untouched confirmation, because R1.0 read it. Genuine confirmation
-waits for data that did not exist when the specification was frozen.
+What R1.3 may do: read why per-rebalance turnover rose, decide whether the
+economic intent behind criterion 3 was met in substance (the per-side cost
+break-even roughly doubled, from 77.9 bps to 156.9 bps, and the 10 bps cost drag
+fell by 2.1 pp) even though the mechanical threshold was missed, and decide
+whether H1 is worth freezing for prospective observation. If it is, the phase
+after that freezes a shadow-portfolio protocol — strategy rules unchanged,
+future data accumulated — which is a research instrument and **not** permission
+to trade capital.
+
+Nothing here is ready to trade. The current-classification limitation remains
+material and unresolved, no result has independent confirmation, and R1.2's
+evidence rests on 17 quarterly cross-sections and one realised path.
 
 No evidence acquisition, no A4, no change to the PIT, identity or scoring
 semantics, and no promotion of `MARKET_SIGNALS_V2` without its own decision.
@@ -3406,6 +3535,12 @@ Not a backlog. These exclusions are deliberate.
   executed. `PIT_RESEARCH_DATASET_V2` and `BACKTEST_DATA_CONTRACT_V1` are
   read through `load_contract`; research code that bypasses the contract's
   bindings is a defect.
+- **The R1.2 result and its criteria (R1.2).** The five falsification criteria
+  and their thresholds are frozen and were not revised after the measurements.
+  `COMPOUNDER_QUARTERLY_TOP_DECILE_V1` is not re-specified, and no second
+  rebalance frequency, selection fraction, weighting, cost level, buffer or
+  minimum-holding rule is tried before R1.3 reviews why criterion 3 failed.
+  2025-01…2026-03 is never described as confirmation of H1.
 - **The R1.1 hypothesis and the R1.2 specification (R1.1).**
   `r1_1_hypothesis.json` and `r1_2_experiment_spec.json` are frozen. Their
   rules, thresholds and falsification criteria are not edited after the fact,
@@ -3443,11 +3578,11 @@ Not a backlog. These exclusions are deliberate.
 
 | | |
 | --- | --- |
-| Commit | The R1.1 commit containing this checkpoint, `feat: add R1 Compounder signal diagnostics`; parent `196690d` (R1.0, `feat: establish R1 backtest harness and baselines`), whose own parent `06357c5` is tagged `pit-research-dataset-v2`. The authoritative plan's meta and authorization record name `repo_commit` `daa1d36`; the corrected package records `2a7d3b8`, the superseded package `ebfbc1c`, the superseded plan `afe6a10`, the index `1b407b6`. |
+| Commit | The R1.2 commit containing this checkpoint, `research: test quarterly Compounder hypothesis`; parent `27a5cb7` (R1.1, `feat: add R1 Compounder signal diagnostics`), then `196690d` (R1.0) and `06357c5` (B2.18, tagged `pit-research-dataset-v2`). The authoritative plan's meta and authorization record name `repo_commit` `daa1d36`; the corrected package records `2a7d3b8`, the superseded package `ebfbc1c`, the superseded plan `afe6a10`, the index `1b407b6`. |
 | Branch | `feat/r1-backtest-harness`, branched from `feat/phase-b2-storage-abstraction` at `06357c5` |
 | Migration head | `0031` — the research-universe layer (9K.7). Nothing since 9K.11 added one. |
 | Score version | `COMPOUNDER_V1_2` (unchanged by anything in Phase 8, 9A, 9B or 9C) |
 | Feature version | `MARKET_FEATURES_V1` |
 | Signal version | `MARKET_SIGNALS_V1` |
-| Primary database | untouched by 8A–8J, 9A–9L.5, B2, R1.0 and R1.1; all work ran against staging copies |
+| Primary database | untouched by 8A–8J, 9A–9L.5, B2, R1.0, R1.1 and R1.2; all work ran against staging copies |
 | Checkpoint date | 2026-09-24 |

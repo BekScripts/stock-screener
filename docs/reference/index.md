@@ -20,6 +20,7 @@ reference page, that sentence belongs in
 - [Backtest data contract](backtest-contract.md) — `PIT_RESEARCH_DATASET_V2` under `BACKTEST_DATA_CONTRACT_V1`: what a historical decision may see, the identity and time semantics, the dataset fingerprints, the readiness matrix and the first safe research class
 - [R1 backtest harness](backtest-harness.md) — the leakage-safe monthly harness over that dataset: the decision calendar, the frozen split, the cross-section funnel, `TERMINAL_LEG_POLICY_V1`, the preregistered baselines and what they are read under
 - [R1.1 signal review](signal-review.md) — interpreting that baseline: the two contrasts and why a U-shaped decile profile makes them differ, the concentration and robustness forensics, the analytic cost break-even, the holdout-contamination record, the classification rubric and the one experiment it licenses
+- [R1.2 quarterly experiment](quarterly-experiment.md) — executing the one preregistered experiment: how the executor is held to the frozen rules, why the quarterly cross-sections are sliced from R1.0 rather than recomputed, the five criteria and why no aggregate rule is invented
 - [Commands](commands.md) — every `make` target and CLI command
 - [Metrics](metrics.md) — every calculation, its formula, and when it is unavailable
 - [CompounderScore v1](compounder-score.md) — every scoring rule, penalty and status

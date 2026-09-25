@@ -98,6 +98,7 @@ from stock_screener.backtest_harness.run import (
     R1Result,
     mirror_r1_0,
     run_r1_0,
+    terminal_legs,
 )
 from stock_screener.backtest_harness.sessions import (
     EXECUTION_RULE,
@@ -185,6 +186,7 @@ __all__ = [
     "score_distribution",
     "simulate",
     "spot_audit",
+    "terminal_legs",
     "validate_manifest",
     "verify_bindings",
     "window",

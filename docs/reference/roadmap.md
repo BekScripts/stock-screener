@@ -3,9 +3,10 @@
 > historical research contract is written (`PIT_RESEARCH_DATASET_V2` under
 > `BACKTEST_DATA_CONTRACT_V1`). **R1 — strategy research and backtesting** is
 > now active: R1.0 built the leakage-safe monthly harness and ran the first
-> preregistered baselines, and R1.1 interpreted them and specified one
-> hypothesis-driven experiment (R1.2) without executing it. Portfolio
-> construction, paper
+> preregistered baselines, R1.1 interpreted them and specified one
+> hypothesis-driven experiment, and R1.2 executed that experiment — leaving H1
+> partially supported, with the turnover premise it was named for unmet.
+> Portfolio construction, paper
 > trading, supervised live and constrained autonomous execution follow it in
 > that order and none of them is started. Everything below remains
 > aspiration, not commitment; nothing in it overrides *Things explicitly not

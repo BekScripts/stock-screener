@@ -131,6 +131,14 @@ from stock_screener.providers import (
     build_profile_provider,
     build_research_provider,
 )
+from stock_screener.quarterly_experiment import (
+    EXPERIMENT_DIR,
+    ExperimentBindingError,
+    bind_experiment,
+    mirror_r1_2,
+    r1_1_directory,
+    run_experiment,
+)
 from stock_screener.research import (
     MAX_CANDIDATES,
     assemble_brief,
@@ -5720,6 +5728,192 @@ def backtest_review_signal_command(
         typer.echo(f"  {name:<34} {verdict}")
     typer.echo(f"R1.2 specification: {'written, not executed' if first.spec else 'NOT WRITTEN'}")
     typer.echo(f"outputs           : {review_dir}")
+
+
+@backtest_app.command("run-quarterly")
+def backtest_run_quarterly_command(
+    database: Annotated[
+        Path, typer.Option("--database", help="The frozen research database, opened read-only.")
+    ] = Path("stage9k.db"),
+    expect_database_sha: Annotated[
+        str, typer.Option(help="The research database digest. Required.")
+    ] = "",
+    expect_contract_sha: Annotated[
+        str, typer.Option(help="The backtest contract file digest. Required.")
+    ] = "",
+    expect_spec_sha: Annotated[
+        str, typer.Option(help="The R1.1 experiment specification digest. Required.")
+    ] = "",
+    expect_hypothesis_sha: Annotated[
+        str, typer.Option(help="The R1.1 hypothesis record digest. Required.")
+    ] = "",
+    expect_r1_1_marker_sha: Annotated[
+        str, typer.Option(help="The R1.1 completion marker digest. Required.")
+    ] = "",
+    expect_r1_0_marker_sha: Annotated[
+        str, typer.Option(help="The R1.0 completion marker digest. Required.")
+    ] = "",
+    expect_split_sha: Annotated[
+        str, typer.Option(help="The frozen research split digest. Required.")
+    ] = "",
+    expect_preregistration_sha: Annotated[
+        str, typer.Option(help="The R1.0 preregistration digest. Required.")
+    ] = "",
+    runs: Annotated[
+        int, typer.Option(min=1, max=2, help="Executions. Two proves determinism.")
+    ] = 2,
+    output: Annotated[
+        Path | None, typer.Option(help="Experiment root. Default: <control>/research/r1_2.")
+    ] = None,
+    mirror: Annotated[
+        bool, typer.Option("--mirror/--no-mirror", help="Mirror the compact metadata.")
+    ] = True,
+) -> None:
+    """Execute the preregistered COMPOUNDER_QUARTERLY_TOP_DECILE_V1 experiment.
+
+    Runs exactly what R1.1 froze and nothing else: every rule the executor is
+    about to apply is asserted against the stored specification first, and a
+    disagreement ends the command. No frequency, fraction, weighting or cost
+    level is searched. The five falsification criteria are read from the frozen
+    hypothesis and evaluated mechanically; because the specification states no
+    rule for combining them, none is invented here.
+    """
+    settings = _bootstrap()
+    for name, value in (
+        ("--expect-database-sha", expect_database_sha),
+        ("--expect-contract-sha", expect_contract_sha),
+        ("--expect-spec-sha", expect_spec_sha),
+        ("--expect-hypothesis-sha", expect_hypothesis_sha),
+        ("--expect-r1-1-marker-sha", expect_r1_1_marker_sha),
+        ("--expect-r1-0-marker-sha", expect_r1_0_marker_sha),
+        ("--expect-split-sha", expect_split_sha),
+        ("--expect-preregistration-sha", expect_preregistration_sha),
+    ):
+        if len(value) != 64:
+            typer.echo(f"STOPPED: {name} is required and must be a full SHA-256")
+            raise typer.Exit(code=1)
+
+    storage, control = _open_layout(settings)
+    contract_dir = control.path / CONTRACT_DIR
+    r1_0 = r1_0_directory(control.path)
+    r1_1 = r1_1_directory(control.path)
+    experiment_dir = output or control.path / EXPERIMENT_DIR
+
+    before = _file_sha256(database)
+    if before != expect_database_sha.lower():
+        typer.echo(f"STOPPED: {database} hashes to {before[:16]}…; refusing to run")
+        raise typer.Exit(code=1)
+    contract_sha = _file_sha256(contract_dir / "backtest_data_contract_v1.json")
+    if contract_sha != expect_contract_sha.lower():
+        typer.echo(f"STOPPED: the contract hashes to {contract_sha[:16]}…; refusing to run")
+        raise typer.Exit(code=1)
+    typer.echo(f"database verified : {before[:16]}… ({database})")
+    typer.echo(f"contract verified : {contract_sha[:16]}…")
+
+    try:
+        binding = bind_experiment(
+            r1_1,
+            r1_0,
+            expect_spec_sha=expect_spec_sha,
+            expect_hypothesis_sha=expect_hypothesis_sha,
+            expect_r1_1_marker_sha=expect_r1_1_marker_sha,
+            expect_r1_0_marker_sha=expect_r1_0_marker_sha,
+            expect_split_sha=expect_split_sha,
+            expect_preregistration_sha=expect_preregistration_sha,
+        )
+    except (ExperimentBindingError, ReviewBindingError) as exc:
+        typer.echo(f"STOPPED: {exc}")
+        raise typer.Exit(code=1) from exc
+    typer.echo(f"experiment bound  : {binding.strategy_version}")
+    typer.echo(f"frozen rules      : {len(binding.rules)} rules, all matching the executor")
+    typer.echo(
+        f"frozen criteria   : {len(binding.criteria)}; aggregate rule "
+        f"{binding.aggregate_rule or 'NONE — none will be invented'}"
+    )
+
+    commit = subprocess.run(
+        ["git", "rev-parse", "HEAD"],  # noqa: S607
+        capture_output=True,
+        text=True,
+        check=False,
+    ).stdout.strip()
+    if len(commit) != 40:
+        typer.echo("STOPPED: cannot determine the code commit; the run manifest requires it")
+        raise typer.Exit(code=1)
+
+    results = []
+    for index in range(runs):
+        target = (
+            experiment_dir if index == 0 else experiment_dir.with_name(experiment_dir.name + "_r2")
+        )
+        if index == 1:
+            shutil.rmtree(target, ignore_errors=True)
+        typer.echo(f"--- run {index + 1} of {runs} into {target} ---")
+        results.append(
+            run_experiment(
+                target,
+                r1_0,
+                database,
+                binding,
+                contract_dir,
+                contract_sha256=contract_sha,
+                code_commit=commit,
+                progress=typer.echo,
+            )
+        )
+
+    first = results[0]
+    if len(results) > 1:
+        differences = sorted(
+            name
+            for name in set(first.fingerprints) | set(results[1].fingerprints)
+            if first.fingerprints.get(name) != results[1].fingerprints.get(name)
+        )
+        if differences:
+            typer.echo(f"STOPPED: the two runs disagree on {differences}")
+            raise typer.Exit(code=1)
+        typer.echo(f"determinism       : {len(first.fingerprints)} fingerprints identical")
+
+    if first.violations:
+        for problem in first.violations:
+            typer.echo(f"ACCOUNTING VIOLATION: {problem}")
+        raise typer.Exit(code=1)
+    if first.manifest_problems:
+        typer.echo(f"MANIFEST INVALID: {first.manifest_problems}")
+        raise typer.Exit(code=1)
+    typer.echo("run manifest      : schema-valid")
+
+    after = _file_sha256(database)
+    if after != before:
+        typer.echo(f"STOPPED: {database} changed during the experiment")
+        raise typer.Exit(code=1)
+    typer.echo(f"database unchanged: {after[:16]}…")
+
+    if mirror:
+        control_mirror = ControlMirror(storage, R1_MIRROR_GENERATION)
+        try:
+            records = mirror_r1_2(control_mirror, experiment_dir)
+        except (MirrorConflictError, StorageUnavailableError) as exc:
+            typer.echo(f"STOPPED: the mirror refused: {exc}")
+            raise typer.Exit(code=1) from exc
+        typer.echo(f"mirrored          : {len(records)} files under {control_mirror.prefix}")
+
+    evaluation = first.evaluation
+    typer.echo("")
+    for criterion in evaluation["criteria"]:
+        mark = "MET    " if criterion["met"] else "NOT MET"
+        typer.echo(
+            f"  C{criterion['number']} {mark}  measured {criterion['measured']} "
+            f"vs threshold {criterion['threshold']}"
+        )
+    typer.echo("")
+    typer.echo(f"H1 outcome        : {evaluation['interpretation']['outcome']}")
+    typer.echo(
+        f"research status   : {evaluation['research_status']['experiment_type']}; "
+        f"independent confirmation "
+        f"{evaluation['research_status']['independent_out_of_sample_confirmation']}"
+    )
+    typer.echo(f"outputs           : {experiment_dir}")
 
 
 def _percent(value: float | None) -> str:
