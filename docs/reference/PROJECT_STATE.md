@@ -36,10 +36,75 @@ appears without the run or the test that produced it.
 
 ## Current phase
 
-**R1.5 — the preregistered H2 experiment executed once** is the current
-checkpoint, on `feat/r1-backtest-harness`, branched from
+**R1.6 — the H2 candidate frozen and the prospective shadow protocol defined**
+is the current checkpoint, on `feat/r1-backtest-harness`, branched from
 `feat/phase-b2-storage-abstraction` at `06357c5` (tagged
 `pit-research-dataset-v2`).
+
+| | |
+| --- | --- |
+| B2 | **COMPLETE / FROZEN** |
+| R1.0 – R1.5 | **COMPLETE** |
+| H1 | **CLOSED / MECHANISTICALLY FALSIFIED** (R1.3). Not reopened |
+| H2 historical exploratory test | **SUPPORTED** (R1.5) — C1–C4 all met |
+| H2 candidate | **`H2_MEMBERSHIP_STABILITY_CANDIDATE_V1`** |
+| Candidate status | **FROZEN** — `FROZEN_CANDIDATE`, `PROSPECTIVE_CONFIRMATION_PENDING`, `NOT_PRODUCTION`, `NO_LIVE_CAPITAL` |
+| Rule | **`ONE_DECILE_HYSTERESIS_V1`**, unchanged |
+| Historical evidence | **`EXPLORATORY_SUPPORT_ONLY`** — and not upgradable by further work on the frozen dataset |
+| Historical development | **CLOSED** — further widths, frequencies, weightings and holding rules all PROHIBITED |
+| Independent confirmation | **PENDING** |
+| Prospective protocol | **`H2_PROSPECTIVE_SHADOW_PROTOCOL_V1`** — FROZEN, runner NOT_YET_ACTIVE |
+| Prospective observations | **0** (0 completed transitions, verdict PENDING) |
+| Broker / paper / live | **NOT AUTHORISED** at any level |
+| Next | **R1.7 — activate the prospective H2 shadow runner** |
+
+What R1.6 froze. The candidate is frozen **because the preregistered mechanism
+passed**, and the record says so alongside the thing it is not frozen for: H2's
+1.35 percentage point edge over the comparator, across seventeen rebalances on
+one realised path with a marginally lower Sharpe, is noise, took no part in the
+verdict, and justifies nothing.
+
+Everything the frozen dataset can still offer is now closed. The historical
+parameter search is `CLOSED`; additional retention widths, frequencies,
+weightings and holding-period rules are `PROHIBITED` under this candidate id;
+`historical_clean_holdout` is `NONE`. A new variant would need a new hypothesis
+identifier and would still carry `EXPLORATORY_SUPPORT_ONLY`, because R1.3
+derived the hypothesis from the whole period.
+
+The protocol that replaces it is fixed before any observation exists to shape
+it. **Five decisions, four transitions**, and the window cannot move in either
+direction — no stopping early on success, no extending on a poor result, no
+choosing the best four afterwards, no dropping or retrospectively replacing a
+transition. **P1 and P2 are paired and directional**: they compare H2 against
+the comparator on the same prospective cross-sections, never against the
+historical 1.6177×, because requiring that magnitude would fit the prospective
+test to an effect size the generating data produced. P3 protects exposure, P4
+makes protocol integrity itself a pass condition — a rewritten decision packet
+fails the test rather than being absorbed by it. `PROSPECTIVE_MECHANISM_CONFIRMED`
+requires **P1 AND P2 AND P3 AND P4**, and `interpret_prospective` returns
+`PENDING` until every transition is in.
+
+**The first eligible decision is a rule, not a date.** Nothing computes a
+calendar: it is the first quarter-end whose decision instant falls strictly
+after activation and for which the runner was armed by the preceding session's
+close. A quarter that misses that is skipped, and any reconstruction carries
+`RETROSPECTIVE` and `NOT_PROSPECTIVE_CONFIRMATION` and never enters the
+criteria.
+
+`PROSPECTIVE_SHADOW_CONTRACT_V1` writes out the bridge to a live stream rather
+than assuming the historical contract governs it. The asymmetry it exists for is
+the direction of error: historically a late filing was simply absent;
+prospectively it may arrive minutes after the decision instant and be sitting
+there when anyone looks. Observations live in `PROSPECTIVE_SHADOW_STREAM_V1` and
+must never be written into `PIT_RESEARCH_DATASET_V2`.
+
+**Nothing was observed and nothing was authorised.** Zero decision packets
+exist, and the package cannot produce one — no simulator, data client or broker
+is importable from it, proved by reading its own source at bind time. Shadow
+means internally simulated reference execution; broker paper and live capital
+remain unauthorised at every level of the ladder.
+
+The preceding checkpoint, **R1.5**, stands unchanged.
 
 | | |
 | --- | --- |
@@ -921,6 +986,35 @@ convention, and none may be relaxed without an explicit instruction.
   `supersession.json` naming the old package and plan digests, the forensic
   verdict and commit; the old artifacts gain a `SUPERSEDED.json` beside them
   and lose nothing, locally or remotely.
+
+### R1.6 what freezing the candidate settled
+
+- **A candidate records why it was frozen, and why it was not.** H2 is frozen on
+  its preregistered mechanism result. The performance edge is written into the
+  same block as the reason, labelled noise, with
+  `performance_entered_the_verdict: false` — so no later reader can mistake the
+  return for the justification.
+- **A prospective criterion is paired and directional, never a historical
+  magnitude.** Requiring the prospective test to reproduce 28.23% would fit it to
+  an effect size that came out of the data which generated the hypothesis. The
+  claim is directional: less turnover, less churn, same exposure, safe execution.
+- **A first observation date is a rule, not a date.** A protocol whose validity
+  depends on when someone happened to deploy is not a protocol. The first
+  eligible decision is derived at activation, and a quarter the runner did not
+  capture live is skipped rather than reconstructed — a reconstruction is a
+  backtest whatever it is labelled.
+- **Protocol integrity is a pass condition, not a caveat.** P4 counts a
+  retrospectively replaced decision packet as a violation, so rewriting history
+  fails the test rather than being absorbed by it.
+- **A live stream does not inherit a frozen dataset's contract silently.**
+  `PROSPECTIVE_SHADOW_CONTRACT_V1` writes the bridge out, and names the
+  asymmetry: historically a late filing was absent, prospectively it arrives and
+  sits there, so the obligation becomes active rather than incidental.
+- **Historical and prospective observations never share a namespace.** The
+  stream is separate by construction, so provenance cannot blur later.
+- **Shadow, paper and live are three different authorisations.** R1.6 authorises
+  preparation for the first only. The ladder is recorded so that promotion is a
+  decision someone has to make rather than a drift.
 
 ### R1.5 what executing H2 settled
 
@@ -2508,6 +2602,76 @@ Documented rather than fixed. Each is a deliberate stop, not a backlog item.
 
 Measured runs, kept because they are the evidence behind decisions above.
 
+### R1.6 H2 candidate frozen and prospective protocol defined — 2026-09-25
+
+- `backtest freeze-h2-candidate --runs 2 --mirror` with `--expect-contract-sha`
+  `f7efb001…` and `--expect-database-sha` `20a77d24…`. **8 binding checks**: the
+  contract, the H2 record `56f2e51f…`, the R1.5 specification `6d266448…`, its
+  evaluation `4d006e50…` and completion marker `9fb0f28b…`, plus R1.5's outcome
+  being SUPPORTED, exploratory, and claiming no confirmation.
+- **0 observations, 0 decision packets, 0 data requests, 0 broker connections,
+  0 orders.** `capability_reachable` scans the package for `simulate`,
+  `PriceBook`, `performance`, `httpx`, `requests`, `alpaca`, `broker`,
+  `create_engine` and the rest, and returned empty.
+- **Candidate `H2_MEMBERSHIP_STABILITY_CANDIDATE_V1`** carrying all four state
+  words: `FROZEN_CANDIDATE`, `PROSPECTIVE_CONFIRMATION_PENDING`,
+  `NOT_PRODUCTION`, `NO_LIVE_CAPITAL`. Bound to the H2 record, the R1.5
+  specification, evaluation and marker, `BACKTEST_DATA_CONTRACT_V1`,
+  `COMPOUNDER_V1_2`, `CLOSE_SIGNAL_NEXT_SESSION_OPEN`, `TERMINAL_LEG_POLICY_V1`
+  and `SIMPLE_10BPS_PER_SIDE_V1`.
+- **Frozen on the mechanism, explicitly not on performance.** The record states
+  the reason (C1–C4 met under a rule fixed before execution) and the
+  non-reason (+1.35 pp over 17 rebalances on one path, Sharpe marginally lower,
+  noise) in the same block, with `performance_entered_the_verdict: false`.
+- **Historical development CLOSED**: parameter search `CLOSED`; additional
+  retention widths, frequencies, weighting rules and holding-period rules all
+  `PROHIBITED`; `historical_clean_holdout` `NONE`. Twelve prohibited
+  modifications enumerated under this candidate id.
+- **Protocol `H2_PROSPECTIVE_SHADOW_PROTOCOL_V1`**, frozen and inactive. A
+  mechanism confirmation study, not an alpha one. Window: 5 decisions, 4
+  transitions, with `stop_early_on_success`, `extend_on_unfavourable_result`,
+  `choose_best_four_afterwards`, `drop_an_unfavourable_transition` and
+  `replace_an_outage_transition_retrospectively` all false.
+- **P1 and P2 are paired and directional** against the comparator run on the
+  same prospective cross-sections; `historical_magnitude_required: false` on
+  both, and the historical figures are carried under
+  `historical_values_are_references_only` with
+  `any_of_these_is_a_prospective_threshold: false`. The 28.23% reduction and the
+  legacy 1.95× are references, never thresholds. P3 preserves exposure; **P4
+  makes protocol integrity a pass condition** by counting retrospective packet
+  replacement as a violation. Aggregate `P1 AND P2 AND P3 AND P4`, no weighting,
+  no majority, no partial label.
+- **No early verdict is representable**: `interpret_prospective` returns
+  `PENDING` with every criterion `PENDING` until four transitions are in, and
+  `evaluate_prospective` takes no performance argument.
+- **First eligible decision is a rule**: `NOT_YET_ASSIGNED`, `hardcoded_date:
+  null`, derived at activation from the benchmark calendar and the requirement
+  that the runner be armed by the preceding session's close. A missed quarter is
+  skipped; a reconstruction carries `RETROSPECTIVE` and
+  `NOT_PROSPECTIVE_CONFIRMATION` and never enters the criteria.
+- **`PROSPECTIVE_SHADOW_CONTRACT_V1`** bridges the frozen semantics to a live
+  stream explicitly — decision-time availability at 16:00 America/New_York with
+  the direction-of-error asymmetry named, identity key, feature timestamps,
+  designated price source, `UNPRICED` with no substitution, corporate actions,
+  terminal treatment, `POST_DECISION_CORRECTION` never rewriting a frozen
+  packet, and storage in `PROSPECTIVE_SHADOW_STREAM_V1` which must not write
+  into `PIT_RESEARCH_DATASET_V2`.
+- **Three schemas written before any decision exists.** The decision packet is
+  `additionalProperties: false` with no outcome field — a packet carrying a
+  forward return fails its own schema — and immutability is by key and digest.
+  The ledger classifies each decision's code change and caps completed
+  transitions at 4. The evaluation schema pins
+  `performance_entered_verdict: false` as a constant.
+- **Promotion ladder frozen**: `FROZEN_H2_CANDIDATE` (current) →
+  `PROSPECTIVE_SHADOW` (R1.7) → `BROKER_PAPER`, `SUPERVISED_SMALL_LIVE`,
+  `CONSTRAINED_AUTONOMOUS`, the last three `NOT AUTHORISED`. Shadow, paper and
+  live are distinguished in the record so none is mistaken for another.
+- **Determinism**: 8 semantic fingerprints identical across two runs; 10 files
+  mirrored to `control/PIT_RESEARCH_DATASET_V2/research/r1-6/` and each read
+  back and verified. Digests: `h2_candidate_freeze.json` `a7ace1d1…`,
+  `h2_prospective_protocol_v1.json` `60c17136…`, `r1_6_complete.json`
+  `ba028a9f…`.
+
 ### R1.5 preregistered H2 experiment executed — 2026-09-25
 
 - `backtest run-h2 --runs 2 --mirror` with all four `--expect-*` digests:
@@ -3922,44 +4086,41 @@ under **80%**. It is what CI runs; run it rather than the individual tools.
 
 ## Next phase
 
-**R1.6 — freeze the H2 candidate and define a prospective shadow-test protocol**
-follows. R1.5 spent the preregistration and the mechanism came out SUPPORTED:
-the rule cut annual turnover 28.2%, cut it by cutting entry and exit churn, and
-did so while holding the comparator's target count at every decision with no
-intentional cash and no invariant broken.
+**R1.7 — build and activate the prospective H2 shadow runner** follows. R1.6
+froze the candidate and the protocol; R1.7's job is to make the protocol
+executable and arm it, which means standing up the prospective stream, the
+decision packet writer, the paired comparator, and the reference-execution
+capture — all conforming to the three schemas already written.
 
-**That is the whole of what was established, and it is not much on its own.**
-R1.3 generated H2 from the entire frozen period, so this result is exploratory
-by construction — it shows the mechanism works as described on the data that
-suggested it. Independent confirmation is still required and still cannot come
-from this dataset. It needs prospective observations accumulated after the
-preregistration, or a genuinely untouched external sample with equivalent
-point-in-time semantics. That is what R1.6 should define: strategy rules
-unchanged, future data accumulated, a protocol frozen before the data arrives.
+**What activation actually commits to.** Setting
+`PROSPECTIVE_PROTOCOL_ACTIVE_AT` starts a clock that cannot be restarted for a
+poor result. The first eligible decision is then derived, not chosen: the first
+quarter-end strictly after activation for which the runner was armed by the
+preceding session's close. Missing that arming window costs a quarter and
+nothing else — the next one becomes the first observation, and reconstructing
+the missed one would be a backtest.
 
-**What R1.6 must not do.** It must not tune the band, the cadence, the entry
-threshold, the weighting or the execution rule and re-run under the H2 name —
-`r1_5_execution_state.json` refuses a second execution and any variation is a
-new hypothesis with its own preregistration, contaminated for the same reason
-this one is. It must not read the +1.35 pp of extra return or the shallower
-drawdown as evidence for anything: performance took no part in the verdict, the
-difference is well inside noise on 17 rebalances and one realised path, and H2
-never claimed it. It must not relabel a legacy block as a holdout. And it should
-not treat a shadow protocol as a step toward trading: it is a research
-instrument and **not** permission to trade capital.
+**What R1.7 must not do.** It must not assign the first decision date by hand or
+from the wall clock. It must not connect a broker, place a paper or live order,
+or treat shadow as a step already taken toward them. It must not alter the band,
+the cadence, the entry threshold, the weighting or the execution rule — a
+semantic change ends the test and needs a new candidate, protocol and clock. And
+it must not report a mechanism verdict before four transitions are in;
+`interpret_prospective` will return `PENDING` regardless, and the candidate
+stays `PROSPECTIVE_CONFIRMATION_PENDING` however strong a single quarter looks.
 
-Two findings are worth carrying into whatever comes next. Resizing turnover
-**rose** by 0.071×/year under the rule, because holding names longer leaves more
-weight drift to correct — a reduction in one component was partly paid for in
-another. And the legacy validation block still trails its benchmark by 7.4
-percentage points, almost exactly as it did under the comparator; nothing about
-membership stability touched it, and it remains the most uncomfortable number in
-the record.
+**What confirmation would and would not mean.** If P1 through P4 all pass, the
+permitted statement is that the membership-stability mechanism independently
+reproduced its intended turnover and churn effect on prospectively observed
+data. Not that the strategy has proven alpha, not that the historical returns
+are validated, not that anything is ready for real money. Four transitions can
+establish a mechanism and cannot establish a return.
 
 Nothing here is ready to trade. The current-classification limitation remains
-material and unresolved, no result has independent confirmation, the evidence
-rests on 17 quarterly cross-sections and one realised path, and H2's support is
-exploratory.
+material and unresolved, the historical support is exploratory and cannot be
+upgraded on this dataset, no prospective observation exists yet, and the legacy
+validation block still trails its benchmark by 7.4 percentage points under both
+strategies.
 
 No evidence acquisition, no A4, no change to the PIT, identity or scoring
 semantics, and no promotion of `MARKET_SIGNALS_V2` without its own decision.
@@ -4025,6 +4186,18 @@ Not a backlog. These exclusions are deliberate.
   rebalance frequency, selection fraction, weighting, cost level, buffer or
   minimum-holding rule is tried on the strength of R1.3's findings.
   2025-01…2026-03 is never described as confirmation of H1.
+- **The H2 candidate and its prospective protocol (R1.6).**
+  `H2_MEMBERSHIP_STABILITY_CANDIDATE_V1` is frozen with `ONE_DECILE_HYSTERESIS_V1`
+  unchanged, and historical development on it is closed: no further retention
+  width, frequency, weighting or holding rule under this candidate id.
+  `H2_PROSPECTIVE_SHADOW_PROTOCOL_V1` fixes four transitions, four paired
+  criteria and the rule `P1 AND P2 AND P3 AND P4` before any observation; none
+  of these may be revised once the window opens, the historical 28.23% and the
+  legacy 1.95× are never prospective thresholds, and performance never enters
+  the verdict. No historical subperiod is relabelled, no reconstruction counts as
+  prospective, and no frozen decision packet is ever rewritten. Broker paper and
+  live capital are unauthorised, and `prospective_protocol` must never gain an
+  import that lets it simulate, fetch or trade.
 - **The R1.5 result and its criteria (R1.5).** The four criteria, their
   thresholds and the aggregate rule were fixed before execution and are not
   revised after it. `ONE_DECILE_HYSTERESIS_V1` is not re-specified, no second
@@ -4090,11 +4263,11 @@ Not a backlog. These exclusions are deliberate.
 
 | | |
 | --- | --- |
-| Commit | The R1.5 commit containing this checkpoint, `research: execute membership stability experiment`; parent `f7332d0` (R1.4, `research: preregister membership stability hypothesis`), then `1c4fa88` (R1.3), `db96f18` (R1.2), `27a5cb7` (R1.1), `196690d` (R1.0) and `06357c5` (B2.18, tagged `pit-research-dataset-v2`). The authoritative plan's meta and authorization record name `repo_commit` `daa1d36`; the corrected package records `2a7d3b8`, the superseded package `ebfbc1c`, the superseded plan `afe6a10`, the index `1b407b6`. |
+| Commit | The R1.6 commit containing this checkpoint, `research: freeze H2 prospective shadow protocol`; parent `d825a3b` (R1.5, `research: execute membership stability experiment`), then `f7332d0` (R1.4), `1c4fa88` (R1.3), `db96f18` (R1.2), `27a5cb7` (R1.1), `196690d` (R1.0) and `06357c5` (B2.18, tagged `pit-research-dataset-v2`). The authoritative plan's meta and authorization record name `repo_commit` `daa1d36`; the corrected package records `2a7d3b8`, the superseded package `ebfbc1c`, the superseded plan `afe6a10`, the index `1b407b6`. |
 | Branch | `feat/r1-backtest-harness`, branched from `feat/phase-b2-storage-abstraction` at `06357c5` |
 | Migration head | `0031` — the research-universe layer (9K.7). Nothing since 9K.11 added one. |
 | Score version | `COMPOUNDER_V1_2` (unchanged by anything in Phase 8, 9A, 9B or 9C) |
 | Feature version | `MARKET_FEATURES_V1` |
 | Signal version | `MARKET_SIGNALS_V1` |
-| Primary database | untouched by 8A–8J, 9A–9L.5, B2 and R1.0–R1.5; all work ran against staging copies |
+| Primary database | untouched by 8A–8J, 9A–9L.5, B2 and R1.0–R1.6; all work ran against staging copies |
 | Checkpoint date | 2026-09-25 |

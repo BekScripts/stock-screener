@@ -14,8 +14,12 @@
 > and ran nothing. R1.5 then spent that preregistration once: the mechanism came
 > out SUPPORTED, with annual turnover down 28.2% and the reduction coming from
 > the entry and exit churn the rule targets. No part of the frozen history can
-> confirm it, so that support is exploratory by construction and independent
-> confirmation still requires data nobody has yet.
+> confirm it, so that support is exploratory by construction. R1.6 then froze the
+> candidate on that mechanism result — explicitly not on its returns — closed
+> historical development on it, and defined the prospective shadow protocol:
+> four transitions, paired directional criteria, and a first decision date that
+> is a rule rather than a date. Nothing is observed yet and no broker, paper or
+> live authorisation exists at any level.
 > Portfolio construction, paper
 > trading, supervised live and constrained autonomous execution follow it in
 > that order and none of them is started. Everything below remains

@@ -138,6 +138,12 @@ from stock_screener.pit import (
     measure_historical_forward_returns,
     record_capture_failure,
 )
+from stock_screener.prospective_protocol import (
+    PROTOCOL_DIR,
+    freeze_candidate_and_protocol,
+    mirror_r1_6,
+    r1_5_directory,
+)
 from stock_screener.providers import (
     ConfigurationError,
     build_deep_research_provider,
@@ -6399,6 +6405,145 @@ def backtest_run_h2_command(
     typer.echo(f"classification    : {evaluation['historical_test_classification']}")
     typer.echo(f"independent conf. : {evaluation['independent_confirmation']}")
     typer.echo(f"outputs           : {experiment_dir}")
+
+
+@backtest_app.command("freeze-h2-candidate")
+def backtest_freeze_h2_candidate_command(
+    expect_contract_sha: Annotated[
+        str, typer.Option(help="The backtest contract file digest. Required.")
+    ] = "",
+    expect_database_sha: Annotated[
+        str, typer.Option(help="The research database digest. Required.")
+    ] = "",
+    database: Annotated[
+        Path, typer.Option("--database", help="The frozen research database. Verified, never read.")
+    ] = Path("stage9k.db"),
+    runs: Annotated[
+        int, typer.Option(min=1, max=2, help="Executions. Two proves determinism.")
+    ] = 2,
+    output: Annotated[
+        Path | None, typer.Option(help="Protocol root. Default: <control>/research/r1_6.")
+    ] = None,
+    mirror: Annotated[
+        bool, typer.Option("--mirror/--no-mirror", help="Mirror the frozen protocol.")
+    ] = True,
+) -> None:
+    """Freeze the H2 candidate and define the prospective shadow protocol.
+
+    Verifies the closed historical record, then writes the candidate freeze, the
+    prospective data contract, the protocol and its three schemas. It observes
+    nothing and starts nothing: the package is scanned for any simulator, data
+    client or broker import before anything is read, the prospective runner is
+    left inactive, and the first eligible decision is a rule rather than a date.
+    """
+    settings = _bootstrap()
+    for name, value in (
+        ("--expect-contract-sha", expect_contract_sha),
+        ("--expect-database-sha", expect_database_sha),
+    ):
+        if len(value) != 64:
+            typer.echo(f"STOPPED: {name} is required and must be a full SHA-256")
+            raise typer.Exit(code=1)
+
+    storage, control = _open_layout(settings)
+    contract_dir = control.path / CONTRACT_DIR
+    target_root = output or control.path / PROTOCOL_DIR
+
+    before = _file_sha256(database)
+    if before != expect_database_sha.lower():
+        typer.echo(f"STOPPED: {database} hashes to {before[:16]}…; refusing to run")
+        raise typer.Exit(code=1)
+    contract_sha = _file_sha256(contract_dir / "backtest_data_contract_v1.json")
+    typer.echo(f"database verified : {before[:16]}… ({database})")
+
+    commit = subprocess.run(
+        ["git", "rev-parse", "HEAD"],  # noqa: S607
+        capture_output=True,
+        text=True,
+        check=False,
+    ).stdout.strip()
+    if len(commit) != 40:
+        typer.echo("STOPPED: cannot determine the code commit")
+        raise typer.Exit(code=1)
+
+    results = []
+    for index in range(runs):
+        target = target_root if index == 0 else target_root.with_name(target_root.name + "_r2")
+        if index == 1:
+            shutil.rmtree(target, ignore_errors=True)
+        typer.echo(f"--- run {index + 1} of {runs} into {target} ---")
+        try:
+            results.append(
+                freeze_candidate_and_protocol(
+                    target,
+                    r1_4_directory(control.path),
+                    r1_5_directory(control.path),
+                    contract_sha256=contract_sha,
+                    expect_contract_sha256=expect_contract_sha.lower(),
+                    code_commit=commit,
+                )
+            )
+        except H2BindingError as exc:
+            typer.echo(f"STOPPED: {exc}")
+            raise typer.Exit(code=1) from exc
+
+    first = results[0]
+    typer.echo(f"bindings verified : {len(first.binding.checks)} checks")
+    if len(results) > 1:
+        differences = sorted(
+            name
+            for name in set(first.fingerprints) | set(results[1].fingerprints)
+            if first.fingerprints.get(name) != results[1].fingerprints.get(name)
+        )
+        if differences:
+            typer.echo(f"STOPPED: the two runs disagree on {differences}")
+            raise typer.Exit(code=1)
+        typer.echo(f"determinism       : {len(first.fingerprints)} fingerprints identical")
+
+    after = _file_sha256(database)
+    if after != before:
+        typer.echo(f"STOPPED: {database} changed during the freeze")
+        raise typer.Exit(code=1)
+    typer.echo(f"database unchanged: {after[:16]}…")
+
+    if mirror:
+        control_mirror = ControlMirror(storage, R1_MIRROR_GENERATION)
+        try:
+            mirrored = mirror_r1_6(control_mirror, target_root)
+        except (MirrorConflictError, StorageUnavailableError) as exc:
+            typer.echo(f"STOPPED: the mirror refused: {exc}")
+            raise typer.Exit(code=1) from exc
+        typer.echo(f"mirrored          : {len(mirrored)} files under {control_mirror.prefix}")
+
+    summary = first.summary
+    typer.echo("")
+    typer.echo(f"candidate         : {summary['candidate_id']}")
+    typer.echo(f"  state           : {', '.join(summary['candidate_state'])}")
+    typer.echo(
+        f"  historical      : {summary['historical_outcome']} / "
+        f"{summary['historical_classification']}"
+    )
+    typer.echo(f"  development     : {summary['historical_development']}")
+    typer.echo(f"protocol          : {summary['protocol_id']}")
+    typer.echo(f"  stream          : {summary['prospective_stream']}")
+    typer.echo(f"  contract        : {summary['prospective_contract_id']}")
+    typer.echo(
+        f"  window          : {summary['required_decisions']} decisions, "
+        f"{summary['required_transitions']} transitions"
+    )
+    typer.echo(f"  criteria        : {', '.join(summary['criteria'])}")
+    typer.echo(f"  aggregate       : {summary['aggregate_rule']}")
+    typer.echo(
+        f"  historical magnitude required: {summary['historical_magnitude_required']}; "
+        f"performance a criterion: {summary['performance_is_a_criterion']}"
+    )
+    typer.echo("")
+    for key, value in summary["status"].items():
+        typer.echo(f"  {key:<28}: {value}")
+    typer.echo("")
+    typer.echo(f"independent conf. : {summary['independent_confirmation']}")
+    typer.echo(f"broker / live     : {summary['authorisations']['broker_connectivity']}")
+    typer.echo(f"outputs           : {target_root}")
 
 
 def _percent(value: float | None) -> str:
