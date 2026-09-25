@@ -18,8 +18,11 @@
 > candidate on that mechanism result — explicitly not on its returns — closed
 > historical development on it, and defined the prospective shadow protocol:
 > four transitions, paired directional criteria, and a first decision date that
-> is a rule rather than a date. Nothing is observed yet and no broker, paper or
-> live authorisation exists at any level.
+> is a rule rather than a date. R1.7 then built the shadow runner, activated it
+> against an immutable commit and armed it before the first qualifying quarter
+> end, leaving it waiting with zero observations and the criteria sealed. No
+> broker, paper or live authorisation exists at any level, and the runner is
+> structurally incapable of submitting an order.
 > Portfolio construction, paper
 > trading, supervised live and constrained autonomous execution follow it in
 > that order and none of them is started. Everything below remains

@@ -36,10 +36,94 @@ appears without the run or the test that produced it.
 
 ## Current phase
 
-**R1.6 — the H2 candidate frozen and the prospective shadow protocol defined**
-is the current checkpoint, on `feat/r1-backtest-harness`, branched from
+**R1.7 — the prospective H2 shadow runner built, activated and armed** is the
+current checkpoint, on `feat/r1-backtest-harness`, branched from
 `feat/phase-b2-storage-abstraction` at `06357c5` (tagged
 `pit-research-dataset-v2`).
+
+| | |
+| --- | --- |
+| B2 | **COMPLETE / FROZEN** |
+| R1.0 – R1.6 | **COMPLETE** |
+| H1 | **CLOSED / MECHANISTICALLY FALSIFIED** (R1.3) |
+| H2 historical exploratory test | **SUPPORTED** (R1.5), `EXPLORATORY_SUPPORT_ONLY` |
+| H2 candidate | **`H2_MEMBERSHIP_STABILITY_CANDIDATE_V1`** — **FROZEN**, unchanged by R1.7 |
+| Prospective protocol | **`H2_PROSPECTIVE_SHADOW_PROTOCOL_V1`** — **FROZEN**, unchanged by R1.7 |
+| Prospective runner | **`PROSPECTIVE_SHADOW_RUNNER_V1` — ACTIVE_AND_ARMED** |
+| Activation | **RECORDED** — one immutable record bound to this commit; see `prospective_activation.json` and the control mirror |
+| First eligible prospective decision | **ASSIGNED_BY_PROTOCOL** — derived at arming from the activation instant and the session calendar; recorded in `prospective_arm_record.json`. Never manually supplied |
+| Prospective observations | **0** |
+| Completed transitions | **0** |
+| Prospective criteria | **SEALED_UNTIL_WINDOW_COMPLETE** — P1–P4 each `NOT_YET_EVALUATED` |
+| Prospective verdict | **PENDING** |
+| Paper trading | **NOT AUTHORIZED** |
+| Live trading | **NOT AUTHORIZED** |
+| Next | **R1.8 — capture the first eligible prospective H2 decision when due** |
+
+What R1.7 built. A runner that waits, and that is hard to misuse a year from
+now when nobody remembers why a rule was there.
+
+**It cannot trade.** `order_capability_reachable` parses each module and
+inspects imported names, attribute accesses and call targets rather than
+grepping text — capability is a property of code, so a string mentioning a
+broker is data while an import is an ability. `bind_runner` calls it before
+changing any state, no `force` parameter exists anywhere in the package, and no
+broker credential is read or required.
+
+**The calendar is checked, not asserted.** The frozen dataset's benchmark
+sessions stop where the dataset stops, so `NYSE_SESSION_CALENDAR_V1` writes the
+rules out — weekday, minus rule-derived holidays including Good Friday from the
+Easter computation and Juneteenth from 2022, minus known irregular closures,
+with a Saturday New Year's Day not observed. Replayed over the frozen record it
+reproduces all **1,531** benchmark sessions from 2020-07-27 to 2026-08-28 with
+zero additions and zero drops, and `bind_runner` refuses if it ever disagrees.
+
+**Activation cannot be backdated or repeated.** The instant comes from the
+runtime clock; a supplied timestamp is an explicit error rather than a validated
+convenience. It binds to a full immutable commit, because prospective packets
+bind to code and uncommitted code cannot be bound to — the CLI refuses a dirty
+tree for the same reason. A restart re-reads the stored record: idempotency keys
+on what is stored rather than on a freshly stamped one, since the clock moves
+between calls and a restart must not look like a second activation. What must
+match is the binding — commit, candidate, protocol, contract, semantic
+fingerprint. **Activation is not an observation.**
+
+**The first decision is derived, never chosen.** It is the first quarter-end
+session strictly after activation for which the runner was armed no later than
+the close of the immediately preceding session. Both conditions are required;
+arming exactly at that close satisfies the cutoff and one minute after does not.
+A quarter failing it is recorded in `skipped_quarters` and never enters the
+sequence, so there is nothing to reconstruct later. The arm record exists
+because a later decision claiming the runner was armed is worth nothing unless a
+durable record predates it, and it is mirrored immediately for that reason.
+
+**The state machine skips nothing.** `ARMED` leads only to
+`WAITING_FOR_DECISION`, so no path reaches a captured decision without passing
+through waiting for the decision instant. The observation count is derived from
+the packets that exist rather than incremented, so a duplicated call cannot
+advance it, and a restart recovers activation, arming, the first decision, the
+counts and the verdict from durable state alone.
+
+**A semantic change halts capture.** Thirteen modules that can affect the
+universe, features, score inputs, ranking, selection, target count, identity,
+execution reference or accounting contribute to one fingerprint; logging and
+presentation do not. A moved fingerprint classifies as
+`SEMANTIC_RESEARCH_CHANGE` and refuses confirmatory capture until reviewed,
+because remembering which changes matter is not a control.
+
+**Decision and execution packets are separate records**, and that separation is
+load-bearing: merging them would put a price the decision could not have seen
+inside the record of that decision. A decision packet rejects every outcome
+field at construction; an execution packet links by digest and declares
+`modifies_decision_packet: false`; a correction links to both and changes
+neither, and a material one yields
+`PROSPECTIVE_TEST_INVALIDATED_BY_DEFECT` rather than a fix.
+
+**Nothing was observed.** Zero decision packets exist and none may exist until
+the derived decision instant actually arrives. Ending armed with zero
+observations and a sealed verdict is the successful outcome of this phase.
+
+The preceding checkpoint, **R1.6**, stands unchanged.
 
 | | |
 | --- | --- |
@@ -986,6 +1070,35 @@ convention, and none may be relaxed without an explicit instruction.
   `supersession.json` naming the old package and plan digests, the forensic
   verdict and commit; the old artifacts gain a `SUPERSEDED.json` beside them
   and lose nothing, locally or remotely.
+
+### R1.7 what building the runner settled
+
+- **Capability is a code property, not a text one.** The order guard parses
+  imports, attributes and call targets instead of grepping, so it cannot be
+  fooled by a string and cannot be tripped by its own declarations. A shadow
+  runner that merely does not call a broker today is one import away from being
+  something else; one that contains no order capability cannot become one by
+  accident.
+- **Idempotency keys on what is stored, never on a fresh stamp.** A restart
+  re-reads the activation and arm records. Comparing against a newly minted
+  record would make the clock alone look like a second activation, which would
+  turn every restart into a protocol conflict.
+- **A derived date is a rule executed once, not a value written down.** The
+  first eligible decision is computed at arming from the activation instant and
+  the calendar, recorded with its cutoff comparison, and never accepted as
+  input.
+- **A durable arm record must predate the decision it vouches for.** Arming is
+  written and mirrored before any capture, because a later claim that the runner
+  was armed is worth nothing without a record that came first.
+- **The observation count is derived from packets, never incremented.** A
+  counter can be advanced twice; a count of the packets that exist cannot.
+- **A frozen calendar is verified against the record it replaces.** One that
+  cannot reproduce the sessions the research already used is not one to take a
+  prospective observation under, and an unscheduled future closure is a data
+  event the runner must fail closed on rather than a rule it can derive.
+- **Sealing beats discipline.** Status reports the criteria as sealed rather
+  than as a running total, so nobody has to decide whether to look at an interim
+  reading.
 
 ### R1.6 what freezing the candidate settled
 
@@ -2602,6 +2715,64 @@ Documented rather than fixed. Each is a deliberate stop, not a backlog item.
 
 Measured runs, kept because they are the evidence behind decisions above.
 
+### R1.7 prospective H2 shadow runner activated and armed — 2026-09-25
+
+- `prospective activate` then `prospective arm`, each verifying the R1.6
+  candidate `a7ace1d1…`, protocol `60c17136…`, prospective contract `bcade412…`
+  and completion marker `ba028a9f…` by digest before changing any state.
+- **Ordering used (R1.6 §78 two-stage):** implementation → targeted tests →
+  `make check` → **one tracked-code commit** → post-commit gate → clean tree →
+  activation bound to that exact commit → arming → control mirror → no tracked
+  file changed afterwards, and the commit was not amended.
+- **`NYSE_SESSION_CALENDAR_V1` validated against the record**: replayed over the
+  frozen benchmark sessions it reproduces **1,531** sessions from 2020-07-27 to
+  2026-08-28 with 0 additions and 0 drops. `bind_runner` refuses on any
+  disagreement. Good Friday is computed, Juneteenth applies from 2022, and a
+  Saturday New Year's Day is correctly not observed.
+- **No order capability.** `order_capability_reachable` parses each module and
+  inspects imported names, attribute accesses and call targets; it returns empty
+  for the runner and detects a real `submit_order` / `TradingClient` path in a
+  fixture. No `force` parameter exists; no broker credential is read.
+- **Activation**: one immutable record, instant from the runtime clock, bound to
+  a full commit. A supplied timestamp, a non-commit reference and a dirty tree
+  are each refused. A restart re-reads the stored record rather than minting a
+  new one — idempotency keys on the binding (commit, candidate, protocol,
+  contract, semantic fingerprint), not on the clock. `observations_at_activation:
+  0`.
+- **Arming and derivation**: the first eligible decision is the first quarter-end
+  strictly after activation for which the runner was armed by the close of the
+  preceding session. Derived at arming, `derived_automatically: true`,
+  `manually_supplied: false`, and recorded with its preceding session, required
+  cutoff and comparison result. Arming exactly at the cutoff passes; one minute
+  later skips the quarter to the next.
+- **Semantic fingerprint** over 13 modules spanning the universe, features,
+  score inputs, ranking, selection, target count, identity, execution reference
+  and accounting. A moved fingerprint halts confirmatory capture as
+  `SEMANTIC_RESEARCH_CHANGE`; a missing module is an error rather than a skip.
+- **Packet discipline implemented and tested**: decision packets reject every
+  outcome field at construction; execution packets link by digest and never
+  modify a decision; corrections change neither and a material one yields
+  `PROSPECTIVE_TEST_INVALIDATED_BY_DEFECT`; `finalise` accepts an identical retry
+  and raises `PacketConflictError` on different bytes under the same key.
+- **Paired construction**: `paired_targets` takes one ranked cross-section and
+  returns both target sets, so separate fetching is impossible.
+  `ordinary_target_count(746) == 74` and `(1010) == 101`, matching R1.2 exactly;
+  with no incumbents the two sets are equal, which is the initial-formation
+  invariant.
+- **Status is sealed**: criteria `SEALED_UNTIL_WINDOW_COMPLETE`, P1–P4 each
+  `NOT_YET_EVALUATED`, verdict `PENDING`, performance
+  `NOT_EVALUATED_FOR_RESEARCH_DECISION`, no turnover reading exposed, and the
+  command fetches nothing to display.
+- **Recovery proven**: after a simulated restart the runner recovers activation,
+  arming, the derived first decision, the observation count, the transition count
+  and protocol health from durable state alone, creating no duplicate records —
+  the ledger shows exactly one `PROTOCOL_ACTIVATED` and one `RUNNER_ARMED`.
+- **State separation**: runtime state lives under `.evidence/prospective/h2_v1/`
+  and is mirrored to `control/PROSPECTIVE_SHADOW_STREAM_V1/`, never under
+  `research/r1_*`. The frozen R1.6 record re-hashes unchanged after activation.
+- **0 observations, 0 transitions, 0 decision packets, 0 broker connections, 0
+  orders.** This is the successful end state.
+
 ### R1.6 H2 candidate frozen and prospective protocol defined — 2026-09-25
 
 - `backtest freeze-h2-candidate --runs 2 --mirror` with `--expect-contract-sha`
@@ -4086,41 +4257,38 @@ under **80%**. It is what CI runs; run it rather than the individual tools.
 
 ## Next phase
 
-**R1.7 — build and activate the prospective H2 shadow runner** follows. R1.6
-froze the candidate and the protocol; R1.7's job is to make the protocol
-executable and arm it, which means standing up the prospective stream, the
-decision packet writer, the paired comparator, and the reference-execution
-capture — all conforming to the three schemas already written.
+**R1.8 — capture the first eligible prospective H2 decision when due** follows.
+The runner is armed and waiting; R1.8's job begins at the derived decision
+instant, 16:00 America/New_York on the first eligible quarter-end session, and
+not before.
 
-**What activation actually commits to.** Setting
-`PROSPECTIVE_PROTOCOL_ACTIVE_AT` starts a clock that cannot be restarted for a
-poor result. The first eligible decision is then derived, not chosen: the first
-quarter-end strictly after activation for which the runner was armed by the
-preceding session's close. Missing that arming window costs a quarter and
-nothing else — the next one becomes the first observation, and reconstructing
-the missed one would be a backtest.
+**What R1.8 must do.** Build the decision-time source snapshot — universe,
+fundamentals with acceptance timestamps, prices through the decision session,
+score inputs, tradability — and prove every input was available at or before the
+instant. Produce one ranked cross-section, feed it to both strategies, check the
+initial-formation invariant that H2's target set equals the comparator's when
+there are no incumbents, and finalise one immutable decision packet. Then, on
+the next session, capture the reference open as a separate execution packet that
+links to the decision by digest and modifies nothing.
 
-**What R1.7 must not do.** It must not assign the first decision date by hand or
-from the wall clock. It must not connect a broker, place a paper or live order,
-or treat shadow as a step already taken toward them. It must not alter the band,
-the cadence, the entry threshold, the weighting or the execution rule — a
-semantic change ends the test and needs a new candidate, protocol and clock. And
-it must not report a mechanism verdict before four transitions are in;
-`interpret_prospective` will return `PENDING` regardless, and the candidate
-stays `PROSPECTIVE_CONFIRMATION_PENDING` however strong a single quarter looks.
+**What R1.8 must not do.** It must not capture early: a packet may only be
+finalised at or after the decision instant. It must not convert later-current
+data into an as-of snapshot — if availability cannot be proven under the
+prospective contract, the capture fails closed and the observation does not
+count. It must not write an execution price into a decision packet, rewrite a
+finalised packet, or reconstruct a missed quarter. It must not connect a broker
+or place an order of any kind. And it must not report a mechanism reading: the
+criteria stay sealed until four transitions are in.
 
-**What confirmation would and would not mean.** If P1 through P4 all pass, the
-permitted statement is that the membership-stability mechanism independently
-reproduced its intended turnover and churn effect on prospectively observed
-data. Not that the strategy has proven alpha, not that the historical returns
-are validated, not that anything is ready for real money. Four transitions can
-establish a mechanism and cannot establish a return.
+**What still cannot be claimed, whatever happens.** One decision is not a
+window, four transitions cannot establish a return effect, and the historical
+support remains exploratory and unupgradable on the frozen dataset. The
+candidate stays `PROSPECTIVE_CONFIRMATION_PENDING` until the window closes.
 
 Nothing here is ready to trade. The current-classification limitation remains
-material and unresolved, the historical support is exploratory and cannot be
-upgraded on this dataset, no prospective observation exists yet, and the legacy
-validation block still trails its benchmark by 7.4 percentage points under both
-strategies.
+material and unresolved, no prospective observation exists, paper and live
+trading are unauthorised at every level of the ladder, and the legacy validation
+block still trails its benchmark by 7.4 percentage points under both strategies.
 
 No evidence acquisition, no A4, no change to the PIT, identity or scoring
 semantics, and no promotion of `MARKET_SIGNALS_V2` without its own decision.
@@ -4186,6 +4354,15 @@ Not a backlog. These exclusions are deliberate.
   rebalance frequency, selection fraction, weighting, cost level, buffer or
   minimum-holding rule is tried on the strength of R1.3's findings.
   2025-01…2026-03 is never described as confirmation of H1.
+- **The prospective runner and its activation (R1.7).** The activation record
+  and the arm record are written once and never rewritten; the activation instant
+  comes from the runtime clock and cannot be supplied; the first eligible
+  decision is derived by the protocol and never manually assigned. The runner
+  must never gain an order-submission capability, a `force` parameter, or a
+  broker credential, and `NYSE_SESSION_CALENDAR_V1` must keep reproducing every
+  frozen benchmark session. A missed arm cutoff skips its quarter permanently —
+  a reconstruction is a backtest and may never enter the confirmatory sample.
+  Prospective state stays out of `research/r1_*`.
 - **The H2 candidate and its prospective protocol (R1.6).**
   `H2_MEMBERSHIP_STABILITY_CANDIDATE_V1` is frozen with `ONE_DECILE_HYSTERESIS_V1`
   unchanged, and historical development on it is closed: no further retention
@@ -4263,11 +4440,11 @@ Not a backlog. These exclusions are deliberate.
 
 | | |
 | --- | --- |
-| Commit | The R1.6 commit containing this checkpoint, `research: freeze H2 prospective shadow protocol`; parent `d825a3b` (R1.5, `research: execute membership stability experiment`), then `f7332d0` (R1.4), `1c4fa88` (R1.3), `db96f18` (R1.2), `27a5cb7` (R1.1), `196690d` (R1.0) and `06357c5` (B2.18, tagged `pit-research-dataset-v2`). The authoritative plan's meta and authorization record name `repo_commit` `daa1d36`; the corrected package records `2a7d3b8`, the superseded package `ebfbc1c`, the superseded plan `afe6a10`, the index `1b407b6`. |
+| Commit | The R1.7 commit containing this checkpoint, `research: activate H2 prospective shadow runner`, which the prospective activation record binds to; parent `e730e93` (R1.6, `research: freeze H2 prospective shadow protocol`), then `d825a3b` (R1.5), `f7332d0` (R1.4), `1c4fa88` (R1.3), `db96f18` (R1.2), `27a5cb7` (R1.1), `196690d` (R1.0) and `06357c5` (B2.18, tagged `pit-research-dataset-v2`). The authoritative plan's meta and authorization record name `repo_commit` `daa1d36`; the corrected package records `2a7d3b8`, the superseded package `ebfbc1c`, the superseded plan `afe6a10`, the index `1b407b6`. |
 | Branch | `feat/r1-backtest-harness`, branched from `feat/phase-b2-storage-abstraction` at `06357c5` |
 | Migration head | `0031` — the research-universe layer (9K.7). Nothing since 9K.11 added one. |
 | Score version | `COMPOUNDER_V1_2` (unchanged by anything in Phase 8, 9A, 9B or 9C) |
 | Feature version | `MARKET_FEATURES_V1` |
 | Signal version | `MARKET_SIGNALS_V1` |
-| Primary database | untouched by 8A–8J, 9A–9L.5, B2 and R1.0–R1.6; all work ran against staging copies |
+| Primary database | untouched by 8A–8J, 9A–9L.5, B2 and R1.0–R1.7; all work ran against staging copies |
 | Checkpoint date | 2026-09-25 |

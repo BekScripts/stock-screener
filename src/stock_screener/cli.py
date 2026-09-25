@@ -144,6 +144,24 @@ from stock_screener.prospective_protocol import (
     mirror_r1_6,
     r1_5_directory,
 )
+from stock_screener.prospective_protocol import STREAM_ID as PROSPECTIVE_STREAM_ID
+from stock_screener.prospective_runner import (
+    MIRROR_PREFIX as PROSPECTIVE_MIRROR_PREFIX,
+)
+from stock_screener.prospective_runner import (
+    MIRRORED_FILES as PROSPECTIVE_MIRRORED,
+)
+from stock_screener.prospective_runner import (
+    PROSPECTIVE_ROOT,
+    ActivationError,
+    RunnerBinding,
+    RunnerBindingError,
+    StateError,
+    activate,
+    arm,
+    bind_runner,
+    status,
+)
 from stock_screener.providers import (
     ConfigurationError,
     build_deep_research_provider,
@@ -6544,6 +6562,191 @@ def backtest_freeze_h2_candidate_command(
     typer.echo(f"independent conf. : {summary['independent_confirmation']}")
     typer.echo(f"broker / live     : {summary['authorisations']['broker_connectivity']}")
     typer.echo(f"outputs           : {target_root}")
+
+
+prospective_app = typer.Typer(
+    help="The H2 prospective shadow runner. Observes; never trades.", no_args_is_help=True
+)
+app.add_typer(prospective_app, name="prospective")
+
+
+def _prospective_binding(control: EvidenceControlRoot, database: Path) -> RunnerBinding:
+    """Bind the runner, checking the calendar against the frozen sessions."""
+    with closing(sqlite3.connect(f"file:{database}?mode=ro", uri=True)) as db:
+        sessions = [
+            date.fromisoformat(str(row[0]))
+            for row in db.execute("SELECT date FROM benchmark_prices ORDER BY date")
+        ]
+    return bind_runner(control.path / "research/r1_6", historical_sessions=sessions)
+
+
+@prospective_app.command("activate")
+def prospective_activate_command(
+    database: Annotated[
+        Path, typer.Option("--database", help="The frozen research database, read-only.")
+    ] = Path("stage9k.db"),
+    expect_database_sha: Annotated[
+        str, typer.Option(help="The research database digest. Required.")
+    ] = "",
+    mirror: Annotated[
+        bool, typer.Option("--mirror/--no-mirror", help="Mirror the activation record.")
+    ] = True,
+) -> None:
+    """Activate the prospective protocol, once, at the runtime clock's instant.
+
+    The activation time is taken from the clock and cannot be supplied. The
+    runner must be bound to an immutable commit, because prospective packets
+    bind to code and uncommitted code cannot be bound to. Activation is not an
+    observation: it starts the clock the first decision is derived from.
+    """
+    settings = _bootstrap()
+    if len(expect_database_sha) != 64:
+        typer.echo("STOPPED: --expect-database-sha is required and must be a full SHA-256")
+        raise typer.Exit(code=1)
+    storage, control = _open_layout(settings)
+    observed = _file_sha256(database)
+    if observed != expect_database_sha.lower():
+        typer.echo(f"STOPPED: {database} hashes to {observed[:16]}…; refusing to run")
+        raise typer.Exit(code=1)
+
+    dirty = subprocess.run(
+        ["git", "status", "--porcelain"],  # noqa: S607
+        capture_output=True,
+        text=True,
+        check=False,
+    ).stdout.strip()
+    if dirty:
+        typer.echo("STOPPED: the working tree is dirty; activation must bind to a clean commit")
+        raise typer.Exit(code=1)
+    commit = subprocess.run(
+        ["git", "rev-parse", "HEAD"],  # noqa: S607
+        capture_output=True,
+        text=True,
+        check=False,
+    ).stdout.strip()
+
+    try:
+        binding = _prospective_binding(control, database)
+    except RunnerBindingError as exc:
+        typer.echo(f"STOPPED: {exc}")
+        raise typer.Exit(code=1) from exc
+    typer.echo(f"bindings verified : {len(binding.checks)} checks")
+    checked = binding.calendar["historical_check"]["checked"]
+    typer.echo(f"calendar          : {checked} frozen sessions reproduced")
+    typer.echo(f"semantic code     : {binding.semantic['semantic_fingerprint'][:16]}…")
+
+    root = control.path / PROSPECTIVE_ROOT
+    try:
+        result = activate(root, binding, code_commit=commit)
+    except (ActivationError, StateError) as exc:
+        typer.echo(f"STOPPED: {exc}")
+        raise typer.Exit(code=1) from exc
+    _write_runner_binding(root, binding)
+    typer.echo(
+        f"activation        : {'written' if result.written else 'already present, identical'}"
+    )
+    typer.echo(f"  sha256          : {result.sha256}")
+    typer.echo(f"  activated_at    : {result.record['activated_at_utc']} (UTC)")
+    typer.echo(f"  activated_at ET : {result.record['activated_at_eastern']}")
+    typer.echo(f"  code commit     : {result.record['code_commit']}")
+    if mirror:
+        _mirror_prospective(storage, root)
+    typer.echo("observations      : 0 — activation is not a decision")
+
+
+@prospective_app.command("arm")
+def prospective_arm_command(
+    database: Annotated[
+        Path, typer.Option("--database", help="The frozen research database, read-only.")
+    ] = Path("stage9k.db"),
+    mirror: Annotated[
+        bool, typer.Option("--mirror/--no-mirror", help="Mirror the arm record.")
+    ] = True,
+) -> None:
+    """Arm the runner and derive the first eligible prospective decision.
+
+    The decision date is derived from the protocol, the activation instant and
+    the benchmark calendar. It cannot be supplied. A quarter whose arm cutoff
+    was missed is skipped and recorded as skipped; it never enters the sequence.
+    """
+    settings = _bootstrap()
+    storage, control = _open_layout(settings)
+    commit = subprocess.run(
+        ["git", "rev-parse", "HEAD"],  # noqa: S607
+        capture_output=True,
+        text=True,
+        check=False,
+    ).stdout.strip()
+    try:
+        binding = _prospective_binding(control, database)
+        root = control.path / PROSPECTIVE_ROOT
+        result = arm(root, binding, code_commit=commit)
+    except (RunnerBindingError, ActivationError, StateError) as exc:
+        typer.echo(f"STOPPED: {exc}")
+        raise typer.Exit(code=1) from exc
+
+    record = result.record
+    typer.echo(
+        f"arm               : {'written' if result.written else 'already present, identical'}"
+    )
+    typer.echo(f"  sha256          : {result.sha256}")
+    typer.echo(f"  armed_at        : {record['armed_at_utc']} (UTC)")
+    typer.echo("")
+    typer.echo(f"first eligible decision : {record['first_eligible_decision']}")
+    typer.echo(f"  preceding session     : {record['preceding_session']}")
+    typer.echo(f"  required arm cutoff   : {record['required_arm_cutoff']}")
+    typer.echo(f"  cutoff satisfied      : {record['cutoff_satisfied']}")
+    typer.echo(f"  decision instant      : {record['decision_instant']}")
+    typer.echo(f"  derived automatically : {record['derived_automatically']}")
+    typer.echo(f"  quarters skipped      : {len(record['skipped_quarters'])}")
+    if mirror:
+        _mirror_prospective(storage, root)
+
+
+@prospective_app.command("status")
+def prospective_status_command(
+    database: Annotated[
+        Path, typer.Option("--database", help="The frozen research database, read-only.")
+    ] = Path("stage9k.db"),
+) -> None:
+    """Report where the prospective experiment is. Fetches nothing, mutates nothing.
+
+    The criteria are reported as sealed rather than as a running total, so that
+    nobody has to decide whether to look at an interim reading.
+    """
+    settings = _bootstrap()
+    _, control = _open_layout(settings)
+    try:
+        binding = _prospective_binding(control, database)
+    except RunnerBindingError:
+        binding = None
+    view = status(control.path / PROSPECTIVE_ROOT, binding)
+    for key, value in view.items():
+        typer.echo(f"  {key:<32}: {value}")
+
+
+def _write_runner_binding(root: Path, binding: RunnerBinding) -> None:
+    """Persist the runner's binding descriptor beside its state."""
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "prospective_runner_binding.json").write_text(
+        json.dumps(binding.as_json(), indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+
+
+def _mirror_prospective(storage: EvidenceStorage, root: Path) -> None:
+    """Mirror the prospective control state and read every object back."""
+    mirror = ControlMirror(storage, PROSPECTIVE_STREAM_ID)
+    for name in PROSPECTIVE_MIRRORED:
+        local = root / name
+        if not local.is_file():
+            continue
+        kind = f"{PROSPECTIVE_MIRROR_PREFIX}/{name.replace('.', '-')}"
+        record, _ = mirror.mirror_snapshot(local, kind, phase="R1.7")
+        newest = mirror.newest_snapshot(kind)
+        if newest is None or hashlib.sha256(newest[1]).hexdigest() != record.sha256:
+            typer.echo(f"STOPPED: {name} did not read back from the mirror")
+            raise typer.Exit(code=1)
+    typer.echo(f"mirrored          : {len(PROSPECTIVE_MIRRORED)} objects under {mirror.prefix}")
 
 
 def _percent(value: float | None) -> str:
