@@ -93,6 +93,16 @@ from stock_screener.evidence import (
     EvidenceUnavailableError,
     inspect_sec_evidence_dir,
 )
+from stock_screener.hysteresis_experiment import (
+    EXPERIMENT_DIR as H2_EXPERIMENT_DIR,
+)
+from stock_screener.hysteresis_experiment import (
+    SelectionError,
+    bind_r1_5,
+    mirror_r1_5,
+    r1_4_directory,
+    run_h2,
+)
 from stock_screener.identity import (
     ContaminationReport,
     FtdFileResult,
@@ -6221,6 +6231,174 @@ def backtest_preregister_h2_command(
     )
     typer.echo("performance       : NONE CALCULATED — the experiment has not been run")
     typer.echo(f"outputs           : {target_root}")
+
+
+@backtest_app.command("run-h2")
+def backtest_run_h2_command(
+    database: Annotated[
+        Path, typer.Option("--database", help="The frozen research database, opened read-only.")
+    ] = Path("stage9k.db"),
+    expect_database_sha: Annotated[
+        str, typer.Option(help="The research database digest. Required.")
+    ] = "",
+    expect_contract_sha: Annotated[
+        str, typer.Option(help="The backtest contract file digest. Required.")
+    ] = "",
+    expect_h2_sha: Annotated[
+        str, typer.Option(help="The frozen H2 hypothesis record digest. Required.")
+    ] = "",
+    expect_spec_sha: Annotated[
+        str, typer.Option(help="The frozen R1.5 specification digest. Required.")
+    ] = "",
+    runs: Annotated[
+        int, typer.Option(min=1, max=2, help="Executions. Two proves determinism.")
+    ] = 2,
+    output: Annotated[
+        Path | None, typer.Option(help="Experiment root. Default: <control>/research/r1_5.")
+    ] = None,
+    mirror: Annotated[
+        bool, typer.Option("--mirror/--no-mirror", help="Mirror the compact results.")
+    ] = True,
+) -> None:
+    """Execute the single preregistered H2 membership-stability experiment.
+
+    Runs `ONE_DECILE_HYSTERESIS_V1` exactly as R1.4 froze it, against the
+    comparator's own frozen cross-sections and target counts, and judges it by
+    the four preregistered criteria under the aggregate rule C1 AND C2 AND C3
+    AND C4. The mechanism verdict is fixed before any return is read. A durable
+    execution marker prevents the specification being spent twice, and the
+    result is an exploratory historical test that confirms nothing.
+    """
+    settings = _bootstrap()
+    for name, value in (
+        ("--expect-database-sha", expect_database_sha),
+        ("--expect-contract-sha", expect_contract_sha),
+        ("--expect-h2-sha", expect_h2_sha),
+        ("--expect-spec-sha", expect_spec_sha),
+    ):
+        if len(value) != 64:
+            typer.echo(f"STOPPED: {name} is required and must be a full SHA-256")
+            raise typer.Exit(code=1)
+
+    storage, control = _open_layout(settings)
+    contract_dir = control.path / CONTRACT_DIR
+    experiment_dir = output or control.path / H2_EXPERIMENT_DIR
+
+    before = _file_sha256(database)
+    if before != expect_database_sha.lower():
+        typer.echo(f"STOPPED: {database} hashes to {before[:16]}…; refusing to run")
+        raise typer.Exit(code=1)
+    contract_sha = _file_sha256(contract_dir / "backtest_data_contract_v1.json")
+    if contract_sha != expect_contract_sha.lower():
+        typer.echo(f"STOPPED: the contract hashes to {contract_sha[:16]}…; refusing to run")
+        raise typer.Exit(code=1)
+    typer.echo(f"database verified : {before[:16]}… ({database})")
+
+    try:
+        binding = bind_r1_5(
+            r1_0_directory(control.path),
+            r1_1_directory(control.path),
+            r1_2_directory(control.path),
+            r1_3_directory(control.path),
+            r1_4_directory(control.path),
+            contract_sha256=contract_sha,
+            expect_contract_sha256=expect_contract_sha.lower(),
+            expect_h2_record_sha256=expect_h2_sha.lower(),
+            expect_spec_sha256=expect_spec_sha.lower(),
+        )
+    except (H2BindingError, ForensicBindingError) as exc:
+        typer.echo(f"STOPPED: {exc}")
+        raise typer.Exit(code=1) from exc
+    typer.echo(f"preregistration   : {len(binding.checks)} checks; 1 executable variant")
+    typer.echo(f"comparator        : {binding.comparator['strategy_version']}")
+
+    commit = subprocess.run(
+        ["git", "rev-parse", "HEAD"],  # noqa: S607
+        capture_output=True,
+        text=True,
+        check=False,
+    ).stdout.strip()
+    if len(commit) != 40:
+        typer.echo("STOPPED: cannot determine the code commit")
+        raise typer.Exit(code=1)
+
+    results = []
+    for index in range(runs):
+        target = (
+            experiment_dir if index == 0 else experiment_dir.with_name(experiment_dir.name + "_r2")
+        )
+        if index == 1:
+            shutil.rmtree(target, ignore_errors=True)
+        typer.echo(f"--- run {index + 1} of {runs} into {target} ---")
+        try:
+            results.append(
+                run_h2(
+                    target,
+                    r1_2_directory(control.path),
+                    database,
+                    binding,
+                    contract_dir,
+                    contract_sha256=contract_sha,
+                    code_commit=commit,
+                    claim_execution=index == 0,
+                    progress=typer.echo,
+                )
+            )
+        except (H2BindingError, SelectionError) as exc:
+            typer.echo(f"STOPPED: {exc}")
+            raise typer.Exit(code=1) from exc
+
+    first = results[0]
+    if len(results) > 1:
+        differences = sorted(
+            name
+            for name in set(first.fingerprints) | set(results[1].fingerprints)
+            if first.fingerprints.get(name) != results[1].fingerprints.get(name)
+        )
+        if differences:
+            typer.echo(f"STOPPED: the two runs disagree on {differences}")
+            raise typer.Exit(code=1)
+        typer.echo(f"determinism       : {len(first.fingerprints)} fingerprints identical")
+
+    if first.violations:
+        for problem in first.violations:
+            typer.echo(f"ACCOUNTING VIOLATION: {problem}")
+    if first.manifest_problems:
+        typer.echo(f"MANIFEST INVALID: {first.manifest_problems}")
+        raise typer.Exit(code=1)
+    typer.echo("run manifest      : schema-valid")
+
+    after = _file_sha256(database)
+    if after != before:
+        typer.echo(f"STOPPED: {database} changed during the experiment")
+        raise typer.Exit(code=1)
+    typer.echo(f"database unchanged: {after[:16]}…")
+
+    if mirror:
+        control_mirror = ControlMirror(storage, R1_MIRROR_GENERATION)
+        try:
+            mirrored = mirror_r1_5(control_mirror, experiment_dir)
+        except (MirrorConflictError, StorageUnavailableError) as exc:
+            typer.echo(f"STOPPED: the mirror refused: {exc}")
+            raise typer.Exit(code=1) from exc
+        typer.echo(f"mirrored          : {len(mirrored)} files under {control_mirror.prefix}")
+
+    evaluation = first.evaluation
+    typer.echo("")
+    for criterion in evaluation["criteria"]:
+        mark = "MET    " if criterion["met"] else "NOT MET"
+        typer.echo(
+            f"  C{criterion['number']} {mark}  {criterion['id']}: "
+            f"measured {criterion['measured']} vs threshold {criterion['threshold']}"
+        )
+    typer.echo("")
+    typer.echo(
+        f"aggregate rule    : {evaluation['interpretation']['aggregate_rule']['expression']}"
+    )
+    typer.echo(f"H2 outcome        : {evaluation['interpretation']['outcome']}")
+    typer.echo(f"classification    : {evaluation['historical_test_classification']}")
+    typer.echo(f"independent conf. : {evaluation['independent_confirmation']}")
+    typer.echo(f"outputs           : {experiment_dir}")
 
 
 def _percent(value: float | None) -> str:

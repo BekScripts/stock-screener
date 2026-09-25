@@ -23,6 +23,7 @@ reference page, that sentence belongs in
 - [R1.2 quarterly experiment](quarterly-experiment.md) — executing the one preregistered experiment: how the executor is held to the frozen rules, why the quarterly cross-sections are sliced from R1.0 rather than recomputed, the five criteria and why no aggregate rule is invented
 - [R1.3 turnover forensics](turnover-forensics.md) — explaining the one criterion that failed: the turnover formula the project actually uses, the two annualisation conventions, how membership change is attributed to cause rather than to the score, the floor that shows the ceiling was unreachable, and why no replacement rule is chosen here
 - [R1.4 H2 preregistration](membership-hypothesis.md) — the next hypothesis, frozen before it is tested: one membership-hysteresis rule whose band is structural rather than chosen, four criteria and the aggregate rule that combines them, why no part of the frozen history can confirm it, and the binder R1.5 has to pass
+- [R1.5 H2 experiment](hysteresis-experiment.md) — spending that preregistration once: the fixed order that puts the mechanism verdict before any return, what is shared with the comparator and what is not, the four criteria and the aggregate rule, the durable one-run marker, and why the result is exploratory whatever it says
 - [Commands](commands.md) — every `make` target and CLI command
 - [Metrics](metrics.md) — every calculation, its formula, and when it is unavailable
 - [CompounderScore v1](compounder-score.md) — every scoring rule, penalty and status

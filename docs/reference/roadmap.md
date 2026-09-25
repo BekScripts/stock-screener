@@ -11,8 +11,11 @@
 > is mechanistically falsified and frequency was the wrong lever. R1.4 then
 > preregistered the next hypothesis — `H2_MEMBERSHIP_STABILITY`, one
 > hysteresis rule, four criteria and an aggregate rule fixed before execution —
-> and ran nothing. No part of the frozen history can confirm it, so R1.5's run
-> will be exploratory by construction.
+> and ran nothing. R1.5 then spent that preregistration once: the mechanism came
+> out SUPPORTED, with annual turnover down 28.2% and the reduction coming from
+> the entry and exit churn the rule targets. No part of the frozen history can
+> confirm it, so that support is exploratory by construction and independent
+> confirmation still requires data nobody has yet.
 > Portfolio construction, paper
 > trading, supervised live and constrained autonomous execution follow it in
 > that order and none of them is started. Everything below remains
