@@ -21,6 +21,7 @@ reference page, that sentence belongs in
 - [R1 backtest harness](backtest-harness.md) — the leakage-safe monthly harness over that dataset: the decision calendar, the frozen split, the cross-section funnel, `TERMINAL_LEG_POLICY_V1`, the preregistered baselines and what they are read under
 - [R1.1 signal review](signal-review.md) — interpreting that baseline: the two contrasts and why a U-shaped decile profile makes them differ, the concentration and robustness forensics, the analytic cost break-even, the holdout-contamination record, the classification rubric and the one experiment it licenses
 - [R1.2 quarterly experiment](quarterly-experiment.md) — executing the one preregistered experiment: how the executor is held to the frozen rules, why the quarterly cross-sections are sliced from R1.0 rather than recomputed, the five criteria and why no aggregate rule is invented
+- [R1.3 turnover forensics](turnover-forensics.md) — explaining the one criterion that failed: the turnover formula the project actually uses, the two annualisation conventions, how membership change is attributed to cause rather than to the score, the floor that shows the ceiling was unreachable, and why no replacement rule is chosen here
 - [Commands](commands.md) — every `make` target and CLI command
 - [Metrics](metrics.md) — every calculation, its formula, and when it is unavailable
 - [CompounderScore v1](compounder-score.md) — every scoring rule, penalty and status

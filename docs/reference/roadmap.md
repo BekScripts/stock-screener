@@ -1,11 +1,15 @@
-> **Status (2026-09-24).** The evidence and data foundation this direction
+> **Status (2026-09-25).** The evidence and data foundation this direction
 > rests on is complete and frozen (`SEC_EVIDENCE_GENERATION_V2`), and the
 > historical research contract is written (`PIT_RESEARCH_DATASET_V2` under
 > `BACKTEST_DATA_CONTRACT_V1`). **R1 — strategy research and backtesting** is
 > now active: R1.0 built the leakage-safe monthly harness and ran the first
 > preregistered baselines, R1.1 interpreted them and specified one
-> hypothesis-driven experiment, and R1.2 executed that experiment — leaving H1
-> partially supported, with the turnover premise it was named for unmet.
+> hypothesis-driven experiment, R1.2 executed that experiment — leaving H1
+> partially supported, with the turnover premise it was named for unmet — and
+> R1.3 established why that premise could not have held: the least trading the
+> quarterly selections could require already exceeds the frozen ceiling, so H1
+> is mechanistically falsified and frequency was the wrong lever. No
+> replacement rule has been chosen; R1.4 must preregister one first.
 > Portfolio construction, paper
 > trading, supervised live and constrained autonomous execution follow it in
 > that order and none of them is started. Everything below remains

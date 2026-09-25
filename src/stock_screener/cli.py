@@ -334,6 +334,13 @@ from stock_screener.signal_review import (
     review_r1_0,
 )
 from stock_screener.signals import derive_market_signals
+from stock_screener.turnover_forensics import (
+    FORENSIC_DIR,
+    ForensicBindingError,
+    mirror_r1_3,
+    r1_2_directory,
+    run_forensics,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Iterator, Sequence
@@ -5914,6 +5921,141 @@ def backtest_run_quarterly_command(
         f"{evaluation['research_status']['independent_out_of_sample_confirmation']}"
     )
     typer.echo(f"outputs           : {experiment_dir}")
+
+
+@backtest_app.command("review-turnover")
+def backtest_review_turnover_command(
+    expect_contract_sha: Annotated[
+        str, typer.Option(help="The backtest contract file digest. Required.")
+    ] = "",
+    expect_database_sha: Annotated[
+        str, typer.Option(help="The research database digest. Required.")
+    ] = "",
+    database: Annotated[
+        Path, typer.Option("--database", help="The frozen research database. Verified, never read.")
+    ] = Path("stage9k.db"),
+    runs: Annotated[
+        int, typer.Option(min=1, max=2, help="Executions. Two proves determinism.")
+    ] = 2,
+    output: Annotated[
+        Path | None, typer.Option(help="Forensic root. Default: <control>/research/r1_3.")
+    ] = None,
+    mirror: Annotated[
+        bool, typer.Option("--mirror/--no-mirror", help="Mirror the compact results.")
+    ] = True,
+) -> None:
+    """Explain the turnover premise R1.2 found unmet, without testing anything.
+
+    The command reproduces the turnover figure from the frozen ledgers by an
+    independent path, documents the formula the project actually uses, attributes
+    every membership change to its cause, and computes the least trading the
+    executed selections could have required. It runs no strategy: the forensic
+    package is scanned for a reachable simulator before anything is read, and a
+    reachable one ends the command.
+    """
+    settings = _bootstrap()
+    for name, value in (
+        ("--expect-contract-sha", expect_contract_sha),
+        ("--expect-database-sha", expect_database_sha),
+    ):
+        if len(value) != 64:
+            typer.echo(f"STOPPED: {name} is required and must be a full SHA-256")
+            raise typer.Exit(code=1)
+
+    storage, control = _open_layout(settings)
+    contract_dir = control.path / CONTRACT_DIR
+    forensic_dir = output or control.path / FORENSIC_DIR
+
+    before = _file_sha256(database)
+    if before != expect_database_sha.lower():
+        typer.echo(f"STOPPED: {database} hashes to {before[:16]}…; refusing to run")
+        raise typer.Exit(code=1)
+    contract_sha = _file_sha256(contract_dir / "backtest_data_contract_v1.json")
+    typer.echo(f"database verified : {before[:16]}… ({database})")
+
+    commit = subprocess.run(
+        ["git", "rev-parse", "HEAD"],  # noqa: S607
+        capture_output=True,
+        text=True,
+        check=False,
+    ).stdout.strip()
+    if len(commit) != 40:
+        typer.echo("STOPPED: cannot determine the code commit")
+        raise typer.Exit(code=1)
+
+    results = []
+    for index in range(runs):
+        target = forensic_dir if index == 0 else forensic_dir.with_name(forensic_dir.name + "_r2")
+        if index == 1:
+            shutil.rmtree(target, ignore_errors=True)
+        typer.echo(f"--- run {index + 1} of {runs} into {target} ---")
+        try:
+            results.append(
+                run_forensics(
+                    target,
+                    r1_0_directory(control.path),
+                    r1_1_directory(control.path),
+                    r1_2_directory(control.path),
+                    contract_sha256=contract_sha,
+                    expect_contract_sha256=expect_contract_sha.lower(),
+                    code_commit=commit,
+                )
+            )
+        except ForensicBindingError as exc:
+            typer.echo(f"STOPPED: {exc}")
+            raise typer.Exit(code=1) from exc
+
+    first = results[0]
+    typer.echo(f"bindings verified : {len(first.binding.checks)} checks")
+    if len(results) > 1:
+        differences = sorted(
+            name
+            for name in set(first.fingerprints) | set(results[1].fingerprints)
+            if first.fingerprints.get(name) != results[1].fingerprints.get(name)
+        )
+        if differences:
+            typer.echo(f"STOPPED: the two runs disagree on {differences}")
+            raise typer.Exit(code=1)
+        typer.echo(f"determinism       : {len(first.fingerprints)} fingerprints identical")
+
+    after = _file_sha256(database)
+    if after != before:
+        typer.echo(f"STOPPED: {database} changed during the analysis")
+        raise typer.Exit(code=1)
+    typer.echo(f"database unchanged: {after[:16]}…")
+
+    if mirror:
+        control_mirror = ControlMirror(storage, R1_MIRROR_GENERATION)
+        try:
+            records = mirror_r1_3(control_mirror, forensic_dir)
+        except (MirrorConflictError, StorageUnavailableError) as exc:
+            typer.echo(f"STOPPED: the mirror refused: {exc}")
+            raise typer.Exit(code=1) from exc
+        typer.echo(f"mirrored          : {len(records)} files under {control_mirror.prefix}")
+
+    summary = first.summary
+    turnover = summary["turnover"]
+    typer.echo("")
+    typer.echo(
+        f"  quarterly annual turnover  {turnover['quarterly_annual']:.4f}x "
+        f"vs frozen ceiling {turnover['frozen_threshold']}x"
+    )
+    typer.echo(f"  reproduced exactly         {turnover['reproduced_exactly']}")
+    typer.echo(
+        f"  per-rebalance quarterly    {turnover['quarterly_per_rebalance']:.4f} "
+        f"vs monthly {turnover['monthly_matched_per_rebalance']:.4f}"
+    )
+    typer.echo(
+        f"  membership-change floor    "
+        f"{summary['lower_bound']['floor_annual']:.4f}x; same selections could pass: "
+        f"{summary['lower_bound']['could_same_selections_pass']}"
+    )
+    typer.echo("")
+    typer.echo(f"mechanism         : {summary['mechanism_primary']}")
+    typer.echo(f"H1 final status   : {summary['h1_final_status']}")
+    typer.echo(f"next dimension    : {summary['next_dimension']}")
+    typer.echo(f"numeric rule      : {summary['numeric_rule_chosen'] or 'NONE — none chosen here'}")
+    typer.echo(f"outputs           : {forensic_dir}")
 
 
 def _percent(value: float | None) -> str:

@@ -36,9 +36,9 @@ appears without the run or the test that produced it.
 
 ## Current phase
 
-**R1.2 — the preregistered quarterly experiment executed and H1 judged by its
-own criteria** is the current checkpoint, on `feat/r1-backtest-harness`,
-branched from `feat/phase-b2-storage-abstraction` at `06357c5` (tagged
+**R1.3 — the failed turnover premise explained and H1 closed** is the current
+checkpoint, on `feat/r1-backtest-harness`, branched from
+`feat/phase-b2-storage-abstraction` at `06357c5` (tagged
 `pit-research-dataset-v2`).
 
 | | |
@@ -46,12 +46,59 @@ branched from `feat/phase-b2-storage-abstraction` at `06357c5` (tagged
 | B2 | **COMPLETE / FROZEN** |
 | R1.0 | **COMPLETE** — harness and four preregistered baselines |
 | R1.1 | **COMPLETE** — interpretation; one experiment specified, not run |
-| R1.2 | **COMPLETE** — that experiment executed unchanged |
-| `H1_MEDIUM_HORIZON_SELECTION` | **PARTIALLY SUPPORTED** (`PARTIALLY_SUPPORTED_BY_R1_2`) — criteria 1, 2, 4 and 5 met; **criterion 3 not met** |
-| `COMPOUNDER_QUARTERLY_TOP_DECILE_V1` | historical experiment complete; spec `1b30916d…` executed verbatim, no variant tried |
-| Independent confirmation | **NOT YET** — H1 was formed after R1.0 read 2025-01…2026-03, so no part of R1.2 is out-of-sample |
+| R1.2 | **COMPLETE** — that experiment executed unchanged; H1 `PARTIALLY_SUPPORTED_BY_R1_2` |
+| R1.3 | **COMPLETE** — forensic analysis only; **0 strategies simulated, 0 parameters tested** |
+| Failed premise | **C3 — annual turnover ≤ 1.95×**; observed **2.253982668222645×**, reproduced bit-exactly from the ledgers |
+| Mechanism | `M2_REBALANCE_FREQUENCY_REDUCTION_OFFSET_BY_MEMBERSHIP_DRIFT` |
+| `H1_MEDIUM_HORIZON_SELECTION` | **`H1_MECHANISTICALLY_FALSIFIED`** — the criterion was unreachable by frequency alone. Not a defect, and not a verdict on the score |
+| Implementation / accounting defect | **NONE** — one cosmetic metadata miscount found and recorded; it touches no criterion |
+| Independent confirmation | **NOT YET** — unchanged; the R1.2 holdout remains `CONTAMINATED_FOR_H1_CONFIRMATION` and was not upgraded |
 | Current-classification limitation | **MATERIAL / UNRESOLVED** — 99.0% of executable observations, 98.4% of selections, 98.3% of portfolio weight |
-| Next | **R1.3 — review the failed turnover premise and decide whether H1 is worth prospective observation** |
+| Next | **R1.4 — define the next preregistered hypothesis** from the turnover-mechanism evidence. No rule is chosen yet |
+
+What R1.3 found. **A quarter of the rebalances is not a quarter of the
+trading.** Per-rebalance one-way turnover rose by a factor of 1.796 (0.3137 →
+0.5635) because the ranking drifts further over three months than over one, and
+that gave back **39.8%** of the reduction frequency alone would have delivered:
+had per-event turnover held at the monthly level, quarterly would have annualised
+at 1.255× and passed comfortably.
+
+**The criterion was unreachable, which is why H1 is falsified rather than
+merely unmet.** An exit must be sold in full and an entrant bought to its
+target, so both are forced by the target set; only resizing a position held on
+both sides is avoidable. Removing *every* resizing trade while keeping the
+executed quarterly selections unchanged still leaves annual turnover at
+**2.1242×**, above the 1.95× ceiling by 0.174×. No implementation could have
+satisfied C3 without changing which identities are selected — which is not what
+H1 proposed.
+
+**The number was already in the hypothesis record.** Quarter-to-quarter
+retention is 45.77%, and the monthly ledger's own three-month survival is
+45.98% — the same quantity over the same elapsed time, agreeing to 0.2 pp. H1's
+premise B recorded that figure as `three_month_retention: 0.4598` before the
+experiment ran. Quarterly rebalancing did not cause the drift; it only stopped
+trading through it.
+
+**Churn is not boundary noise.** Only 14.4% of membership changes involve a rank
+move under 5 percentile points and 34.2% under 10; 37.6% move more than 20
+points, and the median move is 14.9 points. Half of entrants (49.6%) arrive from
+beyond the 20th percentile and 57.5% of exits fall beyond it. 87.0% of exits and
+75.6% of entries are ranking decisions; the rest are availability changes —
+tradability 6.2% of exits and 16.2% of entries — so the score is not responsible
+for all of it. Resizing is 5.98% of traded notional and terminal legs 0.23%.
+
+Two reporting notes, recorded rather than fixed. R1.2's comparator field
+`rebalances_in_window` reads 50 where 49 is correct: it counts distinct month
+labels among in-window trades, and a terminal settlement carries an empty month
+label. It feeds no criterion and no turnover figure. Separately, the frozen
+record annualises turnover two ways — nominal frequency for the quarterly figure
+and C3's 3.90× anchor, elapsed years for the matched comparator — which is why
+that comparator reports 3.7949× where the nominal convention gives 3.7642× for
+the same window. C3's verdict is invariant to the choice, and the convention
+actually used *understates* quarterly turnover, since 17 rebalances over 4.056
+years is 4.19 a year rather than the nominal 4.00.
+
+The preceding checkpoint, **R1.2**, stands unchanged.
 
 What R1.2 found. Over 17 quarter ends (2022-03-31 … 2026-03-31) and 1,023
 sessions, the quarterly portfolio returned **+126.5% gross** (CAGR 22.3%,
@@ -71,7 +118,7 @@ threshold was not moved. One other measurement is worth naming: the validation
 block is the single block with a negative benchmark-relative return (−7.3 pp),
 so criterion 4 passed at exactly its threshold of two blocks out of three.
 
-The preceding checkpoint, **R1.1**, stands unchanged.
+The checkpoint before it, **R1.1**, stands unchanged.
 
 | | |
 | --- | --- |
@@ -769,6 +816,48 @@ convention, and none may be relaxed without an explicit instruction.
   `supersession.json` naming the old package and plan digests, the forensic
   verdict and commit; the old artifacts gain a `SUPERSEDED.json` beside them
   and lose nothing, locally or remotely.
+
+### R1.3 what the failed turnover premise settled
+
+- **Turnover is one-way, denominated on pre-trade NAV at the rebalance open,
+  and annualised by nominal frequency.** `Σ|notional|` over BUY and SELL legs
+  ÷ `2 × pre-trade NAV`, then `mean × rebalances per year`. Terminal
+  settlements are outside the numerator; notional is pre-cost. That is the
+  definition C3's 3.90× anchor was computed under and the one the quarterly
+  figure is compared against, so the criterion compares like with like. The
+  matched comparator's elapsed-years annualisation is a second convention
+  reported alongside, never substituted for the first.
+- **A forensic phase cannot simulate.** `turnover_forensics` imports no
+  simulator, and `simulation_reachable` proves it by reading the package's own
+  source at bind time rather than trusting a loaded module. A non-empty result
+  refuses the run. Explaining a result and producing one are different phases.
+- **An availability change is not a score decision.** `CAUSE_BY_EXCLUSION` maps
+  every cross-section exclusion to tradability, score readiness, feature
+  freshness, execution availability or evidence timing, and maps **nothing** to
+  `RANKING` — that label is reachable only by a row no exclusion applied to.
+  Attributing all churn to the ranking would credit the score with decisions the
+  universe made: 13.0% of exits and 24.4% of entries are availability changes.
+- **A mechanism working as specified is not a defect.** `classify` returns
+  `M1_IMPLEMENTATION_OR_ACCOUNTING_DEFECT` only on positive evidence — a figure
+  that does not reproduce, a decomposition that does not close, or a broken
+  accounting invariant. Trading that follows correctly from a changed target set
+  is the strategy's mechanism whatever the verdict on it.
+- **The floor is arithmetic on trades that already happened.** An exit must be
+  sold in full and an entrant bought to its target, so removing every resizing
+  trade while holding the executed selections fixed gives the least trading those
+  selections could have required. It is not a strategy, was not executed, and is
+  what makes C3 unreachable rather than merely unmet.
+- **H1 is closed, and closing it settles nothing about the score.** C1, C2, C4
+  and C5 were met and are untouched. `H1_MECHANISTICALLY_FALSIFIED` answers the
+  question H1 asked — whether frequency alone would halve turnover — and no
+  member of `H1_STATUSES` is confirmation.
+- **No replacement parameter was chosen, deliberately.** R1.3 measured where
+  entrants and exits sit relative to the cutoff and chose no hysteresis width, no
+  buffer, no minimum holding period, no selected fraction, no position count and
+  no cadence. These data are the outcome such a rule would be judged against;
+  picking the width here would fit the parameter to the result. The recommended
+  dimension is `MEMBERSHIP_STABILITY_OF_THE_SELECTED_SET` and the numeric rule is
+  R1.4's to preregister.
 
 ### R1.2 the quarterly experiment and what it settled
 
@@ -2256,6 +2345,95 @@ Documented rather than fixed. Each is a deliberate stop, not a backlog item.
 
 Measured runs, kept because they are the evidence behind decisions above.
 
+### R1.3 failed turnover premise explained — 2026-09-25
+
+- `backtest review-turnover --runs 2 --mirror` with `--expect-contract-sha`
+  `f7efb001…` and `--expect-database-sha` `20a77d24…`. **27 binding checks**
+  passed: the contract, every R1.0 ledger fingerprint, all 14 R1.2 artifact
+  fingerprints, the H1 record `a64268ef…`, the R1.2 specification `1b30916d…`,
+  and R1.2's interpretation being `PARTIALLY_SUPPORTED_BY_R1_2` with C3 the only
+  unmet criterion. Both databases byte-identical before and after.
+- **0 strategies simulated.** `simulation_reachable` scans the forensic
+  package's own imports and returned empty; a non-empty result ends the command.
+  `research_ledger.jsonl` records `FORENSIC_ANALYSIS`, 0 variants tried, 0
+  sweeps, 0 new frequency or selection variants, 0 new holdout evaluations.
+- **Turnover reproduced from the ledgers alone**, bit for bit: quarterly
+  2.253982668222645× against the stored 2.253982668222645×, discrepancy exactly
+  0.0. The monthly C3 anchor reproduced at 3.895762988882577× against
+  3.8957629888825784×, differing in the last representable place. Pre-trade NAV
+  was recovered as `market_value / actual_weight`, which under the gross cost
+  model equals the pre-trade figure.
+- **Decomposition closes exactly**: entrants 50.5046%, exits 43.2901%, resizing
+  5.9780%, terminal 0.2274% — shares summing to 1.0 within 1e-12, ranking churn
+  93.7946%, residual 0.0 on 2,471,817.294027481 of rebalance notional and 0.0 on
+  5,632.624902353189 of terminal notional. 0 accounting violations, 0 unpriced
+  selections, 0 quarters in cash.
+- **Frequency decomposition.** Monthly matched 49 rebalances at 0.31368215
+  per-event (3.7642× nominal); quarterly 17 at 0.56349567 (2.2540×). Ratio
+  **1.7964**; the counterfactual holding per-event turnover at the monthly level
+  gives **1.2547×**, so **39.8%** of the frequency benefit was given back.
+  Required reduction to reach 1.95×: 0.303983× absolute, 13.49% relative.
+- **Lower bound — the decisive measurement.** Removing every resizing trade
+  while holding the executed selections fixed leaves **2.1242×**, above the
+  ceiling by 0.1742×. `could_same_selections_satisfy_threshold: false`, so C3
+  was unreachable by frequency and weighting mechanics alone →
+  **`H1_MECHANISTICALLY_FALSIFIED`**, mechanism
+  `M2_REBALANCE_FREQUENCY_REDUCTION_OFFSET_BY_MEMBERSHIP_DRIFT`.
+- **Retention.** Quarter-to-quarter 45.77% (median 46.48%, min 38.55%, max
+  58.90%) against the monthly survival curve's 71.46% / 56.41% / **45.98%** at
+  one, two and three months — the same quantity over the same elapsed time,
+  agreeing to 0.2 pp, and already recorded in H1's premise B. Interpolated
+  membership half-life **2.61 months**, slower than the 2.06 a geometric decay
+  from the first step would give, so a persistent core sits inside a churning
+  fringe.
+- **Membership change by cause.** Exits (677): ranking 87.00%, tradability
+  6.20%, score readiness 3.40%, not in universe 3.10%, feature freshness 0.30%.
+  Entries (704): ranking 75.57%, tradability 16.19%, score readiness 4.12%, not
+  in universe 3.98%, feature freshness 0.14%.
+- **Churn is not boundary noise.** Rank moves: under 5 points 14.38%, 5–10
+  19.84%, 10–20 28.20%, over 20 **37.58%**; median move 0.1488, mean 0.2076.
+  Entrants' prior band: top 5% 5.87%, 5–10% 4.17%, 10–15% 23.03%, 15–20% 17.31%,
+  beyond 20% **49.61%**. Exits' current band: beyond 20% **57.50%**.
+- **Rank and score persistence**, measured on R1.0's monthly cross-sections.
+  All-scored Spearman 0.9066 / 0.8129 / 0.7323 at one, two and three months
+  (≈1,397 identities per pair); executable-only 0.9089280237618296 / 0.8182 /
+  0.7366 (≈719 per pair), the first of which reproduces R1.1's recorded
+  month-to-month correlation exactly. Mean absolute score change 2.73 / 4.55 /
+  5.90 points on the executable population, p90 6.72 / 10.73 / 13.10.
+- **Holding duration**, 778 episodes over 503 identities: mean 1.7314 quarters,
+  median 1, p75 2, p90 4, maximum 14; 504 single-quarter episodes. Re-entry: 202
+  identities, 275 events, 35.35% of all episodes, median 2 quarters outside.
+- **Turnover spread, not concentrated.** Largest rebalance 10.03% of traded
+  notional (2026-04-01), top 3 26.89%, top 5 41.89% against an even share of
+  5.88%. By block: DEV 2.1769×, VAL 2.2601×, HOLDOUT 2.3724×. By year: 2022
+  1.8809× (partial), 2023 2.3545×, 2024 2.2140×, 2025 2.4540×, 2026 2.2924×
+  (partial). Dispersion-versus-turnover Spearman −0.4363 across 17 observations.
+- **Threshold provenance.** C3's 1.95× is a product of two parts of different
+  kinds: an empirical anchor (3.90×, R1.0's full-window monthly turnover, but
+  measured after R1.0 had read its holdout, so not pre-holdout) times an
+  arbitrary round reduction factor (one half, with no derivation anywhere in the
+  record — no cost model connects it to premise D's 77.9 bps). Classified
+  `OTHER`, and not altered.
+- **Two reporting notes, recorded not fixed.** R1.2's comparator field
+  `rebalances_in_window` reads 50 where 49 is correct, because it counts distinct
+  month labels and a terminal settlement carries an empty label; it feeds no
+  criterion and no turnover figure (`COSMETIC_METADATA`). And the frozen record
+  annualises turnover two ways — nominal frequency for the quarterly figure and
+  C3's anchor, elapsed years for the matched comparator — which is why that
+  comparator reads 3.7949× where nominal gives 3.7642× for the same window. C3's
+  verdict is invariant, and the convention used understates quarterly turnover
+  (17 rebalances over 4.056 years is 4.19 a year, not 4.00).
+- **Determinism**: 11 semantic fingerprints identical across two runs; 11 files
+  mirrored to `control/PIT_RESEARCH_DATASET_V2/research/r1-3/` and each read
+  back and verified. Digests: `r1_3_complete.json` `89e085c1…`,
+  `r1_3_summary.json` `467ab0c4…`, `r1_3_h1_forensic_evaluation.json`
+  `77c8c993…`, `r1_3_turnover_lower_bound.json` `9dac937d…`.
+- **Holdout untouched.** Still `CONTAMINATED_FOR_H1_CONFIRMATION`, not upgraded,
+  0 new holdout strategy evaluations. No aggregate rule invented: R1.2's
+  four-of-five remains `PARTIALLY_SUPPORTED_BY_R1_2`. Next: **R1.4 — define the
+  next preregistered hypothesis**, dimension
+  `MEMBERSHIP_STABILITY_OF_THE_SELECTED_SET`, numeric rule **none chosen**.
+
 ### R1.2 preregistered quarterly experiment executed — 2026-09-24
 
 - `backtest run-quarterly --database stage9k.db --runs 2 --mirror` with all
@@ -3449,33 +3627,47 @@ under **80%**. It is what CI runs; run it rather than the individual tools.
 
 ## Next phase
 
-**R1.3 — review the failed turnover premise and decide whether H1 is worth
-prospective observation** follows. R1.2 left H1 `PARTIALLY_SUPPORTED_BY_R1_2`:
-four of five preregistered criteria held, and the one that failed is the one the
-hypothesis was named for. Turnover fell 42.2% where the frozen criterion asked
-for half, because per-rebalance turnover rises with the gap between rebalances —
-the ranking drifts more over a quarter than over a month, so a quarter of the
-rebalances does not mean a quarter of the trading.
+**R1.4 — define the next preregistered hypothesis** follows. R1.3 closed the
+question H1 asked. The answer is that frequency was the wrong lever: per-
+rebalance turnover tracks one minus retention, and retention is a property of
+how the selection rule responds to a drifting ranking rather than of how often
+the rule is applied. Applying it a third as often did not make the ranking hold
+still.
 
-R1.3's job is to understand that, not to route around it. **It must not test
-another frequency.** Specifically it may not try two, four, six or twelve
-months, may not add a buffer, hysteresis or minimum-holding rule, and may not
-re-specify the top decile — each of those would be the parameter search the
-whole R1 protocol exists to avoid, and each would be chosen with R1.2's result
-already in view.
+**The dimension R1.4 should address is membership stability of the selected
+set.** A hypothesis of the shape *does a preregistered membership-stability rule
+reduce annual turnover below the previously failed threshold without materially
+degrading the frozen Compounder signal?* is licensed by the evidence. **No
+numeric rule is licensed by it.** R1.3 deliberately chose no hysteresis width,
+no buffer, no minimum holding period, no alternative selected fraction or fixed
+position count, no cadence, no turnover penalty and no score smoothing — because
+these data are the outcome such a rule would be judged against, and choosing the
+width here would fit the parameter to the result and leave nothing to test.
+R1.4 must state its rule before it is evaluated.
 
-What R1.3 may do: read why per-rebalance turnover rose, decide whether the
-economic intent behind criterion 3 was met in substance (the per-side cost
-break-even roughly doubled, from 77.9 bps to 156.9 bps, and the 10 bps cost drag
-fell by 2.1 pp) even though the mechanical threshold was missed, and decide
-whether H1 is worth freezing for prospective observation. If it is, the phase
-after that freezes a shadow-portfolio protocol — strategy rules unchanged,
-future data accumulated — which is a research instrument and **not** permission
-to trade capital.
+Two things R1.3's evidence argues against assuming, and neither settles anything:
+
+- **A simple boundary buffer is unlikely to be sufficient on its own.** Only
+  14.4% of membership changes involve a rank move under 5 percentile points and
+  34.2% under 10; 37.6% move more than 20, and half of entrants arrive from
+  beyond the 20th percentile. Most churn is substantial ranking change, not
+  names hovering at the line. This is a reason not to assume a buffer is the
+  answer — not a reason to pick a different number instead.
+- **13.0% of exits and 24.4% of entries are availability changes, not score
+  decisions** — tradability most of all. A rule aimed only at the ranking would
+  not touch them.
+
+**R1.4 must still not test another cadence**, and must not treat R1.2's four met
+criteria as H1 passing: the frozen specification states no rule for combining
+its five criteria and none has been invented. If a hypothesis is frozen and
+survives, the phase after that freezes a shadow-portfolio protocol — strategy
+rules unchanged, future data accumulated — which is a research instrument and
+**not** permission to trade capital.
 
 Nothing here is ready to trade. The current-classification limitation remains
-material and unresolved, no result has independent confirmation, and R1.2's
-evidence rests on 17 quarterly cross-sections and one realised path.
+material and unresolved, no result has independent confirmation, R1.2's evidence
+rests on 17 quarterly cross-sections and one realised path, and the validation
+block's −7.3 pp shortfall against SPY is not erased by anything R1.3 measured.
 
 No evidence acquisition, no A4, no change to the PIT, identity or scoring
 semantics, and no promotion of `MARKET_SIGNALS_V2` without its own decision.
@@ -3539,8 +3731,17 @@ Not a backlog. These exclusions are deliberate.
   and their thresholds are frozen and were not revised after the measurements.
   `COMPOUNDER_QUARTERLY_TOP_DECILE_V1` is not re-specified, and no second
   rebalance frequency, selection fraction, weighting, cost level, buffer or
-  minimum-holding rule is tried before R1.3 reviews why criterion 3 failed.
+  minimum-holding rule is tried on the strength of R1.3's findings.
   2025-01…2026-03 is never described as confirmation of H1.
+- **The R1.3 forensic record and what it withheld (R1.3).** The turnover
+  definition, the membership-change floor and the cause attribution stand as
+  measured; the C3 threshold is not altered retrospectively; R1.2's
+  four-of-five is not re-read as H1 passing, because the specification states no
+  aggregate rule and none has been invented. Above all, **no numeric rule may be
+  taken from R1.3's boundary or rank-move distributions.** R1.3 chose none on
+  purpose — they are the outcome a stability rule would be judged against — and
+  R1.4 must state its rule before evaluating it. `turnover_forensics` must never
+  gain an import that lets it simulate.
 - **The R1.1 hypothesis and the R1.2 specification (R1.1).**
   `r1_1_hypothesis.json` and `r1_2_experiment_spec.json` are frozen. Their
   rules, thresholds and falsification criteria are not edited after the fact,
@@ -3578,11 +3779,11 @@ Not a backlog. These exclusions are deliberate.
 
 | | |
 | --- | --- |
-| Commit | The R1.2 commit containing this checkpoint, `research: test quarterly Compounder hypothesis`; parent `27a5cb7` (R1.1, `feat: add R1 Compounder signal diagnostics`), then `196690d` (R1.0) and `06357c5` (B2.18, tagged `pit-research-dataset-v2`). The authoritative plan's meta and authorization record name `repo_commit` `daa1d36`; the corrected package records `2a7d3b8`, the superseded package `ebfbc1c`, the superseded plan `afe6a10`, the index `1b407b6`. |
+| Commit | The R1.3 commit containing this checkpoint, `research: explain quarterly Compounder turnover failure`; parent `db96f18` (R1.2, `research: test quarterly Compounder hypothesis`), then `27a5cb7` (R1.1, `feat: add R1 Compounder signal diagnostics`), `196690d` (R1.0) and `06357c5` (B2.18, tagged `pit-research-dataset-v2`). The authoritative plan's meta and authorization record name `repo_commit` `daa1d36`; the corrected package records `2a7d3b8`, the superseded package `ebfbc1c`, the superseded plan `afe6a10`, the index `1b407b6`. |
 | Branch | `feat/r1-backtest-harness`, branched from `feat/phase-b2-storage-abstraction` at `06357c5` |
 | Migration head | `0031` — the research-universe layer (9K.7). Nothing since 9K.11 added one. |
 | Score version | `COMPOUNDER_V1_2` (unchanged by anything in Phase 8, 9A, 9B or 9C) |
 | Feature version | `MARKET_FEATURES_V1` |
 | Signal version | `MARKET_SIGNALS_V1` |
-| Primary database | untouched by 8A–8J, 9A–9L.5, B2, R1.0, R1.1 and R1.2; all work ran against staging copies |
-| Checkpoint date | 2026-09-24 |
+| Primary database | untouched by 8A–8J, 9A–9L.5, B2, R1.0, R1.1, R1.2 and R1.3; all work ran against staging copies |
+| Checkpoint date | 2026-09-25 |
