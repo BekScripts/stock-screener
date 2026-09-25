@@ -8,8 +8,11 @@
 > partially supported, with the turnover premise it was named for unmet — and
 > R1.3 established why that premise could not have held: the least trading the
 > quarterly selections could require already exceeds the frozen ceiling, so H1
-> is mechanistically falsified and frequency was the wrong lever. No
-> replacement rule has been chosen; R1.4 must preregister one first.
+> is mechanistically falsified and frequency was the wrong lever. R1.4 then
+> preregistered the next hypothesis — `H2_MEMBERSHIP_STABILITY`, one
+> hysteresis rule, four criteria and an aggregate rule fixed before execution —
+> and ran nothing. No part of the frozen history can confirm it, so R1.5's run
+> will be exploratory by construction.
 > Portfolio construction, paper
 > trading, supervised live and constrained autonomous execution follow it in
 > that order and none of them is started. Everything below remains

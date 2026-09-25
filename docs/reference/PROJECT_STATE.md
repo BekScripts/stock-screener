@@ -36,10 +36,62 @@ appears without the run or the test that produced it.
 
 ## Current phase
 
-**R1.3 — the failed turnover premise explained and H1 closed** is the current
-checkpoint, on `feat/r1-backtest-harness`, branched from
-`feat/phase-b2-storage-abstraction` at `06357c5` (tagged
-`pit-research-dataset-v2`).
+**R1.4 — H2 preregistered, and nothing run** is the current checkpoint, on
+`feat/r1-backtest-harness`, branched from `feat/phase-b2-storage-abstraction` at
+`06357c5` (tagged `pit-research-dataset-v2`).
+
+| | |
+| --- | --- |
+| B2 | **COMPLETE / FROZEN** |
+| R1.0 – R1.2 | **COMPLETE** |
+| R1.3 | **COMPLETE** — forensic analysis; H1 `H1_MECHANISTICALLY_FALSIFIED`, no defect |
+| R1.4 | **COMPLETE** — preregistration only; **0 strategies simulated, 0 return or turnover calculations** |
+| H1 | **CLOSED / MECHANISTICALLY FALSIFIED.** Not reopened |
+| R1.3 cause | membership drift — `M2_REBALANCE_FREQUENCY_REDUCTION_OFFSET_BY_MEMBERSHIP_DRIFT` |
+| H2 | **`H2_MEMBERSHIP_STABILITY`** — `PREREGISTERED_NOT_EXECUTED` |
+| Rule | **`ONE_DECILE_HYSTERESIS_V1`** — one parameterisation, no alternative evaluated |
+| Aggregate rule | **C1 AND C2 AND C3 AND C4**, fixed before execution — unlike H1, which stated none |
+| Historical evidence status | **EXPLORATORY ONLY.** R1.3 read the whole frozen period, so no part of it can confirm H2 |
+| Independent confirmation | **REQUIRED** after the exploratory test, and not obtainable from this dataset |
+| Next | **R1.5 — execute the single preregistered H2 exploratory test** |
+
+What R1.4 froze. H2 claims that holding the quarterly cadence, the score, the
+target size, the weighting, the execution timing and every data semantic fixed,
+a one-decile membership-hysteresis rule reduces turnover by reducing rank-driven
+entries and exits while preserving exposure. **It makes no performance claim**,
+and no performance measurement takes part in its verdict.
+
+The rule adds exactly one idea to R1.2: a name already held survives a smaller
+rank decline than would be required to buy it. Entry is the ordinary top-decile
+target count; an incumbent is retained while its rank position is inside
+**twice** that count. Both numbers are structural rather than selected — the
+target count is taken from R1.2 and never recomputed, so both strategies always
+hold the same number of names, and the band is two selection widths expressed in
+names, which equals the top 20% by construction while inheriting the entry
+rule's rounding. R1.3 measured where entrants and exits sit relative to the
+cutoff and deliberately chose no width from those distributions.
+
+Four criteria are frozen: turnover strictly below 2.253982668222645×, entry/exit
+churn turnover strictly below 2.11411510465003× (an absolute quantity, since a
+share can fall while the quantity rises), the same target-count rule with zero
+intentional cash quarters, and zero accounting, identity, leakage or same-close
+violations. H1's 1.95× is **not** an H2 criterion — R1.3 showed it to be an
+empirical anchor times an undeclared one half — and is carried only as
+`LEGACY_H1_TURNOVER_REFERENCE`. The binder refuses any specification that
+promotes it to a criterion or moves it.
+
+**No part of the frozen history can confirm H2.** R1.3's analysis spanned
+development, validation and the already-read holdout, so the dataset is
+hypothesis-generation data for H2. A later historical run must be classified
+`EXPLORATORY_HISTORICAL_TEST`; `clean_h2_holdout_remains` is false, no subperiod
+is relabelled, and `CONFIRMATION_REQUIRED_AFTER_EXPLORATORY_TEST` is true. No
+prospective duration is chosen, because no research policy defines one.
+
+**No H2 performance appears anywhere, because none exists.** The package imports
+no simulator and no pricing path, and `simulation_reachable` proves it by
+reading its own source before anything else runs.
+
+The preceding checkpoint, **R1.3**, stands unchanged.
 
 | | |
 | --- | --- |
@@ -816,6 +868,34 @@ convention, and none may be relaxed without an explicit instruction.
   `supersession.json` naming the old package and plan digests, the forensic
   verdict and commit; the old artifacts gain a `SUPERSEDED.json` beside them
   and lose nothing, locally or remotely.
+
+### R1.4 what preregistering H2 settled
+
+- **A hypothesis states its aggregate rule.** H1 stated five criteria and no way
+  of combining them, and R1.2 had to respect that absence after the fact. H2
+  fixes `C1 AND C2 AND C3 AND C4` before execution. A frozen criterion set with
+  no combination rule is an ambiguity, and it is not to be repeated.
+- **A threshold with an undeclared component is a diagnostic, not a criterion.**
+  1.95× stays in the record as `LEGACY_H1_TURNOVER_REFERENCE` and is never an H2
+  pass condition. It is also never moved: retiring a bound and rewriting one are
+  different acts.
+- **A rule's parameters are structural where they can be.** H2's band is two
+  selection widths, and its target count is R1.2's. Neither was chosen from
+  R1.3's distributions, because R1.3's distributions are the outcome H2 will be
+  judged against. Where a number cannot be derived structurally, it is not
+  chosen at all — no prospective duration is fixed here.
+- **Contamination is recorded, never engineered around.** Every month of the
+  frozen dataset has been exposed to the research process, so no subperiod may
+  be relabelled as an H2 holdout, and a historical H2 run is an
+  `EXPLORATORY_HISTORICAL_TEST` however carefully it was preregistered.
+  Independent confirmation requires data the generating process could not see.
+- **A preregistration phase cannot price anything.** `membership_hypothesis`
+  imports no simulator and no pricing path, proved by reading its own source at
+  bind time. The experiment does not exist until R1.5 runs it once.
+- **One run, then a new hypothesis id.** If H2's result is poor, the band, the
+  frequency, the entry threshold, the weighting and the execution rule are not
+  adjusted and re-run. Any variation is a new hypothesis, a new preregistration,
+  and contaminated for the same reason this one is.
 
 ### R1.3 what the failed turnover premise settled
 
@@ -2345,6 +2425,70 @@ Documented rather than fixed. Each is a deliberate stop, not a backlog item.
 
 Measured runs, kept because they are the evidence behind decisions above.
 
+### R1.4 H2 membership-stability hypothesis preregistered — 2026-09-25
+
+- `backtest preregister-h2 --runs 2 --mirror` with `--expect-contract-sha`
+  `f7efb001…` and `--expect-database-sha` `20a77d24…`. **14 binding checks**
+  passed, including a re-read of every R1.3 measurement H2 rests on: quarterly
+  annual turnover 2.253982668222645×, membership floor 2.1242318895×, quarterly
+  retention 45.7707%, monthly three-month survival 45.9757%, ranking-churn share
+  93.7946%, resizing share 5.9780%, 0 implementation and 0 accounting defects.
+  Drift in any of them refuses the phase.
+- **0 strategies simulated, 0 return calculations, 0 turnover calculations.**
+  `simulation_reachable` scans the package's imports for `simulate`,
+  `PriceBook`, `Rebalance`, `performance`, `benchmark_path`, `run_experiment`,
+  `run_r1_0` and `load_labels`, and returned empty. `research_ledger.jsonl`
+  records `HYPOTHESIS_PREREGISTRATION`, 0 variants tried, 0 sweeps, 0 holdout
+  evaluations, `turnover_calculated: false`.
+- **One hypothesis, one rule.** `H2_MEMBERSHIP_STABILITY` /
+  `ONE_DECILE_HYSTERESIS_V1`: entry at the ordinary top-decile target count,
+  retention while rank position is inside twice that count, target size taken
+  from R1.2 and never recomputed, equal weight, next-session open, calendar
+  quarter ends. The first rebalance has no incumbents and is therefore exactly
+  R1.2's selection. Forced exits — ineligibility, missing score, failed
+  tradability, missing execution eligibility, terminal state — override the band.
+- **Both numbers are structural, not selected.** The band is two selection
+  widths expressed in names, which equals the top 20% by construction while
+  inheriting the entry rule's rounding rather than adding a second one. No
+  alternative width was evaluated, and `PROHIBITED_VARIATIONS` names twelve
+  variations a later phase may not make while calling itself H2.
+- **Four frozen criteria** measured against the comparator
+  `COMPOUNDER_QUARTERLY_TOP_DECILE_V1`: C1 annual turnover < 2.253982668222645×;
+  C2 annualised entry/exit churn turnover < 2.11411510465003× (absolute, not a
+  share); C3 same target-count rule, 0 intentional cash quarters, no
+  hysteresis-caused exposure loss; C4 zero accounting, identity, leakage and
+  same-close violations. **Aggregate rule `C1 AND C2 AND C3 AND C4`, stated
+  before execution** — the one deliberate difference from H1, which stated none.
+- **1.95× is not an H2 criterion.** Carried as
+  `LEGACY_H1_TURNOVER_REFERENCE`, a continuity reading only, on R1.3's finding
+  that it is an empirical anchor times an undeclared one half. Not moved. The
+  binder refuses a specification that promotes it or changes its value.
+- **Contamination recorded, not worked around.** The frozen dataset is
+  `HYPOTHESIS_GENERATION_DATA_FOR_H2`; all three blocks were exposed; a later
+  historical run must be classified `EXPLORATORY_HISTORICAL_TEST` and may not be
+  called independent, clean-holdout, out-of-sample or prospective confirmation;
+  `clean_h2_holdout_remains` false; `holdout_reset` false;
+  `CONFIRMATION_REQUIRED_AFTER_EXPLORATORY_TEST` true; prospective duration
+  `null`, because no research policy defines one.
+- **The record carries the evidence against itself**: only 34.2% of membership
+  changes move a name under ten rank-percentile points while 37.6% move it over
+  twenty, so a band may catch less churn than its motivation suggests; 13.0% of
+  exits and 24.4% of entries are availability changes no retention band can
+  prevent; and retaining a name the ordinary rule would sell means not holding a
+  higher-ranked one, at an unmeasured cost.
+- **`verify_h2` is the gate R1.5 must pass**, written now rather than later. It
+  refuses a moved record or specification, a specification bound to a different
+  record, one already executed or permitting more than one run, more than one
+  value in any of eight singular fields, any sweep or optimisation, a stored or
+  executor rule that drifted, changed criteria or aggregate rule, a promoted or
+  moved 1.95×, a wrong comparator, and any claim of a clean holdout or a
+  relabelled subperiod. No `--force`.
+- **Determinism**: 7 semantic fingerprints identical across two runs; 5 files
+  mirrored to `control/PIT_RESEARCH_DATASET_V2/research/r1-4/` and each read back
+  and verified. Digests: `h2_membership_stability.json` `56f2e51f…`,
+  `r1_5_experiment_spec.json` `6d266448…`, `r1_4_complete.json` `66629f3f…`.
+- **No H2 performance is recorded anywhere, because none exists.**
+
 ### R1.3 failed turnover premise explained — 2026-09-25
 
 - `backtest review-turnover --runs 2 --mirror` with `--expect-contract-sha`
@@ -3627,47 +3771,38 @@ under **80%**. It is what CI runs; run it rather than the individual tools.
 
 ## Next phase
 
-**R1.4 — define the next preregistered hypothesis** follows. R1.3 closed the
-question H1 asked. The answer is that frequency was the wrong lever: per-
-rebalance turnover tracks one minus retention, and retention is a property of
-how the selection rule responds to a drifting ranking rather than of how often
-the rule is applied. Applying it a third as often did not make the ranking hold
-still.
+**R1.5 — execute the single preregistered H2 exploratory test** follows. R1.4
+froze `H2_MEMBERSHIP_STABILITY` and `ONE_DECILE_HYSTERESIS_V1` without running
+them, so R1.5's job is narrow: call `verify_h2`, run the one parameterisation
+once over the frozen quarterly calendar, evaluate the four criteria and apply
+the aggregate rule exactly as written.
 
-**The dimension R1.4 should address is membership stability of the selected
-set.** A hypothesis of the shape *does a preregistered membership-stability rule
-reduce annual turnover below the previously failed threshold without materially
-degrading the frozen Compounder signal?* is licensed by the evidence. **No
-numeric rule is licensed by it.** R1.3 deliberately chose no hysteresis width,
-no buffer, no minimum holding period, no alternative selected fraction or fixed
-position count, no cadence, no turnover penalty and no score smoothing — because
-these data are the outcome such a rule would be judged against, and choosing the
-width here would fit the parameter to the result and leave nothing to test.
-R1.4 must state its rule before it is evaluated.
+What R1.5 may not do is already decided. It may not try a second band width, a
+second frequency, a second weighting or a second cost level — the binder refuses
+each structurally. It may not move a threshold after seeing a measurement. It
+may not use 1.95× as a pass condition. It may not describe its result as
+out-of-sample, clean-holdout or prospective confirmation, because R1.3 read the
+whole frozen period and the dataset is hypothesis-generation data for H2; the
+mandatory classification is `EXPLORATORY_HISTORICAL_TEST`. And it may not rerun
+the rule with an adjusted band if the result disappoints: that is a new
+hypothesis id and a new preregistration, contaminated for the same reason.
 
-Two things R1.3's evidence argues against assuming, and neither settles anything:
-
-- **A simple boundary buffer is unlikely to be sufficient on its own.** Only
-  14.4% of membership changes involve a rank move under 5 percentile points and
-  34.2% under 10; 37.6% move more than 20, and half of entrants arrive from
-  beyond the 20th percentile. Most churn is substantial ranking change, not
-  names hovering at the line. This is a reason not to assume a buffer is the
-  answer — not a reason to pick a different number instead.
-- **13.0% of exits and 24.4% of entries are availability changes, not score
-  decisions** — tradability most of all. A rule aimed only at the ranking would
-  not touch them.
-
-**R1.4 must still not test another cadence**, and must not treat R1.2's four met
-criteria as H1 passing: the frozen specification states no rule for combining
-its five criteria and none has been invented. If a hypothesis is frozen and
-survives, the phase after that freezes a shadow-portfolio protocol — strategy
-rules unchanged, future data accumulated — which is a research instrument and
-**not** permission to trade capital.
+A `SUPPORTED` verdict there would mean the mechanism behaved as claimed —
+turnover fell, fell by cutting entry and exit churn, and did so without
+shrinking the portfolio or breaking an invariant. It would not mean H2 is a
+better investment than the comparator, and performance plays no part in the
+verdict. Whatever R1.5 finds, independent confirmation remains required and
+remains unobtainable from this dataset: it needs prospective observations
+accumulated after this preregistration, or a genuinely untouched external
+sample with equivalent point-in-time semantics. If a hypothesis survives that
+far, the phase after it freezes a shadow-portfolio protocol — strategy rules
+unchanged, future data accumulated — which is a research instrument and **not**
+permission to trade capital.
 
 Nothing here is ready to trade. The current-classification limitation remains
 material and unresolved, no result has independent confirmation, R1.2's evidence
-rests on 17 quarterly cross-sections and one realised path, and the validation
-block's −7.3 pp shortfall against SPY is not erased by anything R1.3 measured.
+rests on 17 quarterly cross-sections and one realised path, the validation
+block's −7.3 pp shortfall against SPY stands, and H2 has not been run at all.
 
 No evidence acquisition, no A4, no change to the PIT, identity or scoring
 semantics, and no promotion of `MARKET_SIGNALS_V2` without its own decision.
@@ -3733,6 +3868,16 @@ Not a backlog. These exclusions are deliberate.
   rebalance frequency, selection fraction, weighting, cost level, buffer or
   minimum-holding rule is tried on the strength of R1.3's findings.
   2025-01…2026-03 is never described as confirmation of H1.
+- **The H2 preregistration (R1.4).** `H2_MEMBERSHIP_STABILITY` and
+  `ONE_DECILE_HYSTERESIS_V1` are frozen: one entry threshold, one retention band
+  of two selection widths, one frequency, one weighting, one execution rule, one
+  cost level. The four criteria, their thresholds and the aggregate rule
+  `C1 AND C2 AND C3 AND C4` are fixed and are not revised after the result.
+  1.95× is a diagnostic and never an H2 criterion. No historical subperiod is
+  relabelled as an H2 holdout, and a historical H2 run is never called
+  out-of-sample, clean-holdout or prospective confirmation. `verify_h2` enforces
+  all of it and has no `--force`; `membership_hypothesis` must never gain an
+  import that lets it price or simulate.
 - **The R1.3 forensic record and what it withheld (R1.3).** The turnover
   definition, the membership-change floor and the cause attribution stand as
   measured; the C3 threshold is not altered retrospectively; R1.2's
@@ -3779,11 +3924,11 @@ Not a backlog. These exclusions are deliberate.
 
 | | |
 | --- | --- |
-| Commit | The R1.3 commit containing this checkpoint, `research: explain quarterly Compounder turnover failure`; parent `db96f18` (R1.2, `research: test quarterly Compounder hypothesis`), then `27a5cb7` (R1.1, `feat: add R1 Compounder signal diagnostics`), `196690d` (R1.0) and `06357c5` (B2.18, tagged `pit-research-dataset-v2`). The authoritative plan's meta and authorization record name `repo_commit` `daa1d36`; the corrected package records `2a7d3b8`, the superseded package `ebfbc1c`, the superseded plan `afe6a10`, the index `1b407b6`. |
+| Commit | The R1.4 commit containing this checkpoint, `research: preregister membership stability hypothesis`; parent `1c4fa88` (R1.3, `research: explain quarterly Compounder turnover failure`), then `db96f18` (R1.2), `27a5cb7` (R1.1), `196690d` (R1.0) and `06357c5` (B2.18, tagged `pit-research-dataset-v2`). The authoritative plan's meta and authorization record name `repo_commit` `daa1d36`; the corrected package records `2a7d3b8`, the superseded package `ebfbc1c`, the superseded plan `afe6a10`, the index `1b407b6`. |
 | Branch | `feat/r1-backtest-harness`, branched from `feat/phase-b2-storage-abstraction` at `06357c5` |
 | Migration head | `0031` — the research-universe layer (9K.7). Nothing since 9K.11 added one. |
 | Score version | `COMPOUNDER_V1_2` (unchanged by anything in Phase 8, 9A, 9B or 9C) |
 | Feature version | `MARKET_FEATURES_V1` |
 | Signal version | `MARKET_SIGNALS_V1` |
-| Primary database | untouched by 8A–8J, 9A–9L.5, B2, R1.0, R1.1, R1.2 and R1.3; all work ran against staging copies |
+| Primary database | untouched by 8A–8J, 9A–9L.5, B2 and R1.0–R1.4; all work ran against staging copies |
 | Checkpoint date | 2026-09-25 |

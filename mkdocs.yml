@@ -64,6 +64,7 @@ nav:
       - R1.1 signal review: reference/signal-review.md
       - R1.2 quarterly experiment: reference/quarterly-experiment.md
       - R1.3 turnover forensics: reference/turnover-forensics.md
+      - R1.4 H2 preregistration: reference/membership-hypothesis.md
       - Security identity: reference/security-identity.md
       - Listing evidence: reference/listing-evidence.md
       - Storage layout: reference/storage-layout.md

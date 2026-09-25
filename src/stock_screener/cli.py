@@ -109,6 +109,15 @@ from stock_screener.listing import (
     ingest_files,
 )
 from stock_screener.logging import configure_logging
+from stock_screener.membership_hypothesis import (
+    PREREGISTRATION_DIR,
+    RULE,
+    H2BindingError,
+    mirror_r1_4,
+    preregister_h2,
+    r1_3_directory,
+    verify_h2,
+)
 from stock_screener.pit import (
     capture_day,
     discover_delistings,
@@ -6056,6 +6065,162 @@ def backtest_review_turnover_command(
     typer.echo(f"next dimension    : {summary['next_dimension']}")
     typer.echo(f"numeric rule      : {summary['numeric_rule_chosen'] or 'NONE — none chosen here'}")
     typer.echo(f"outputs           : {forensic_dir}")
+
+
+@backtest_app.command("preregister-h2")
+def backtest_preregister_h2_command(
+    expect_contract_sha: Annotated[
+        str, typer.Option(help="The backtest contract file digest. Required.")
+    ] = "",
+    expect_database_sha: Annotated[
+        str, typer.Option(help="The research database digest. Required.")
+    ] = "",
+    database: Annotated[
+        Path, typer.Option("--database", help="The frozen research database. Verified, never read.")
+    ] = Path("stage9k.db"),
+    runs: Annotated[
+        int, typer.Option(min=1, max=2, help="Executions. Two proves determinism.")
+    ] = 2,
+    output: Annotated[
+        Path | None, typer.Option(help="Preregistration root. Default: <control>/research/r1_4.")
+    ] = None,
+    mirror: Annotated[
+        bool, typer.Option("--mirror/--no-mirror", help="Mirror the compact metadata.")
+    ] = True,
+) -> None:
+    """Preregister H2_MEMBERSHIP_STABILITY, and run no experiment.
+
+    Verifies that R1.3's mechanism measurements still reproduce, then writes the
+    hypothesis record and the R1.5 specification with one rule, one band, four
+    criteria and the aggregate rule that combines them fixed in advance. It
+    computes no turnover and no return, because the experiment does not exist
+    yet: the package is scanned for a reachable simulator or pricing path before
+    anything is read, and a reachable one ends the command.
+    """
+    settings = _bootstrap()
+    for name, value in (
+        ("--expect-contract-sha", expect_contract_sha),
+        ("--expect-database-sha", expect_database_sha),
+    ):
+        if len(value) != 64:
+            typer.echo(f"STOPPED: {name} is required and must be a full SHA-256")
+            raise typer.Exit(code=1)
+
+    storage, control = _open_layout(settings)
+    contract_dir = control.path / CONTRACT_DIR
+    target_root = output or control.path / PREREGISTRATION_DIR
+
+    before = _file_sha256(database)
+    if before != expect_database_sha.lower():
+        typer.echo(f"STOPPED: {database} hashes to {before[:16]}…; refusing to run")
+        raise typer.Exit(code=1)
+    contract_sha = _file_sha256(contract_dir / "backtest_data_contract_v1.json")
+    typer.echo(f"database verified : {before[:16]}… ({database})")
+
+    commit = subprocess.run(
+        ["git", "rev-parse", "HEAD"],  # noqa: S607
+        capture_output=True,
+        text=True,
+        check=False,
+    ).stdout.strip()
+    if len(commit) != 40:
+        typer.echo("STOPPED: cannot determine the code commit")
+        raise typer.Exit(code=1)
+
+    results = []
+    for index in range(runs):
+        target = target_root if index == 0 else target_root.with_name(target_root.name + "_r2")
+        if index == 1:
+            shutil.rmtree(target, ignore_errors=True)
+        typer.echo(f"--- run {index + 1} of {runs} into {target} ---")
+        try:
+            results.append(
+                preregister_h2(
+                    target,
+                    r1_1_directory(control.path),
+                    r1_2_directory(control.path),
+                    r1_3_directory(control.path),
+                    contract_sha256=contract_sha,
+                    expect_contract_sha256=expect_contract_sha.lower(),
+                    code_commit=commit,
+                )
+            )
+        except H2BindingError as exc:
+            typer.echo(f"STOPPED: {exc}")
+            raise typer.Exit(code=1) from exc
+
+    first = results[0]
+    typer.echo(f"bindings verified : {len(first.binding.checks)} checks")
+    if len(results) > 1:
+        differences = sorted(
+            name
+            for name in set(first.fingerprints) | set(results[1].fingerprints)
+            if first.fingerprints.get(name) != results[1].fingerprints.get(name)
+        )
+        if differences:
+            typer.echo(f"STOPPED: the two runs disagree on {differences}")
+            raise typer.Exit(code=1)
+        typer.echo(f"determinism       : {len(first.fingerprints)} fingerprints identical")
+
+    record_sha = first.documents["h2_membership_stability.json"]
+    spec_sha = first.documents["r1_5_experiment_spec.json"]
+    try:
+        checks = verify_h2(
+            first.record,
+            first.spec,
+            record_sha256=record_sha,
+            spec_sha256=spec_sha,
+            expect_record_sha256=record_sha,
+            expect_spec_sha256=spec_sha,
+            executor_rules=RULE,
+        )
+    except H2BindingError as exc:
+        typer.echo(f"STOPPED: the binder refuses what this phase wrote: {exc}")
+        raise typer.Exit(code=1) from exc
+    typer.echo(f"binder self-check : {len(checks)} checks; no --force exists")
+
+    after = _file_sha256(database)
+    if after != before:
+        typer.echo(f"STOPPED: {database} changed during preregistration")
+        raise typer.Exit(code=1)
+    typer.echo(f"database unchanged: {after[:16]}…")
+
+    if mirror:
+        control_mirror = ControlMirror(storage, R1_MIRROR_GENERATION)
+        try:
+            mirrored = mirror_r1_4(control_mirror, target_root)
+        except (MirrorConflictError, StorageUnavailableError) as exc:
+            typer.echo(f"STOPPED: the mirror refused: {exc}")
+            raise typer.Exit(code=1) from exc
+        typer.echo(f"mirrored          : {len(mirrored)} files under {control_mirror.prefix}")
+
+    typer.echo("")
+    typer.echo(f"hypothesis        : {first.record['hypothesis_id']}")
+    typer.echo(f"rule              : {first.record['rule_version']}, 1 parameterisation")
+    typer.echo(
+        f"  entry           : {first.record['entry_widths']} selection width; "
+        f"retention {first.record['retention_widths']} widths"
+    )
+    for criterion in first.record["falsification_criteria"]["criteria"]:
+        typer.echo(f"  C{criterion['number']} {criterion['id']}: {criterion['requirement']}")
+    typer.echo(
+        f"  aggregate       : "
+        f"{first.record['falsification_criteria']['aggregate_rule']['expression']}"
+    )
+    typer.echo(
+        f"  legacy 1.95x    : diagnostic only, is_a_criterion="
+        f"{first.record['legacy_h1_reference']['is_an_h2_criterion']}"
+    )
+    typer.echo("")
+    typer.echo(f"R1.5 spec status  : {first.spec['status']}")
+    typer.echo(
+        f"historical status : "
+        f"{first.record['historical_evidence_status']['mandatory_classification_of_a_historical_run']}"
+        f"; clean holdout remains: "
+        f"{first.record['historical_evidence_status']['clean_h2_holdout_remains']}"
+    )
+    typer.echo("performance       : NONE CALCULATED — the experiment has not been run")
+    typer.echo(f"outputs           : {target_root}")
 
 
 def _percent(value: float | None) -> str:
