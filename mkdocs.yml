@@ -68,6 +68,7 @@ nav:
       - R1.5 H2 experiment: reference/hysteresis-experiment.md
       - R1.6 H2 candidate and shadow protocol: reference/prospective-protocol.md
       - R1.7 prospective shadow runner: reference/prospective-runner.md
+      - R1.9 prospective source plane: reference/prospective-source.md
       - Security identity: reference/security-identity.md
       - Listing evidence: reference/listing-evidence.md
       - Storage layout: reference/storage-layout.md

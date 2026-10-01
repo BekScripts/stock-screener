@@ -36,10 +36,79 @@ appears without the run or the test that produced it.
 
 ## Current phase
 
-**R1.7 — the prospective H2 shadow runner built, activated and armed** is the
-current checkpoint, on `feat/r1-backtest-harness`, branched from
+**R1.9 — the prospective source plane built and the missed quarter disposed of**
+is the current checkpoint, on `feat/r1-backtest-harness`, branched from
 `feat/phase-b2-storage-abstraction` at `06357c5` (tagged
 `pit-research-dataset-v2`).
+
+| | |
+| --- | --- |
+| B2 | **COMPLETE / FROZEN** |
+| R1.0 – R1.7 | **COMPLETE** |
+| H1 | **CLOSED / MECHANISTICALLY FALSIFIED** (R1.3) |
+| H2 | **unchanged** — `PENDING PROSPECTIVE EVIDENCE`; not failed, not supported |
+| R1.8 | **FIRST ELIGIBLE PROSPECTIVE CAPTURE MISSED** |
+| Reason | **`PROSPECTIVE_DATA_PLANE_NOT_READY`** — an operational readiness defect, not an H2 result |
+| September 30 recovery | **PROHIBITED / NOT RECOVERABLE / NOT BACKFILLED** |
+| Prospective evidence | **0 valid observations** |
+| R1.9 | prospective source plane **READY** — 6 of 6 inputs, proven against live providers |
+| Protocol disposition | **`P3_PROTOCOL_SILENT_AMENDMENT_REQUIRED`** |
+| V1 | **IMMUTABLE AND UNEDITED** |
+| Successor | **`H2_PROSPECTIVE_SHADOW_PROTOCOL_V2`** — governance only; H2 untouched |
+| Re-arm | **REQUIRED** — two independent reasons |
+| Prospective verdict | **PENDING**; criteria `SEALED_UNTIL_WINDOW_COMPLETE` |
+| Next eligible capture | derived from the benchmark calendar, not assigned here |
+| Next | **R1.10 — certify the next eligible capture window and arm under V2** |
+
+What R1.8 cost, and why. The 2026-09-30 decision was eligible and the runner was
+armed five days early, but no honest packet could be produced: five of the six
+required decision-packet fingerprints had no source path, and the newest prices
+in either database were 33 days older than the decision session. Failing closed
+was correct. **One quarter of a five-decision window is gone and cannot be
+recovered**, because V1 permits reconstruction only of a quarter whose
+decision-time state was already durably captured, and it was not.
+
+What R1.9 built. Four live adapters, an immutable content-addressed store, and a
+readiness gate that is conjunctive — five of six reads BLOCKED, not nearly ready,
+because a decision packet needs all six fingerprints. The invariant at the centre
+is one rule in one direction: **late retrieval is permitted, late information is
+not.** Every snapshot carries `retrieved_at` and `semantic_as_of` separately and
+a naive timestamp is refused, since it cannot be compared to an instant.
+
+SEC availability is the one genuinely point-in-time source — the submissions
+index publishes an acceptance timestamp per accession, so `accepted_at <= T` is
+provable rather than asserted, and `companyfacts` is refused by name because a
+current aggregate cannot attribute a value to an accession. Prices are bounded by
+session, with later bars dropped and counted. The universe carries no history at
+all, so its as-of is its retrieval moment and is never backdated.
+
+**A constraint surfaced while proving the plane**, and it changes how a capture
+must be scheduled: a current-state source can only serve an instant at or after
+its retrieval, so the universe must be snapshotted **at or before** the decision
+instant. The capture job must run *at* 16:00, not later that evening. Prices and
+SEC acceptance may be fetched afterwards; the universe may not.
+
+What the governance audit found. V1 settles that September 30 can never count.
+It does **not** settle whether the window continues: its "skip that quarter"
+clause is triggered by a missed *arm cutoff*, and this cutoff was satisfied, so
+borrowing that disposition would be an interpretation rather than a reading — and
+the convenient one. Hence `P3`, and a successor protocol that states the
+disposition explicitly while leaving V1 untouched.
+
+**V2 changes nothing about H2** — not the rule, the band, the cadence, P1–P4, the
+aggregate rule, or the window length. It adds a named disposition for a
+capture that fails closed on an unavailable source, distinguishing a
+pre-sequence miss (no transition lost; the window starts later) from a
+mid-sequence one (the chain the criteria measure is broken), and makes readiness
+a **precondition of arming** rather than a hope at capture.
+
+**Re-arm is required for two independent reasons**: V1's arm record names
+2026-09-30, a date the runner can no longer act on; and building the source plane
+moved the semantic code fingerprint from `fc4b10f1…` to `164b445e…`, which on its
+own closes the V1 window, since the runner refuses confirmatory capture across a
+semantic change.
+
+The preceding checkpoint, **R1.7**, stands unchanged.
 
 | | |
 | --- | --- |
@@ -4440,11 +4509,11 @@ Not a backlog. These exclusions are deliberate.
 
 | | |
 | --- | --- |
-| Commit | The R1.7 commit containing this checkpoint, `research: activate H2 prospective shadow runner`, which the prospective activation record binds to; parent `e730e93` (R1.6, `research: freeze H2 prospective shadow protocol`), then `d825a3b` (R1.5), `f7332d0` (R1.4), `1c4fa88` (R1.3), `db96f18` (R1.2), `27a5cb7` (R1.1), `196690d` (R1.0) and `06357c5` (B2.18, tagged `pit-research-dataset-v2`). The authoritative plan's meta and authorization record name `repo_commit` `daa1d36`; the corrected package records `2a7d3b8`, the superseded package `ebfbc1c`, the superseded plan `afe6a10`, the index `1b407b6`. |
+| Commit | The R1.9 commit containing this checkpoint, `feat: build prospective shadow data plane`; parent `85a63c6` (R1.7, `research: activate H2 prospective shadow runner`, which the prospective activation record binds to), then `e730e93` (R1.6), `d825a3b` (R1.5), `f7332d0` (R1.4), `1c4fa88` (R1.3), `db96f18` (R1.2), `27a5cb7` (R1.1), `196690d` (R1.0) and `06357c5` (B2.18, tagged `pit-research-dataset-v2`). The authoritative plan's meta and authorization record name `repo_commit` `daa1d36`; the corrected package records `2a7d3b8`, the superseded package `ebfbc1c`, the superseded plan `afe6a10`, the index `1b407b6`. |
 | Branch | `feat/r1-backtest-harness`, branched from `feat/phase-b2-storage-abstraction` at `06357c5` |
 | Migration head | `0031` — the research-universe layer (9K.7). Nothing since 9K.11 added one. |
 | Score version | `COMPOUNDER_V1_2` (unchanged by anything in Phase 8, 9A, 9B or 9C) |
 | Feature version | `MARKET_FEATURES_V1` |
 | Signal version | `MARKET_SIGNALS_V1` |
-| Primary database | untouched by 8A–8J, 9A–9L.5, B2 and R1.0–R1.7; all work ran against staging copies |
+| Primary database | untouched by 8A–8J, 9A–9L.5, B2 and R1.0–R1.9; all work ran against staging copies |
 | Checkpoint date | 2026-09-25 |

@@ -159,7 +159,7 @@ def test_changed_external_evidence_produces_a_second_report(
             "Acme Corporation said it had signed a multi-year supply agreement with "
             "Vertex covering platform components through 2030."
         ),
-        published_at=date(2026, 6, 28),
+        published_at=_recently_published(),
     )
     with_news = _run(session, settings, external=MockExternalResearch({"": [article]}))
     session.flush()
@@ -360,6 +360,17 @@ def test_bad_claims_are_dropped_and_the_report_still_persists(
     assert DeepResearchReportRepository(session).count() == 1
 
 
+def _recently_published() -> date:
+    """A publication date comfortably inside the external-research window.
+
+    The window is relative to the present, so a hardcoded date eventually ages
+    out of it and the test starts failing for a reason that has nothing to do
+    with what it checks. Anchoring to today keeps it testing storage rather
+    than recency.
+    """
+    return datetime.now(UTC).date() - timedelta(days=7)
+
+
 def _article(url: str = "https://reuters.com/business/acme-vertex") -> ExternalSearchResult:
     """One well-formed recent article a collection would accept."""
     return ExternalSearchResult(
@@ -369,7 +380,7 @@ def _article(url: str = "https://reuters.com/business/acme-vertex") -> ExternalS
             "Acme Corporation said it had signed a multi-year supply agreement with "
             "Vertex covering platform components through 2030."
         ),
-        published_at=date(2026, 6, 28),
+        published_at=_recently_published(),
     )
 
 

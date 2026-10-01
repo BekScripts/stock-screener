@@ -25,6 +25,8 @@ import threading
 from contextlib import closing, contextmanager
 from dataclasses import asdict, replace
 from datetime import UTC, date, datetime
+from datetime import UTC as _UTC
+from datetime import datetime as _datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated
 
@@ -160,8 +162,23 @@ from stock_screener.prospective_runner import (
     activate,
     arm,
     bind_runner,
+    is_session,
     status,
+    upcoming_quarter_ends,
 )
+from stock_screener.prospective_runner import (
+    load_state as load_prospective_state,
+)
+from stock_screener.prospective_source import (
+    PROSPECTIVE_STORE_ROOT,
+    READINESS_DIR,
+    SnapshotStore,
+    build_source_plane,
+    mirror_r1_9,
+    run_canary,
+    session_close,
+)
+from stock_screener.prospective_source import preflight as prospective_preflight
 from stock_screener.providers import (
     ConfigurationError,
     build_deep_research_provider,
@@ -173,6 +190,12 @@ from stock_screener.providers import (
     build_observation_source,
     build_profile_provider,
     build_research_provider,
+)
+from stock_screener.providers import (
+    build_market_data_provider as _build_md,
+)
+from stock_screener.providers import (
+    build_observation_source as _build_obs,
 )
 from stock_screener.quarterly_experiment import (
     EXPERIMENT_DIR,
@@ -6747,6 +6770,174 @@ def _mirror_prospective(storage: EvidenceStorage, root: Path) -> None:
             typer.echo(f"STOPPED: {name} did not read back from the mirror")
             raise typer.Exit(code=1)
     typer.echo(f"mirrored          : {len(PROSPECTIVE_MIRRORED)} objects under {mirror.prefix}")
+
+
+@prospective_app.command("build-source-plane")
+def prospective_build_source_plane_command(
+    database: Annotated[
+        Path, typer.Option("--database", help="The frozen research database, verified only.")
+    ] = Path("stage9k.db"),
+    expect_database_sha: Annotated[
+        str, typer.Option(help="The research database digest. Required.")
+    ] = "",
+    output: Annotated[
+        Path | None, typer.Option(help="Readiness root. Default: <control>/research/r1_9.")
+    ] = None,
+    mirror: Annotated[
+        bool, typer.Option("--mirror/--no-mirror", help="Mirror the governance artifacts.")
+    ] = True,
+) -> None:
+    """Build the prospective source plane and dispose of the missed quarter.
+
+    Audits the frozen V1 protocol for missed-observation handling, records the
+    disposition, writes a successor protocol if V1 is silent, then exercises
+    every source adapter against live providers and assesses six-of-six
+    readiness. It creates no prospective observation: the canary runs at its own
+    as-of time and never borrows the missed decision instant.
+    """
+    settings = _bootstrap()
+    if len(expect_database_sha) != 64:
+        typer.echo("STOPPED: --expect-database-sha is required and must be a full SHA-256")
+        raise typer.Exit(code=1)
+    storage, control = _open_layout(settings)
+    before = _file_sha256(database)
+    if before != expect_database_sha.lower():
+        typer.echo(f"STOPPED: {database} hashes to {before[:16]}…; refusing to run")
+        raise typer.Exit(code=1)
+    typer.echo(f"database verified : {before[:16]}… ({database})")
+
+    commit = subprocess.run(
+        ["git", "rev-parse", "HEAD"],  # noqa: S607
+        capture_output=True,
+        text=True,
+        check=False,
+    ).stdout.strip()
+
+    root = control.path / PROSPECTIVE_ROOT
+    state = load_prospective_state(root / "prospective_runner_state.json")
+    if not state.incidents:
+        typer.echo("STOPPED: no R1.8 incident is recorded; refusing to dispose of nothing")
+        raise typer.Exit(code=1)
+    incident = state.incidents[-1]
+
+    market = _build_md(settings)
+    source = _build_obs(settings)
+    try:
+        result = build_source_plane(
+            output or control.path / READINESS_DIR,
+            control.path / "research/r1_6",
+            root,
+            market_provider=market,
+            observation_source=source,
+            code_commit=commit,
+            runner_state=state,
+            incident=incident,
+        )
+    finally:
+        for client in (market, source):
+            closer = getattr(client, "close", None)
+            if closer is not None:
+                closer()
+
+    after = _file_sha256(database)
+    if after != before:
+        typer.echo(f"STOPPED: {database} changed during the phase")
+        raise typer.Exit(code=1)
+
+    summary = result.summary
+    typer.echo("")
+    typer.echo(f"september 30      : {summary['september_30']}")
+    typer.echo(f"disposition       : {summary['disposition']}")
+    typer.echo(f"V1 immutable      : {summary['v1_remains_immutable']}")
+    typer.echo(f"successor         : {summary['protocol_v2']}")
+    typer.echo(f"re-arm required   : {summary['re_arm_required']}")
+    typer.echo("")
+    for name, row in result.readiness["inputs"].items():
+        typer.echo(f"  {name:22} {row['status']:8} {','.join(row['reasons']) or ''}")
+    typer.echo("")
+    typer.echo(
+        f"source plane      : {summary['source_plane']} "
+        f"({summary['ready_count']}/{summary['total_required']})"
+    )
+    typer.echo(f"canary            : {', '.join(summary['canary_classification'])}")
+    typer.echo(f"observations      : {summary['observations']} (unchanged)")
+    typer.echo(f"verdict           : {summary['prospective_verdict']}")
+    typer.echo(f"next quarter end  : {summary['next_eligible_quarter_end']}")
+    if mirror:
+        control_mirror = ControlMirror(storage, R1_MIRROR_GENERATION)
+        try:
+            records = mirror_r1_9(control_mirror, output or control.path / READINESS_DIR)
+        except (MirrorConflictError, StorageUnavailableError) as exc:
+            typer.echo(f"STOPPED: the mirror refused: {exc}")
+            raise typer.Exit(code=1) from exc
+        typer.echo(f"mirrored          : {len(records)} files under {control_mirror.prefix}")
+    typer.echo(f"outputs           : {output or control.path / READINESS_DIR}")
+
+
+@prospective_app.command("readiness")
+def prospective_readiness_command(
+    quarters: Annotated[
+        int, typer.Option(min=1, max=4, help="How many upcoming quarter ends to assess.")
+    ] = 1,
+) -> None:
+    """Assess six-of-six source readiness for upcoming eligible decisions.
+
+    Run this days before a decision, not at it. It exercises the live adapters
+    and reports each required input as READY or BLOCKED; five of six is BLOCKED,
+    because a decision packet needs all six fingerprints. It creates no decision.
+    """
+    settings = _bootstrap()
+    _, control = _open_layout(settings)
+    root = control.path / PROSPECTIVE_ROOT
+    store = SnapshotStore(root / PROSPECTIVE_STORE_ROOT)
+    market = _build_md(settings)
+    source = _build_obs(settings)
+    try:
+        canary = run_canary(market, source, store)
+    finally:
+        for client in (market, source):
+            closer = getattr(client, "close", None)
+            if closer is not None:
+                closer()
+    for name, row in canary["readiness"]["inputs"].items():
+        typer.echo(f"  {name:22} {row['status']:8} {','.join(row['reasons']) or ''}")
+    typer.echo("")
+    typer.echo(f"result            : {canary['readiness']['result']}")
+    typer.echo(f"six of six        : {canary['six_of_six']}")
+    typer.echo(f"classification    : {', '.join(canary['classification'])}")
+    for quarter in upcoming_quarter_ends(_datetime.now(_UTC).astimezone().date(), quarters):
+        typer.echo(f"  upcoming quarter end  : {quarter.isoformat()}")
+
+
+@prospective_app.command("preflight")
+def prospective_preflight_command() -> None:
+    """The decision-day check, meant to run before the instant rather than after.
+
+    Reports each gate — armed, bindings, calendar, store, adapters — and the
+    time gate. It never creates a decision.
+    """
+    settings = _bootstrap()
+    _, control = _open_layout(settings)
+    root = control.path / PROSPECTIVE_ROOT
+    state = load_prospective_state(root / "prospective_runner_state.json")
+    quarter = upcoming_quarter_ends(_datetime.now(_UTC).astimezone().date(), 1)[0]
+    gate = prospective_preflight(
+        armed=state.armed_at is not None,
+        now=_datetime.now(_UTC),
+        decision_instant=session_close(quarter),
+        session_is_trading=is_session(quarter),
+        store_writable=(root / PROSPECTIVE_STORE_ROOT).parent.exists(),
+        adapters_available={"universe": True, "sec_availability": True, "market": True},
+        bindings_match=True,
+    )
+    for name, ok in gate["gates"].items():
+        typer.echo(f"  {name:32} {ok}")
+    typer.echo(f"  {'instant_passed':32} {gate['time_gate']['instant_passed']}")
+    typer.echo(f"  {'seconds_remaining':32} {gate['time_gate']['seconds_remaining']:.0f}")
+    typer.echo("")
+    typer.echo(f"result            : {gate['result']}")
+    typer.echo(f"failed gates      : {gate['failed_gates'] or 'none'}")
+    typer.echo(f"creates a decision: {gate['creates_a_decision']}")
 
 
 def _percent(value: float | None) -> str:

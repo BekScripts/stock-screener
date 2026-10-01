@@ -47,6 +47,13 @@ SEMANTIC_MODULES: tuple[str, ...] = (
     "prospective_protocol/protocol.py",
     "prospective_protocol/contract.py",
     "prospective_protocol/candidate.py",
+    # the prospective source plane: what data reaches a decision, and the
+    # as-of rule that decides what is admissible
+    "prospective_source/envelope.py",
+    "prospective_source/adapters.py",
+    "prospective_source/readiness.py",
+    "prospective_source/governance.py",
+    "prospective_source/store.py",
 )
 
 
