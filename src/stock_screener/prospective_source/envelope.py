@@ -30,6 +30,7 @@ __all__ = [
     "Completeness",
     "SnapshotEnvelope",
     "StaleSourceError",
+    "TemporalClass",
     "admissible_for",
     "content_digest",
     "request_fingerprint",
@@ -43,6 +44,28 @@ class Completeness(StrEnum):
     INCOMPLETE = "INCOMPLETE"
     UNAVAILABLE = "UNAVAILABLE"
     AMBIGUOUS = "AMBIGUOUS"
+
+
+class TemporalClass(StrEnum):
+    """What a source can say about a moment other than now.
+
+    The distinction decides whether a snapshot may be taken after the decision
+    instant, and it is the thing R1.10 exists to close. A source carrying event
+    times can be read whenever, because each fact says when it became knowable.
+    A session-bounded source can be read after the close, because the session is
+    the fact. A source that only describes the present can say nothing about an
+    earlier instant at all — so it must be read *before* the instant, or its
+    snapshot is evidence about the wrong moment.
+    """
+
+    #: Every fact carries its own availability timestamp. SEC acceptance.
+    EVENT_TIME = "SOURCE_HAS_EVENT_TIME"
+
+    #: Facts belong to a named session. A completed daily bar.
+    SESSION_BOUNDED = "SESSION_BOUNDED"
+
+    #: The payload describes the present and nothing else. A broker asset list.
+    CURRENT_AT_RETRIEVAL = "CURRENT_AT_RETRIEVAL_ONLY"
 
 
 class StaleSourceError(RuntimeError):
@@ -97,6 +120,12 @@ class SnapshotEnvelope:
         min_source_timestamp: Earliest fact timestamp, where the source gives one.
         max_source_timestamp: Latest fact timestamp. This is what bounds the snapshot.
         completeness: Whether the source delivered what was asked.
+        temporal_class: What the source can say about a moment other than now.
+            The default is the most restrictive, so a source that forgets to
+            declare itself is treated as current-only rather than trusted.
+        effective_at: A provider-supplied timestamp establishing when the state
+            described was in force. Only this can let a current-only source be
+            read after the instant, and only when the provider supplies it.
         ambiguity: Anything the source could not disambiguate.
         notes: Anything else worth recording.
     """
@@ -112,6 +141,8 @@ class SnapshotEnvelope:
     normalizer_version: str
     record_count: int
     completeness: Completeness
+    temporal_class: TemporalClass = TemporalClass.CURRENT_AT_RETRIEVAL
+    effective_at: datetime | None = None
     decision_session: str | None = None
     min_source_timestamp: str | None = None
     max_source_timestamp: str | None = None
@@ -156,6 +187,8 @@ class SnapshotEnvelope:
             "min_source_timestamp": self.min_source_timestamp,
             "max_source_timestamp": self.max_source_timestamp,
             "completeness": str(self.completeness),
+            "temporal_class": str(self.temporal_class),
+            "effective_at": None if self.effective_at is None else self.effective_at.isoformat(),
             "ambiguity": list(self.ambiguity),
             "notes": list(self.notes),
         }
@@ -196,11 +229,31 @@ def admissible_for(
         reasons.append(f"SOURCE_{envelope.completeness}")
     if envelope.semantic_as_of > decision_instant:
         reasons.append("SEMANTIC_AS_OF_AFTER_DECISION_INSTANT")
+
+    # A current-only source describes the present and nothing else, so reading it
+    # after the instant produces evidence about the wrong moment. Retrieval time
+    # is therefore load-bearing for this class and only this class: an event-time
+    # or session-bounded payload may be fetched whenever, because each fact
+    # already says when it was true.
+    #
+    # The single escape is a provider-supplied effective time. It must come from
+    # the provider — an effective time we assign ourselves would just be the
+    # retrojection this rule exists to forbid, wearing a field name.
+    late_current_only = False
+    if envelope.temporal_class is TemporalClass.CURRENT_AT_RETRIEVAL:
+        if envelope.effective_at is not None:
+            if envelope.effective_at > decision_instant:
+                reasons.append("PROVIDER_EFFECTIVE_TIME_AFTER_DECISION_INSTANT")
+        elif envelope.retrieved_at > decision_instant:
+            late_current_only = True
+            reasons.append("CURRENT_ONLY_SOURCE_TOO_LATE")
+
     age = (decision_instant - envelope.semantic_as_of).total_seconds()
     if max_age is not None and age > max_age:
         reasons.append("SOURCE_TOO_STALE_FOR_DECISION")
     return {
         "source_type": envelope.source_type,
+        "temporal_class": str(envelope.temporal_class),
         "admissible": not reasons,
         "reasons": reasons,
         "semantic_as_of": envelope.semantic_as_of.isoformat(),
@@ -209,8 +262,20 @@ def admissible_for(
         "max_age_seconds": max_age,
         "retrieved_at": envelope.retrieved_at.isoformat(),
         "retrieved_after_semantic_time": envelope.retrieved_after_semantic_time,
+        "effective_at": (
+            None if envelope.effective_at is None else envelope.effective_at.isoformat()
+        ),
+        "retrieval_time_is_load_bearing": (
+            envelope.temporal_class is TemporalClass.CURRENT_AT_RETRIEVAL
+            and envelope.effective_at is None
+        ),
+        "current_only_read_too_late": late_current_only,
         "rule": (
             "late retrieval is permitted; late information is not. A payload whose "
-            "facts postdate the instant is never admissible, however it was obtained."
+            "facts postdate the instant is never admissible, however it was "
+            "obtained. A current-only payload must additionally be retrieved at or "
+            "before the instant, because it describes the present and can say "
+            "nothing about an earlier moment — unless the provider itself supplies "
+            "an effective time that does."
         ),
     }

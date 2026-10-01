@@ -34,6 +34,7 @@ from .envelope import (
     Completeness,
     SnapshotEnvelope,
     StaleSourceError,
+    TemporalClass,
     content_digest,
     request_fingerprint,
 )
@@ -152,6 +153,7 @@ def fetch_universe(provider: Any, *, decision_session: date) -> SourceResult:
         normalizer_version=NORMALIZER_VERSION,
         record_count=len(records),
         completeness=Completeness.COMPLETE if records else Completeness.UNAVAILABLE,
+        temporal_class=TemporalClass.CURRENT_AT_RETRIEVAL,
         decision_session=decision_session.isoformat(),
         ambiguity=ambiguity,
         notes=[
@@ -229,6 +231,7 @@ def fetch_sec_availability(
         normalizer_version=NORMALIZER_VERSION,
         record_count=len(admitted),
         completeness=(Completeness.INCOMPLETE if unavailable else Completeness.COMPLETE),
+        temporal_class=TemporalClass.EVENT_TIME,
         decision_session=decision_instant.date().isoformat(),
         min_source_timestamp=min(stamps) if stamps else None,
         max_source_timestamp=max(stamps) if stamps else None,
@@ -318,6 +321,7 @@ def fetch_market(
         normalizer_version=NORMALIZER_VERSION,
         record_count=len(admitted),
         completeness=Completeness.COMPLETE,
+        temporal_class=TemporalClass.SESSION_BOUNDED,
         decision_session=decision_session.isoformat(),
         min_source_timestamp=min(sessions) if sessions else None,
         max_source_timestamp=max(sessions) if sessions else None,

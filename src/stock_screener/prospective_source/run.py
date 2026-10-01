@@ -19,6 +19,7 @@ import json
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from typing import TYPE_CHECKING, Any
+from zoneinfo import ZoneInfo
 
 import structlog
 
@@ -33,6 +34,7 @@ from stock_screener.sec_evidence.mirror import MirrorConflictError
 
 from .adapters import (
     NORMALIZER_VERSION,
+    SESSION_TIMEZONE,
     fetch_market,
     fetch_sec_availability,
     fetch_universe,
@@ -41,6 +43,7 @@ from .adapters import (
 from .governance import audit_v1, disposition_record, protocol_v2
 from .readiness import FRESHNESS_POLICY, REQUIRED_INPUTS, assess, preflight
 from .store import PROSPECTIVE_STORE_ROOT, SnapshotStore
+from .window import WindowError
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -51,14 +54,20 @@ log = structlog.get_logger(__name__)
 
 __all__ = [
     "CANARY_CLASSIFICATION",
+    "CERTIFY_DIR",
+    "CERTIFY_MIRRORED_FILES",
+    "CERTIFY_MIRROR_PREFIX",
     "MIRRORED_FILES",
     "MIRROR_PREFIX",
     "PHASE",
     "READINESS_DIR",
     "ReadinessResult",
     "build_source_plane",
+    "certify_window",
     "mirror_r1_9",
     "run_canary",
+    "timing_canary",
+    "v1_v2_diff",
 ]
 
 PHASE = "R1.9"
@@ -574,3 +583,411 @@ def mirror_r1_9(mirror: ControlMirror, directory: Path) -> list[MirrorRecord]:
             raise MirrorConflictError(f"{name} did not read back from the mirror as mirrored")
         records.append(record)
     return records
+
+
+#: R1.10's artifacts, mirrored under their own prefix.
+CERTIFY_DIR = "research/r1_10"
+CERTIFY_MIRROR_PREFIX = "research/r1-10"
+CERTIFY_MIRRORED_FILES = (
+    "r1_10_binding.json",
+    "r1_10_v1_v2_diff.json",
+    "r1_10_temporal_source_audit.json",
+    "h2_prospective_protocol_v2.json",
+    "prospective_capture_sequence_v2.json",
+    "r1_10_calendar_derivation.json",
+    "r1_10_source_readiness.json",
+    "r1_10_timing_canary.json",
+    "r1_10_decision_day_runbook.json",
+    "r1_10_recovery.json",
+    "r1_10_summary.json",
+    "r1_10_complete.json",
+)
+
+
+def v1_v2_diff(v1: dict[str, Any], v2: dict[str, Any]) -> dict[str, Any]:
+    """Compare V1 and V2 on the things H2's science depends on.
+
+    Args:
+        v1: The frozen V1 protocol.
+        v2: The V2 protocol.
+
+    Returns:
+        A field-by-field comparison, and a verdict on whether any scientific
+        semantic moved.
+    """
+    checks = {
+        "candidate_id": (v1["candidate_id"], v2["candidate_id"]),
+        "rule_version": (v1["rule_version"], v2["rule_version"]),
+        "entry": (v1["rule"]["entry"], v2["rule"]["entry"]),
+        "retention": (v1["rule"]["retention"], v2["rule"]["retention"]),
+        "target_size": (v1["rule"]["target_size"], v2["rule"]["target_size"]),
+        "weighting": (v1["rule"]["weighting"], v2["rule"]["weighting"]),
+        "rebalance": (v1["rule"]["rebalance"], v2["rule"]["rebalance"]),
+        "execution": (v1["rule"]["execution"], v2["rule"]["execution"]),
+        "criteria": ([row["id"] for row in v1["criteria"]], list(v2["criteria"])),
+        "aggregate_expression": (
+            v1["aggregate_rule"]["expression"],
+            v2["aggregate_rule"]["expression"],
+        ),
+        "required_decisions": (
+            v1["window"]["required_decisions"],
+            v2["required_decisions"],
+        ),
+        "required_transitions": (
+            v1["window"]["required_transitions"],
+            v2["required_transitions"],
+        ),
+    }
+    changed = {name: pair for name, pair in checks.items() if pair[0] != pair[1]}
+    return {
+        "compared": {
+            name: {"v1": pair[0], "v2": pair[1], "same": pair[0] == pair[1]}
+            for name, pair in sorted(checks.items())
+        },
+        "h2_scientific_semantics_changed": bool(changed),
+        "changed_fields": sorted(changed),
+        "added_in_v2": sorted(v2["added_in_v2"]),
+        "v2_may_not": list(v2["may_not"]),
+        "window_requirement_changed": (
+            v1["window"]["required_transitions"] != v2["required_transitions"]
+        ),
+        "verdict": (
+            "V2 changes only prospective operational governance"
+            if not changed
+            else f"STOP — V2 altered {sorted(changed)}"
+        ),
+    }
+
+
+def timing_canary() -> dict[str, Any]:
+    """Prove the three temporal classes behave as the audit claims.
+
+    Four cases, because the fourth is the one that was missing: a current-only
+    snapshot read after the instant must be refused by name.
+
+    Returns:
+        Each case with its verdict.
+    """
+    from .envelope import (
+        Completeness,
+        SnapshotEnvelope,
+        TemporalClass,
+        admissible_for,
+        content_digest,
+    )
+
+    instant = datetime(2026, 12, 31, 16, 0, tzinfo=ZoneInfo(SESSION_TIMEZONE))
+    payload = [{"probe": True}]
+
+    def envelope(
+        temporal: TemporalClass,
+        retrieved: datetime,
+        semantic: datetime,
+        effective: datetime | None = None,
+    ) -> SnapshotEnvelope:
+        return SnapshotEnvelope(
+            source_type="probe",
+            source_name="timing_canary",
+            source_version="v1",
+            operation="probe",
+            retrieved_at=retrieved,
+            semantic_as_of=semantic,
+            content_sha256=content_digest(payload),
+            request="probe",
+            normalizer_version=NORMALIZER_VERSION,
+            record_count=1,
+            completeness=Completeness.COMPLETE,
+            temporal_class=temporal,
+            effective_at=effective,
+        )
+
+    late = instant + timedelta(hours=3)
+    early = instant - timedelta(hours=2)
+    cases: dict[str, dict[str, Any]] = {
+        "event_time_late_retrieval": {
+            "expected": True,
+            "verdict": admissible_for(envelope(TemporalClass.EVENT_TIME, late, instant), instant),
+        },
+        "session_bounded_post_close_retrieval": {
+            "expected": True,
+            "verdict": admissible_for(
+                envelope(TemporalClass.SESSION_BOUNDED, late, instant), instant
+            ),
+        },
+        "current_only_pre_decision_retrieval": {
+            "expected": True,
+            "verdict": admissible_for(
+                envelope(TemporalClass.CURRENT_AT_RETRIEVAL, early, early),
+                instant,
+                max_age=FRESHNESS_POLICY["universe"],
+            ),
+        },
+        "current_only_post_decision_retrieval": {
+            "expected": False,
+            "verdict": admissible_for(
+                envelope(TemporalClass.CURRENT_AT_RETRIEVAL, late, late), instant
+            ),
+        },
+        "current_only_with_provider_effective_time": {
+            "expected": True,
+            "verdict": admissible_for(
+                envelope(TemporalClass.CURRENT_AT_RETRIEVAL, late, instant, effective=early),
+                instant,
+            ),
+        },
+    }
+    results: dict[str, dict[str, Any]] = {}
+    for name, body in cases.items():
+        verdict = dict(body["verdict"])
+        expected = bool(body["expected"])
+        results[name] = {
+            "expected_admissible": expected,
+            "observed_admissible": bool(verdict["admissible"]),
+            "reasons": list(verdict["reasons"]),
+            "matches_expectation": bool(verdict["admissible"]) == expected,
+        }
+    return {
+        "canary_id": "PROSPECTIVE_TIMING_CANARY_V1",
+        "decision_instant": instant.isoformat(),
+        "cases": dict(sorted(results.items())),
+        "all_as_expected": all(row["matches_expectation"] for row in results.values()),
+        "the_case_that_was_missing": "current_only_post_decision_retrieval",
+        "its_failure_code": "CURRENT_ONLY_SOURCE_TOO_LATE",
+        "creates_an_observation": False,
+    }
+
+
+def certify_window(
+    directory: Path,
+    r1_6_directory: Path,
+    r1_9_directory: Path,
+    prospective_root: Path,
+    *,
+    market_provider: Any,
+    observation_source: Any,
+    code_commit: str,
+    arm: bool,
+) -> dict[str, Any]:
+    """Certify the next eligible window, and arm it under V2 when asked.
+
+    The order is forced: verify V2 against the frozen V1 before anything else,
+    because an arm resting on a protocol that moved H2's science would be worse
+    than no arm. Then classify the sources temporally, derive the window from the
+    calendar, freeze the capture sequence, prove readiness live, and only then
+    activate and arm.
+
+    Args:
+        directory: Where to write R1.10's record.
+        r1_6_directory: Where V1 lives.
+        r1_9_directory: Where R1.9's V2 draft lives.
+        prospective_root: The prospective runtime root.
+        market_provider: The configured market-data provider.
+        observation_source: The configured SEC observation source.
+        code_commit: The commit to bind to.
+        arm: Whether to create the activation and arm. False certifies only.
+
+    Returns:
+        The certification, and the activation and arm when created.
+
+    Raises:
+        WindowError: If V2 altered H2's science, or the window cannot be armed.
+    """
+    from .governance import protocol_v2
+    from .window import (
+        activate_v2,
+        arm_v2,
+        calendar_derivation,
+        capture_sequence,
+        certify_timing,
+        decision_day_runbook,
+        derive_window,
+    )
+
+    directory.mkdir(parents=True, exist_ok=True)
+    v1_path = r1_6_directory / "h2_prospective_protocol_v1.json"
+    v1 = json.loads(v1_path.read_text(encoding="utf-8"))
+    disposition = json.loads(
+        (r1_9_directory / "r1_9_missed_observation_disposition.json").read_text("utf-8")
+    )
+    if not disposition["september_30_remains_lost"]:
+        raise WindowError("the R1.9 disposition no longer records September 30 as lost")
+
+    # R1.9's V2 carried H2's historical aggregate rule by mistake. Regenerate it
+    # from the corrected generator and compare both, so the correction is on the
+    # record rather than silently applied.
+    draft_path = r1_9_directory / "h2_prospective_protocol_v2.json"
+    draft_digest = hashlib.sha256(draft_path.read_bytes()).hexdigest()
+    v2 = protocol_v2(disposition=disposition, code_commit=code_commit)
+    diff = v1_v2_diff(v1, v2)
+    if diff["h2_scientific_semantics_changed"]:
+        raise WindowError(
+            f"V2 would alter H2's scientific semantics: {diff['changed_fields']}. "
+            "Refusing to certify or arm."
+        )
+
+    audit = certify_timing()
+    window = derive_window(after=date(2026, 9, 30), armed_at=datetime.now(UTC))
+    sequence = capture_sequence(window)
+    calendar = calendar_derivation(window)
+    runbook = decision_day_runbook(window)
+
+    store = SnapshotStore(prospective_root / PROSPECTIVE_STORE_ROOT)
+    canary = run_canary(market_provider, observation_source, store)
+    timing = timing_canary()
+    if not canary["readiness"]["six_of_six"]:
+        raise WindowError(
+            f"source readiness is {canary['readiness']['result']}; a window is not "
+            "armed on a plane that cannot feed it"
+        )
+    if not timing["all_as_expected"]:
+        raise WindowError("the timing canary did not behave as the audit claims")
+
+    documents: dict[str, str] = {}
+    documents["h2_prospective_protocol_v2.json"] = write_document(
+        directory / "h2_prospective_protocol_v2.json", v2
+    )
+    documents["r1_10_v1_v2_diff.json"] = write_document(
+        directory / "r1_10_v1_v2_diff.json",
+        {
+            **diff,
+            "r1_9_draft_digest": draft_digest,
+            "r1_9_draft_superseded_before_use": True,
+            "why_superseded": (
+                "R1.9's generator imported H2's historical aggregate rule "
+                "(C1 AND C2 AND C3 AND C4) in place of the prospective one "
+                "(P1 AND P2 AND P3 AND P4). Nothing was armed under it, so it was "
+                "a draft that failed this phase's verification rather than an "
+                "authority being rewritten. The corrected V2 is emitted here."
+            ),
+            "authoritative_v2_digest": documents["h2_prospective_protocol_v2.json"],
+        },
+    )
+    documents["r1_10_temporal_source_audit.json"] = write_document(
+        directory / "r1_10_temporal_source_audit.json", audit
+    )
+    documents["prospective_capture_sequence_v2.json"] = write_document(
+        directory / "prospective_capture_sequence_v2.json", sequence
+    )
+    documents["r1_10_calendar_derivation.json"] = write_document(
+        directory / "r1_10_calendar_derivation.json", calendar
+    )
+    documents["r1_10_source_readiness.json"] = write_document(
+        directory / "r1_10_source_readiness.json",
+        {"readiness": canary["readiness"], "canary": canary},
+    )
+    documents["r1_10_timing_canary.json"] = write_document(
+        directory / "r1_10_timing_canary.json", timing
+    )
+    documents["r1_10_decision_day_runbook.json"] = write_document(
+        directory / "r1_10_decision_day_runbook.json", runbook
+    )
+
+    activation: Any = None
+    armed: Any = None
+    if arm:
+        activation = activate_v2(
+            prospective_root,
+            code_commit=code_commit,
+            candidate_sha256=hashlib.sha256(
+                (r1_6_directory / "h2_candidate_freeze.json").read_bytes()
+            ).hexdigest(),
+            protocol_v2_sha256=documents["h2_prospective_protocol_v2.json"],
+            contract_sha256=hashlib.sha256(
+                (r1_6_directory / "prospective_shadow_contract_v1.json").read_bytes()
+            ).hexdigest(),
+            runner_version="PROSPECTIVE_SHADOW_RUNNER_V1",
+            capture_sequence_sha256=documents["prospective_capture_sequence_v2.json"],
+            readiness_sha256=documents["r1_10_source_readiness.json"],
+        )
+        armed = arm_v2(
+            prospective_root,
+            activation=activation,
+            window=window,
+            candidate_sha256=activation.body["candidate_sha256"],
+            protocol_v2_sha256=documents["h2_prospective_protocol_v2.json"],
+            capture_sequence_sha256=documents["prospective_capture_sequence_v2.json"],
+            readiness_sha256=documents["r1_10_source_readiness.json"],
+            missed_opportunities=1,
+        )
+
+    recovery = {
+        "september_30_was_missed": True,
+        "why": "REQUIRED_SOURCE_UNAVAILABLE / PROSPECTIVE_DATA_PLANE_NOT_READY",
+        "september_30_backfillable": False,
+        "v1_closed_for_that_window": True,
+        "v2_authoritative_prospectively": True,
+        "armed_code_commit": code_commit,
+        "armed_semantic_fingerprint": semantic_fingerprint()["semantic_fingerprint"],
+        "armed_decision_session": window["decision_session"],
+        "source_timing_rules": audit["sources"],
+        "valid_observations": 0,
+        "missed_eligible_opportunities": 1,
+        "activation_sha256": None if activation is None else activation.sha256,
+        "arm_sha256": None if armed is None else armed.sha256,
+        "V2_PROSPECTIVE_ARM_RECOVERY_SUFFICIENT": bool(armed is not None),
+    }
+    documents["r1_10_recovery.json"] = write_document(directory / "r1_10_recovery.json", recovery)
+    documents["r1_10_binding.json"] = write_document(
+        directory / "r1_10_binding.json",
+        {
+            "code_commit": code_commit,
+            "v1_digest": hashlib.sha256(v1_path.read_bytes()).hexdigest(),
+            "v2_digest": documents["h2_prospective_protocol_v2.json"],
+            "semantic_code_fingerprint": semantic_fingerprint()["semantic_fingerprint"],
+            "phase_kind": "WINDOW_CERTIFICATION_AND_REARM",
+        },
+    )
+
+    summary = {
+        "phase": "R1.10",
+        "phase_kind": "WINDOW_CERTIFICATION_AND_REARM",
+        "code_commit": code_commit,
+        "september_30": "MISSED / NOT_BACKFILLED / NOT_BACKFILLABLE",
+        "h2_scientific_semantics_changed": False,
+        "v1_immutable": True,
+        "v2_authoritative": True,
+        "window": window,
+        "source_plane": canary["readiness"]["result"],
+        "ready_count": canary["readiness"]["ready_count"],
+        "timing_canary": timing["all_as_expected"],
+        "valid_observations": 0,
+        "decisions": 0,
+        "executions": 0,
+        "completed_transitions": 0,
+        "missed_eligible_opportunities": 1,
+        "state": "ARMED_WAITING_FOR_DECISION" if armed else "CERTIFIED_NOT_ARMED",
+        "activation_sha256": None if activation is None else activation.sha256,
+        "arm_sha256": None if armed is None else armed.sha256,
+        "h2_verdict": "PENDING",
+        "next_action": (
+            "wait for the armed decision window; run readiness and preflight "
+            "before the instant, and capture exactly once at it"
+        ),
+    }
+    documents["r1_10_summary.json"] = write_document(directory / "r1_10_summary.json", summary)
+    documents["r1_10_complete.json"] = write_document(
+        directory / "r1_10_complete.json",
+        {
+            "phase": "R1.10",
+            "documents": dict(sorted(documents.items())),
+            "state": summary["state"],
+            "valid_observations": 0,
+            "missed_eligible_opportunities": 1,
+            "h2_verdict": "PENDING",
+        },
+    )
+    return {
+        "summary": summary,
+        "diff": diff,
+        "audit": audit,
+        "window": window,
+        "sequence": sequence,
+        "calendar": calendar,
+        "runbook": runbook,
+        "readiness": canary["readiness"],
+        "timing": timing,
+        "recovery": recovery,
+        "documents": documents,
+        "activation": activation,
+        "arm": armed,
+    }

@@ -24,8 +24,9 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from stock_screener.membership_hypothesis import AGGREGATE_RULE, RULE, RULE_VERSION
+from stock_screener.membership_hypothesis import RULE, RULE_VERSION
 from stock_screener.prospective_protocol import (
+    AGGREGATE_RULE,
     CANDIDATE_ID,
     CRITERIA,
     PROTOCOL_ID,

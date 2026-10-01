@@ -170,10 +170,15 @@ from stock_screener.prospective_runner import (
     load_state as load_prospective_state,
 )
 from stock_screener.prospective_source import (
+    CERTIFY_DIR,
+    CERTIFY_MIRROR_PREFIX,
+    CERTIFY_MIRRORED_FILES,
     PROSPECTIVE_STORE_ROOT,
     READINESS_DIR,
     SnapshotStore,
+    WindowError,
     build_source_plane,
+    certify_window,
     mirror_r1_9,
     run_canary,
     session_close,
@@ -6938,6 +6943,131 @@ def prospective_preflight_command() -> None:
     typer.echo(f"result            : {gate['result']}")
     typer.echo(f"failed gates      : {gate['failed_gates'] or 'none'}")
     typer.echo(f"creates a decision: {gate['creates_a_decision']}")
+
+
+@prospective_app.command("certify-window")
+def prospective_certify_window_command(
+    database: Annotated[
+        Path, typer.Option("--database", help="The frozen research database, verified only.")
+    ] = Path("stage9k.db"),
+    expect_database_sha: Annotated[
+        str, typer.Option(help="The research database digest. Required.")
+    ] = "",
+    arm: Annotated[
+        bool, typer.Option("--arm/--no-arm", help="Create the V2 activation and arm.")
+    ] = False,
+    output: Annotated[
+        Path | None, typer.Option(help="Root. Default: <control>/research/r1_10.")
+    ] = None,
+    mirror: Annotated[
+        bool, typer.Option("--mirror/--no-mirror", help="Mirror the governance records.")
+    ] = True,
+) -> None:
+    """Certify the next eligible H2 window and, with --arm, re-arm under V2.
+
+    Verifies V2 against immutable V1 and refuses if H2's scientific semantics
+    moved, classifies every source by what it can say about an earlier moment,
+    derives the window from the calendar, freezes the staged capture sequence,
+    and proves readiness and timing live. Creates no H2 decision.
+    """
+    settings = _bootstrap()
+    if len(expect_database_sha) != 64:
+        typer.echo("STOPPED: --expect-database-sha is required and must be a full SHA-256")
+        raise typer.Exit(code=1)
+    storage, control = _open_layout(settings)
+    before = _file_sha256(database)
+    if before != expect_database_sha.lower():
+        typer.echo(f"STOPPED: {database} hashes to {before[:16]}…; refusing to run")
+        raise typer.Exit(code=1)
+
+    dirty = subprocess.run(
+        ["git", "status", "--porcelain"],  # noqa: S607
+        capture_output=True,
+        text=True,
+        check=False,
+    ).stdout.strip()
+    if arm and dirty:
+        typer.echo("STOPPED: the working tree is dirty; an arm must bind to a clean commit")
+        raise typer.Exit(code=1)
+    commit = subprocess.run(
+        ["git", "rev-parse", "HEAD"],  # noqa: S607
+        capture_output=True,
+        text=True,
+        check=False,
+    ).stdout.strip()
+
+    market = _build_md(settings)
+    source = _build_obs(settings)
+    try:
+        result = certify_window(
+            output or control.path / CERTIFY_DIR,
+            control.path / "research/r1_6",
+            control.path / "research/r1_9",
+            control.path / PROSPECTIVE_ROOT,
+            market_provider=market,
+            observation_source=source,
+            code_commit=commit,
+            arm=arm,
+        )
+    except WindowError as exc:
+        typer.echo(f"STOPPED: {exc}")
+        raise typer.Exit(code=1) from exc
+    finally:
+        for client in (market, source):
+            closer = getattr(client, "close", None)
+            if closer is not None:
+                closer()
+
+    after = _file_sha256(database)
+    if after != before:
+        typer.echo(f"STOPPED: {database} changed during the phase")
+        raise typer.Exit(code=1)
+
+    summary = result["summary"]
+    window = result["window"]
+    typer.echo("")
+    typer.echo(f"H2 semantics changed : {summary['h2_scientific_semantics_changed']}")
+    typer.echo(f"V1 immutable         : {summary['v1_immutable']}")
+    typer.echo(f"september 30         : {summary['september_30']}")
+    typer.echo("")
+    for name, row in sorted(result["audit"]["sources"].items()):
+        typer.echo(
+            f"  {name:22} {row['temporal_class']:28} latest: {row['latest_permitted_retrieval']}"
+        )
+    typer.echo("")
+    typer.echo(f"decision session     : {window['decision_session']}")
+    typer.echo(f"decision instant     : {window['decision_instant']}")
+    typer.echo(
+        f"arm cutoff           : {window['arm_cutoff']}  satisfied={window['cutoff_satisfied']}"
+    )
+    typer.echo(f"execution reference  : {window['execution_reference_session']} (derived)")
+    typer.echo(f"lead time (days)     : {window['lead_time_seconds'] / 86400:.1f}")
+    typer.echo("")
+    typer.echo(f"source plane         : {summary['source_plane']} ({summary['ready_count']}/6)")
+    typer.echo(f"timing canary        : {summary['timing_canary']}")
+    typer.echo(f"state                : {summary['state']}")
+    typer.echo(f"valid observations   : {summary['valid_observations']}")
+    typer.echo(f"missed opportunities : {summary['missed_eligible_opportunities']}")
+    typer.echo(f"H2 verdict           : {summary['h2_verdict']}")
+    if summary["activation_sha256"]:
+        typer.echo(f"V2 activation        : {summary['activation_sha256']}")
+        typer.echo(f"V2 arm               : {summary['arm_sha256']}")
+    if mirror:
+        control_mirror = ControlMirror(storage, R1_MIRROR_GENERATION)
+        root = output or control.path / CERTIFY_DIR
+        count = 0
+        for name in CERTIFY_MIRRORED_FILES:
+            local = root / name
+            if not local.is_file():
+                continue
+            kind = f"{CERTIFY_MIRROR_PREFIX}/{name.replace('.', '-')}"
+            record, _ = control_mirror.mirror_snapshot(local, kind, phase="R1.10")
+            newest = control_mirror.newest_snapshot(kind)
+            if newest is None or hashlib.sha256(newest[1]).hexdigest() != record.sha256:
+                typer.echo(f"STOPPED: {name} did not read back from the mirror")
+                raise typer.Exit(code=1)
+            count += 1
+        typer.echo(f"mirrored             : {count} files under {control_mirror.prefix}")
 
 
 def _percent(value: float | None) -> str:

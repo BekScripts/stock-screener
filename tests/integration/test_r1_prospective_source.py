@@ -30,11 +30,13 @@ from stock_screener.prospective_source import (
     PROSPECTIVE_STORE_ROOT,
     PROTOCOL_V2_ID,
     REQUIRED_INPUTS,
+    SOURCE_TEMPORAL_CLASS,
     Completeness,
     SnapshotEnvelope,
     SnapshotStore,
     StaleSourceError,
     StoreConflictError,
+    TemporalClass,
     admissible_for,
     assess,
     audit_v1,
@@ -72,8 +74,14 @@ def _env(
     retrieved_at: datetime | None = None,
     completeness: Completeness = Completeness.COMPLETE,
     records: int = 1,
+    temporal_class: TemporalClass | None = None,
 ) -> SnapshotEnvelope:
     payload = [{"n": records}]
+    # Declare the class the production adapter would, so a fixture cannot be
+    # accidentally more permissive than the real source it stands for.
+    temporal = temporal_class or SOURCE_TEMPORAL_CLASS.get(
+        source_type, TemporalClass.SESSION_BOUNDED
+    )
     return SnapshotEnvelope(
         source_type=source_type,
         source_name="fixture",
@@ -86,6 +94,7 @@ def _env(
         normalizer_version=NORMALIZER_VERSION,
         record_count=records,
         completeness=completeness,
+        temporal_class=temporal,
     )
 
 
@@ -231,9 +240,12 @@ def test_derived_inputs_block_when_their_sources_do() -> None:
 
 
 def test_all_sources_admissible_makes_six_of_six() -> None:
+    # The universe is current-only, so it has to be in hand before the instant.
+    # The other two may be fetched afterwards.
+    before = SEPT_30 - timedelta(hours=1)
     report = assess(
         {
-            "universe": _env(source_type="universe"),
+            "universe": _env(source_type="universe", semantic_as_of=before, retrieved_at=before),
             "sec_availability": _env(source_type="sec_availability"),
             "market": _env(),
         },

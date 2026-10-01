@@ -36,10 +36,67 @@ appears without the run or the test that produced it.
 
 ## Current phase
 
-**R1.9 — the prospective source plane built and the missed quarter disposed of**
-is the current checkpoint, on `feat/r1-backtest-harness`, branched from
-`feat/phase-b2-storage-abstraction` at `06357c5` (tagged
-`pit-research-dataset-v2`).
+**R1.10 — the V2 window certified and re-armed** is the current checkpoint, on
+`feat/r1-backtest-harness`, branched from `feat/phase-b2-storage-abstraction` at
+`06357c5` (tagged `pit-research-dataset-v2`).
+
+| | |
+| --- | --- |
+| B2 | **COMPLETE / FROZEN** |
+| R1.0 – R1.9 | **COMPLETE** |
+| H1 | **CLOSED / MECHANISTICALLY FALSIFIED** (R1.3) |
+| H2 | **unchanged** — rule, band, cadence, P1–P4, aggregate rule and window length all as frozen |
+| September 30 | **MISSED / NOT BACKFILLED / NOT BACKFILLABLE** — a hard refusal, not a convention |
+| V1 protocol | **IMMUTABLE** (`60c17136…`), superseded prospectively by V2 |
+| V2 protocol | **AUTHORITATIVE FOR THE FUTURE WINDOW** |
+| Source plane | **READY** — 6 of 6, proven live |
+| Temporal source rule | **`CURRENT_AT_RETRIEVAL` sources must be captured at or before the decision instant** |
+| Valid prospective observations | **0** |
+| Missed eligible opportunities | **1** |
+| Next eligible decision | **2026-12-31**, instant 16:00 ET, derived from the calendar |
+| State | **ARMED_WAITING_FOR_DECISION** |
+| Next | wait for the armed window; run readiness and preflight before the instant |
+
+What R1.10 closed. R1.9 built the sources and left a timing gap wide enough for
+the September failure to recur. Its admissibility check asked only whether a
+snapshot's facts predated the instant — and a **current-only snapshot satisfies
+that trivially, because its semantic time is its retrieval time**. A universe
+fetched at 23:00 would have passed for a 16:00 decision.
+
+Sources are now classified by what they can say about a moment other than now.
+`SOURCE_HAS_EVENT_TIME` (SEC acceptance) and `SESSION_BOUNDED` (a completed daily
+bar) may be fetched whenever, because each fact carries when it was true.
+`CURRENT_AT_RETRIEVAL_ONLY` (the broker asset list, tradability) may not: its
+latest admissible retrieval is **the decision instant itself**, and a later one
+is refused as `CURRENT_ONLY_SOURCE_TOO_LATE`. The single escape is a
+provider-supplied effective time at or before the instant — it must come from the
+provider, since one we assign ourselves is the retrojection the rule forbids
+wearing a field name. An envelope declaring no class defaults to the most
+restrictive, so forgetting fails closed.
+
+**The capture sequence is frozen before the arm**, so the decision day has
+nothing left to decide: Stage A takes the universe and tradability *before* the
+instant and seals them; Stage C completes the session bar and the
+acceptance-bounded SEC retrieval afterwards; the score is computed last, because
+what matters is that every input was admissible at the instant and the arithmetic
+adds no information. **Stage A is the one stage that cannot be recovered** —
+prices and filings can be fetched late, the universe cannot.
+
+**A defect R1.9 shipped, caught here by verifying V2 against the artifact rather
+than the report.** R1.9's generator imported H2's *historical* aggregate rule
+(`C1 AND C2 AND C3 AND C4`) in place of the *prospective* one
+(`P1 AND P2 AND P3 AND P4`). Nothing had been armed under it, so it was a draft
+that failed verification rather than an authority being rewritten; the corrected
+V2 is emitted by R1.10 and both digests are recorded. A regression test now
+asserts the criteria and the aggregate expression name the same things.
+
+**The missed opportunity is counted apart from the observations**, so neither can
+absorb the other: valid observations 0, missed eligible opportunities 1, and the
+next successful capture is `VALID_OBSERVATION_1` rather than a renumbering of
+history. The window requirement is unchanged at five decisions and four
+transitions — a source-plane failure is not a reason to ask less of a hypothesis.
+
+The preceding checkpoint, **R1.9**, stands unchanged.
 
 | | |
 | --- | --- |
@@ -4509,11 +4566,11 @@ Not a backlog. These exclusions are deliberate.
 
 | | |
 | --- | --- |
-| Commit | The R1.9 commit containing this checkpoint, `feat: build prospective shadow data plane`; parent `85a63c6` (R1.7, `research: activate H2 prospective shadow runner`, which the prospective activation record binds to), then `e730e93` (R1.6), `d825a3b` (R1.5), `f7332d0` (R1.4), `1c4fa88` (R1.3), `db96f18` (R1.2), `27a5cb7` (R1.1), `196690d` (R1.0) and `06357c5` (B2.18, tagged `pit-research-dataset-v2`). The authoritative plan's meta and authorization record name `repo_commit` `daa1d36`; the corrected package records `2a7d3b8`, the superseded package `ebfbc1c`, the superseded plan `afe6a10`, the index `1b407b6`. |
+| Commit | The R1.10 commit containing this checkpoint, `research: certify and arm H2 prospective V2 window`, which the V2 activation and arm bind to; parent `92cc56f` (R1.9, `feat: build prospective shadow data plane`), then `85a63c6` (R1.7, `research: activate H2 prospective shadow runner`, which the prospective activation record binds to), then `e730e93` (R1.6), `d825a3b` (R1.5), `f7332d0` (R1.4), `1c4fa88` (R1.3), `db96f18` (R1.2), `27a5cb7` (R1.1), `196690d` (R1.0) and `06357c5` (B2.18, tagged `pit-research-dataset-v2`). The authoritative plan's meta and authorization record name `repo_commit` `daa1d36`; the corrected package records `2a7d3b8`, the superseded package `ebfbc1c`, the superseded plan `afe6a10`, the index `1b407b6`. |
 | Branch | `feat/r1-backtest-harness`, branched from `feat/phase-b2-storage-abstraction` at `06357c5` |
 | Migration head | `0031` — the research-universe layer (9K.7). Nothing since 9K.11 added one. |
 | Score version | `COMPOUNDER_V1_2` (unchanged by anything in Phase 8, 9A, 9B or 9C) |
 | Feature version | `MARKET_FEATURES_V1` |
 | Signal version | `MARKET_SIGNALS_V1` |
-| Primary database | untouched by 8A–8J, 9A–9L.5, B2 and R1.0–R1.9; all work ran against staging copies |
+| Primary database | untouched by 8A–8J, 9A–9L.5, B2 and R1.0–R1.10; all work ran against staging copies |
 | Checkpoint date | 2026-09-25 |

@@ -54,6 +54,7 @@ SEMANTIC_MODULES: tuple[str, ...] = (
     "prospective_source/readiness.py",
     "prospective_source/governance.py",
     "prospective_source/store.py",
+    "prospective_source/window.py",
 )
 
 
