@@ -235,25 +235,36 @@ def test_a_missing_source_blocks_rather_than_being_skipped() -> None:
 def test_derived_inputs_block_when_their_sources_do() -> None:
     report = assess({"market": None}, decision_instant=SEPT_30)
 
-    for name in ("score_inputs", "tradability", "ranked_cross_section"):
+    for name in ("score_inputs", "ranked_cross_section"):
         assert report.inputs[name]["reasons"] == ["UPSTREAM_SOURCE_BLOCKED"]
 
 
-def test_all_sources_admissible_makes_six_of_six() -> None:
-    # The universe is current-only, so it has to be in hand before the instant.
-    # The other two may be fetched afterwards.
+def test_a_derived_input_is_never_reported_ready_by_this_module() -> None:
+    """R1.12 narrowed what this module claims.
+
+    It previously marked a derived input READY whenever its sources were
+    admissible, which R1.9 and R1.10 then certified as 6/6 with no producer in
+    existence. Derivability is now reported as what it is.
+    """
     before = SEPT_30 - timedelta(hours=1)
+    universe = _env(source_type="universe", semantic_as_of=before, retrieved_at=before)
     report = assess(
         {
-            "universe": _env(source_type="universe", semantic_as_of=before, retrieved_at=before),
+            "universe": universe,
+            "tradability": universe,
             "sec_availability": _env(source_type="sec_availability"),
             "market": _env(),
         },
         decision_instant=SEPT_30,
     )
 
-    assert report.ready is True
-    assert report.ready_count == 6
+    assert report.sources_ready is True
+    assert report.ready_count == 4
+    for name in ("score_inputs", "ranked_cross_section"):
+        assert report.inputs[name]["status"] == "DERIVABLE_NOT_PRODUCED"
+        assert report.inputs[name]["fingerprint"] is None
+    assert report.as_json()["readiness_kind"] == "SOURCE_AND_DERIVABILITY"
+    assert report.as_json()["result"] == "SOURCES_READY"
 
 
 @pytest.mark.parametrize("missing", ["universe", "sec_availability", "market"])

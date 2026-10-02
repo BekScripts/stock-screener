@@ -9,6 +9,17 @@ fingerprints or it is not a decision packet.
 `readiness` is the pre-event gate. `preflight` is the lighter decision-day
 check. Neither creates a decision, and both refuse to report READY on a source
 whose freshness policy it cannot satisfy — the condition that cost September 30.
+
+**What this module does and does not claim.** It answers one question: are the
+fetched sources admissible for the instant, and are the derived components
+therefore derivable? That is `SOURCE_AND_DERIVABILITY` readiness, and R1.11
+showed why the distinction matters — a derived component reported READY here on
+the strength of its sources alone, which R1.9 and R1.10 then certified as 6/6
+without any producer existing. Those reports were accurate under this
+definition; the definition was the problem. Derived components are now reported
+as `DERIVABLE_NOT_PRODUCED`, which is not readiness, and the stronger question —
+has a producer actually emitted a validated, fingerprinted artifact — belongs to
+`prospective_capture.readiness` and its `CAPTURE_READY` state.
 """
 
 from __future__ import annotations
@@ -26,12 +37,19 @@ if TYPE_CHECKING:
     from .envelope import SnapshotEnvelope
 
 __all__ = [
+    "DERIVED_INPUTS",
+    "FETCHED_INPUTS",
     "FRESHNESS_POLICY",
+    "READINESS_KIND",
     "REQUIRED_INPUTS",
     "ReadinessReport",
     "assess",
     "preflight",
 ]
+
+#: What a verdict from this module means. Never plain "readiness": see the module
+#: docstring and `prospective_capture.readiness`.
+READINESS_KIND = "SOURCE_AND_DERIVABILITY"
 
 #: The six inputs a decision packet needs. All of them, or none.
 REQUIRED_INPUTS: tuple[str, ...] = (
@@ -42,6 +60,17 @@ REQUIRED_INPUTS: tuple[str, ...] = (
     "tradability",
     "ranked_cross_section",
 )
+
+#: The four that are fetched. `tradability` belongs here and not among the
+#: derived: the frozen capture sequence lists it as a stage-A current-only
+#: source, supplied by the same broker asset list as the universe. Treating it as
+#: derived is what let it be reported ready without a source of its own.
+FETCHED_INPUTS: tuple[str, ...] = ("universe", "tradability", "market", "sec_availability")
+
+#: The two that a producer must emit. Neither is derivable from the fetched
+#: sources alone: no fetched source carries a reported fundamental value, which
+#: is why `prospective_capture` adds a filing-observations fetch to feed them.
+DERIVED_INPUTS: tuple[str, ...] = ("score_inputs", "ranked_cross_section")
 
 #: How stale a source may be when a decision is taken, in seconds. Fail-closed
 #: and prospective only: §34 forbids applying this to September 30 after the
@@ -80,13 +109,28 @@ class ReadinessReport:
 
     @property
     def ready_count(self) -> int:
-        """How many of the six required inputs are ready."""
+        """How many required inputs are READY — fetched sources only."""
         return sum(1 for row in self.inputs.values() if row["status"] == "READY")
 
     @property
+    def derivable_count(self) -> int:
+        """How many derived inputs are derivable but unproduced."""
+        return sum(1 for row in self.inputs.values() if row["status"] == "DERIVABLE_NOT_PRODUCED")
+
+    @property
+    def sources_ready(self) -> bool:
+        """Whether every fetched source is admissible. Not capture readiness."""
+        return all(self.inputs.get(name, {}).get("status") == "READY" for name in FETCHED_INPUTS)
+
+    @property
     def ready(self) -> bool:
-        """Whether all six are ready. Five is not nearly ready."""
-        return self.ready_count == len(REQUIRED_INPUTS)
+        """Whether every fetched source is admissible and the rest derivable.
+
+        This is deliberately not "ready to capture". A derived input counted here
+        has no artifact and no fingerprint; `prospective_capture.readiness`
+        answers whether a decision can actually be produced.
+        """
+        return self.sources_ready and self.derivable_count == len(DERIVED_INPUTS)
 
     def as_json(self) -> dict[str, Any]:
         """Return the report as a JSON-safe mapping."""
@@ -94,10 +138,18 @@ class ReadinessReport:
             "decision_instant": self.decision_instant.isoformat(),
             "required_inputs": list(REQUIRED_INPUTS),
             "inputs": dict(sorted(self.inputs.items())),
+            "readiness_kind": READINESS_KIND,
+            "fetched_inputs": list(FETCHED_INPUTS),
+            "derived_inputs": list(DERIVED_INPUTS),
             "ready_count": self.ready_count,
+            "derivable_count": self.derivable_count,
             "total_required": len(REQUIRED_INPUTS),
-            "six_of_six": self.ready,
-            "result": "READY" if self.ready else "BLOCKED",
+            "sources_ready": self.sources_ready,
+            "result": "SOURCES_READY" if self.ready else "BLOCKED",
+            "is_not_capture_readiness": (
+                "a derived input here has no artifact and no fingerprint. See "
+                "prospective_capture.readiness for CAPTURE_READY."
+            ),
             "blockers": list(self.blockers),
             "rule": (
                 "the six inputs are conjunctive. A decision packet needs all six "
@@ -113,7 +165,7 @@ def assess(
     envelopes: Mapping[str, SnapshotEnvelope | None],
     *,
     decision_instant: datetime,
-    derived: Sequence[str] = ("score_inputs", "tradability", "ranked_cross_section"),
+    derived: Sequence[str] = DERIVED_INPUTS,
 ) -> ReadinessReport:
     """Assess readiness for a decision instant.
 
@@ -122,8 +174,9 @@ def assess(
             supplied. A missing key is treated as unavailable rather than
             skipped, because a silently absent input is the R1.8 failure.
         decision_instant: The instant to assess against.
-        derived: Inputs produced from the fetched ones rather than fetched
-            directly. They are ready when their sources are.
+        derived: Inputs a producer must emit rather than fetch. They are never
+            reported READY here, only derivable, because this module cannot see
+            whether a producer exists.
 
     Returns:
         The report.
@@ -157,11 +210,14 @@ def assess(
     for name in derived:
         if sources_ready:
             report.inputs[name] = {
-                "status": "READY",
-                "reasons": [],
+                "status": "DERIVABLE_NOT_PRODUCED",
+                "reasons": ["ARTIFACT_NOT_PRODUCED"],
                 "derived_from": fetched,
                 "fingerprint": None,
-                "note": "derivable once its sources are admissible",
+                "note": (
+                    "its sources are admissible, so it is derivable. That is not "
+                    "readiness: no producer has run and there is no fingerprint."
+                ),
             }
         else:
             report.inputs[name] = {

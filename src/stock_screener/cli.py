@@ -27,6 +27,7 @@ from dataclasses import asdict, replace
 from datetime import UTC, date, datetime
 from datetime import UTC as _UTC
 from datetime import datetime as _datetime
+from datetime import timedelta as _timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated
 
@@ -35,7 +36,7 @@ import typer
 
 from api_clients import ProviderInvalidRequestError, SecDocuments
 from data_access import build_session_factory, create_engine_from_url, session_scope
-from domain import DelistingReason, TerminalStatus
+from domain import DelistingReason, PriceBar, TerminalStatus
 from research import build_system_prompt, render_brief
 from stock_screener.backtest import (
     Cadence,
@@ -140,6 +141,56 @@ from stock_screener.pit import (
     measure_historical_forward_returns,
     record_capture_failure,
 )
+from stock_screener.prospective_capture import (
+    CalendarBinding as CaptureCalendarBinding,
+)
+from stock_screener.prospective_capture import (
+    CalendarBindingError as CaptureCalendarError,
+)
+from stock_screener.prospective_capture import (
+    DecisionRefusedError,
+    ExecutionRefusedError,
+    admitted_accessions_by_ticker,
+)
+from stock_screener.prospective_capture import (
+    PackageError as CapturePackageError,
+)
+from stock_screener.prospective_capture import (
+    bind_calendar as bind_capture_calendar,
+)
+from stock_screener.prospective_capture import (
+    capture_decision as capture_prospective_decision,
+)
+from stock_screener.prospective_capture import (
+    capture_execution_reference as capture_prospective_execution,
+)
+from stock_screener.prospective_capture import (
+    complete_post_close as complete_capture_post_close,
+)
+from stock_screener.prospective_capture import (
+    derive_execution_session as derive_capture_execution_session,
+)
+from stock_screener.prospective_capture import (
+    fetch_corporate_actions as fetch_capture_actions,
+)
+from stock_screener.prospective_capture import (
+    fetch_filing_observations as fetch_capture_observations,
+)
+from stock_screener.prospective_capture import (
+    load_package as load_capture_package,
+)
+from stock_screener.prospective_capture import (
+    resolve_identities as resolve_capture_identities,
+)
+from stock_screener.prospective_capture import (
+    seal_predecision as seal_capture_predecision,
+)
+from stock_screener.prospective_capture.readiness import IncompleteDecisionInputsError
+from stock_screener.prospective_capture.run import (
+    CANARY_RECORD_FILE,
+    capture_readiness,
+    run_capture_pipeline_canary,
+)
 from stock_screener.prospective_protocol import (
     PROTOCOL_DIR,
     freeze_candidate_and_protocol,
@@ -169,6 +220,9 @@ from stock_screener.prospective_runner import (
 from stock_screener.prospective_runner import (
     load_state as load_prospective_state,
 )
+from stock_screener.prospective_runner import (
+    semantic_fingerprint as prospective_semantic_fingerprint,
+)
 from stock_screener.prospective_source import (
     CERTIFY_DIR,
     CERTIFY_MIRROR_PREFIX,
@@ -184,6 +238,15 @@ from stock_screener.prospective_source import (
     session_close,
 )
 from stock_screener.prospective_source import preflight as prospective_preflight
+from stock_screener.prospective_source.adapters import (
+    fetch_market,
+    fetch_sec_availability,
+    fetch_universe,
+)
+from stock_screener.prospective_source.adapters import (
+    session_close as prospective_session_close,
+)
+from stock_screener.prospective_source.envelope import StaleSourceError
 from stock_screener.providers import (
     ConfigurationError,
     build_deep_research_provider,
@@ -7068,6 +7131,493 @@ def prospective_certify_window_command(
                 raise typer.Exit(code=1)
             count += 1
         typer.echo(f"mirrored             : {count} files under {control_mirror.prefix}")
+
+
+# --------------------------------------------------------------------------- #
+# R1.12 — the capture pipeline. One entry point per stage.
+# --------------------------------------------------------------------------- #
+
+#: One activation or arm record, as read from disk.
+ArmedRecord = dict[str, object]
+
+#: Where a window's sealed package, artifacts and packets live.
+CAPTURE_WINDOW_DIR = "prospective/h2_v1"
+
+#: A year of sessions, so the twelve-month features and benchmark can be built.
+CAPTURE_LOOKBACK_DAYS = 400
+
+
+def _capture_paths(control: EvidenceControlRoot) -> tuple[Path, Path, Path]:
+    """The window directory, the snapshot store root and the state file."""
+    root = control.path / CAPTURE_WINDOW_DIR
+    return root, root / "snapshots", root / "prospective_runner_state.json"
+
+
+def _armed_records(root: Path, *, require_arm: bool = True) -> tuple[ArmedRecord, ArmedRecord]:
+    """The activation and arm records in force.
+
+    Args:
+        root: The window root.
+        require_arm: Whether a missing arm is fatal. Readiness is the one caller
+            that must run *before* the arm exists — a check that cannot be used
+            until arming is a check that cannot gate arming — so it passes False
+            and gets an empty arm to report as missing.
+
+    Returns:
+        The activation and the arm. The arm is `{}` when absent and not required.
+
+    Raises:
+        typer.Exit: If the activation is absent, or the arm is absent and required.
+    """
+    activation = root / "prospective_activation_v2.json"
+    arm = root / "prospective_arm_record_v2.json"
+    if not activation.is_file():
+        typer.echo(f"STOPPED: {activation.name} does not exist; the window is not activated")
+        raise typer.Exit(code=1)
+    if require_arm and not arm.is_file():
+        typer.echo(f"STOPPED: {arm.name} does not exist; the window is not armed")
+        raise typer.Exit(code=1)
+    return (
+        json.loads(activation.read_text(encoding="utf-8")),
+        json.loads(arm.read_text(encoding="utf-8")) if arm.is_file() else {},
+    )
+
+
+def _bind_capture_calendar(database: Path) -> tuple[CaptureCalendarBinding, list[date]]:
+    """Bind the calendar to the authoritative session source.
+
+    Raises:
+        typer.Exit: If the source is not the one the protocol was certified against.
+    """
+    with closing(sqlite3.connect(f"file:{database}?mode=ro", uri=True)) as db:
+        sessions = [
+            date.fromisoformat(str(row[0]))
+            for row in db.execute("SELECT date FROM benchmark_prices ORDER BY date")
+        ]
+    try:
+        return bind_capture_calendar(sessions, source=str(database)), sessions
+    except CaptureCalendarError as exc:
+        typer.echo(f"STOPPED: {exc}")
+        raise typer.Exit(code=1) from exc
+
+
+@prospective_app.command("pipeline-canary")
+def prospective_pipeline_canary_command(
+    database: Annotated[
+        Path, typer.Option("--database", help="The frozen research database, read-only.")
+    ] = Path("stage9k.db"),
+    sample: Annotated[
+        int, typer.Option(min=1, max=200, help="How many identities to carry through.")
+    ] = 25,
+) -> None:
+    """Exercise the whole capture pipeline live, without taking a decision.
+
+    Runs the production fetchers, score builder, scorer and ranker and reports six
+    real fingerprints. It stops before H2 selection, so it can never consume a
+    prospective observation.
+    """
+    settings = _bootstrap()
+    _, control = _open_layout(settings)
+    store = SnapshotStore(control.path / "prospective/canary/snapshots")
+    market, source = _build_md(settings), _build_obs(settings)
+    try:
+        result = run_capture_pipeline_canary(
+            market,
+            source,
+            store,
+            database,
+            benchmark_symbol=settings.benchmark_symbol,
+            bar_volume_basis=settings.bar_volume_basis,
+            thresholds=settings.eligibility_thresholds,
+            sample=sample,
+        )
+    except (CaptureCalendarError, StaleSourceError) as exc:
+        typer.echo(f"STOPPED: {exc}")
+        raise typer.Exit(code=1) from exc
+    finally:
+        for client in (market, source):
+            closer = getattr(client, "close", None)
+            if closer is not None:
+                closer()
+    record = control.path / "prospective/canary" / CANARY_RECORD_FILE
+    record.parent.mkdir(parents=True, exist_ok=True)
+    record.write_text(
+        json.dumps(result, indent=2, sort_keys=True, default=str) + "\n", encoding="utf-8"
+    )
+    typer.echo(f"classification       : {', '.join(result['classification'])}")
+    typer.echo(f"canary session       : {result['canary_session']}")
+    typer.echo(f"record               : {record}")
+    typer.echo(f"calendar             : {result['calendar']['session_count']} sessions")
+    typer.echo(f"identities resolved  : {result['identities_resolved']}")
+    typer.echo(f"sampled              : {result['sampled']}")
+    typer.echo(f"observations admitted: {result['observations_admitted']}")
+    scored = result["scores"]
+    typer.echo(f"scored / rankable    : {scored['scored_count']} / {scored['rankable_count']}")
+    typer.echo(f"executable           : {result['cross_section']['executable_count']}")
+    typer.echo("")
+    for name, digest in sorted(result["required_fingerprints"].items()):
+        typer.echo(f"  {name:<22}: {digest[:16] if digest else 'NULL'}")
+    typer.echo("")
+    typer.echo(f"six real fingerprints: {result['six_real_fingerprints']}")
+    provenance = result["provenance"]
+    typer.echo(f"source operation     : {provenance['source_operation']}")
+    typer.echo(f"unique accessions    : {provenance['unique_accessions']}")
+    typer.echo(f"max accepted_at      : {provenance['max_accepted_at']}")
+    typer.echo(f"post-cutoff rejected : {provenance['post_cutoff_observations_rejected']}")
+    typer.echo(f"untraceable values   : {provenance['untraceable_values']}")
+    typer.echo(f"merged reads used    : {provenance['merged_current_operations_used']}")
+    typer.echo(
+        "provenance complete  : "
+        f"{provenance['score_inputs_with_complete_accession_provenance']}"
+        f"/{provenance['scorable_score_inputs']}"
+    )
+    typer.echo(f"network after freeze : {result['network_calls_after_freeze']}")
+    typer.echo(f"stopped before       : {result['stopped_before']}")
+    typer.echo(f"consumed observation : {result['consumed_an_observation']}")
+
+
+@prospective_app.command("capture-readiness")
+def prospective_capture_readiness_command(
+    database: Annotated[
+        Path, typer.Option("--database", help="The frozen research database, read-only.")
+    ] = Path("stage9k.db"),
+) -> None:
+    """Report whether a capture can actually run, not whether it could in principle.
+
+    Distinguishes reachable sources from implemented producers and from existing
+    executors, so a reassuring single READY cannot hide a missing one.
+    """
+    settings = _bootstrap()
+    _, control = _open_layout(settings)
+    root, store_root, _ = _capture_paths(control)
+    activation, arm = _armed_records(root, require_arm=False)
+    calendar, _ = _bind_capture_calendar(database)
+    fingerprint = prospective_semantic_fingerprint()["semantic_fingerprint"]
+    # Without an arm there is no authorised instant yet, so the window is derived
+    # for the report rather than read from an arm that does not exist.
+    instant = str(arm.get("decision_instant") or "")
+    if not instant:
+        quarter = upcoming_quarter_ends(_datetime.now(_UTC).astimezone().date(), 1)[0]
+        instant = prospective_session_close(quarter).isoformat()
+    # Before the armed session arrives there is no package to inspect, so the
+    # evidence that the derived producers work is the last pipeline canary: it ran
+    # them against live sources and emitted six non-null fingerprints. Once a
+    # package for the armed session is sealed, its own artifacts take precedence.
+    canary_path = control.path / "prospective/canary" / CANARY_RECORD_FILE
+    canary = json.loads(canary_path.read_text(encoding="utf-8")) if canary_path.is_file() else None
+    try:
+        package = load_capture_package(root)
+        sealed_prints = dict(package.fingerprints)
+        stage = package.stage
+    except CapturePackageError:
+        sealed_prints, stage = {}, "NOT_SEALED"
+
+    demonstrated = dict((canary or {}).get("required_fingerprints") or {})
+    provenance_clean = bool(((canary or {}).get("provenance") or {}).get("clean"))
+    produced = {
+        name: bool(demonstrated.get(name)) and provenance_clean
+        for name in ("score_inputs", "ranked_cross_section")
+    }
+    fingerprints = {
+        name: sealed_prints.get(name) or demonstrated.get(name)
+        for name in (
+            "universe",
+            "tradability",
+            "market",
+            "sec_availability",
+            "score_inputs",
+            "ranked_cross_section",
+        )
+    }
+    report = capture_readiness(
+        decision_instant=instant,
+        fingerprints=fingerprints,
+        produced=produced,
+        store_healthy=store_root.is_dir(),
+        calendar_authoritative=calendar.authoritative,
+        activation_matches=activation.get("semantic_code_fingerprint") == fingerprint,
+        arm_matches=arm.get("semantic_code_fingerprint") == fingerprint,
+    )
+    typer.echo(f"readiness kind       : {report['readiness_kind']}")
+    typer.echo(f"input package stage  : {stage}")
+    typer.echo(
+        "producibility basis  : "
+        + (
+            f"pipeline canary {canary['canary_session']} (provenance clean: {provenance_clean})"
+            if canary
+            else "NONE — run `prospective pipeline-canary` first"
+        )
+    )
+    for name, row in report["components"].items():
+        typer.echo(f"  {name:<22}: {row['state']:<22} {','.join(row['reasons'])}")
+    typer.echo("")
+    typer.echo(f"executors            : {report['executors']}")
+    typer.echo(f"fingerprints         : {report['non_null_fingerprint_count']}/6 non-null")
+    typer.echo(f"arm                  : {'PRESENT' if arm else 'MISSING'}")
+    typer.echo(f"state                : {report['state']}")
+    for blocker in report["blockers"]:
+        typer.echo(f"  blocker            : {blocker}")
+
+
+@prospective_app.command("seal-predecision")
+def prospective_seal_predecision_command(
+    database: Annotated[
+        Path, typer.Option("--database", help="The frozen research database, read-only.")
+    ] = Path("stage9k.db"),
+) -> None:
+    """Stage A: retrieve and seal the current-only sources before the instant.
+
+    The broker asset list describes the present and cannot be asked later what it
+    said at the close, so this must run before the decision instant. It creates no
+    decision.
+    """
+    settings = _bootstrap()
+    _, control = _open_layout(settings)
+    root, store_root, _ = _capture_paths(control)
+    _, arm = _armed_records(root)
+    session = str(arm["decision_session"])
+    instant = _datetime.fromisoformat(str(arm["decision_instant"]))
+    _bind_capture_calendar(database)
+    store = SnapshotStore(store_root)
+    market = _build_md(settings)
+    try:
+        universe = fetch_universe(market, decision_session=date.fromisoformat(session))
+    finally:
+        closer = getattr(market, "close", None)
+        if closer is not None:
+            closer()
+    try:
+        package = seal_capture_predecision(
+            store,
+            root,
+            decision_session=session,
+            decision_instant=instant,
+            sources={"universe": universe, "tradability": universe},
+        )
+    except CapturePackageError as exc:
+        typer.echo(f"STOPPED: {exc}")
+        raise typer.Exit(code=1) from exc
+    typer.echo(f"decision session     : {session}")
+    typer.echo(f"sealed sources       : {', '.join(sorted(package.envelopes))}")
+    typer.echo(f"listings             : {universe.envelope.record_count}")
+    typer.echo(f"package fingerprint  : {package.fingerprint()[:16]}…")
+    typer.echo(f"stage                : {package.stage}")
+    typer.echo("creates a decision   : False")
+
+
+@prospective_app.command("capture-decision")
+def prospective_capture_decision_command(
+    database: Annotated[
+        Path, typer.Option("--database", help="The frozen research database, read-only.")
+    ] = Path("stage9k.db"),
+    universe_limit: Annotated[
+        int, typer.Option(min=1, help="Cap the identities read, for a rehearsal.")
+    ] = 100_000,
+) -> None:
+    """Stages C through D: complete the package after the close and decide once.
+
+    Refuses a missed session, a superseded authorisation, an unreached instant or
+    an incomplete input package. Writes exactly one decision packet and advances
+    the state only after the packet reads back as written.
+    """
+    settings = _bootstrap()
+    _, control = _open_layout(settings)
+    root, store_root, state_path = _capture_paths(control)
+    activation, arm = _armed_records(root)
+    calendar, _ = _bind_capture_calendar(database)
+    session = date.fromisoformat(str(arm["decision_session"]))
+    instant = _datetime.fromisoformat(str(arm["decision_instant"]))
+    store = SnapshotStore(store_root)
+    try:
+        package = load_capture_package(root)
+    except CapturePackageError as exc:
+        typer.echo(f"STOPPED: {exc}. Run `prospective seal-predecision` before the instant.")
+        raise typer.Exit(code=1) from exc
+
+    universe_payload = store.get(
+        "universe",
+        package.decision_session,
+        package.envelopes["universe"].content_sha256[:16],
+    )["payload"]["listings"]
+    with closing(sqlite3.connect(f"file:{database}?mode=ro", uri=True)) as db:
+        identities, _, _ = resolve_capture_identities(db, universe_payload)
+    identities = list(identities)[:universe_limit]
+    symbols = [identity.symbol for identity in identities]
+    lookback = session - _timedelta(days=CAPTURE_LOOKBACK_DAYS)
+
+    market, source = _build_md(settings), _build_obs(settings)
+    try:
+        acceptance = fetch_sec_availability(source, symbols, decision_instant=instant)
+        observations = fetch_capture_observations(
+            source,
+            identities,
+            decision_instant=instant,
+            admitted=admitted_accessions_by_ticker(acceptance.records),
+        )
+        bars = fetch_market(market, symbols, decision_session=session, lookback_start=lookback)
+        actions = fetch_capture_actions(
+            market, symbols, decision_session=session, lookback_start=lookback
+        )
+        benchmark = fetch_market(
+            market,
+            [settings.benchmark_symbol],
+            decision_session=session,
+            lookback_start=lookback,
+        )
+    finally:
+        for client in (market, source):
+            closer = getattr(client, "close", None)
+            if closer is not None:
+                closer()
+
+    try:
+        package = complete_capture_post_close(
+            store,
+            root,
+            package=package,
+            decision_instant=instant,
+            sources={
+                "market": bars,
+                "sec_availability": acceptance,
+                "filing_observations": observations,
+                "corporate_actions": actions,
+            },
+        )
+        capture = capture_prospective_decision(
+            store,
+            root,
+            package=package,
+            activation=activation,
+            arm=arm,
+            calendar=calendar,
+            identities=identities,
+            benchmark_bars=[
+                PriceBar(
+                    date=date.fromisoformat(str(row["session"])),
+                    open=float(row["open"]),
+                    high=float(row["high"]),
+                    low=float(row["low"]),
+                    close=float(row["close"]),
+                    volume=float(row["volume"]),
+                )
+                for row in benchmark.records
+            ],
+            benchmark_symbol=settings.benchmark_symbol,
+            bar_volume_basis=settings.bar_volume_basis,
+            thresholds=settings.eligibility_thresholds,
+            semantic_fingerprint=prospective_semantic_fingerprint()["semantic_fingerprint"],
+            code_commit=_head_commit(),
+            state_path=state_path,
+            now=_datetime.now(_UTC),
+        )
+    except (
+        CapturePackageError,
+        DecisionRefusedError,
+        WindowError,
+        IncompleteDecisionInputsError,
+    ) as exc:
+        typer.echo(f"STOPPED: {exc}")
+        raise typer.Exit(code=1) from exc
+
+    view = capture.as_json()
+    for key, value in view.items():
+        typer.echo(f"  {key:<24}: {value}")
+
+
+@prospective_app.command("capture-execution-reference")
+def prospective_capture_execution_command(
+    decision_session: Annotated[
+        str, typer.Option(help="The decision session to price, YYYY-MM-DD.")
+    ],
+    database: Annotated[
+        Path, typer.Option("--database", help="The frozen research database, read-only.")
+    ] = Path("stage9k.db"),
+) -> None:
+    """Stage E: record the execution reference for a decision already taken.
+
+    Needs the execution session's open, so it runs after that session opens. It
+    places no order; the stream has no broker authorisation.
+    """
+    settings = _bootstrap()
+    _, control = _open_layout(settings)
+    root, _, state_path = _capture_paths(control)
+    session = derive_capture_execution_session(date.fromisoformat(decision_session))
+    by_identity = _execution_symbols(root, decision_session, database)
+    market = _build_md(settings)
+    try:
+        bars = market.get_daily_prices_batch(sorted(set(by_identity.values())), session, session)
+    finally:
+        closer = getattr(market, "close", None)
+        if closer is not None:
+            closer()
+    priced = {
+        ticker.upper(): series[0].open
+        for ticker, series in bars.items()
+        if series and series[0].date == session
+    }
+    opens = {identity: priced.get(ticker.upper()) for identity, ticker in by_identity.items()}
+    try:
+        capture = capture_prospective_execution(
+            root,
+            decision_session=decision_session,
+            opens=opens,
+            source={"provider": type(market).__name__, "basis": "official open"},
+            state_path=state_path,
+            now=_datetime.now(_UTC),
+        )
+    except ExecutionRefusedError as exc:
+        typer.echo(f"STOPPED: {exc}")
+        raise typer.Exit(code=1) from exc
+    for key, value in capture.as_json().items():
+        typer.echo(f"  {key:<24}: {value}")
+
+
+def _execution_symbols(root: Path, decision_session: str, database: Path) -> dict[str, str]:
+    """Resolve each target identity to the ticker it currently trades under.
+
+    The frozen packet records `(kind, identity_id)` and no symbol, because the
+    contract makes a ticker a dated display attribute rather than an identity. So
+    the symbol is resolved from the registry here, at pricing time.
+
+    Args:
+        root: Where the window's packets live.
+        decision_session: The decision being priced.
+        database: The research database, read-only.
+
+    Returns:
+        `{"KIND:identity_id": ticker}` for every target.
+
+    Raises:
+        typer.Exit: If the decision packet does not exist, or an identity cannot
+            be resolved — pricing the wrong security is worse than not pricing.
+    """
+    path = root / f"decision_{decision_session}.json"
+    if not path.is_file():
+        typer.echo(f"STOPPED: {path.name} does not exist; there is no decision to price")
+        raise typer.Exit(code=1)
+    body = json.loads(path.read_text(encoding="utf-8"))
+    targets = {
+        (str(row["kind"]), int(row["identity_id"])) for row in body.get("h2_target_set") or ()
+    }
+    resolved: dict[str, str] = {}
+    with closing(sqlite3.connect(f"file:{database}?mode=ro", uri=True)) as db:
+        for kind, identity_id in sorted(targets):
+            row = db.execute("SELECT ticker FROM companies WHERE id = ?", (identity_id,)).fetchone()
+            if row is None or not row[0]:
+                typer.echo(f"STOPPED: {kind}:{identity_id} has no ticker in {database}")
+                raise typer.Exit(code=1)
+            resolved[f"{kind}:{identity_id}"] = str(row[0])
+    return resolved
+
+
+def _head_commit() -> str:
+    """The commit the capture binds to."""
+    return subprocess.run(
+        ["git", "rev-parse", "HEAD"],  # noqa: S607
+        capture_output=True,
+        text=True,
+        check=False,
+    ).stdout.strip()
 
 
 def _percent(value: float | None) -> str:

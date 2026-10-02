@@ -36,26 +36,89 @@ appears without the run or the test that produced it.
 
 ## Current phase
 
-**R1.10 — the V2 window certified and re-armed** is the current checkpoint, on
+**R1.12 — the prospective capture pipeline built** is the current checkpoint, on
 `feat/r1-backtest-harness`, branched from `feat/phase-b2-storage-abstraction` at
 `06357c5` (tagged `pit-research-dataset-v2`).
 
 | | |
 | --- | --- |
 | B2 | **COMPLETE / FROZEN** |
-| R1.0 – R1.9 | **COMPLETE** |
+| R1.0 – R1.11 | **COMPLETE** |
 | H1 | **CLOSED / MECHANISTICALLY FALSIFIED** (R1.3) |
 | H2 | **unchanged** — rule, band, cadence, P1–P4, aggregate rule and window length all as frozen |
-| September 30 | **MISSED / NOT BACKFILLED / NOT BACKFILLABLE** — a hard refusal, not a convention |
+| September 30 | **MISSED / NOT BACKFILLED / NOT BACKFILLABLE** — a hard refusal, now enforced before any value is computed |
 | V1 protocol | **IMMUTABLE** (`60c17136…`), superseded prospectively by V2 |
-| V2 protocol | **AUTHORITATIVE FOR THE FUTURE WINDOW** |
-| Source plane | **READY** — 6 of 6, proven live |
+| V2 protocol | **AUTHORITATIVE FOR THE FUTURE WINDOW** — semantically unchanged by R1.12 |
+| Capture executors | **IMPLEMENTED** — stages D and E have production callers; R1.11 found zero |
+| Readiness | two definitions: `SOURCE_AND_DERIVABILITY` and `EXECUTABLE_CAPTURE_READINESS` |
 | Temporal source rule | **`CURRENT_AT_RETRIEVAL` sources must be captured at or before the decision instant** |
+| Calendar binding | bound to the 1,531-session research source; a thinner source raises `CALENDAR_BINDING_MISMATCH` |
 | Valid prospective observations | **0** |
 | Missed eligible opportunities | **1** |
 | Next eligible decision | **2026-12-31**, instant 16:00 ET, derived from the calendar |
-| State | **ARMED_WAITING_FOR_DECISION** |
-| Next | wait for the armed window; run readiness and preflight before the instant |
+| R1.10 activation and arm | **SUPERSEDED_BY_SEMANTIC_REPAIR** — unedited, but no longer authoritative |
+| Current activation and arm | bound to the R1.12 repair commit; the records and their digests live under `.evidence/prospective/h2_v1/` and `.evidence/research/r1_12/`, as every prior activation has |
+| State | **CAPTURE_READY / ARMED_WAITING_FOR_DECISION** |
+| Next | operational readiness checks only; capture the first valid decision once, at the authorised instant |
+
+Three generations of readiness, and what each actually claimed:
+
+| Phase | Readiness claim | What was true |
+| --- | --- | --- |
+| R1.8 | — | no prospective source path existed at all; the 2026-09-30 decision was missed |
+| R1.9 / R1.10 | `SOURCE_AND_DERIVABILITY` — reported as 6/6 READY | the three fetched sources were live; the three derived inputs were asserted derivable with null fingerprints and no producer |
+| R1.11 | the same, re-certified | `CAPTURE_STATE_MACHINE_INCOMPLETE` — stages D and E had no executor, and the declared derivation was impossible |
+| R1.12 | `EXECUTABLE_CAPTURE_READINESS` | every required artifact is produced by a real producer and carries a non-null fingerprint; both executors have production callers |
+
+Earlier reports are not rewritten. Each was accurate under the definition in force
+when it was made, and naming the definitions apart is what stops the weaker claim
+being mistaken for the stronger one again.
+
+What R1.11 found, and what R1.12 repaired. R1.11 certified the armed window with
+every gate green — bindings matched, the calendar replayed 1,531 frozen sessions,
+the live source canary returned 6/6 READY, preflight said `GO` — and then found
+that no decision could be produced. `decision_packet()`, `execution_packet()` and
+`paired_targets()` had **zero production callers**, and stages `D_DECISION` and
+`E_EXECUTION_REFERENCE` were specified and implemented nowhere.
+
+Underneath that sat a deeper fault: the declared derivation was impossible. The
+old readiness marked `score_inputs`, `tradability` and `ranked_cross_section`
+READY whenever the three fetched sources were admissible, with
+`fingerprint: null` and the note *"derivable once its sources are admissible"* —
+but no fetched source carried a reported fundamental value. The universe is a
+broker asset list, the market snapshot is daily bars, and `sec_availability`
+holds only acceptance metadata. "6/6 READY" asserted a derivation nothing could
+satisfy.
+
+R1.12 supplies the missing fetch and the missing executors. Reported values come
+from `get_filing_observations`, joined to the acceptance snapshot by accession so
+a value participates only when the filing carrying it was public at the instant;
+the frozen `NON_PIT_SAFE_OPERATIONS` refuses the *merged* `get_financial_statements`
+and not this one, because the merged view destroys the availability date. Corporate
+actions recover the share-count price basis. Both are fingerprinted inside
+`score_inputs`' provenance, so the required count stays at six.
+
+Readiness is now two questions, named apart: `SOURCE_AND_DERIVABILITY` asks
+whether the fetched sources are admissible, and `EXECUTABLE_CAPTURE_READINESS`
+asks whether a producer has emitted a validated, fingerprinted artifact. A merely
+derivable component is `BLOCKED`, and nothing is ready with a null fingerprint.
+R1.9's and R1.10's reports are not rewritten; they were accurate under the
+definition they were made with.
+
+**The repair moved the semantic fingerprint**, from
+`0c9a594b5392eaf1279bcda0848bba48c681392745764ebe800253a7d24e4e9e` (19 modules)
+to a 30-module fingerprint covering the capture path. The R1.10 activation and
+arm are therefore `SUPERSEDED_BY_SEMANTIC_REPAIR` — left unedited, and correctly
+reporting `activation_mismatch` / `arm_mismatch` until a new activation and arm
+are taken on the R1.12 commit.
+
+One strategy implementation. Selection runs through
+`membership_hypothesis.select`, ranking through `membership_hypothesis.rank`, and
+scoring through `domain.score_company` on metrics from
+`domain.build_company_metrics` and periods from
+`api_clients.periods_from_observations` — the same functions the historical
+reconstruction calls. Nothing is reimplemented prospectively, because a copy
+could drift from the frozen original without a test failing.
 
 What R1.10 closed. R1.9 built the sources and left a timing gap wide enough for
 the September failure to recur. Its admissibility check asked only whether a

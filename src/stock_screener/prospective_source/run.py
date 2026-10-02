@@ -251,6 +251,11 @@ def run_canary(
     universe = fetch_universe(market_provider, decision_session=session)
     stored_universe = store.put(universe.envelope, universe.payload)
     envelopes["universe"] = universe.envelope
+    # The broker asset list supplies the tradability verdict as well as the
+    # listing, so one retrieval satisfies both stage-A sources. Recording it under
+    # both names is what stops `tradability` being counted as derived — the
+    # miscategorisation that let it report ready with no source of its own.
+    envelopes["tradability"] = universe.envelope
     results["universe"] = {
         "fingerprint": universe.fingerprint,
         "records": universe.envelope.record_count,
@@ -336,6 +341,8 @@ def run_canary(
         "securities_sampled": len(tickers),
         "sources": results,
         "readiness": report.as_json(),
+        "sources_ready": report.sources_ready,
+        "readiness_kind": report.as_json()["readiness_kind"],
         "six_of_six": report.ready,
         "h2_observation_created": False,
         "decision_created": False,
@@ -834,7 +841,7 @@ def certify_window(
     store = SnapshotStore(prospective_root / PROSPECTIVE_STORE_ROOT)
     canary = run_canary(market_provider, observation_source, store)
     timing = timing_canary()
-    if not canary["readiness"]["six_of_six"]:
+    if not canary["readiness"]["sources_ready"]:
         raise WindowError(
             f"source readiness is {canary['readiness']['result']}; a window is not "
             "armed on a plane that cannot feed it"

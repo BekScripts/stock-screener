@@ -55,6 +55,19 @@ SEMANTIC_MODULES: tuple[str, ...] = (
     "prospective_source/governance.py",
     "prospective_source/store.py",
     "prospective_source/window.py",
+    # the capture pipeline: what turns sealed snapshots into a decision
+    "prospective_capture/readiness.py",
+    "prospective_capture/calendar_binding.py",
+    "prospective_capture/identity.py",
+    "prospective_capture/observations.py",
+    "prospective_capture/actions.py",
+    "prospective_capture/provenance.py",
+    "prospective_capture/score_inputs.py",
+    "prospective_capture/scoring.py",
+    "prospective_capture/crosssection.py",
+    "prospective_capture/package.py",
+    "prospective_capture/decision.py",
+    "prospective_capture/execution.py",
 )
 
 
