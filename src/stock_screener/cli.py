@@ -7733,6 +7733,25 @@ def portfolio_evaluate_command(
             f"{','.join(intent['reason_codes'])}"
         )
     typer.echo("")
+    report = body.get("risk_report")
+    if report is not None:
+        effective = report["effective_policy"]
+        band = (effective["active_band"] or {}).get("label", "none")
+        typer.echo("")
+        typer.echo(f"engine               : {approved['engine_version']}")
+        typer.echo(f"drawdown / band      : {report['drawdown']} / {band}")
+        typer.echo(
+            f"gross limit          : {effective['max_gross_exposure']} "
+            f"(base {effective['base_max_gross_exposure']})"
+        )
+        typer.echo(f"effective mode       : {effective['mode']} (base {effective['base_mode']})")
+        typer.echo(
+            f"portfolio volatility : {report['portfolio_volatility_before_risk']} -> "
+            f"{report['portfolio_volatility_after_risk']}"
+        )
+        typer.echo(f"liquidity constrained: {report['liquidity_constrained_positions']}")
+        typer.echo(f"missing risk metrics : {report['missing_risk_metric']}")
+    typer.echo("")
     delta_summary = body["delta_summary"]
     typer.echo(
         f"turnover estimate    : {delta_summary['weight_turnover_estimate']} "

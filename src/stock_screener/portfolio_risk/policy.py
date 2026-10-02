@@ -23,14 +23,20 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from .drawdown import DrawdownBand
 
 from .arithmetic import arithmetic_policy, quantise
 from .fingerprint import digest
+from .risk_inputs import MAX_PLAUSIBLE_VOLATILITY
 
 __all__ = [
+    "EXAMPLE_ADVANCED_RISK_POLICY_V1",
     "EXAMPLE_POLICY_V1",
     "ConstructionMode",
+    "MissingMetricPolicy",
     "PolicyError",
     "PolicyMode",
     "RiskPolicy",
@@ -61,6 +67,33 @@ class PolicyMode(StrEnum):
     halt into a liquidation is a separate, explicit decision that this layer
     deliberately cannot make.
     """
+
+
+class MissingMetricPolicy(StrEnum):
+    """What to do when a risk metric a limit needs is not available.
+
+    The default is deliberately the cautious one. An unknown volatility is not
+    zero and an unknown ADV is not infinite, so the question is not *what value
+    should we assume* but *what may we permit while ignorant* — and the answer that
+    costs least when wrong is: no new risk, but let the position be reduced.
+    """
+
+    REJECT_INCREASE = "REJECT_INCREASE"
+    """No new or increased exposure in that name. Reductions and exits still pass.
+
+    This is also what "allow reduce only" means: a reduction is never blocked by a
+    missing metric, so there is one behaviour here rather than two names for it.
+    """
+
+    IGNORE_METRIC = "IGNORE_METRIC"
+    """The limit simply does not apply where its metric is absent.
+
+    Honest when the metric is genuinely optional. Dangerous as a default, which is
+    why it must be asked for.
+    """
+
+    REQUIRE_METRIC = "REQUIRE_METRIC"
+    """The whole decision fails closed. Nothing is authorised at all."""
 
 
 class ConstructionMode(StrEnum):
@@ -101,6 +134,23 @@ class RiskPolicy:
             None is no cap.
         min_position_weight: Targets below this are dropped rather than held as
             dust. None keeps every approved target.
+        max_portfolio_volatility: Ceiling on estimated annualised portfolio
+            volatility. None means no volatility constraint is evaluated. A
+            ceiling, never a target: exposure is not raised to reach it.
+        max_position_adv_fraction: A position may not exceed this fraction of the
+            security's average daily dollar volume. None means no position capacity
+            limit.
+        max_trade_adv_fraction: A single change in exposure may not exceed this
+            fraction of ADV. Separate from position capacity, because holding a
+            large position and acquiring one in a day are different risks.
+        drawdown_bands: The overlay ladder, shallowest first. Empty means no
+            overlay.
+        missing_volatility_policy: What an unknown volatility or absent covariance
+            row permits.
+        missing_liquidity_policy: What an unknown ADV permits.
+        max_risk_metric_age_seconds: How stale a risk metric may be. None means no
+            freshness bound — P1.1 defines no production threshold for this and
+            will not invent one.
         production_authorized: Whether these limits have been established as
             suitable for live capital. False for every policy in this phase.
     """
@@ -117,6 +167,13 @@ class RiskPolicy:
     min_cash_weight: float = 0.05
     max_trade_notional_weight: float | None = None
     min_position_weight: float | None = None
+    max_portfolio_volatility: float | None = None
+    max_position_adv_fraction: float | None = None
+    max_trade_adv_fraction: float | None = None
+    drawdown_bands: tuple[DrawdownBand, ...] = ()
+    missing_volatility_policy: MissingMetricPolicy = MissingMetricPolicy.REJECT_INCREASE
+    missing_liquidity_policy: MissingMetricPolicy = MissingMetricPolicy.REJECT_INCREASE
+    max_risk_metric_age_seconds: float | None = None
     production_authorized: bool = False
 
     def __post_init__(self) -> None:
@@ -158,6 +215,28 @@ class RiskPolicy:
                 f"max_trade_notional_weight must be positive, got "
                 f"{self.max_trade_notional_weight!r}"
             )
+        for name in (
+            "max_portfolio_volatility",
+            "max_position_adv_fraction",
+            "max_trade_adv_fraction",
+            "max_risk_metric_age_seconds",
+        ):
+            value = getattr(self, name)
+            if value is not None and value <= 0:
+                raise PolicyError(f"{name} must be positive when set, got {value!r}")
+        if (
+            self.max_portfolio_volatility is not None
+            and self.max_portfolio_volatility > MAX_PLAUSIBLE_VOLATILITY
+        ):
+            raise PolicyError(
+                f"max_portfolio_volatility is {self.max_portfolio_volatility!r}, above "
+                f"the plausible ceiling {MAX_PLAUSIBLE_VOLATILITY}. Volatility is an "
+                "annualised decimal: 20% is 0.20, not 20."
+            )
+        if self.drawdown_bands:
+            from .drawdown import validate_bands
+
+            validate_bands(self.drawdown_bands)
         # A policy whose per-name capacity cannot fill its budget is only
         # inconsistent when it promises to fill it. Under PRESERVE_ABSOLUTE_WEIGHTS
         # a concentrated policy that leaves most of the book in cash is a
@@ -214,13 +293,51 @@ class RiskPolicy:
             "arithmetic": arithmetic_policy(),
         }
 
+    @property
+    def uses_advanced_controls(self) -> bool:
+        """Whether any P1.1 control is actually configured.
+
+        The advanced block enters the fingerprint only when it does. A policy that
+        sets no volatility ceiling, no capacity fraction and no drawdown band is
+        the same policy it was before those concepts existed, so it must digest the
+        same — which is what keeps a V1 decision reproducible rather than something
+        that had to be re-recorded when the engine grew.
+        """
+        return any(
+            value is not None
+            for value in (
+                self.max_portfolio_volatility,
+                self.max_position_adv_fraction,
+                self.max_trade_adv_fraction,
+                self.max_risk_metric_age_seconds,
+            )
+        ) or bool(self.drawdown_bands)
+
+    def advanced_body(self) -> dict[str, Any]:
+        """The P1.1 limits, for the fingerprint and the record."""
+        return {
+            "max_portfolio_volatility": self.max_portfolio_volatility,
+            "max_position_adv_fraction": self.max_position_adv_fraction,
+            "max_trade_adv_fraction": self.max_trade_adv_fraction,
+            "drawdown_bands": [band.as_json() for band in self.drawdown_bands],
+            "missing_volatility_policy": str(self.missing_volatility_policy),
+            "missing_liquidity_policy": str(self.missing_liquidity_policy),
+            "max_risk_metric_age_seconds": self.max_risk_metric_age_seconds,
+        }
+
     def fingerprint(self) -> str:
         """The policy's deterministic digest. A changed limit changes it."""
-        return digest(self.body())
+        body = self.body()
+        if self.uses_advanced_controls:
+            body = {**body, "advanced_risk_controls": self.advanced_body()}
+        return digest(body)
 
     def as_json(self) -> dict[str, Any]:
         """Return the policy with its fingerprint."""
-        return {**self.body(), "fingerprint": self.fingerprint()}
+        body = self.body()
+        if self.uses_advanced_controls:
+            body = {**body, "advanced_risk_controls": self.advanced_body()}
+        return {**body, "fingerprint": self.fingerprint()}
 
 
 #: A policy for exercising the engine. **NOT_PRODUCTION_AUTHORIZED**: these
@@ -239,3 +356,60 @@ EXAMPLE_POLICY_V1 = RiskPolicy(
     min_cash_weight=0.05,
     production_authorized=False,
 )
+
+
+#: An advanced policy for exercising the P1.1 controls. **NOT_PRODUCTION_AUTHORIZED**:
+#: every number here was chosen to make a limit observable in a test, and none was
+#: derived from historical return, Sharpe or drawdown — deriving them that way is
+#: exactly the parameter fitting this programme exists to avoid. Promoting any of
+#: them requires a dedicated risk-policy phase with its own evidence.
+def example_advanced_risk_policy() -> RiskPolicy:
+    """Build the P1.1 example policy.
+
+    A function rather than a module constant because the drawdown bands import from
+    a module that imports this one; constructing on demand keeps the import graph
+    acyclic without weakening the type.
+
+    Returns:
+        The example policy. Not authorised for live capital.
+    """
+    from .drawdown import DrawdownBand as _Band
+
+    return RiskPolicy(
+        policy_id="EXAMPLE_ADVANCED_RISK_POLICY_V1",
+        policy_version="1",
+        mode=PolicyMode.NORMAL,
+        construction_mode=ConstructionMode.PRESERVE_ABSOLUTE_WEIGHTS,
+        long_only=True,
+        max_gross_exposure=1.00,
+        max_position_weight=0.10,
+        max_positions=20,
+        min_cash_weight=0.05,
+        max_portfolio_volatility=0.20,
+        max_position_adv_fraction=0.05,
+        max_trade_adv_fraction=0.02,
+        drawdown_bands=(
+            _Band(
+                threshold=-0.10, max_gross_multiplier=0.75, mode=PolicyMode.NORMAL, label="caution"
+            ),
+            _Band(
+                threshold=-0.20,
+                max_gross_multiplier=0.50,
+                mode=PolicyMode.REDUCE_ONLY,
+                label="reduce-only",
+            ),
+            _Band(
+                threshold=-0.30,
+                max_gross_multiplier=0.50,
+                mode=PolicyMode.HALTED,
+                label="halted",
+            ),
+        ),
+        missing_volatility_policy=MissingMetricPolicy.REJECT_INCREASE,
+        missing_liquidity_policy=MissingMetricPolicy.REJECT_INCREASE,
+        production_authorized=False,
+    )
+
+
+#: The example advanced policy. NOT_PRODUCTION_AUTHORIZED.
+EXAMPLE_ADVANCED_RISK_POLICY_V1 = example_advanced_risk_policy()

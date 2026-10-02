@@ -167,3 +167,176 @@ resized or rejected.
 | `portfolio show-policy` | prints the example policy and its fingerprint |
 
 Named `evaluate` rather than `execute` deliberately. There is no `--force`.
+
+---
+
+# P1.1 — volatility, liquidity, covariance and drawdown
+
+`PORTFOLIO_RISK_ENGINE_V1_1` makes the authority aware of market risk. Supplying
+no risk snapshot keeps V1 semantics exactly, so a V1 decision and its golden
+output still reproduce byte for byte — V1 is a version, not a former state of the
+code.
+
+## What P1.1 does not do
+
+Stated plainly, because a risk layer invites the assumption that it does more than
+it does. It does **not**:
+
+- forecast volatility — it consumes a declared value and its fingerprint;
+- forecast or estimate correlation — likewise;
+- estimate market impact, slippage, spread, latency, partial fills or commissions;
+- choose production thresholds — every number here is a test constant;
+- optimise a portfolio, or search history for a limit;
+- submit an order, or hold a credential;
+- enforce sector or industry caps;
+- apply Kelly sizing, volatility *targeting*, beta targets or VIX scaling.
+
+## Risk inputs
+
+| Type | Carries |
+| --- | --- |
+| `SecurityRiskMetrics` | annualised volatility, average daily dollar volume, price |
+| `CovarianceSnapshot` | an ordered identity list and an annualised matrix |
+| `PortfolioRiskSnapshot` | NAV, peak NAV, the metrics and the covariance |
+
+Units are frozen and validated. Volatility is an **annualised decimal**, so 25% is
+`0.25`; a value above `MAX_PLAUSIBLE_VOLATILITY` is refused as a probable unit
+error, because `25` meaning 25% and `25` meaning 2500% differ by a hundred and
+nothing downstream could tell which was meant. ADV is **US dollars per session**,
+never share volume.
+
+**Missing is a state.** `MetricState` is `KNOWN`, `UNKNOWN` or `NOT_APPLICABLE`.
+An unknown volatility is not zero, an unknown ADV is not infinite, and an absent
+covariance row is not an absent correlation — each would convert ignorance into
+permission. A `KNOWN` state with no value, or a value under an `UNKNOWN` state, is
+a contradiction and is refused.
+
+**A metric cannot describe the future.** `metric_as_of` must not postdate the
+decision, and a snapshot that does raises `RISK_SNAPSHOT_AFTER_DECISION`. A
+freshness bound is supported but has no default: P1.1 defines no production
+staleness threshold and does not invent one.
+
+## Covariance validation
+
+Square, symmetric within `COVARIANCE_TOLERANCE`, finite, non-negative diagonal,
+unique identities, explicit ordering. Nothing is repaired: an asymmetric matrix is
+not silently averaged and a negative variance is not clamped, because both are
+symptoms of a fault in whatever produced them and hiding the symptom keeps the
+fault. A matrix covering a wider universe is subselected deterministically; a
+*missing* required row is `RISK_METRIC_MISSING`, never a zero.
+
+## Portfolio volatility
+
+`sigma_p = sqrt(w' * Sigma * w)` over the risky weights. **Cash contributes
+zero** — this is a market-risk model and cash carries no market exposure in it,
+which understates risk in a currency crisis and is stated rather than hidden.
+
+When `sigma_p` exceeds `max_portfolio_volatility`, one scale is applied:
+`limit / sigma_p`. Because volatility is homogeneous of degree one in the weights,
+that single multiplication lands exactly on the limit, preserves every relative
+weight, and cannot raise any target. When `sigma_p` is already inside the limit
+nothing happens: **the limit is a ceiling, not a target.** Volatility targeting is
+a later phase and a different decision.
+
+## Liquidity capacity
+
+Two separate limits, because holding a large position and acquiring one in a day
+are different risks:
+
+| Limit | Meaning |
+| --- | --- |
+| `max_position_adv_fraction` | `target_notional <= ADV × fraction` |
+| `max_trade_adv_fraction` | `abs(notional change) <= ADV × fraction` |
+
+Both are **capacity controls, not impact models**. Existing risk and new risk are
+distinguished: a position already above its capacity is not an instruction to buy
+up to the limit, and is never prevented from being reduced or exited. The ceiling
+is the greater of the limit and what is already held, so liquidity constrains the
+*increase*.
+
+An unknown ADV follows `missing_liquidity_policy`: `REJECT_INCREASE` (the
+fail-safe default — hold where you stand, reduction still available),
+`IGNORE_METRIC`, or `REQUIRE_METRIC` (refuse the whole decision).
+
+## Drawdown overlay
+
+`drawdown = nav / peak - 1`, necessarily non-positive; a peak below the current
+NAV is refused. Ordered `DrawdownBand`s each carry a threshold, a gross multiplier
+in `[0, 1]`, and a mode. The deepest triggered band is the one in force.
+
+**The overlay can only tighten.** A multiplier above one is refused. A band that
+allows more gross, or a weaker mode, at greater depth is refused. The effective
+mode is the stricter of the base mode and the band's, by the frozen severity
+ordering `NORMAL < REDUCE_ONLY < HALTED` — a policy already `HALTED` is never
+relaxed by a band that would have said `NORMAL`.
+
+**Halting still does not liquidate.** A band escalating to `HALTED` holds the book
+and emits no sale.
+
+The base policy is never mutated. `EffectiveRiskPolicy` is derived from it and the
+risk snapshot, carries its own fingerprint, and records which band produced it, so
+a tightened limit always traces to the loss that caused it.
+
+## The frozen constraint order
+
+Reordering these changes results, so it is a semantic change requiring an engine
+version bump — not a refactor:
+
+```text
+1  validate inputs and risk timing
+2  seed ceilings at pre-risk weights
+3  derive effective policy from drawdown
+4  position count cap
+5  per-name weight cap
+6  position liquidity capacity
+7  trade liquidity capacity
+8  missing risk metric ceilings
+9  effective gross and cash budget
+10 portfolio volatility ceiling
+11 dust floor
+12 trade notional cap
+13 effective operating mode
+14 forced exits
+15 invariants
+```
+
+Liquidity precedes volatility scaling because scaling only reduces: applying it
+first would be undone by a later cap and the result could sit above the ceiling.
+
+## Risk controls only reduce risk
+
+The property that makes the staged model trustworthy, and the one that needed the
+most care. Every ceiling is **seeded at the pre-risk weight** and only ever
+lowered, so no later stage can hand back exposure an earlier one removed.
+
+That matters most for the normalising construction mode. Filling the investable
+budget is exactly the mechanism that would otherwise defeat a liquidity cap:
+capping one name frees budget, and the redistribution would give it to another
+name — leaving aggregate risk unchanged. Under V1.1 the budget a cap frees becomes
+**cash**. An invariant asserts that no approved target exceeds its pre-risk value,
+where the pre-risk reference is the constructed weight for a requested name and
+the current weight for a position merely retained.
+
+## Reason codes are additive
+
+A name constrained by the weight cap, then its position capacity, then its trade
+capacity, carries all three codes in the order they were imposed. Earlier reasons
+are never overwritten, because the question afterwards is not *which limit won* but
+*what happened*.
+
+## The risk report
+
+`PortfolioRiskReport` shows both sides of every number: requested, constructed and
+approved exposure; volatility before and after; cash before and after; the names
+each control touched; per-position weight × volatility; and covariance diagnostics
+— average and maximum pairwise correlation, and component variances that sum
+exactly to the portfolio variance. All diagnostics: P1.1 enforces no correlation
+limit and no risk budget, because each needs its own design and its own evidence.
+
+## Example policy
+
+`EXAMPLE_ADVANCED_RISK_POLICY_V1` is **`NOT_PRODUCTION_AUTHORIZED`**. Every number
+in it was chosen to make a control observable in a test. None was derived from
+historical return, Sharpe or drawdown — deriving them that way is the parameter
+fitting this programme exists to avoid. Promoting any of them requires a dedicated
+risk-policy phase with its own evidence.

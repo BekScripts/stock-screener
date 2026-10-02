@@ -36,16 +36,18 @@ appears without the run or the test that produced it.
 
 ## Current phase
 
-**P1.0 — the portfolio and risk engine foundation** is the current checkpoint, on
-`feat/p1-portfolio-risk-engine`, branched from the armed H2 commit (tagged
-`h2-prospective-capture-v2-armed`).
+**P1.1 — volatility, liquidity, covariance and drawdown controls** is the current
+checkpoint, on `feat/p1-portfolio-risk-engine`, branched from the armed H2 commit
+(tagged `h2-prospective-capture-v2-armed`).
 
 | Programme | State |
 | --- | --- |
 | Data / PIT foundation | **COMPLETE** |
 | H2 prospective track | **CAPTURE_READY_AND_ARMED — FROZEN UNTIL OPERATIONAL CHECKS** |
 | P1 portfolio / risk | **ACTIVE** |
-| P1.0 | **`PORTFOLIO_RISK_ENGINE_V1` foundation** |
+| P1.0 | **FOUNDATION COMPLETE** — `PORTFOLIO_RISK_ENGINE_V1` |
+| P1.1 | **VOLATILITY / LIQUIDITY / DRAWDOWN RISK CONTROLS** — `PORTFOLIO_RISK_ENGINE_V1_1` |
+| Production risk thresholds | **NOT AUTHORIZED** |
 | Broker authority | **NONE** |
 | Live trading | **NOT AUTHORIZED** |
 
@@ -71,6 +73,39 @@ bypass or override argument — asserted by a test walking every signature, beca
 the rule is worth exactly what it is worth on the day someone wants it not to hold.
 Only the future broker adapter will hold credentials or submit an order; every
 layer above it is structurally incapable of reaching one.
+
+### P1.1 — what the risk authority can now constrain
+
+`PORTFOLIO_RISK_ENGINE_V1_1` adds a portfolio-volatility ceiling from a declared
+covariance matrix, position and trade capacity limits from average dollar volume,
+and a drawdown overlay that can tighten the gross limit or escalate the operating
+mode. **V1 is preserved as a version, not as a former state of the code**: with no
+risk snapshot the engine reports V1 and reproduces a V1 decision and its golden
+output byte for byte.
+
+Three rules govern the layer:
+
+- **Risk controls only reduce risk.** Every ceiling is seeded at the pre-risk
+  weight and only ever lowered, so no later stage can restore exposure an earlier
+  one removed. The case that forced it: filling an investable budget would
+  otherwise hand a liquidity-capped name's freed budget to another name, leaving
+  aggregate risk unchanged and defeating the cap. The freed budget becomes cash,
+  and an invariant asserts no approved target exceeds its pre-risk value.
+- **Ignorance is not permission.** An unknown volatility is not zero and an
+  unknown ADV is not infinite. A missing metric holds the position where it stands
+  and still permits a reduction, unless the policy explicitly says otherwise.
+- **The overlay can only tighten, and halting does not liquidate.** A multiplier
+  above one is refused, a band that weakens at greater depth is refused, and the
+  effective mode is the stricter of the base mode and the band's.
+
+The constraint order is frozen and documented in
+[the reference page](portfolio-risk-engine.md); reordering it changes results, so
+it is an engine-version change rather than a refactor.
+
+P1.1 forecasts nothing. It consumes declared volatility and covariance with their
+fingerprints, estimates no market impact, and chose no threshold from history —
+`EXAMPLE_ADVANCED_RISK_POLICY_V1` is `NOT_PRODUCTION_AUTHORIZED` and every number
+in it is a test constant.
 
 `PORTFOLIO_RISK_ENGINE_V1` is a foundation, not a production risk system.
 `EXAMPLE_POLICY_V1` is `NOT_PRODUCTION_AUTHORIZED`: its limits exist to make the

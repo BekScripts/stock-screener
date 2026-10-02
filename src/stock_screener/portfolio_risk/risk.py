@@ -41,19 +41,28 @@ asserted rather than assumed.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any
 
+from .advanced import (
+    Ceilings,
+    apply_liquidity_ceilings,
+    apply_volatility_ceilings,
+    scale_to_volatility_ceiling,
+)
 from .arithmetic import EXPOSURE_TOLERANCE, is_close, quantise
+from .drawdown import derive_effective_policy
 from .fingerprint import digest
 from .policy import ConstructionMode, PolicyMode
 from .validation import ReasonCode
 
 if TYPE_CHECKING:
     from .constructor import ConstructedPortfolio
+    from .drawdown import EffectiveRiskPolicy
     from .models import PortfolioSnapshot, SecurityIdentity
     from .policy import RiskPolicy
+    from .risk_inputs import PortfolioRiskSnapshot
 
 __all__ = [
     "CONSTRAINT_MODEL_ID",
@@ -125,7 +134,12 @@ class RiskOutcome:
         approved: `{identity key: weight}` for everything authorised non-zero.
         identities: Identity objects by key, for display.
         cash_weight: What remains uninvested.
-        policy: The policy that authorised this.
+        policy: The base policy that authorised this.
+        effective: The limits actually in force, after any drawdown overlay.
+        advanced: Diagnostics from the V1.1 stages. Empty under V1.
+        constructed: The pre-risk weights, so the report can show what risk changed.
+        current: The weights held going in. The pre-risk reference for a position
+            retained without being requested, which is what HALTED produces.
     """
 
     decisions: tuple[RiskDecision, ...]
@@ -133,6 +147,10 @@ class RiskOutcome:
     identities: dict[tuple[str, int], SecurityIdentity]
     cash_weight: float
     policy: RiskPolicy
+    effective: EffectiveRiskPolicy | None = None
+    advanced: dict[str, Any] = field(default_factory=dict)
+    constructed: dict[tuple[str, int], float] = field(default_factory=dict)
+    current: dict[tuple[str, int], float] = field(default_factory=dict)
 
     @property
     def gross_exposure(self) -> float:
@@ -188,14 +206,21 @@ def _fit_to_budget(
     budget: float,
     cap: float,
     normalize: bool,
+    ceilings: Ceilings | None = None,
 ) -> tuple[dict[tuple[str, int], float], dict[tuple[str, int], list[str]]]:
-    """Fit weights into the investable budget without breaching the per-name cap.
+    """Fit weights into the investable budget without breaching any ceiling.
+
+    The redistribution respects each identity's ceiling, not merely the policy's
+    per-name cap. That is what stops a liquidity limit being defeated: without it,
+    capping one name would hand the freed budget to another — or back to the capped
+    name — and the limit would have reduced nothing in aggregate.
 
     Args:
         weights: The capped weights.
         budget: The greatest investable total.
         cap: The per-name maximum.
         normalize: Whether an under-budget total should be scaled up.
+        ceilings: Per-identity upper bounds from the advanced risk stages.
 
     Returns:
         The fitted weights and the reason codes each one earned.
@@ -219,7 +244,11 @@ def _fit_to_budget(
             shortfall = budget - total
             if shortfall <= EXPOSURE_TOLERANCE:
                 break
-            headroom = {key: cap - weight for key, weight in weights.items() if cap - weight > 0}
+            headroom = {
+                key: bound - weight
+                for key, weight in weights.items()
+                if (bound := (ceilings.of(key, cap) if ceilings else cap)) - weight > 0
+            }
             capacity = sum(headroom.values())
             if capacity <= EXPOSURE_TOLERANCE:
                 break
@@ -235,20 +264,33 @@ def authorize(
     constructed: ConstructedPortfolio,
     snapshot: PortfolioSnapshot,
     policy: RiskPolicy,
+    *,
+    risk: PortfolioRiskSnapshot | None = None,
+    effective: EffectiveRiskPolicy | None = None,
 ) -> RiskOutcome:
     """Decide what portion of the constructed portfolio is permitted.
+
+    With no risk snapshot this is exactly the V1 engine: the advanced stages are
+    skipped and the effective policy equals the base policy, so a V1 decision
+    reproduces byte for byte. Supplying a snapshot engages the V1.1 stages in the
+    frozen order recorded by `ADVANCED_STAGE_ORDER`.
 
     Args:
         constructed: What the intents expressed.
         snapshot: The portfolio as it stands, for the mode rules and exits.
-        policy: The limits.
+        policy: The base limits, never mutated.
+        risk: The market-risk inputs. None keeps V1 semantics.
+        effective: The derived limits. Computed when not supplied.
 
     Returns:
         The outcome: a decision per identity, the approved weights, and cash.
     """
+    in_force = effective or derive_effective_policy(policy, risk)
     requested = dict(constructed.requested)
     identities = dict(constructed.identities)
     current = snapshot.weights
+    ceilings = Ceilings()
+    advanced: dict[str, Any] = {}
     for key in current:
         held = snapshot.identity_for(key)
         if held is not None:
@@ -273,22 +315,79 @@ def authorize(
             weights[key] = quantise(policy.max_position_weight)
             reasons[key].append(ReasonCode.MAX_POSITION_WEIGHT)
 
-    # stage 3 — budget
+    # stages 3-5 — liquidity capacity and missing risk metrics (V1.1 only)
+    if risk is not None:
+        # Seed every ceiling at the pre-risk weight. This is what makes the risk
+        # controls strictly reducing: once a cap has removed exposure from one
+        # name, the budget redistribution cannot hand it to another, because no
+        # name may exceed what construction asked for. The freed budget becomes
+        # cash. Under V1 no ceilings are passed and the V1 redistribution is
+        # unchanged, so a V1 decision still reproduces exactly.
+        for key, weight in constructed.requested.items():
+            ceilings.bounds[key] = quantise(weight)
+        advanced["liquidity"] = apply_liquidity_ceilings(
+            ceilings,
+            requested=weights,
+            current=current,
+            risk=risk,
+            policy=policy,
+            nav=snapshot.nav,
+        )
+        advanced["volatility_metrics"] = apply_volatility_ceilings(
+            ceilings,
+            requested=weights,
+            current=current,
+            risk=risk,
+            policy=policy,
+        )
+        for key in sorted(weights):
+            bound = ceilings.of(key, policy.max_position_weight)
+            if weights[key] > bound + EXPOSURE_TOLERANCE:
+                weights[key] = quantise(bound)
+                for code in ceilings.codes(key):
+                    if code not in reasons[key]:
+                        reasons[key].append(code)
+        for key in sorted(ceilings.blocked):
+            if key in weights and weights[key] <= EXPOSURE_TOLERANCE:
+                rejected.setdefault(key, []).extend(
+                    code for code in ceilings.codes(key) if code not in rejected.get(key, [])
+                )
+
+    # stage 6 — budget, under the effective (possibly drawdown-tightened) limits
     binder = (
         ReasonCode.MAX_GROSS_EXPOSURE
-        if policy.max_gross_exposure <= 1.0 - policy.min_cash_weight
+        if in_force.max_gross_exposure <= 1.0 - policy.min_cash_weight
         else ReasonCode.MIN_CASH_RESERVE
     )
     weights, budget_reasons = _fit_to_budget(
         weights,
-        budget=policy.investable_budget,
+        budget=in_force.investable_budget,
         cap=policy.max_position_weight,
         normalize=policy.construction_mode is ConstructionMode.NORMALIZE_TO_INVESTABLE_BUDGET,
+        ceilings=ceilings if risk is not None else None,
     )
     for key, budget_codes in budget_reasons.items():
         if budget_codes:
             reasons[key].extend(budget_codes)
             reasons[key].append(binder)
+            if in_force.max_gross_exposure < in_force.base_max_gross_exposure:
+                reasons[key].append(ReasonCode.DRAWDOWN_GROSS_LIMIT)
+
+    # stage 7 — portfolio volatility ceiling. After liquidity, because scaling only
+    # reduces: applying it first would be undone by a later cap, and the resulting
+    # portfolio could sit above the volatility limit.
+    if risk is not None:
+        scaled, volatility_record = scale_to_volatility_ceiling(
+            {key: value for key, value in weights.items() if value > 0},
+            risk=risk,
+            policy=policy,
+        )
+        advanced["portfolio_volatility"] = volatility_record
+        if volatility_record.get("applied"):
+            for key, value in scaled.items():
+                weights[key] = value
+                if ReasonCode.PORTFOLIO_VOLATILITY_LIMIT not in reasons[key]:
+                    reasons[key].append(ReasonCode.PORTFOLIO_VOLATILITY_LIMIT)
 
     # stage 4 — dust
     if policy.min_position_weight is not None:
@@ -307,29 +406,44 @@ def authorize(
                 weights[key] = quantise(held_weight + (limit if delta > 0 else -limit))
                 reasons[key].append(ReasonCode.MAX_TRADE_NOTIONAL)
 
-    # stage 6 — mode
-    if policy.mode is PolicyMode.HALTED:
+    # stage 12 — the effective operating mode, which the drawdown may have tightened
+    mode_code = {
+        PolicyMode.REDUCE_ONLY: ReasonCode.DRAWDOWN_REDUCE_ONLY,
+        PolicyMode.HALTED: ReasonCode.DRAWDOWN_HALTED,
+    }
+    if in_force.mode is not in_force.base_mode:
+        advanced["mode_tightened_by_drawdown"] = {
+            "base_mode": str(in_force.base_mode),
+            "effective_mode": str(in_force.mode),
+            "reason_code": mode_code.get(in_force.mode),
+        }
+    if in_force.mode is PolicyMode.HALTED:
         # Halting holds the book exactly where it stands. It liquidates nothing:
         # turning a halt into a sell order is a separate, explicit decision.
         weights = {key: quantise(value) for key, value in current.items() if value != 0}
+        halt_codes = [ReasonCode.TRADING_HALTED]
+        if in_force.mode is not in_force.base_mode:
+            halt_codes.append(ReasonCode.DRAWDOWN_HALTED)
         for key in requested:
-            rejected.setdefault(key, []).append(ReasonCode.TRADING_HALTED)
+            rejected.setdefault(key, []).extend(halt_codes)
         rejected = {key: codes for key, codes in rejected.items() if key not in weights}
-    elif policy.mode is PolicyMode.REDUCE_ONLY:
+    elif in_force.mode is PolicyMode.REDUCE_ONLY:
+        extra = [ReasonCode.DRAWDOWN_REDUCE_ONLY] if in_force.mode is not in_force.base_mode else []
         for key in sorted(weights):
             held_weight = current.get(key, 0.0)
             if weights[key] > held_weight + EXPOSURE_TOLERANCE:
                 if held_weight <= EXPOSURE_TOLERANCE:
-                    rejected[key] = [*reasons.get(key, []), ReasonCode.REDUCE_ONLY]
+                    rejected[key] = [*reasons.get(key, []), ReasonCode.REDUCE_ONLY, *extra]
                     weights[key] = 0.0
                 else:
                     weights[key] = quantise(held_weight)
                     reasons[key].append(ReasonCode.REDUCE_ONLY)
+                    reasons[key].extend(extra)
 
-    # stage 7 — exits for anything held with no approved target
+    # stage 13 — exits for anything held with no approved target
     approved = {key: value for key, value in weights.items() if value > 0}
     exits: list[tuple[str, int]] = []
-    if policy.mode is not PolicyMode.HALTED:
+    if in_force.mode is not PolicyMode.HALTED:
         exits = sorted(key for key in current if key not in approved and current[key] != 0)
 
     decisions: list[RiskDecision] = []
@@ -369,4 +483,8 @@ def authorize(
         identities=identities,
         cash_weight=cash_weight,
         policy=policy,
+        effective=in_force,
+        advanced=advanced,
+        constructed=dict(constructed.requested),
+        current=dict(current),
     )

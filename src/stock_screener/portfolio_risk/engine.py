@@ -29,10 +29,13 @@ from typing import TYPE_CHECKING, Any
 
 import structlog
 
+from .advanced import ADVANCED_STAGE_ORDER, verify_risk_timing
 from .arithmetic import EXPOSURE_TOLERANCE, is_close, quantise
 from .constructor import CONSTRUCTOR_ID, construct
+from .drawdown import derive_effective_policy
 from .fingerprint import ENGINE_VERSION, binding, digest
 from .intents import Action, ExecutionIntent, classify, intents_fingerprint
+from .report import build_risk_report
 from .risk import CONSTRAINT_MODEL_ID, authorize
 from .validation import ReasonCode, validate_inputs
 
@@ -43,6 +46,7 @@ if TYPE_CHECKING:
     from .models import PortfolioSnapshot
     from .policy import RiskPolicy
     from .risk import RiskOutcome
+    from .risk_inputs import PortfolioRiskSnapshot
 
 log = structlog.get_logger(__name__)
 
@@ -56,6 +60,12 @@ __all__ = [
 
 #: This layer's turnover estimate, named so it is never mistaken for another.
 TURNOVER_DEFINITION_ID = "PORTFOLIO_WEIGHT_TURNOVER_ESTIMATE_V1"
+
+#: The engine version when market-risk inputs are supplied. V1 is preserved
+#: exactly: with no risk snapshot the engine reports V1 and reproduces a V1
+#: decision byte for byte, so P1.0's golden output is still a valid check rather
+#: than something that had to be re-recorded.
+ADVANCED_ENGINE_VERSION = "PORTFOLIO_RISK_ENGINE_V1_1"
 
 
 class InvariantViolationError(RuntimeError):
@@ -73,8 +83,11 @@ class ApprovedPortfolio:
         cash_target_weight: What remains uninvested.
         gross_exposure: Sum of absolute target weights.
         net_exposure: Sum of signed target weights.
-        bindings: The three input fingerprints this is a function of.
+        bindings: Every input fingerprint this is a function of — under V1.1 that
+            includes the risk snapshot and the effective policy, so a tightened
+            limit is always traceable to the loss or metric that tightened it.
         risk_decisions: Every decision, including rejections.
+        engine_version: V1 with no risk inputs, V1.1 with them.
     """
 
     decision_id: str
@@ -85,11 +98,12 @@ class ApprovedPortfolio:
     net_exposure: float
     bindings: dict[str, str]
     risk_decisions: tuple[dict[str, Any], ...]
+    engine_version: str = ENGINE_VERSION
 
     def body(self) -> dict[str, Any]:
         """The fingerprinted body. No wall clock inside."""
         return {
-            "engine_version": ENGINE_VERSION,
+            "engine_version": self.engine_version,
             "constructor_id": CONSTRUCTOR_ID,
             "constraint_model": CONSTRAINT_MODEL_ID,
             "decision_id": self.decision_id,
@@ -122,6 +136,7 @@ class PortfolioDecision:
         risk_summary: Counts and exposures.
         delta_summary: What changed, and the weight-turnover estimate.
         manifest: The decision manifest, binding every fingerprint.
+        risk_report: Pre-risk and post-risk state. None under V1.
     """
 
     approved: ApprovedPortfolio
@@ -129,6 +144,7 @@ class PortfolioDecision:
     risk_summary: dict[str, Any]
     delta_summary: dict[str, Any]
     manifest: dict[str, Any]
+    risk_report: dict[str, Any] | None = None
 
     @property
     def execution_fingerprint(self) -> str:
@@ -137,7 +153,7 @@ class PortfolioDecision:
 
     def as_json(self) -> dict[str, Any]:
         """Return the whole decision as a JSON-safe mapping."""
-        return {
+        body = {
             "approved_portfolio": self.approved.as_json(),
             "execution_intents": [intent.as_json() for intent in self.execution_intents],
             "execution_intents_fingerprint": self.execution_fingerprint,
@@ -145,6 +161,42 @@ class PortfolioDecision:
             "delta_summary": self.delta_summary,
             "manifest": self.manifest,
         }
+        if self.risk_report is not None:
+            body["risk_report"] = self.risk_report
+        return body
+
+
+def _assert_monotonicity(outcome: RiskOutcome) -> list[str]:
+    """Check no risk control increased a target above its pre-risk value.
+
+    This is the property that makes the staged model trustworthy: a constraint may
+    reduce exposure and may refuse it, but no later stage may hand back risk an
+    earlier one removed. Without it a liquidity cap could be undone by the budget
+    redistribution and the limit would reduce nothing in aggregate.
+
+    Args:
+        outcome: The risk outcome, carrying the constructed weights.
+
+    Returns:
+        A failure message per identity whose approved weight exceeds its
+        constructed weight. Empty when the engine only reduced risk.
+    """
+    failures: list[str] = []
+    for key, approved in sorted(outcome.approved.items()):
+        # The pre-risk reference is what the strategy asked for where it asked, and
+        # otherwise what is already held — a position retained but never requested
+        # is the existing book, not a risk increase. HALTED produces exactly that.
+        reference = outcome.constructed.get(key)
+        if reference is None:
+            reference = outcome.current.get(key)
+        if reference is None:
+            failures.append(f"{key[0]}:{key[1]} was approved while neither requested nor held")
+        elif approved > reference + EXPOSURE_TOLERANCE:
+            failures.append(
+                f"{key[0]}:{key[1]} was approved at {approved} above its pre-risk "
+                f"{reference}: a risk control increased exposure"
+            )
+    return failures
 
 
 def _assert_invariants(outcome: RiskOutcome, policy: RiskPolicy) -> None:
@@ -170,11 +222,25 @@ def _assert_invariants(outcome: RiskOutcome, policy: RiskPolicy) -> None:
             )
     if len(approved) > policy.max_positions:
         failures.append(f"{len(approved)} positions exceeds max_positions {policy.max_positions}")
-    if outcome.gross_exposure > policy.max_gross_exposure + EXPOSURE_TOLERANCE:
+    gross_limit = (
+        outcome.effective.max_gross_exposure
+        if outcome.effective is not None
+        else policy.max_gross_exposure
+    )
+    if outcome.gross_exposure > gross_limit + EXPOSURE_TOLERANCE:
         failures.append(
-            f"gross exposure {outcome.gross_exposure} exceeds "
-            f"max_gross_exposure {policy.max_gross_exposure}"
+            f"gross exposure {outcome.gross_exposure} exceeds the effective "
+            f"max_gross_exposure {gross_limit}"
         )
+    if outcome.advanced:
+        failures.extend(_assert_monotonicity(outcome))
+        volatility = outcome.advanced.get("portfolio_volatility") or {}
+        after = volatility.get("portfolio_volatility_after")
+        limit = policy.max_portfolio_volatility
+        if after is not None and limit is not None and after > limit + EXPOSURE_TOLERANCE:
+            failures.append(
+                f"estimated portfolio volatility {after} exceeds max_portfolio_volatility {limit}"
+            )
     if (
         policy.max_net_exposure is not None
         and outcome.net_exposure > policy.max_net_exposure + EXPOSURE_TOLERANCE
@@ -278,6 +344,7 @@ def evaluate(
     snapshot: PortfolioSnapshot | None,
     policy: RiskPolicy | None,
     *,
+    risk: PortfolioRiskSnapshot | None = None,
     code_commit: str | None = None,
 ) -> PortfolioDecision:
     """Run the authority chain and return what is actually authorised.
@@ -288,20 +355,34 @@ def evaluate(
         intents: The strategy's requests.
         snapshot: The portfolio as it stands.
         policy: The limits to authorise under.
+        risk: Market-risk inputs — volatility, liquidity, covariance, drawdown.
+            None keeps V1 semantics exactly, so a V1 decision still reproduces.
         code_commit: The commit evaluating, recorded on the manifest.
 
     Returns:
-        The decision: approved portfolio, execution intents, summaries, manifest.
+        The decision: approved portfolio, execution intents, summaries, manifest,
+        and under V1.1 the risk report.
 
     Raises:
-        ValidationError: If the inputs cannot authorise anything.
+        ValidationError: If the inputs cannot authorise anything, including risk
+            inputs that postdate the decision.
         InvariantViolationError: If the result would break an invariant.
     """
     validated = validate_inputs(intents, snapshot, policy)
     assert snapshot is not None and policy is not None  # noqa: S101 - validated above
 
+    timing: dict[str, Any] | None = None
+    effective = None
+    if risk is not None:
+        timing = verify_risk_timing(
+            risk,
+            decision_as_of=str(validated["as_of"] or snapshot.as_of),
+            max_age_seconds=policy.max_risk_metric_age_seconds,
+        )
+        effective = derive_effective_policy(policy, risk)
+
     constructed = construct(intents, snapshot, policy)
-    outcome = authorize(constructed, snapshot, policy)
+    outcome = authorize(constructed, snapshot, policy, risk=risk, effective=effective)
     _assert_invariants(outcome, policy)
 
     bindings = binding(
@@ -309,7 +390,20 @@ def evaluate(
         snapshot_fingerprint=snapshot.fingerprint(),
         policy_fingerprint=policy.fingerprint(),
     )
+    if risk is not None:
+        bindings = {
+            **bindings,
+            "engine_version": ADVANCED_ENGINE_VERSION,
+            "risk_snapshot_fingerprint": risk.fingerprint(),
+            "effective_risk_policy_fingerprint": (
+                effective.fingerprint() if effective is not None else ""
+            ),
+            "covariance_fingerprint": (
+                risk.covariance.fingerprint() if risk.covariance is not None else "NONE"
+            ),
+        }
     approved = ApprovedPortfolio(
+        engine_version=ADVANCED_ENGINE_VERSION if risk is not None else ENGINE_VERSION,
         decision_id=str(validated["decision_id"]),
         as_of=str(validated["as_of"] or snapshot.as_of),
         targets={outcome.identities[key].label: weight for key, weight in outcome.approved.items()},
@@ -327,9 +421,33 @@ def evaluate(
         "constraint_model": CONSTRAINT_MODEL_ID,
     }
     delta = _delta_summary(execution)
-    manifest = {
-        "manifest_id": "PORTFOLIO_DECISION_MANIFEST_V1",
-        "engine_version": ENGINE_VERSION,
+    report = None
+    if risk is not None:
+        report = build_risk_report(
+            outcome,
+            risk=risk,
+            requested_gross=float(validated["requested_gross_exposure"]),
+            requested_count=int(validated["intents"]),
+            current_cash_weight=snapshot.cash_weight,
+        ).as_json()
+        risk_summary = {
+            **risk_summary,
+            "pre_risk_portfolio_volatility": report["portfolio_volatility_before_risk"],
+            "post_risk_portfolio_volatility": report["portfolio_volatility_after_risk"],
+            "constructed_gross_exposure": report["exposure"]["constructed_gross"],
+            "liquidity_resizes": len(report["liquidity_constrained_positions"]),
+            "drawdown_resizes": (1 if effective is not None and effective.tightened else 0),
+            "missing_risk_metrics": len(report["missing_risk_metric"]),
+            "drawdown": report["drawdown"],
+            "effective_mode": str(effective.mode) if effective is not None else None,
+        }
+    manifest: dict[str, Any] = {
+        "manifest_id": (
+            "PORTFOLIO_DECISION_MANIFEST_V1_1"
+            if risk is not None
+            else "PORTFOLIO_DECISION_MANIFEST_V1"
+        ),
+        "engine_version": ADVANCED_ENGINE_VERSION if risk is not None else ENGINE_VERSION,
         "decision_id": approved.decision_id,
         "as_of": approved.as_of,
         "code_commit": code_commit,
@@ -346,6 +464,21 @@ def evaluate(
         "orders_submitted": 0,
         "timestamp_excluded_from_semantic_hashes": True,
     }
+    if risk is not None:
+        # The V1.1 block appears only when market-risk inputs were supplied, so a
+        # V1 manifest is the V1 manifest rather than a V1.1 one with nulls in it.
+        manifest |= {
+            "risk_snapshot_fingerprint": risk.fingerprint(),
+            "covariance_fingerprint": (
+                risk.covariance.fingerprint() if risk.covariance is not None else None
+            ),
+            "effective_risk_policy_fingerprint": (
+                effective.fingerprint() if effective is not None else None
+            ),
+            "risk_report_fingerprint": report["fingerprint"] if report is not None else None,
+            "risk_timing": timing,
+            "advanced_risk_stage_order": list(ADVANCED_STAGE_ORDER),
+        }
     log.info(
         "portfolio.authorised",
         decision=approved.decision_id,
@@ -359,4 +492,5 @@ def evaluate(
         risk_summary=risk_summary,
         delta_summary=delta,
         manifest=manifest,
+        risk_report=report,
     )

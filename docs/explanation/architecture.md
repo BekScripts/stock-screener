@@ -228,6 +228,16 @@ accepts a force, bypass or override argument. That is checked by a test walking
 every signature in the package, because the value of the rule is precisely that it
 holds on the day someone wants it not to.
 
+**Risk controls only reduce risk.** The portfolio layer's advanced stages each
+impose a *ceiling* seeded at the pre-risk weight and only ever lowered, so no
+later stage can restore exposure an earlier one removed. The case that forced the
+design: filling an investable budget would otherwise hand a liquidity-capped
+name's freed budget to another name, leaving aggregate risk unchanged and
+defeating the cap. The freed budget becomes cash instead, and an invariant
+asserts no approved target exceeds its pre-risk value. The stage order is frozen
+and documented, because reordering it changes results — so it is an engine-version
+change, not a refactor.
+
 **Only the broker adapter will ever hold credentials or submit an order.** Every
 layer above it is structurally incapable of reaching one: `portfolio_risk` imports
 no HTTP client, no socket and no broker SDK, and its execution intents are inert
