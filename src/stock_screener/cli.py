@@ -141,6 +141,15 @@ from stock_screener.pit import (
     measure_historical_forward_returns,
     record_capture_failure,
 )
+from stock_screener.portfolio_risk import EXAMPLE_POLICY_V1 as EXAMPLE_PORTFOLIO_POLICY
+from stock_screener.portfolio_risk import IntentError as PortfolioIntentError
+from stock_screener.portfolio_risk import (
+    InvariantViolationError,
+    PortfolioStateError,
+)
+from stock_screener.portfolio_risk import PolicyError as PortfolioPolicyError
+from stock_screener.portfolio_risk import ValidationError as PortfolioValidationError
+from stock_screener.portfolio_risk import evaluate_request as evaluate_portfolio_request
 from stock_screener.prospective_capture import (
     CalendarBinding as CaptureCalendarBinding,
 )
@@ -7646,3 +7655,110 @@ def run() -> int:
         code = exc.code
         return code if isinstance(code, int) else 0
     return 0
+
+
+# --------------------------------------------------------------------------- #
+# P1.0 — the portfolio and risk engine. Evaluates; never trades.
+# --------------------------------------------------------------------------- #
+
+portfolio_app = typer.Typer(
+    help="The portfolio and risk engine. Authorises portfolios; places no orders.",
+    no_args_is_help=True,
+)
+app.add_typer(portfolio_app, name="portfolio")
+
+
+@portfolio_app.command("evaluate")
+def portfolio_evaluate_command(
+    request: Annotated[Path, typer.Argument(help="A JSON request: intents, snapshot and policy.")],
+    output: Annotated[
+        Path | None, typer.Option("--output", help="Write the full decision as JSON here.")
+    ] = None,
+) -> None:
+    """Report what portfolio a request would authorise. Reaches no broker.
+
+    Deliberately named `evaluate` rather than `execute`: this command decides
+    nothing outside its own output, submits no order, and has no broker
+    credentials available to it.
+    """
+    commit = subprocess.run(
+        ["git", "rev-parse", "HEAD"],  # noqa: S607
+        capture_output=True,
+        text=True,
+        check=False,
+    ).stdout.strip()
+    try:
+        decision = evaluate_portfolio_request(request, code_commit=commit or None)
+    except (
+        PortfolioValidationError,
+        PortfolioStateError,
+        PortfolioPolicyError,
+        PortfolioIntentError,
+        InvariantViolationError,
+    ) as exc:
+        typer.echo(f"STOPPED: {exc}")
+        raise typer.Exit(code=1) from exc
+    except KeyError as exc:
+        typer.echo(f"STOPPED: the request is missing {exc}")
+        raise typer.Exit(code=1) from exc
+
+    body = decision.as_json()
+    approved = body["approved_portfolio"]
+    policy_line = (
+        "PRODUCTION AUTHORISED"
+        if body["manifest"]["policy_production_authorized"]
+        else "NOT_PRODUCTION_AUTHORIZED"
+    )
+    typer.echo(f"decision             : {approved['decision_id']} as of {approved['as_of']}")
+    typer.echo(f"policy               : {policy_line}")
+    typer.echo(f"approved positions   : {approved['position_count']}")
+    typer.echo(f"gross / net exposure : {approved['gross_exposure']} / {approved['net_exposure']}")
+    typer.echo(f"cash target          : {approved['cash_target_weight']}")
+    typer.echo("")
+    for key in (
+        "requested_count",
+        "approved_count",
+        "resized_count",
+        "rejected_count",
+        "forced_exit_count",
+    ):
+        typer.echo(f"  {key:<24}: {body['risk_summary'][key]}")
+    typer.echo("")
+    for intent in body["execution_intents"]:
+        identity = intent["identity"]
+        label = f"{identity['kind']}:{identity['identity_id']}"
+        typer.echo(
+            f"  {label:<14} {intent['action']:<9} "
+            f"{intent['current_weight']:+.4f} -> {intent['target_weight']:+.4f}  "
+            f"{','.join(intent['reason_codes'])}"
+        )
+    typer.echo("")
+    delta_summary = body["delta_summary"]
+    typer.echo(
+        f"turnover estimate    : {delta_summary['weight_turnover_estimate']} "
+        f"({delta_summary['turnover_definition']})"
+    )
+    typer.echo(f"approved fingerprint : {approved['fingerprint'][:16]}…")
+    typer.echo(f"execution fingerprint: {body['execution_intents_fingerprint'][:16]}…")
+    typer.echo("orders submitted     : 0")
+    typer.echo("broker requests      : 0")
+    if output is not None:
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(json.dumps(body, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        typer.echo(f"written              : {output}")
+
+
+@portfolio_app.command("show-policy")
+def portfolio_show_policy_command() -> None:
+    """Print the example risk policy and its fingerprint.
+
+    The example exists to exercise the engine. Its limits are not validated
+    thresholds and must not be promoted without a dedicated risk-policy phase.
+    """
+    body = EXAMPLE_PORTFOLIO_POLICY.as_json()
+    for key, value in body.items():
+        if key == "arithmetic":
+            continue
+        typer.echo(f"  {key:<28}: {value}")
+    typer.echo("")
+    typer.echo("  NOT_PRODUCTION_AUTHORIZED — these limits have not been established as correct")

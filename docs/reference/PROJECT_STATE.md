@@ -36,7 +36,49 @@ appears without the run or the test that produced it.
 
 ## Current phase
 
-**R1.12 — the prospective capture pipeline built** is the current checkpoint, on
+**P1.0 — the portfolio and risk engine foundation** is the current checkpoint, on
+`feat/p1-portfolio-risk-engine`, branched from the armed H2 commit (tagged
+`h2-prospective-capture-v2-armed`).
+
+| Programme | State |
+| --- | --- |
+| Data / PIT foundation | **COMPLETE** |
+| H2 prospective track | **CAPTURE_READY_AND_ARMED — FROZEN UNTIL OPERATIONAL CHECKS** |
+| P1 portfolio / risk | **ACTIVE** |
+| P1.0 | **`PORTFOLIO_RISK_ENGINE_V1` foundation** |
+| Broker authority | **NONE** |
+| Live trading | **NOT AUTHORIZED** |
+
+**The H2 branch is semantically frozen.** Its arm binds `code_commit` to
+`703cf847e550c21bf133d307281183ba3c9d8f24`, so a further commit on that branch
+would break the binding and the December capture would refuse with `COMMIT_DRIFT`.
+P1 therefore develops on its own branch and requires no edit to the armed one;
+`h2-prospective-capture-v2-armed` is the immutable local checkpoint.
+
+### Authority is layered, and the layers are permanent
+
+| Layer | Authority | May not |
+| --- | --- | --- |
+| Strategy | signal: what is worth holding | size a position, or reach execution |
+| Portfolio engine | allocation: what would express the signal | overrule a limit |
+| Risk engine | veto and resize: what is permitted | be bypassed by a strategy |
+| Execution engine *(later)* | order planning | choose what to hold |
+| Broker adapter *(later)* | external action | decide anything |
+
+A strategy may request; it may not insist. `portfolio_risk.evaluate` is the only
+path from intents to targets, and no function in the package accepts a force,
+bypass or override argument — asserted by a test walking every signature, because
+the rule is worth exactly what it is worth on the day someone wants it not to hold.
+Only the future broker adapter will hold credentials or submit an order; every
+layer above it is structurally incapable of reaching one.
+
+`PORTFOLIO_RISK_ENGINE_V1` is a foundation, not a production risk system.
+`EXAMPLE_POLICY_V1` is `NOT_PRODUCTION_AUTHORIZED`: its limits exist to make the
+engine's behaviour observable, and none of them has been established as correct for
+live capital. Choosing live limits is a dedicated risk-policy phase with its own
+evidence, and no threshold here was selected by running historical performance.
+
+**Previous checkpoint — R1.12, the prospective capture pipeline**, on
 `feat/r1-backtest-harness`, branched from `feat/phase-b2-storage-abstraction` at
 `06357c5` (tagged `pit-research-dataset-v2`).
 

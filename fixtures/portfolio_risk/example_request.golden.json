@@ -1,0 +1,497 @@
+{
+  "_note": "Golden output for fixtures/portfolio_risk/example_request.json. evaluated_at_utc is omitted: it is operational, not semantic. Any other difference is a behaviour change and should be explained, not re-recorded.",
+  "approved_portfolio": {
+    "as_of": "2026-10-01T16:00:00-04:00",
+    "bindings": {
+      "engine_version": "PORTFOLIO_RISK_ENGINE_V1",
+      "portfolio_snapshot_fingerprint": "5625ebca5161859e5071fd2f1d0436f9f7b881d8d55ae7120b0f4ee66f8efeab",
+      "risk_policy_fingerprint": "d7f24706f110509b537065bd3a48fe3b2f2da2d4080be65758011fe1525be6a3",
+      "strategy_intents_fingerprint": "47cb7ec260342cf0aae7be96b2c5299516300aa5825dfbf4641eaad7e33692a6"
+    },
+    "cash_target_weight": 0.05,
+    "constraint_model": "DETERMINISTIC_STAGED_CONSTRAINTS_V1",
+    "constructor_id": "BASELINE_TARGET_WEIGHT_CONSTRUCTOR_V1",
+    "decision_id": "example-decision-1",
+    "engine_version": "PORTFOLIO_RISK_ENGINE_V1",
+    "fingerprint": "5184578a4a8a82e964c73090af00ed2fb44e682d7ad4229ce7caa9d4ee10c35d",
+    "gross_exposure": 0.95,
+    "net_exposure": 0.95,
+    "position_count": 10,
+    "risk_decisions": [
+      {
+        "approved_weight": 0.095,
+        "decision": "RESIZED",
+        "identity": {
+          "identity_id": 1,
+          "kind": "COMPANY",
+          "symbol": "AAA"
+        },
+        "policy_id": "EXAMPLE_POLICY_V1",
+        "policy_version": "1",
+        "reason_codes": [
+          "MAX_POSITION_WEIGHT",
+          "BUDGET_SCALED",
+          "MIN_CASH_RESERVE"
+        ],
+        "requested_weight": 0.25
+      },
+      {
+        "approved_weight": 0.095,
+        "decision": "RESIZED",
+        "identity": {
+          "identity_id": 2,
+          "kind": "COMPANY",
+          "symbol": "T02"
+        },
+        "policy_id": "EXAMPLE_POLICY_V1",
+        "policy_version": "1",
+        "reason_codes": [
+          "BUDGET_SCALED",
+          "MIN_CASH_RESERVE"
+        ],
+        "requested_weight": 0.1
+      },
+      {
+        "approved_weight": 0.095,
+        "decision": "RESIZED",
+        "identity": {
+          "identity_id": 3,
+          "kind": "COMPANY",
+          "symbol": "T03"
+        },
+        "policy_id": "EXAMPLE_POLICY_V1",
+        "policy_version": "1",
+        "reason_codes": [
+          "BUDGET_SCALED",
+          "MIN_CASH_RESERVE"
+        ],
+        "requested_weight": 0.1
+      },
+      {
+        "approved_weight": 0.095,
+        "decision": "RESIZED",
+        "identity": {
+          "identity_id": 4,
+          "kind": "COMPANY",
+          "symbol": "T04"
+        },
+        "policy_id": "EXAMPLE_POLICY_V1",
+        "policy_version": "1",
+        "reason_codes": [
+          "BUDGET_SCALED",
+          "MIN_CASH_RESERVE"
+        ],
+        "requested_weight": 0.1
+      },
+      {
+        "approved_weight": 0.095,
+        "decision": "RESIZED",
+        "identity": {
+          "identity_id": 5,
+          "kind": "COMPANY",
+          "symbol": "T05"
+        },
+        "policy_id": "EXAMPLE_POLICY_V1",
+        "policy_version": "1",
+        "reason_codes": [
+          "BUDGET_SCALED",
+          "MIN_CASH_RESERVE"
+        ],
+        "requested_weight": 0.1
+      },
+      {
+        "approved_weight": 0.095,
+        "decision": "RESIZED",
+        "identity": {
+          "identity_id": 6,
+          "kind": "COMPANY",
+          "symbol": "T06"
+        },
+        "policy_id": "EXAMPLE_POLICY_V1",
+        "policy_version": "1",
+        "reason_codes": [
+          "BUDGET_SCALED",
+          "MIN_CASH_RESERVE"
+        ],
+        "requested_weight": 0.1
+      },
+      {
+        "approved_weight": 0.095,
+        "decision": "RESIZED",
+        "identity": {
+          "identity_id": 7,
+          "kind": "COMPANY",
+          "symbol": "T07"
+        },
+        "policy_id": "EXAMPLE_POLICY_V1",
+        "policy_version": "1",
+        "reason_codes": [
+          "BUDGET_SCALED",
+          "MIN_CASH_RESERVE"
+        ],
+        "requested_weight": 0.1
+      },
+      {
+        "approved_weight": 0.095,
+        "decision": "RESIZED",
+        "identity": {
+          "identity_id": 8,
+          "kind": "COMPANY",
+          "symbol": "T08"
+        },
+        "policy_id": "EXAMPLE_POLICY_V1",
+        "policy_version": "1",
+        "reason_codes": [
+          "BUDGET_SCALED",
+          "MIN_CASH_RESERVE"
+        ],
+        "requested_weight": 0.1
+      },
+      {
+        "approved_weight": 0.095,
+        "decision": "RESIZED",
+        "identity": {
+          "identity_id": 9,
+          "kind": "COMPANY",
+          "symbol": "T09"
+        },
+        "policy_id": "EXAMPLE_POLICY_V1",
+        "policy_version": "1",
+        "reason_codes": [
+          "BUDGET_SCALED",
+          "MIN_CASH_RESERVE"
+        ],
+        "requested_weight": 0.1
+      },
+      {
+        "approved_weight": 0.095,
+        "decision": "RESIZED",
+        "identity": {
+          "identity_id": 10,
+          "kind": "COMPANY",
+          "symbol": "T10"
+        },
+        "policy_id": "EXAMPLE_POLICY_V1",
+        "policy_version": "1",
+        "reason_codes": [
+          "BUDGET_SCALED",
+          "MIN_CASH_RESERVE"
+        ],
+        "requested_weight": 0.1
+      },
+      {
+        "approved_weight": 0.0,
+        "decision": "REJECTED",
+        "identity": {
+          "identity_id": 11,
+          "kind": "COMPANY",
+          "symbol": "T11"
+        },
+        "policy_id": "EXAMPLE_POLICY_V1",
+        "policy_version": "1",
+        "reason_codes": [
+          "MAX_POSITION_COUNT"
+        ],
+        "requested_weight": 0.1
+      },
+      {
+        "approved_weight": 0.0,
+        "decision": "REJECTED",
+        "identity": {
+          "identity_id": 12,
+          "kind": "COMPANY",
+          "symbol": "T12"
+        },
+        "policy_id": "EXAMPLE_POLICY_V1",
+        "policy_version": "1",
+        "reason_codes": [
+          "MAX_POSITION_COUNT"
+        ],
+        "requested_weight": 0.1
+      },
+      {
+        "approved_weight": 0.0,
+        "decision": "REJECTED",
+        "identity": {
+          "identity_id": 99,
+          "kind": "COMPANY",
+          "symbol": "ZZZ"
+        },
+        "policy_id": "EXAMPLE_POLICY_V1",
+        "policy_version": "1",
+        "reason_codes": [
+          "NOT_REQUESTED"
+        ],
+        "requested_weight": 0.0
+      }
+    ],
+    "targets": {
+      "COMPANY:1": 0.095,
+      "COMPANY:10": 0.095,
+      "COMPANY:2": 0.095,
+      "COMPANY:3": 0.095,
+      "COMPANY:4": 0.095,
+      "COMPANY:5": 0.095,
+      "COMPANY:6": 0.095,
+      "COMPANY:7": 0.095,
+      "COMPANY:8": 0.095,
+      "COMPANY:9": 0.095
+    }
+  },
+  "delta_summary": {
+    "is_realised_execution_turnover": false,
+    "positions_entered": 8,
+    "positions_exited": 1,
+    "positions_held": 0,
+    "positions_increased": 1,
+    "positions_reduced": 1,
+    "turnover_caveat": "a target-weight estimate only. It models no spread, no impact, no partial fill and no commission, so it is not comparable with a realised execution turnover or with the research layer's one-way rebalance turnover.",
+    "turnover_definition": "PORTFOLIO_WEIGHT_TURNOVER_ESTIMATE_V1",
+    "turnover_formula": "0.5 * sum(abs(target_weight - current_weight))",
+    "weight_turnover_estimate": 0.445
+  },
+  "execution_intents": [
+    {
+      "action": "INCREASE",
+      "broker_fields": null,
+      "current_weight": 0.05,
+      "identity": {
+        "identity_id": 1,
+        "kind": "COMPANY",
+        "symbol": "AAA"
+      },
+      "is_an_order": false,
+      "notional_delta": 45000.0,
+      "reason_codes": [
+        "MAX_POSITION_WEIGHT",
+        "BUDGET_SCALED",
+        "MIN_CASH_RESERVE"
+      ],
+      "strategy_id": null,
+      "target_weight": 0.095,
+      "weight_delta": 0.045
+    },
+    {
+      "action": "REDUCE",
+      "broker_fields": null,
+      "current_weight": 0.12,
+      "identity": {
+        "identity_id": 2,
+        "kind": "COMPANY",
+        "symbol": "T02"
+      },
+      "is_an_order": false,
+      "notional_delta": -25000.0,
+      "reason_codes": [
+        "BUDGET_SCALED",
+        "MIN_CASH_RESERVE"
+      ],
+      "strategy_id": null,
+      "target_weight": 0.095,
+      "weight_delta": -0.025
+    },
+    {
+      "action": "ENTER",
+      "broker_fields": null,
+      "current_weight": 0.0,
+      "identity": {
+        "identity_id": 3,
+        "kind": "COMPANY",
+        "symbol": "T03"
+      },
+      "is_an_order": false,
+      "notional_delta": 95000.0,
+      "reason_codes": [
+        "BUDGET_SCALED",
+        "MIN_CASH_RESERVE"
+      ],
+      "strategy_id": null,
+      "target_weight": 0.095,
+      "weight_delta": 0.095
+    },
+    {
+      "action": "ENTER",
+      "broker_fields": null,
+      "current_weight": 0.0,
+      "identity": {
+        "identity_id": 4,
+        "kind": "COMPANY",
+        "symbol": "T04"
+      },
+      "is_an_order": false,
+      "notional_delta": 95000.0,
+      "reason_codes": [
+        "BUDGET_SCALED",
+        "MIN_CASH_RESERVE"
+      ],
+      "strategy_id": null,
+      "target_weight": 0.095,
+      "weight_delta": 0.095
+    },
+    {
+      "action": "ENTER",
+      "broker_fields": null,
+      "current_weight": 0.0,
+      "identity": {
+        "identity_id": 5,
+        "kind": "COMPANY",
+        "symbol": "T05"
+      },
+      "is_an_order": false,
+      "notional_delta": 95000.0,
+      "reason_codes": [
+        "BUDGET_SCALED",
+        "MIN_CASH_RESERVE"
+      ],
+      "strategy_id": null,
+      "target_weight": 0.095,
+      "weight_delta": 0.095
+    },
+    {
+      "action": "ENTER",
+      "broker_fields": null,
+      "current_weight": 0.0,
+      "identity": {
+        "identity_id": 6,
+        "kind": "COMPANY",
+        "symbol": "T06"
+      },
+      "is_an_order": false,
+      "notional_delta": 95000.0,
+      "reason_codes": [
+        "BUDGET_SCALED",
+        "MIN_CASH_RESERVE"
+      ],
+      "strategy_id": null,
+      "target_weight": 0.095,
+      "weight_delta": 0.095
+    },
+    {
+      "action": "ENTER",
+      "broker_fields": null,
+      "current_weight": 0.0,
+      "identity": {
+        "identity_id": 7,
+        "kind": "COMPANY",
+        "symbol": "T07"
+      },
+      "is_an_order": false,
+      "notional_delta": 95000.0,
+      "reason_codes": [
+        "BUDGET_SCALED",
+        "MIN_CASH_RESERVE"
+      ],
+      "strategy_id": null,
+      "target_weight": 0.095,
+      "weight_delta": 0.095
+    },
+    {
+      "action": "ENTER",
+      "broker_fields": null,
+      "current_weight": 0.0,
+      "identity": {
+        "identity_id": 8,
+        "kind": "COMPANY",
+        "symbol": "T08"
+      },
+      "is_an_order": false,
+      "notional_delta": 95000.0,
+      "reason_codes": [
+        "BUDGET_SCALED",
+        "MIN_CASH_RESERVE"
+      ],
+      "strategy_id": null,
+      "target_weight": 0.095,
+      "weight_delta": 0.095
+    },
+    {
+      "action": "ENTER",
+      "broker_fields": null,
+      "current_weight": 0.0,
+      "identity": {
+        "identity_id": 9,
+        "kind": "COMPANY",
+        "symbol": "T09"
+      },
+      "is_an_order": false,
+      "notional_delta": 95000.0,
+      "reason_codes": [
+        "BUDGET_SCALED",
+        "MIN_CASH_RESERVE"
+      ],
+      "strategy_id": null,
+      "target_weight": 0.095,
+      "weight_delta": 0.095
+    },
+    {
+      "action": "ENTER",
+      "broker_fields": null,
+      "current_weight": 0.0,
+      "identity": {
+        "identity_id": 10,
+        "kind": "COMPANY",
+        "symbol": "T10"
+      },
+      "is_an_order": false,
+      "notional_delta": 95000.0,
+      "reason_codes": [
+        "BUDGET_SCALED",
+        "MIN_CASH_RESERVE"
+      ],
+      "strategy_id": null,
+      "target_weight": 0.095,
+      "weight_delta": 0.095
+    },
+    {
+      "action": "EXIT",
+      "broker_fields": null,
+      "current_weight": 0.06,
+      "identity": {
+        "identity_id": 99,
+        "kind": "COMPANY",
+        "symbol": "ZZZ"
+      },
+      "is_an_order": false,
+      "notional_delta": -60000.0,
+      "reason_codes": [
+        "NOT_REQUESTED"
+      ],
+      "strategy_id": null,
+      "target_weight": 0.0,
+      "weight_delta": -0.06
+    }
+  ],
+  "execution_intents_fingerprint": "f95a72e922ac7a574512f19ac8effde3626f3b06c592bf76d4fad0e6c91c70b0",
+  "manifest": {
+    "approved_portfolio_fingerprint": "5184578a4a8a82e964c73090af00ed2fb44e682d7ad4229ce7caa9d4ee10c35d",
+    "as_of": "2026-10-01T16:00:00-04:00",
+    "broker_requests": 0,
+    "code_commit": null,
+    "constructed_portfolio_fingerprint": "e65d10151a7afdeef89a816e9579411af0571f6dd1b4cdf37768b0dfe0bc6693",
+    "decision_id": "example-decision-1",
+    "engine_version": "PORTFOLIO_RISK_ENGINE_V1",
+    "execution_intents_fingerprint": "f95a72e922ac7a574512f19ac8effde3626f3b06c592bf76d4fad0e6c91c70b0",
+    "manifest_id": "PORTFOLIO_DECISION_MANIFEST_V1",
+    "orders_submitted": 0,
+    "policy_production_authorized": false,
+    "portfolio_snapshot_fingerprint": "5625ebca5161859e5071fd2f1d0436f9f7b881d8d55ae7120b0f4ee66f8efeab",
+    "risk_decisions_fingerprint": "9781b8566f17ee9bf9c849b9d5069589ffb3baeab43ca6e23c06a1fac1d1070d",
+    "risk_policy_fingerprint": "d7f24706f110509b537065bd3a48fe3b2f2da2d4080be65758011fe1525be6a3",
+    "strategy_intents_fingerprint": "47cb7ec260342cf0aae7be96b2c5299516300aa5825dfbf4641eaad7e33692a6",
+    "timestamp_excluded_from_semantic_hashes": true
+  },
+  "risk_summary": {
+    "approved_count": 10,
+    "approved_gross_exposure": 0.95,
+    "approved_net_exposure": 0.95,
+    "approved_unchanged_count": 0,
+    "cash_target_weight": 0.05,
+    "constraint_model": "DETERMINISTIC_STAGED_CONSTRAINTS_V1",
+    "forced_exit_count": 1,
+    "rejected_count": 2,
+    "requested_count": 12,
+    "requested_gross_exposure": 1.35,
+    "requested_position_count": 12,
+    "resized_count": 10
+  }
+}

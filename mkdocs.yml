@@ -71,6 +71,7 @@ nav:
       - R1.9 prospective source plane: reference/prospective-source.md
       - R1.10 V2 window certification: reference/prospective-window.md
       - R1.12 prospective capture pipeline: reference/prospective-capture.md
+      - P1.0 portfolio and risk engine: reference/portfolio-risk-engine.md
       - Security identity: reference/security-identity.md
       - Listing evidence: reference/listing-evidence.md
       - Storage layout: reference/storage-layout.md

@@ -205,6 +205,36 @@ changes without a new version turns a change in the rules into an apparent chang
 in the business, which is exactly what the score-change views would surface
 first. See [ADR-0006](../adr/0006-score-snapshots-are-versioned-and-immutable.md).
 
+## Authority is layered, and the layers are permanent
+
+The screener answers *what is worth holding*. Deciding what is actually held, and
+then what is actually traded, are different questions with different failure
+modes, so they are different layers — and the separation is a project invariant
+rather than a current arrangement:
+
+| Layer | Authority | May not |
+| --- | --- | --- |
+| Strategy | signal: what is worth holding | size a position, or reach execution |
+| Portfolio engine | allocation: what would express the signal | overrule a limit |
+| Risk engine | veto and resize: what is permitted | be bypassed by a strategy |
+| Execution engine *(later)* | order planning | choose what to hold |
+| Broker adapter *(later)* | external action | decide anything |
+
+Two consequences are load-bearing.
+
+**A strategy may request; it may not insist.** `portfolio_risk.evaluate` is the
+only path from intents to targets, and nothing in the strategy-facing surface
+accepts a force, bypass or override argument. That is checked by a test walking
+every signature in the package, because the value of the rule is precisely that it
+holds on the day someone wants it not to.
+
+**Only the broker adapter will ever hold credentials or submit an order.** Every
+layer above it is structurally incapable of reaching one: `portfolio_risk` imports
+no HTTP client, no socket and no broker SDK, and its execution intents are inert
+data with no quantity, no venue and no side effect. Keeping the capability absent
+rather than merely unused is what makes the boundary enforceable later, when there
+is something real on the other side of it.
+
 ## What is deliberately absent
 
 Not every company gets a number. A bank, an ineligible security and a company
