@@ -24,6 +24,10 @@ venv/
 # manifests, checkpoints, plans and the derived index. Never committed.
 .evidence/
 
+# P1.3 portfolio ledgers, checkpoints and reconciliation reports: operational
+# trading records, never repository content.
+.portfolio/
+
 # Credential files. The project takes secrets from the environment only, so
 # none of these should exist; the guard is for the day one is made by hand.
 credentials.json

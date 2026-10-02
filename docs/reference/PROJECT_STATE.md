@@ -36,9 +36,9 @@ appears without the run or the test that produced it.
 
 ## Current phase
 
-**P1.2 — multi-strategy capital allocation, correlation concentration and risk
-budgets** is the current checkpoint, on `feat/p1-portfolio-risk-engine`, branched
-from the armed H2 commit (tagged `h2-prospective-capture-v2-armed`).
+**P1.3 — portfolio state, NAV/P&L accounting and reconciliation** is the current
+checkpoint, on `feat/p1-portfolio-risk-engine`, branched from the armed H2 commit
+(tagged `h2-prospective-capture-v2-armed`).
 
 | Programme | State |
 | --- | --- |
@@ -48,6 +48,7 @@ from the armed H2 commit (tagged `h2-prospective-capture-v2-armed`).
 | P1.0 | **FOUNDATION COMPLETE** — `PORTFOLIO_RISK_ENGINE_V1` |
 | P1.1 | **ADVANCED SINGLE-PORTFOLIO RISK COMPLETE** — `PORTFOLIO_RISK_ENGINE_V1_1` |
 | P1.2 | **MULTI-STRATEGY CAPITAL / CORRELATION / RISK BUDGETS** — `PORTFOLIO_RISK_ENGINE_V1_2` |
+| P1.3 | **STATE / NAV / P&L / RECONCILIATION COMPLETE** — `PORTFOLIO_ACCOUNTING_V1` |
 | Production risk thresholds | **NOT AUTHORIZED** |
 | Production strategy budgets | **NOT AUTHORIZED** |
 | Production correlation thresholds | **NOT AUTHORIZED** |
@@ -76,6 +77,68 @@ bypass or override argument — asserted by a test walking every signature, beca
 the rule is worth exactly what it is worth on the day someone wants it not to hold.
 Only the future broker adapter will hold credentials or submit an order; every
 layer above it is structurally incapable of reaching one.
+
+### P1.3 — what is actually owned, as distinct from what was authorised
+
+`PORTFOLIO_ACCOUNTING_V1` adds the layer the risk engine could not provide: a
+record of holdings. P1.0–P1.2 decide what a portfolio *should* contain, and none
+of that is evidence that anything was bought. A target and a holding are now
+separate objects with separate truth conditions.
+
+**State is derived, never set.** A `PortfolioState` comes from replaying an
+append-only ledger and from nowhere else — no setter, no constructor from a broker
+statement, no patch. The hash chain (`PORTFOLIO_LEDGER_HASH_CHAIN_V1`) makes
+tamper, deletion, reordering and insertion detectable from the records alone.
+Truncation is the documented exception: a ledger with its tail removed is a valid
+shorter chain, so checkpoints record a head hash and a count and
+`CHECKPOINT_UNVERIFIABLE` catches it.
+
+**Four identities are checked on every valuation**, exactly rather than within a
+tolerance, because every figure entering them was quantised by one `Decimal`
+policy:
+
+```
+cash  = opening + deposits - withdrawals - purchases + sales - fees + dividends
+NAV   = cash + market value of holdings
+P&L   = realised + unrealised + income - fees
+NAV - inception NAV at cost = P&L + net external flows - unpriced cost basis
+```
+
+The last one is the strongest check in the package: it compares the P&L story
+against the balance sheet rather than against itself. It found a real defect
+during construction — realised P&L had been recorded net of fees, so a commission
+paid on a *purchase* left cash and entered no P&L component at all, and a
+portfolio that had only ever bought reported a NAV change wrong by exactly its
+fees. Fees are now their own term and `realised` is gross of them, so a purchase
+commission is charged exactly as a sale commission is.
+
+**Refusal beats approximation.** A buy the cash cannot fund is `INSUFFICIENT_CASH`
+(fees included in the test), a sale beyond the holding is `INSUFFICIENT_POSITION`
+rather than a short, a mark stamped after the valuation instant is
+`MARK_AFTER_VALUATION_TIME` — the same leakage the research layer prevents, which
+here would simply be called a NAV — and a valuation missing any holding is
+`VALUATION_INCOMPLETE`, because a NAV missing one position is wrong rather than
+small. A stale mark is a reported warning, not a refusal.
+
+**Only two corporate actions are modelled**, cash dividends and splits. Everything
+else is refused by name with the terms it would have needed. A guessed cost basis
+is indistinguishable from a correct one downstream, and an ignored action leaves
+the ledger describing a security that no longer exists as recorded.
+
+**Reconciliation never repairs.** There is no repair function and it cannot be
+configured to have one — asserted by a test over the module's function names. A
+difference from a custodian is evidence that something happened the ledger was not
+told about; adopting the external figure destroys that evidence and leaves the
+cause in place. Four break kinds are distinguished because they have different
+causes, and an incomplete statement never reconciles cleanly.
+
+**Decimal here, float there, one seam.** Accounting is exact; risk arithmetic is
+statistical. `to_risk_snapshot` is the only crossing and it goes one way —
+nothing writes a target into a holding.
+
+Storage is one JSON file per record under `.portfolio/`, chosen over SQLite
+deliberately: a database would also provide `UPDATE`. Writes are `fsync`ed and
+atomically renamed, then read back and rehashed.
 
 ### P1.2 — covariance safety, and capital authority for several strategies
 
@@ -2970,6 +3033,31 @@ care — nothing has a foreign key *to* it, so dropping it cascades to nothing.
 
 ## Known limitations
 
+**Weighted-average cost pools basis across strategies (P1.3).** When two
+strategies hold the same security at different prices, each one's *reported* cost
+basis is the pooled average rather than what it actually paid. Portfolio-level
+realised P&L is exact; the per-strategy split is exact only when co-owners
+entered at the same price. This is a property of `WEIGHTED_AVERAGE_COST_V1`
+rather than a bug, and fixing it needs per-strategy tax lots, which changes what
+a position *is* and would thread through every weight in the risk layer. Accepted
+rather than fixed; a strategy-level P&L comparison between co-owners of one
+security should not be read as precise.
+
+**Realised P&L on a fully closed position loses its owner (P1.3).** Once every
+share is sold the ledger no longer records who held it, so that position's
+realised result is reported under `UNATTRIBUTED_EXISTING`. Attributing it to a
+surviving strategy would be a guess.
+
+**Truncation needs a checkpoint to be detectable (P1.3).** A ledger with its tail
+removed is a valid shorter hash chain. `verify_chain` cannot see it; only
+`PortfolioStore.verify` against a written checkpoint can. A ledger with no
+checkpoint can be truncated and will still verify.
+
+**No tax lots, accrued interest, margin or multi-currency in the books (P1.3).**
+Cash is a single balance in one implied currency. `WEIGHTED_AVERAGE_COST_V1` is an
+accounting basis, not a tax basis: there are no wash-sale rules and no tax
+character. The long-only baseline has no borrowing.
+
 **The legacy colocated layout is still supported, and is one failure domain.**
 Every corpus harvested before B2.5 — the BEK corpus included — keeps its
 manifest, checkpoints and derived index beneath `SEC_EVIDENCE_DIR`, and with
@@ -4641,6 +4729,14 @@ Not a backlog. These exclusions are deliberate.
 
 **Do not build without being asked:**
 
+- an accounting path that writes a risk target into a holding, or any `apply` /
+  `execute` seam between `portfolio_risk` and `portfolio_accounting`
+- a reconciliation auto-repair, an "adopt external" flag, or a cash tolerance
+  defaulted to anything but zero
+- a second supported corporate action, tax lots, FIFO or specific-lot
+  identification — each is a new `COST_BASIS_POLICY` version, never an edit
+- a SQLite or SQLAlchemy ledger backend; the file format is what makes the
+  append-only guarantee structural rather than a matter of discipline
 - a second LLM provider, or a second execution path for a job
 - scheduled or automatic deep research, report diffing, alerts, notifications
 - charts, portfolios, positions, price targets

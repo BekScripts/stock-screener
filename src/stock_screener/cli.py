@@ -141,6 +141,9 @@ from stock_screener.pit import (
     measure_historical_forward_returns,
     record_capture_failure,
 )
+from stock_screener.portfolio_accounting import AccountingError, PortfolioStore, accounting_manifest
+from stock_screener.portfolio_accounting import evaluate_request as evaluate_accounting_request
+from stock_screener.portfolio_accounting import load_request as load_accounting_request
 from stock_screener.portfolio_risk import EXAMPLE_POLICY_V1 as EXAMPLE_PORTFOLIO_POLICY
 from stock_screener.portfolio_risk import IntentError as PortfolioIntentError
 from stock_screener.portfolio_risk import (
@@ -7781,3 +7784,144 @@ def portfolio_show_policy_command() -> None:
         typer.echo(f"  {key:<28}: {value}")
     typer.echo("")
     typer.echo("  NOT_PRODUCTION_AUTHORIZED — these limits have not been established as correct")
+
+
+# --------------------------------------------------------------------------- #
+# P1.3 — portfolio accounting. Records evidence; creates no fills.
+# --------------------------------------------------------------------------- #
+
+books_app = typer.Typer(
+    help="Portfolio books: replay a ledger, value it, reconcile it. Records only.",
+    no_args_is_help=True,
+)
+app.add_typer(books_app, name="books")
+
+
+@books_app.command("replay")
+def books_replay_command(
+    request: Annotated[
+        Path, typer.Argument(help="A JSON request: events, and optional valuation and statement.")
+    ],
+    output: Annotated[
+        Path | None, typer.Option("--output", help="Write the full books as JSON here.")
+    ] = None,
+) -> None:
+    """Replay a ledger and report the books it implies. Reaches no broker.
+
+    Named `replay` rather than `update`: this command derives state from events
+    and changes nothing. It appends no event, simulates no fill, and has no
+    broker credentials available to it.
+    """
+    try:
+        body = load_accounting_request(request)
+        books = evaluate_accounting_request(body)
+    except AccountingError as exc:
+        typer.echo(f"STOPPED [{exc.code}]: {exc.detail}")
+        raise typer.Exit(code=1) from exc
+
+    ledger = books["ledger"]
+    state = books["state"]
+    typer.echo("")
+    typer.echo(f"  ledger records       : {ledger['record_count']}")
+    typer.echo(f"  chain verified       : {ledger['verification']['verified']}")
+    typer.echo(f"  head hash            : {ledger['head_hash'][:16]}…")
+    typer.echo(f"  cash                 : {state['cash']}")
+    typer.echo(f"  open positions       : {state['open_position_count']}")
+    typer.echo(f"  cost basis           : {state['total_cost_basis']}")
+    typer.echo(f"  realised P&L         : {state['realised_pnl']}")
+    typer.echo(f"  dividend income      : {state['dividend_income']}")
+    typer.echo(f"  fees paid            : {state['fees_paid']}")
+
+    valuation = books.get("valuation")
+    if valuation:
+        pnl = valuation["pnl"]
+        typer.echo("")
+        typer.echo(f"  valued at            : {valuation['valuation_time']}")
+        typer.echo(f"  NAV                  : {valuation['nav']}")
+        typer.echo(f"  inception NAV @ cost : {valuation['inception_nav_at_cost']}")
+        typer.echo(
+            f"  P&L                  : realised {pnl['realised']} + "
+            f"unrealised {pnl['unrealised']} + income {pnl['income']} - "
+            f"fees {pnl['fees']} = {pnl['total']}"
+        )
+        typer.echo(f"  external flows (NAV only) : {pnl['external_flow_net']}")
+        if valuation["stale_marks"]:
+            typer.echo(f"  STALE MARKS          : {', '.join(valuation['stale_marks'])}")
+
+    attribution = books.get("attribution")
+    if attribution:
+        typer.echo("")
+        for row in attribution["strategies"]:
+            label = f"{row['strategy_id']}{' (unknown owner)' if row['is_unattributed'] else ''}"
+            typer.echo(
+                f"  {label:<34}: mv {row['market_value']} "
+                f"unrealised {row['unrealised_pnl']} weight {row['weight']}"
+            )
+
+    reconciliation = books.get("reconciliation")
+    if reconciliation:
+        typer.echo("")
+        typer.echo(f"  reconciled           : {reconciliation['reconciled']}")
+        for row in reconciliation["breaks"]:
+            where = row["identity"] or "cash"
+            typer.echo(
+                f"  BREAK {row['code']:<36} {where}: internal {row['internal']} "
+                f"vs external {row['external']} (diff {row['difference']})"
+            )
+        if reconciliation["breaks"]:
+            typer.echo("")
+            typer.echo(f"  {reconciliation['remediation']}")
+
+    if output is not None:
+        output.write_text(json.dumps(books, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        typer.echo("")
+        typer.echo(f"  written: {output}")
+
+
+@books_app.command("verify-store")
+def books_verify_store_command(
+    root: Annotated[Path, typer.Argument(help="A .portfolio directory to verify.")],
+) -> None:
+    """Verify a stored ledger's hash chain and its checkpoints.
+
+    Checks tamper, deletion, reordering and insertion from the records alone,
+    and truncation against the checkpoints — which a hash chain cannot detect by
+    itself, because a ledger missing its tail is a valid shorter chain.
+    """
+    try:
+        store = PortfolioStore(root)
+        result = store.verify()
+    except AccountingError as exc:
+        typer.echo(f"STOPPED [{exc.code}]: {exc.detail}")
+        raise typer.Exit(code=1) from exc
+    typer.echo("")
+    typer.echo(f"  root                 : {result['root']}")
+    typer.echo(f"  records              : {result['record_count']}")
+    typer.echo(f"  checkpoints          : {result['checkpoint_count']}")
+    typer.echo(f"  chain version        : {result['chain']['chain_version']}")
+    typer.echo(f"  head hash            : {str(result['chain']['head_hash'])[:16]}…")
+    typer.echo(f"  verified             : {result['verified']}")
+
+
+@books_app.command("show-manifest")
+def books_show_manifest_command() -> None:
+    """Print the accounting manifest: every policy version, and its digest.
+
+    A NAV is only comparable with another computed under the same rules, so the
+    rules carry a fingerprint. Two sets of books agree on their policies exactly
+    when these digests match.
+    """
+    manifest = accounting_manifest()
+    typer.echo("")
+    for key, value in sorted(manifest["policies"].items()):
+        typer.echo(f"  {key:<22}: {value}")
+    typer.echo("")
+    typer.echo(f"  manifest fingerprint : {manifest['manifest_fingerprint']}")
+    typer.echo("")
+    typer.echo("  identities enforced on every valuation:")
+    for line in manifest["invariants"]:
+        typer.echo(f"    - {line}")
+    typer.echo("")
+    typer.echo("  this engine never:")
+    for line in manifest["never_does"]:
+        typer.echo(f"    - {line}")

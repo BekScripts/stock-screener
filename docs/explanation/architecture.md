@@ -265,6 +265,30 @@ data with no quantity, no venue and no side effect. Keeping the capability absen
 rather than merely unused is what makes the boundary enforceable later, when there
 is something real on the other side of it.
 
+**A target is not a holding.** The risk engine decides what a portfolio *should*
+contain. `portfolio_accounting` records what it *does* contain, and the two are
+separate objects with separate truth conditions. State there is derived only by
+replaying an append-only ledger whose hash chain makes tamper, deletion,
+reordering and insertion detectable from the records alone; there is no setter, no
+constructor from a broker statement, and no function anywhere that writes a target
+into a holding. A system that conflated them would report the portfolio it wanted
+rather than the one it has — and would do so with every identity still appearing
+to balance.
+
+The same reasoning drives the one rule that looks like stubbornness:
+reconciliation never adopts an external figure. A difference between the ledger
+and a custodian is evidence that something happened the ledger was not told
+about. Setting the ledger to match destroys that evidence and leaves the cause in
+place, so the break stays open until someone decides what event explains it. That
+decision then enters the ledger as an event, which is the only mechanism by which
+holdings change.
+
+Accounting also uses different arithmetic on purpose. Exactness is the point of a
+cash balance, so every figure there is a `Decimal` and the identities are compared
+exactly rather than within a tolerance. Risk arithmetic is statistical, where
+`float64` is both faster and honest about the precision available. One adapter
+converts between them, in one direction.
+
 ## What is deliberately absent
 
 Not every company gets a number. A bank, an ineligible security and a company
