@@ -29,12 +29,13 @@ tell which was intended.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any
 
 from .arithmetic import EXPOSURE_TOLERANCE, quantise
 from .fingerprint import digest
+from .linalg import LDL_METHOD_ID, is_positive_semidefinite
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -43,6 +44,7 @@ if TYPE_CHECKING:
 
 __all__ = [
     "COVARIANCE_TOLERANCE",
+    "LDL_METHOD_ID",
     "MAX_PLAUSIBLE_VOLATILITY",
     "CovarianceSnapshot",
     "MetricState",
@@ -215,6 +217,8 @@ class CovarianceSnapshot:
             and an annualised matrix differ by ~252 and nothing in the numbers says
             which this is.
         source_fingerprint: The digest of whatever produced it.
+        _psd: The semidefiniteness verdict, established at construction. Not part
+            of the value, so it stays out of equality and the fingerprint.
     """
 
     identities: tuple[SecurityIdentity, ...]
@@ -222,6 +226,7 @@ class CovarianceSnapshot:
     as_of: str
     annualization: str = "252 sessions per year"
     source_fingerprint: str = ""
+    _psd: Any = field(default=None, compare=False, repr=False)
 
     def __post_init__(self) -> None:
         """Refuse a matrix that could not be a covariance matrix.
@@ -271,6 +276,28 @@ class CovarianceSnapshot:
                     f"the variance of {self.identities[row_index].label} is "
                     f"{row[row_index]!r}; a variance cannot be negative",
                 )
+        # Symmetry, finiteness and a non-negative diagonal do not prove positive
+        # semidefiniteness, and an indefinite matrix means some portfolio has
+        # negative variance. Validating here rather than when a particular target
+        # happens to expose it: an invalid covariance is invalid regardless of
+        # which weights it is asked about.
+        verdict = is_positive_semidefinite(self.matrix, tolerance=COVARIANCE_TOLERANCE)
+        if not verdict.semidefinite:
+            where = (
+                self.identities[verdict.failure_index].label
+                if verdict.failure_index is not None
+                else "unknown"
+            )
+            raise RiskInputError(
+                "COVARIANCE_INDEFINITE",
+                f"the matrix is not positive semidefinite ({verdict.failure} at "
+                f"{where}, minimum pivot {verdict.minimum_pivot:.6g}). Some portfolio "
+                "therefore has negative variance under it. The matrix is not projected "
+                "onto the semidefinite cone: an indefinite covariance is a fault in "
+                "whatever estimated it, and repairing it here would hide the fault "
+                "behind a number that looks reasonable.",
+            )
+        object.__setattr__(self, "_psd", verdict)
 
     @property
     def index(self) -> dict[tuple[str, int], int]:
@@ -313,10 +340,15 @@ class CovarianceSnapshot:
                 error rather than a zero.
 
         Returns:
-            The annualised variance.
+            The annualised variance. A residue inside `COVARIANCE_TOLERANCE` is
+            normalised to zero, which is floating-point noise rather than
+            information.
 
         Raises:
-            RiskInputError: If a weighted identity has no row.
+            RiskInputError: If a weighted identity has no row, or if the quadratic
+                form is materially negative. P1.1 clamped that to zero and reported
+                a volatility of zero, which is the worst available way to be wrong
+                about risk because it reports perfect safety.
         """
         absent = self.missing(list(weights))
         if absent:
@@ -332,6 +364,14 @@ class CovarianceSnapshot:
             row = self.matrix[index[left]]
             for right, right_weight in sorted(weights.items()):
                 total += left_weight * right_weight * row[index[right]]
+        if total < -COVARIANCE_TOLERANCE:
+            raise RiskInputError(
+                "COVARIANCE_INDEFINITE",
+                f"the portfolio variance is {total!r} under this covariance. A "
+                "negative variance is never clamped to zero: reporting zero "
+                "volatility for a portfolio whose risk the matrix cannot describe "
+                "is the one failure mode that looks like perfect safety.",
+            )
         return max(total, 0.0)
 
     def volatility_of(self, weights: dict[tuple[str, int], float]) -> float:
@@ -401,6 +441,11 @@ class CovarianceSnapshot:
             )
             contributions[f"{key[0]}:{key[1]}"] = quantise(weight * marginal)
         return contributions
+
+    @property
+    def psd(self) -> Any:
+        """The semidefiniteness verdict established at construction."""
+        return self._psd
 
     def body(self) -> dict[str, Any]:
         """The fingerprinted body, in the canonical identity order."""

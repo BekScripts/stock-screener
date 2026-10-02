@@ -29,19 +29,21 @@ from typing import TYPE_CHECKING, Any
 
 import structlog
 
-from .advanced import ADVANCED_STAGE_ORDER, verify_risk_timing
+from .advanced import ADVANCED_STAGE_ORDER, ADVANCED_STAGE_ORDER_V1_2, verify_risk_timing
+from .allocation import ALLOCATOR_ID, AggregatedRequest, allocate
 from .arithmetic import EXPOSURE_TOLERANCE, is_close, quantise
-from .constructor import CONSTRUCTOR_ID, construct
+from .constructor import CONSTRUCTOR_ID, ConstructedPortfolio, construct
 from .drawdown import derive_effective_policy
 from .fingerprint import ENGINE_VERSION, binding, digest
 from .intents import Action, ExecutionIntent, classify, intents_fingerprint
-from .report import build_risk_report
+from .report import build_risk_report, build_strategy_report
 from .risk import CONSTRAINT_MODEL_ID, authorize
 from .validation import ReasonCode, validate_inputs
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
+    from .allocation import StrategyAllocationPolicy
     from .intents import StrategyIntent
     from .models import PortfolioSnapshot
     from .policy import RiskPolicy
@@ -60,6 +62,12 @@ __all__ = [
 
 #: This layer's turnover estimate, named so it is never mistaken for another.
 TURNOVER_DEFINITION_ID = "PORTFOLIO_WEIGHT_TURNOVER_ESTIMATE_V1"
+
+#: The engine version once several strategies allocate through one authority, or
+#: the pairwise correlation control is configured. V1 and V1.1 keep their own
+#: labels and their own stage orders, so their decisions and golden outputs still
+#: reproduce rather than being relabelled by a later phase.
+MULTI_STRATEGY_ENGINE_VERSION = "PORTFOLIO_RISK_ENGINE_V1_2"
 
 #: The engine version when market-risk inputs are supplied. V1 is preserved
 #: exactly: with no risk snapshot the engine reports V1 and reproduces a V1
@@ -137,6 +145,8 @@ class PortfolioDecision:
         delta_summary: What changed, and the weight-turnover estimate.
         manifest: The decision manifest, binding every fingerprint.
         risk_report: Pre-risk and post-risk state. None under V1.
+        strategy_report: Sleeve summaries, overlaps and the attribution matrix.
+            None unless several strategies allocated through one policy.
     """
 
     approved: ApprovedPortfolio
@@ -145,6 +155,7 @@ class PortfolioDecision:
     delta_summary: dict[str, Any]
     manifest: dict[str, Any]
     risk_report: dict[str, Any] | None = None
+    strategy_report: dict[str, Any] | None = None
 
     @property
     def execution_fingerprint(self) -> str:
@@ -163,6 +174,8 @@ class PortfolioDecision:
         }
         if self.risk_report is not None:
             body["risk_report"] = self.risk_report
+        if self.strategy_report is not None:
+            body["strategy_report"] = self.strategy_report
         return body
 
 
@@ -339,12 +352,124 @@ def _delta_summary(intents: Sequence[ExecutionIntent]) -> dict[str, Any]:
     }
 
 
+def _constructed_from_aggregate(
+    aggregated: AggregatedRequest, policy: RiskPolicy
+) -> ConstructedPortfolio:
+    """Express an aggregated multi-strategy request as a constructed portfolio.
+
+    The sleeve stage has already produced global absolute weights, so there is no
+    second normalisation here: running the single-strategy constructor over them
+    would scale an already-scaled request. Priority is the highest priority any
+    contributing strategy attached, so a name two strategies both rank highly keeps
+    that standing when the position count binds.
+
+    Args:
+        aggregated: The sleeves and their aggregate request.
+        policy: The risk policy, for the construction-mode record.
+
+    Returns:
+        The constructed portfolio, ready for the risk engine.
+    """
+    priorities: dict[tuple[str, int], float] = {}
+    for sleeve in aggregated.sleeves:
+        for row in sleeve.contributions:
+            existing = priorities.get(row.identity.key)
+            candidate = sleeve.budget.priority
+            if existing is None or candidate > existing:
+                priorities[row.identity.key] = candidate
+    return ConstructedPortfolio(
+        requested=dict(sorted(aggregated.aggregate.items())),
+        identities=dict(aggregated.identities),
+        priorities=priorities,
+        construction_mode=str(policy.construction_mode),
+        requested_gross=aggregated.requested_gross,
+        notes=(
+            "weights are the aggregate of each strategy's sleeve allocation, already "
+            "expressed as global portfolio weights",
+            "no second normalisation is applied: the sleeve stage has scaled them "
+            "once, and scaling again would compound it",
+            "exposure aggregates by (kind, identity_id); attribution is retained "
+            "separately so a shared position still records who asked for it",
+        ),
+    )
+
+
+def _engine_version(
+    risk: PortfolioRiskSnapshot | None,
+    policy: RiskPolicy,
+    allocation: StrategyAllocationPolicy | None,
+) -> str:
+    """Which semantics actually ran.
+
+    The label is not merely decorative: V1 and V1.1 decisions must keep producing
+    V1 and V1.1 records, so the version reflects the pipeline that executed rather
+    than the newest one that exists.
+
+    Args:
+        risk: The market-risk inputs, if any.
+        policy: The base risk policy.
+        allocation: The strategy allocation policy, if any.
+
+    Returns:
+        The engine version string.
+    """
+    if allocation is not None or policy.uses_correlation_control:
+        return MULTI_STRATEGY_ENGINE_VERSION
+    return ADVANCED_ENGINE_VERSION if risk is not None else ENGINE_VERSION
+
+
+def _reconcile_attribution(
+    aggregated: AggregatedRequest, approved: dict[tuple[str, int], float]
+) -> tuple[dict[str, list[dict[str, Any]]], list[str]]:
+    """Share each identity's approved weight back across the strategies that asked.
+
+    When global risk reduces an aggregate position from 7% to 5%, the attribution
+    must reconcile to 5% too, or the sleeve reports would sum to a portfolio nobody
+    holds. The share is **proportional** to what each strategy contributed: that is
+    the only rule that treats two strategies symmetrically, and assigning the whole
+    reduction to one of them would be an arbitrary judgement about whose request
+    mattered less.
+
+    Args:
+        aggregated: The sleeves and their contributions.
+        approved: The approved aggregate weight per identity.
+
+    Returns:
+        `{strategy_id: [contribution rows]}` in deterministic order, and a list of
+        reconciliation failures. Empty failures means every identity reconciled.
+    """
+    by_strategy: dict[str, list[dict[str, Any]]] = {}
+    failures: list[str] = []
+    for key, rows in sorted(aggregated.contributions.items()):
+        allocated = sum(row.allocated_weight for row in rows)
+        final = approved.get(key, 0.0)
+        share = 0.0 if allocated <= EXPOSURE_TOLERANCE else final / allocated
+        attributed = 0.0
+        for row in sorted(rows, key=lambda entry: entry.strategy_id):
+            weight = quantise(row.allocated_weight * share)
+            attributed += weight
+            by_strategy.setdefault(row.strategy_id, []).append(
+                {
+                    **row.as_json(),
+                    "approved_weight": weight,
+                    "reduced_by_global_risk": quantise(row.allocated_weight - weight),
+                }
+            )
+        if not is_close(attributed, final, tolerance=EXPOSURE_TOLERANCE):
+            failures.append(
+                f"{key[0]}:{key[1]} attribution sums to {attributed} but the approved "
+                f"aggregate is {final}"
+            )
+    return by_strategy, failures
+
+
 def evaluate(
     intents: Sequence[StrategyIntent],
     snapshot: PortfolioSnapshot | None,
     policy: RiskPolicy | None,
     *,
     risk: PortfolioRiskSnapshot | None = None,
+    allocation: StrategyAllocationPolicy | None = None,
     code_commit: str | None = None,
 ) -> PortfolioDecision:
     """Run the authority chain and return what is actually authorised.
@@ -357,6 +482,9 @@ def evaluate(
         policy: The limits to authorise under.
         risk: Market-risk inputs — volatility, liquidity, covariance, drawdown.
             None keeps V1 semantics exactly, so a V1 decision still reproduces.
+        allocation: The strategy allocation policy. Required for intents from more
+            than one strategy, and absent for the single-strategy path, whose
+            weights keep their original absolute reading.
         code_commit: The commit evaluating, recorded on the manifest.
 
     Returns:
@@ -368,7 +496,12 @@ def evaluate(
             inputs that postdate the decision.
         InvariantViolationError: If the result would break an invariant.
     """
-    validated = validate_inputs(intents, snapshot, policy)
+    validated = validate_inputs(
+        intents,
+        snapshot,
+        policy,
+        allocation_policy_id=(allocation.allocation_policy_id if allocation is not None else None),
+    )
     assert snapshot is not None and policy is not None  # noqa: S101 - validated above
 
     timing: dict[str, Any] | None = None
@@ -381,9 +514,31 @@ def evaluate(
         )
         effective = derive_effective_policy(policy, risk)
 
-    constructed = construct(intents, snapshot, policy)
+    aggregated: AggregatedRequest | None = None
+    if allocation is not None:
+        # Sleeve allocation happens before construction: the allocator decides how
+        # much capital each strategy commands, and only then is the economic
+        # exposure aggregated by durable identity and put to the risk engine.
+        aggregated = allocate(
+            intents,
+            allocation,
+            nav=snapshot.nav,
+            covariance=risk.covariance if risk is not None else None,
+        )
+        constructed = _constructed_from_aggregate(aggregated, policy)
+    else:
+        constructed = construct(intents, snapshot, policy)
     outcome = authorize(constructed, snapshot, policy, risk=risk, effective=effective)
     _assert_invariants(outcome, policy)
+
+    attribution: dict[str, list[dict[str, Any]]] = {}
+    if aggregated is not None:
+        attribution, failures = _reconcile_attribution(aggregated, outcome.approved)
+        if failures:
+            raise InvariantViolationError(
+                "strategy attribution did not reconcile with the approved portfolio: "
+                + "; ".join(failures)
+            )
 
     bindings = binding(
         intents_fingerprint=intents_fingerprint(intents),
@@ -402,8 +557,24 @@ def evaluate(
                 risk.covariance.fingerprint() if risk.covariance is not None else "NONE"
             ),
         }
+    version = _engine_version(risk, policy, allocation)
+    stage_order = (
+        ADVANCED_STAGE_ORDER_V1_2
+        if version == MULTI_STRATEGY_ENGINE_VERSION
+        else ADVANCED_STAGE_ORDER
+    )
+    if aggregated is not None:
+        bindings = {
+            **bindings,
+            "engine_version": version,
+            "strategy_allocation_policy_fingerprint": aggregated.policy.fingerprint(),
+            "aggregate_request_fingerprint": aggregated.fingerprint(),
+            "strategy_attribution_fingerprint": digest(dict(sorted(attribution.items()))),
+        }
+    elif policy.uses_correlation_control:
+        bindings = {**bindings, "engine_version": version}
     approved = ApprovedPortfolio(
-        engine_version=ADVANCED_ENGINE_VERSION if risk is not None else ENGINE_VERSION,
+        engine_version=version,
         decision_id=str(validated["decision_id"]),
         as_of=str(validated["as_of"] or snapshot.as_of),
         targets={outcome.identities[key].label: weight for key, weight in outcome.approved.items()},
@@ -477,7 +648,24 @@ def evaluate(
             ),
             "risk_report_fingerprint": report["fingerprint"] if report is not None else None,
             "risk_timing": timing,
-            "advanced_risk_stage_order": list(ADVANCED_STAGE_ORDER),
+            "advanced_risk_stage_order": list(stage_order),
+        }
+    if aggregated is not None:
+        manifest |= {
+            "manifest_id": "PORTFOLIO_DECISION_MANIFEST_V1_2",
+            "allocator_id": ALLOCATOR_ID,
+            "strategy_allocation_policy_fingerprint": aggregated.policy.fingerprint(),
+            "strategy_allocation_policy_production_authorized": (
+                aggregated.policy.production_authorized
+            ),
+            "strategy_intent_fingerprints": {
+                sleeve.strategy_id: sleeve.intents_fingerprint for sleeve in aggregated.sleeves
+            },
+            "strategy_sleeve_fingerprints": {
+                sleeve.strategy_id: sleeve.fingerprint() for sleeve in aggregated.sleeves
+            },
+            "aggregate_request_fingerprint": aggregated.fingerprint(),
+            "strategy_attribution_fingerprint": digest(dict(sorted(attribution.items()))),
         }
     log.info(
         "portfolio.authorised",
@@ -493,4 +681,11 @@ def evaluate(
         delta_summary=delta,
         manifest=manifest,
         risk_report=report,
+        strategy_report=(
+            build_strategy_report(
+                aggregated, approved_weights=outcome.approved, attribution=attribution
+            )
+            if aggregated is not None
+            else None
+        ),
     )

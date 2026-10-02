@@ -80,6 +80,19 @@ class ReasonCode:
     TRADING_HALTED = "TRADING_HALTED"
     REDUCE_ONLY = "REDUCE_ONLY"
 
+    # P1.2 — multi-strategy allocation, correlation concentration, risk budgets
+    UNKNOWN_STRATEGY = "UNKNOWN_STRATEGY"
+    STRATEGY_BUDGET_MISSING = "STRATEGY_BUDGET_MISSING"
+    STRATEGY_BUDGET_INVALID = "STRATEGY_BUDGET_INVALID"
+    STRATEGY_GROSS_LIMIT = "STRATEGY_GROSS_LIMIT"
+    STRATEGY_VOLATILITY_LIMIT = "STRATEGY_VOLATILITY_LIMIT"
+    STRATEGY_CAPITAL_CEILING = "STRATEGY_CAPITAL_CEILING"
+    STRATEGY_IDLE = "STRATEGY_IDLE"
+    CORRELATION_CONCENTRATION_LIMIT = "CORRELATION_CONCENTRATION_LIMIT"
+    CORRELATION_UNDEFINED = "CORRELATION_UNDEFINED"
+    COVARIANCE_INDEFINITE = "COVARIANCE_INDEFINITE"
+    UNATTRIBUTED_EXISTING = "UNATTRIBUTED_EXISTING"
+
     # P1.1 — volatility, liquidity, covariance and drawdown
     PORTFOLIO_VOLATILITY_LIMIT = "PORTFOLIO_VOLATILITY_LIMIT"
     POSITION_LIQUIDITY_LIMIT = "POSITION_LIQUIDITY_LIMIT"
@@ -114,6 +127,8 @@ def validate_inputs(
     intents: Sequence[StrategyIntent],
     snapshot: PortfolioSnapshot | None,
     policy: RiskPolicy | None,
+    *,
+    allocation_policy_id: str | None = None,
 ) -> dict[str, Any]:
     """Check that these inputs could authorise a portfolio at all.
 
@@ -121,6 +136,9 @@ def validate_inputs(
         intents: The strategy's requests.
         snapshot: The portfolio as it stands.
         policy: The limits to authorise under.
+        allocation_policy_id: The allocation policy in force, when one is. Several
+            strategies are permitted only with one: splitting capital between them
+            because there happen to be two is a capital decision nobody made.
 
     Returns:
         A summary of what was validated, for the manifest.
@@ -143,7 +161,7 @@ def validate_inputs(
         )
 
     strategies = sorted({intent.strategy_id for intent in intents})
-    if len(strategies) > 1:
+    if len(strategies) > 1 and allocation_policy_id is None:
         raise ValidationError(
             ReasonCode.MULTI_STRATEGY_ALLOCATION_POLICY_REQUIRED,
             f"intents arrived from {len(strategies)} strategies ({strategies}) with no "
@@ -152,7 +170,8 @@ def validate_inputs(
             "decision with its own evidence.",
         )
 
-    seen: dict[tuple[str, int], str] = {}
+    # One decision covers one decision, whichever strategies contributed to it.
+    seen: dict[tuple[str, int, str], str] = {}
     decisions = sorted({intent.decision_id for intent in intents})
     as_ofs = sorted({intent.as_of for intent in intents})
     if len(decisions) > 1:
@@ -176,7 +195,11 @@ def validate_inputs(
         )
 
     for intent in intents:
-        if intent.key in seen:
+        # Keyed by strategy as well as identity: two strategies wanting the same
+        # security is ordinary and aggregates economically, while one strategy
+        # asking twice means it disagrees with itself.
+        marker = (*intent.key, intent.strategy_id)
+        if marker in seen:
             raise ValidationError(
                 ReasonCode.DUPLICATE_STRATEGY_INTENT,
                 f"{intent.identity.label} was requested twice by {intent.strategy_id}. "
@@ -184,7 +207,7 @@ def validate_inputs(
                 "strategy disagrees with itself, and guessing which it meant would "
                 "invent a position size nobody chose.",
             )
-        seen[intent.key] = intent.strategy_id
+        seen[marker] = intent.strategy_id
         weight = intent.weight_against(snapshot.nav)
         if policy.long_only and weight < 0:
             raise ValidationError(
@@ -197,6 +220,7 @@ def validate_inputs(
     return {
         "intents": len(intents),
         "strategies": strategies,
+        "allocation_policy_id": allocation_policy_id,
         "decision_id": decisions[0] if decisions else None,
         "as_of": as_ofs[0] if as_ofs else None,
         "snapshot_as_of": snapshot.as_of,

@@ -44,8 +44,26 @@ escalate the operating mode. Three further rules govern that layer:
   band that weakens at greater depth is refused, and the effective mode is always
   the stricter of the base mode and the band's. Halting still does not liquidate.
 
-Supplying no risk snapshot keeps V1 semantics exactly, so a V1 decision and its
-golden output still reproduce byte for byte.
+`PORTFOLIO_RISK_ENGINE_V1_2` closes the covariance gap P1.1 declared and lets
+several strategies request capital through one authority. Three further rules:
+
+- **Covariance fails closed.** A matrix is validated for positive semidefiniteness
+  by `LDLᵀ` before it is given any authority, and a materially negative portfolio
+  variance raises rather than clamping to zero — reporting zero volatility for a
+  portfolio the matrix cannot describe is the one failure that looks like safety.
+  Singular-but-valid matrices are accepted: perfect correlation is a fact, not a
+  fault.
+- **Capital authority is explicit.** Several strategies need a
+  `StrategyAllocationPolicy`; without one the engine still refuses. Budgets are
+  ceilings and unused sleeve capacity becomes **cash**, never another strategy's
+  position. Nothing in the package can read a return, a Sharpe ratio or a win rate.
+- **Exposure aggregates, attribution does not.** Two strategies wanting one
+  security hold one position, and the record still says who asked for how much.
+  When global risk reduces the aggregate, attribution reconciles proportionally.
+
+Supplying no risk snapshot keeps V1 semantics exactly, and supplying no allocation
+policy or correlation control keeps V1.1 semantics exactly, so both earlier
+decisions and their golden outputs still reproduce byte for byte.
 
 Neither version is a production risk system: no policy here is authorised for live
 capital, no threshold in either has been established as correct, and none was
@@ -54,7 +72,18 @@ chosen by running historical performance.
 
 from __future__ import annotations
 
-from .advanced import ADVANCED_STAGE_ORDER
+from .advanced import ADVANCED_STAGE_ORDER, ADVANCED_STAGE_ORDER_V1_2
+from .allocation import (
+    ALLOCATOR_ID,
+    EXAMPLE_MULTI_STRATEGY_POLICY_V1,
+    AggregatedRequest,
+    BudgetSemantics,
+    StrategyAllocationPolicy,
+    StrategyBudget,
+    StrategyContribution,
+    StrategySleeve,
+    allocate,
+)
 from .arithmetic import (
     ARITHMETIC_POLICY_ID,
     EXPOSURE_TOLERANCE,
@@ -64,6 +93,11 @@ from .arithmetic import (
     arithmetic_policy,
     is_close,
     quantise,
+)
+from .concentration import (
+    CONCENTRATION_ALGORITHM_ID,
+    apply_correlation_concentration,
+    correlation_of,
 )
 from .constructor import CONSTRUCTOR_ID, ConstructedPortfolio, construct
 from .drawdown import (
@@ -76,6 +110,7 @@ from .drawdown import (
 )
 from .engine import (
     ADVANCED_ENGINE_VERSION,
+    MULTI_STRATEGY_ENGINE_VERSION,
     TURNOVER_DEFINITION_ID,
     ApprovedPortfolio,
     InvariantViolationError,
@@ -92,6 +127,7 @@ from .intents import (
     classify,
     intents_fingerprint,
 )
+from .linalg import LDL_METHOD_ID, PsdVerdict, is_positive_semidefinite
 from .models import (
     KINDS,
     PortfolioSnapshot,
@@ -108,7 +144,7 @@ from .policy import (
     PolicyMode,
     RiskPolicy,
 )
-from .report import PortfolioRiskReport, build_risk_report
+from .report import PortfolioRiskReport, build_risk_report, build_strategy_report
 from .risk import CONSTRAINT_MODEL_ID, Decision, RiskDecision, RiskOutcome, authorize
 from .risk_inputs import (
     COVARIANCE_TOLERANCE,
@@ -119,30 +155,38 @@ from .risk_inputs import (
     RiskInputError,
     SecurityRiskMetrics,
 )
-from .run import evaluate_request, load_request, load_risk
+from .run import evaluate_request, load_allocation, load_request, load_risk
 from .validation import REASON_CODES, ReasonCode, ValidationError, validate_inputs
 
 __all__ = [
     "ADVANCED_ENGINE_VERSION",
     "ADVANCED_STAGE_ORDER",
+    "ADVANCED_STAGE_ORDER_V1_2",
+    "ALLOCATOR_ID",
     "ARITHMETIC_POLICY_ID",
+    "CONCENTRATION_ALGORITHM_ID",
     "CONSTRAINT_MODEL_ID",
     "CONSTRUCTOR_ID",
     "COVARIANCE_TOLERANCE",
     "ENGINE_VERSION",
     "EXAMPLE_ADVANCED_RISK_POLICY_V1",
+    "EXAMPLE_MULTI_STRATEGY_POLICY_V1",
     "EXAMPLE_POLICY_V1",
     "EXPOSURE_TOLERANCE",
     "HOLD_TOLERANCE",
     "KINDS",
+    "LDL_METHOD_ID",
     "MAX_PLAUSIBLE_VOLATILITY",
     "MODE_SEVERITY",
+    "MULTI_STRATEGY_ENGINE_VERSION",
     "REASON_CODES",
     "TURNOVER_DEFINITION_ID",
     "WEIGHT_DECIMALS",
     "WEIGHT_TOLERANCE",
     "Action",
+    "AggregatedRequest",
     "ApprovedPortfolio",
+    "BudgetSemantics",
     "ConstructedPortfolio",
     "ConstructionMode",
     "CovarianceSnapshot",
@@ -163,6 +207,7 @@ __all__ = [
     "PortfolioSnapshot",
     "PortfolioStateError",
     "Position",
+    "PsdVerdict",
     "ReasonCode",
     "RiskDecision",
     "RiskInputError",
@@ -170,20 +215,30 @@ __all__ = [
     "RiskPolicy",
     "SecurityIdentity",
     "SecurityRiskMetrics",
+    "StrategyAllocationPolicy",
+    "StrategyBudget",
+    "StrategyContribution",
     "StrategyIntent",
+    "StrategySleeve",
     "ValidationError",
+    "allocate",
+    "apply_correlation_concentration",
     "arithmetic_policy",
     "authorize",
     "binding",
     "build_risk_report",
+    "build_strategy_report",
     "classify",
     "construct",
+    "correlation_of",
     "derive_effective_policy",
     "digest",
     "evaluate",
     "evaluate_request",
     "intents_fingerprint",
     "is_close",
+    "is_positive_semidefinite",
+    "load_allocation",
     "load_request",
     "load_risk",
     "quantise",

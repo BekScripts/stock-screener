@@ -1361,8 +1361,12 @@ def test_the_package_imports_no_strategy_or_research_module() -> None:
     assert reachable & forbidden == {"backtest_harness"}
     for path in sorted(package.glob("*.py")):
         text = path.read_text(encoding="utf-8")
-        assert "COMPOUNDER" not in text, path.name
+        # The coupling that matters is to the score itself, not to a fixture label:
+        # P1.2's example sleeve is named COMPOUNDER_EXAMPLE and is wired to no
+        # implementation, which is the point of calling it an example.
+        assert "COMPOUNDER_V1_2" not in text, path.name
         assert "membership_hypothesis" not in text, path.name
+        assert "score_company" not in text, path.name
 
 
 # --------------------------------------------------------------------------- #

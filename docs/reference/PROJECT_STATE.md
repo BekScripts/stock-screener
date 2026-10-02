@@ -36,9 +36,9 @@ appears without the run or the test that produced it.
 
 ## Current phase
 
-**P1.1 — volatility, liquidity, covariance and drawdown controls** is the current
-checkpoint, on `feat/p1-portfolio-risk-engine`, branched from the armed H2 commit
-(tagged `h2-prospective-capture-v2-armed`).
+**P1.2 — multi-strategy capital allocation, correlation concentration and risk
+budgets** is the current checkpoint, on `feat/p1-portfolio-risk-engine`, branched
+from the armed H2 commit (tagged `h2-prospective-capture-v2-armed`).
 
 | Programme | State |
 | --- | --- |
@@ -46,8 +46,11 @@ checkpoint, on `feat/p1-portfolio-risk-engine`, branched from the armed H2 commi
 | H2 prospective track | **CAPTURE_READY_AND_ARMED — FROZEN UNTIL OPERATIONAL CHECKS** |
 | P1 portfolio / risk | **ACTIVE** |
 | P1.0 | **FOUNDATION COMPLETE** — `PORTFOLIO_RISK_ENGINE_V1` |
-| P1.1 | **VOLATILITY / LIQUIDITY / DRAWDOWN RISK CONTROLS** — `PORTFOLIO_RISK_ENGINE_V1_1` |
+| P1.1 | **ADVANCED SINGLE-PORTFOLIO RISK COMPLETE** — `PORTFOLIO_RISK_ENGINE_V1_1` |
+| P1.2 | **MULTI-STRATEGY CAPITAL / CORRELATION / RISK BUDGETS** — `PORTFOLIO_RISK_ENGINE_V1_2` |
 | Production risk thresholds | **NOT AUTHORIZED** |
+| Production strategy budgets | **NOT AUTHORIZED** |
+| Production correlation thresholds | **NOT AUTHORIZED** |
 | Broker authority | **NONE** |
 | Live trading | **NOT AUTHORIZED** |
 
@@ -73,6 +76,52 @@ bypass or override argument — asserted by a test walking every signature, beca
 the rule is worth exactly what it is worth on the day someone wants it not to hold.
 Only the future broker adapter will hold credentials or submit an order; every
 layer above it is structurally incapable of reaching one.
+
+### P1.2 — covariance safety, and capital authority for several strategies
+
+`PORTFOLIO_RISK_ENGINE_V1_2` does two things.
+
+**It closes the covariance gap P1.1 declared.** P1.1 validated symmetry,
+finiteness and a non-negative diagonal and said plainly that this does not prove
+positive semidefiniteness — a matrix can pass all three and still imply a
+portfolio with negative variance, which P1.1 then clamped to zero and reported as
+zero volatility. That was the one failure mode in this layer that looked like
+perfect safety. P1.2 validates PSD by `LDLᵀ` factorisation with explicit
+zero-pivot handling, in pure Python so the package's dependency boundary is
+unchanged, at the moment the snapshot is built rather than when some particular
+target happens to expose it. A materially negative quadratic form now raises; only
+residue inside the existing covariance tolerance normalises to zero. Singular
+matrices stay valid, because perfect correlation is a fact rather than a fault, and
+nothing is projected onto the semidefinite cone — an indefinite covariance is a
+fault in whatever estimated it.
+
+**It lets several strategies request capital through one authority.** Capital
+authority is now as deliberate as risk authority:
+
+- **Explicit or refused.** Several strategies need a `StrategyAllocationPolicy`;
+  without one the engine still raises, and nothing infers fifty-fifty from there
+  being two of them. A strategy the policy does not name is refused rather than
+  given a silent zero.
+- **Budgets are ceilings.** Unused sleeve capacity becomes cash, never another
+  strategy's position — otherwise one strategy's restraint would quietly fund
+  another's risk, and the monotonicity the risk engine depends on would break.
+- **Exposure aggregates; attribution does not.** Two strategies wanting one
+  security hold one position, keyed on `(kind, identity_id)`. When global risk
+  reduces the aggregate, attribution reconciles proportionally, and an invariant
+  asserts every identity and the portfolio total both reconcile exactly.
+- **Global risk is still final.** Sleeve budgets override no cap, count, reserve,
+  liquidity limit, volatility ceiling or drawdown band, and all of those apply to
+  aggregate exposure — so strategies cannot each consume the whole ADV budget.
+
+A deterministic pairwise positive-correlation concentration control was added
+alongside the volatility ceiling: the ceiling addresses total covariance risk, the
+pair limit addresses its shape, and neither substitutes for the other. It is not a
+factor model, a cluster optimiser or hierarchical risk parity.
+
+Nothing in the package can read a return, a Sharpe ratio or a win rate — asserted
+by a test over every identifier. No budget, threshold or correlation limit was
+derived from historical performance, and every fixture value exists to force a code
+path.
 
 ### P1.1 — what the risk authority can now constrain
 

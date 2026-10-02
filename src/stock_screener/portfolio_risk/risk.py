@@ -52,6 +52,7 @@ from .advanced import (
     scale_to_volatility_ceiling,
 )
 from .arithmetic import EXPOSURE_TOLERANCE, is_close, quantise
+from .concentration import apply_correlation_concentration
 from .drawdown import derive_effective_policy
 from .fingerprint import digest
 from .policy import ConstructionMode, PolicyMode
@@ -373,9 +374,35 @@ def authorize(
             if in_force.max_gross_exposure < in_force.base_max_gross_exposure:
                 reasons[key].append(ReasonCode.DRAWDOWN_GROSS_LIMIT)
 
-    # stage 7 — portfolio volatility ceiling. After liquidity, because scaling only
-    # reduces: applying it first would be undone by a later cap, and the resulting
-    # portfolio could sit above the volatility limit.
+    # stage 7 — pairwise correlation concentration, on the aggregate weights.
+    # Before the volatility ceiling so that the ceiling remains the final word on
+    # total covariance risk, and after the budget so the shape control sees the
+    # exposures the portfolio would actually carry.
+    if risk is not None and policy.correlation_threshold is not None:
+        concentrated = apply_correlation_concentration(
+            {key: value for key, value in weights.items() if value > 0},
+            risk.covariance,
+            threshold=policy.correlation_threshold,
+            limit=policy.max_correlated_pair_exposure,
+            missing_policy=policy.missing_correlation_policy,
+        )
+        advanced["correlation_concentration"] = {
+            **concentrated.diagnostics,
+            "counterparts": {
+                f"{key[0]}:{key[1]}": labels
+                for key, labels in sorted(concentrated.counterparts.items())
+            },
+        }
+        for key, value in concentrated.weights.items():
+            if value < weights[key] - EXPOSURE_TOLERANCE:
+                weights[key] = value
+                for code in concentrated.reasons.get(key, ()):
+                    if code not in reasons[key]:
+                        reasons[key].append(code)
+
+    # stage 8 — portfolio volatility ceiling. After liquidity and concentration,
+    # because scaling only reduces: applying it first would be undone by a later
+    # cap, and the resulting portfolio could sit above the volatility limit.
     if risk is not None:
         scaled, volatility_record = scale_to_volatility_ceiling(
             {key: value for key, value in weights.items() if value > 0},

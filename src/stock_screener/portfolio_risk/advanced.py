@@ -38,14 +38,16 @@ if TYPE_CHECKING:
 
 __all__ = [
     "ADVANCED_STAGE_ORDER",
+    "ADVANCED_STAGE_ORDER_V1_2",
     "Ceilings",
     "apply_liquidity_ceilings",
     "scale_to_volatility_ceiling",
     "verify_risk_timing",
 ]
 
-#: The frozen evaluation order. Reordering these changes results, so it is a
-#: semantic change requiring an engine version bump — not a refactor.
+#: The frozen V1.1 evaluation order. Reordering these changes results, so it is a
+#: semantic change requiring an engine version bump — not a refactor. Kept exactly
+#: as V1.1 recorded it so a V1.1 decision and its golden output still reproduce.
 ADVANCED_STAGE_ORDER: tuple[str, ...] = (
     "validate_inputs_and_risk_timing",
     "seed_ceilings_at_pre_risk_weights",
@@ -61,6 +63,32 @@ ADVANCED_STAGE_ORDER: tuple[str, ...] = (
     "trade_notional_cap",
     "effective_operating_mode",
     "forced_exits",
+    "invariants",
+)
+
+#: The V1.2 order: sleeve allocation ahead of everything, and pairwise correlation
+#: concentration between the budget and the volatility ceiling. Concentration comes
+#: first so the volatility cap stays the final word on total covariance risk, and
+#: after the budget so the shape control sees the exposures actually carried.
+ADVANCED_STAGE_ORDER_V1_2: tuple[str, ...] = (
+    "validate_inputs_and_risk_timing",
+    "allocate_strategy_sleeves",
+    "aggregate_economic_exposure_by_identity",
+    "seed_ceilings_at_pre_risk_weights",
+    "derive_effective_policy_from_drawdown",
+    "position_count_cap",
+    "per_name_weight_cap",
+    "position_liquidity_capacity",
+    "trade_liquidity_capacity",
+    "missing_risk_metric_ceilings",
+    "effective_gross_and_cash_budget",
+    "correlation_concentration",
+    "portfolio_volatility_ceiling",
+    "dust_floor",
+    "trade_notional_cap",
+    "effective_operating_mode",
+    "forced_exits",
+    "reconcile_strategy_attribution",
     "invariants",
 )
 

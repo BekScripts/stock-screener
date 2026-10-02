@@ -340,3 +340,171 @@ in it was chosen to make a control observable in a test. None was derived from
 historical return, Sharpe or drawdown — deriving them that way is the parameter
 fitting this programme exists to avoid. Promoting any of them requires a dedicated
 risk-policy phase with its own evidence.
+
+---
+
+# P1.2 — multi-strategy allocation, correlation concentration, risk budgets
+
+`PORTFOLIO_RISK_ENGINE_V1_2` does two things: it closes the covariance safety gap
+P1.1 declared, and it lets several independent strategies request capital through
+one central authority.
+
+V1 and V1.1 remain versions rather than former states of the code. With no risk
+snapshot the engine reports V1; with risk inputs but no allocation policy and no
+correlation control it reports V1.1 with V1.1's own stage order; both goldens still
+reproduce byte for byte. The advanced and correlation policy blocks enter a policy
+fingerprint only when that policy actually configures them, which is what makes
+that possible.
+
+## The covariance gap, closed
+
+P1.1 validated symmetry, finiteness and a non-negative diagonal, and said plainly
+that this does not prove positive semidefiniteness. It does not: a matrix can pass
+all three and still have a negative eigenvalue, meaning some portfolio has
+negative variance. P1.1's `variance_of` then clamped that to zero and reported a
+volatility of zero — the worst available way to be wrong about risk, because it
+reports perfect safety.
+
+P1.2 validates PSD by **`LDLᵀ` factorisation with explicit zero-pivot handling**
+(`SYMMETRIC_LDL_WITH_ZERO_PIVOT_HANDLING_V1`), in pure Python. No numerical
+dependency was added: keeping this package's imports to the standard library plus
+`structlog` is a boundary worth more than an eigenvalue call.
+
+| Pivot | Meaning |
+| --- | --- |
+| `d > tolerance` | ordinary |
+| `d < -tolerance` | **`COVARIANCE_INDEFINITE`** |
+| `abs(d) <= tolerance` | a genuine zero pivot — valid only if the rest of that column vanishes too |
+
+**Singular is not invalid.** Perfectly correlated holdings, a duplicated factor
+and a zero-volatility instrument all produce legitimately singular matrices, and
+rejecting them would refuse correct inputs. A zero pivot beside a non-zero
+off-diagonal is a different matter: `[[0, b], [b, c]]` has determinant `-b²`.
+
+Validation happens **when the snapshot is built**, not when some particular target
+happens to expose the indefiniteness — an invalid covariance is invalid regardless
+of which weights it is asked about. And nothing is repaired: the matrix is never
+projected onto the semidefinite cone, because an indefinite covariance is a fault
+in whatever estimated it and repairing it would hide the fault behind a number
+that looks reasonable.
+
+A materially negative quadratic form now raises. Only residue inside the existing
+`COVARIANCE_TOLERANCE` normalises to zero, which is floating-point noise rather
+than information.
+
+## The authority chain, extended
+
+```text
+Strategy -> StrategyIntent -> MultiStrategyAllocator -> PortfolioConstructor
+         -> RiskEngine -> ApprovedPortfolio -> ExecutionIntent
+```
+
+A strategy generates opportunity. `StrategyAllocationPolicy` grants maximum
+capital authority. The allocator creates sleeves. The constructor aggregates
+economic exposure. The risk engine owns final exposure. The execution intent stays
+inert. No strategy bypasses either the allocator or the risk engine.
+
+## Allocation is explicit or refused
+
+Several strategies without a policy still raise
+`MULTI_STRATEGY_ALLOCATION_POLICY_REQUIRED`. Nothing infers fifty-fifty from there
+being two of them — splitting capital because of a count is a capital decision
+nobody made. A strategy the policy does not name raises `UNKNOWN_STRATEGY` rather
+than receiving a silent zero.
+
+**Budgets are ceilings.** `BudgetSemantics.CEILING_UNUSED_BECOMES_CASH` is the
+only interpretation implemented. A strategy granted 30% that asks for 12% gets
+12%, and the other 18% becomes **cash** — it does not flow to another strategy.
+Redistributing it would let one strategy's restraint fund another's risk, and
+would break the monotonicity the risk engine depends on. Who may claim unused
+capacity is a separate decision with its own consequences.
+
+**Fixed budgets only.** No performance weighting, no Sharpe weighting, no winner
+rotation, no adaptive capital, no risk parity across strategies, no Kelly. The
+allocator cannot see a return, a Sharpe ratio or a win rate, and a test walks every
+identifier in the package to keep it that way.
+
+## Sleeve-relative weights
+
+Under an allocation policy a `requested_weight` is a weight **within that
+strategy's sleeve**, so its global contribution is
+`sleeve budget × normalised within-sleeve weight`. Magnitude carries no meaning:
+`0.3 / 0.1` and `30 / 10` produce the same portfolio. The semantics are declared
+by the policy, never inferred from the numbers, and the single-strategy path keeps
+its original absolute reading so no existing caller is silently reinterpreted.
+
+Optional per-sleeve limits, each reducing only that sleeve:
+
+| Limit | Effect |
+| --- | --- |
+| `max_strategy_gross` | scales the sleeve into its own gross ceiling |
+| `max_strategy_volatility` | scales the sleeve until its standalone volatility, in global weights, is within its ceiling |
+
+Neither is a target. A sleeve below its volatility ceiling stays below it, and no
+other sleeve is enlarged to use the freed room.
+
+## Exposure aggregates; attribution does not
+
+Two strategies each wanting 4% of one security produce one 8% position, keyed on
+`(kind, identity_id)` and never on a ticker. The record keeps who asked for what,
+because afterwards the question is rarely *what do we hold* — that is on the
+screen — but *which strategy put it there, and how much of it*.
+
+When global risk reduces an aggregate from 7% to 5%, attribution reconciles to 5%
+**proportionally**: the only rule that treats two strategies symmetrically, where
+assigning the whole reduction to one of them would be an arbitrary judgement about
+whose request mattered less. An invariant asserts that every identity's
+attribution sums to its approved weight, and that the portfolio-wide total equals
+the approved invested exposure.
+
+An existing position no strategy claims is not assigned one to make a report look
+complete. It keeps no attribution and can still be reduced or exited.
+
+## Global risk remains final
+
+Sleeve budgets override nothing. The per-name cap, position count, gross limit,
+cash reserve, liquidity capacity, portfolio-volatility ceiling and drawdown overlay
+all apply to **aggregate** economic exposure after the sleeves are combined — so
+each strategy cannot independently consume the whole ADV budget, and a security
+three strategies want counts as one position.
+
+## Correlation concentration
+
+A portfolio can satisfy a volatility ceiling and still be one bet wearing ten
+names. The volatility cap addresses *total* covariance risk; this addresses the
+*shape*. Both apply and neither substitutes for the other.
+
+For every pair with `rho >= correlation_threshold`, the two approved weights
+together may not exceed `max_correlated_pair_exposure`. **Positive correlation,
+never absolute**: under a long-only book two names moving oppositely diversify, and
+`abs(rho)` would penalise the hedge.
+
+`SIMULTANEOUS_PAIRWISE_CEILING_FIXED_POINT_V1` is order-independent by
+construction. Each round computes every violating pair's implied ceiling from the
+same snapshot of weights, takes the most binding ceiling per identity, and applies
+them all together; within a pair the cut is proportional, so the larger position
+gives up more. Nothing is scaled up, freed exposure becomes cash, and a portfolio
+still violating after the round limit raises rather than being returned as though
+it complied.
+
+**Correlation can be undefined.** A zero-variance security has no correlation with
+anything — not a zero one — so an undefined pair follows the policy's
+missing-metric behaviour rather than being treated as uncorrelated.
+
+This is a deterministic pairwise control. It is **not** a factor model, a cluster
+optimiser, hierarchical risk parity or a diversification optimiser, and it makes no
+diversification-alpha claim.
+
+## What P1.2 does not do
+
+- choose production budgets, thresholds or correlation limits;
+- derive any threshold from historical performance;
+- weight capital by strategy results, or learn an allocation;
+- net long against short across strategies (the baseline is long-only);
+- redistribute unused sleeve capacity;
+- add sector caps, factor exposures, beta targets, Kelly or VIX scaling;
+- build a strategy, or read one's returns.
+
+`EXAMPLE_MULTI_STRATEGY_POLICY_V1` and the fixture budgets are
+**`NOT_PRODUCTION_AUTHORIZED`**. The strategy names are fixture identities wired to
+no implementation, and every limit exists to force a code path.

@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 from typing import TYPE_CHECKING, Any
 
+from .allocation import StrategyAllocationPolicy, StrategyBudget
 from .drawdown import DrawdownBand
 from .engine import evaluate
 from .intents import Direction, StrategyIntent
@@ -32,7 +33,7 @@ if TYPE_CHECKING:
 
     from .engine import PortfolioDecision
 
-__all__ = ["evaluate_request", "load_request", "load_risk"]
+__all__ = ["evaluate_request", "load_allocation", "load_request", "load_risk"]
 
 
 def _optional_float(body: Mapping[str, Any], key: str) -> float | None:
@@ -58,6 +59,34 @@ def _identity(raw: Mapping[str, Any]) -> SecurityIdentity:
         kind=str(raw["kind"]),
         identity_id=int(raw["identity_id"]),
         symbol=raw.get("symbol"),
+    )
+
+
+def load_allocation(body: Mapping[str, Any] | None) -> StrategyAllocationPolicy | None:
+    """Build the strategy allocation policy from a request's `allocation` section.
+
+    Args:
+        body: The `allocation` section, or None for the single-strategy path.
+
+    Returns:
+        The policy, or None.
+    """
+    if not body:
+        return None
+    return StrategyAllocationPolicy(
+        allocation_policy_id=str(body["allocation_policy_id"]),
+        allocation_policy_version=str(body["allocation_policy_version"]),
+        budgets=tuple(
+            StrategyBudget(
+                strategy_id=str(row["strategy_id"]),
+                max_capital_weight=float(row["max_capital_weight"]),
+                max_strategy_gross=_optional_float(row, "max_strategy_gross"),
+                max_strategy_volatility=_optional_float(row, "max_strategy_volatility"),
+                priority=float(row.get("priority", 0.0)),
+            )
+            for row in body["budgets"]
+        ),
+        production_authorized=bool(body.get("production_authorized", False)),
     )
 
 
@@ -179,6 +208,11 @@ def load_request(
         max_position_adv_fraction=_optional_float(policy_raw, "max_position_adv_fraction"),
         max_trade_adv_fraction=_optional_float(policy_raw, "max_trade_adv_fraction"),
         max_risk_metric_age_seconds=_optional_float(policy_raw, "max_risk_metric_age_seconds"),
+        correlation_threshold=_optional_float(policy_raw, "correlation_threshold"),
+        max_correlated_pair_exposure=_optional_float(policy_raw, "max_correlated_pair_exposure"),
+        missing_correlation_policy=MissingMetricPolicy(
+            str(policy_raw.get("missing_correlation_policy", "REJECT_INCREASE"))
+        ),
         drawdown_bands=tuple(
             DrawdownBand(
                 threshold=float(band["threshold"]),
@@ -232,5 +266,10 @@ def evaluate_request(path: Path, *, code_commit: str | None = None) -> Portfolio
     body = json.loads(path.read_text(encoding="utf-8"))
     intents, snapshot, policy = load_request(body)
     return evaluate(
-        intents, snapshot, policy, risk=load_risk(body.get("risk")), code_commit=code_commit
+        intents,
+        snapshot,
+        policy,
+        risk=load_risk(body.get("risk")),
+        allocation=load_allocation(body.get("allocation")),
+        code_commit=code_commit,
     )

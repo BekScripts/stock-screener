@@ -215,10 +215,21 @@ rather than a current arrangement:
 | Layer | Authority | May not |
 | --- | --- | --- |
 | Strategy | signal: what is worth holding | size a position, or reach execution |
-| Portfolio engine | allocation: what would express the signal | overrule a limit |
+| Allocation policy | maximum capital authority per strategy | be inferred from a strategy count |
+| Multi-strategy allocator | capital sleeves | let one sleeve claim another's capacity |
+| Portfolio engine | aggregate economic exposure | overrule a limit |
 | Risk engine | veto and resize: what is permitted | be bypassed by a strategy |
 | Execution engine *(later)* | order planning | choose what to hold |
 | Broker adapter *(later)* | external action | decide anything |
+
+Capital authority is as deliberate as risk authority. Several strategies may
+request capital only under an explicit allocation policy; nothing splits capital
+fifty-fifty because there happen to be two of them. Budgets are ceilings, and the
+capacity a strategy does not use becomes cash rather than another strategy's
+position — otherwise one strategy's restraint would quietly fund another's risk.
+Exposure aggregates by durable identity so two strategies wanting one security hold
+one position; attribution is kept separately, because afterwards the question is
+rarely what the portfolio holds but which strategy put it there.
 
 Two consequences are load-bearing.
 
@@ -237,6 +248,15 @@ defeating the cap. The freed budget becomes cash instead, and an invariant
 asserts no approved target exceeds its pre-risk value. The stage order is frozen
 and documented, because reordering it changes results — so it is an engine-version
 change, not a refactor.
+
+**Risk inputs fail closed rather than understating risk.** A covariance matrix is
+validated for positive semidefiniteness before it is given any authority, and a
+materially negative portfolio variance raises instead of clamping to zero. That
+clamp was the one failure mode in this layer that looked like perfect safety: a
+portfolio whose risk the matrix could not describe would have reported a volatility
+of zero. The same principle governs every missing metric — an unknown volatility is
+not zero, an unknown ADV is not infinite, and an undefined correlation is not
+uncorrelated.
 
 **Only the broker adapter will ever hold credentials or submit an order.** Every
 layer above it is structurally incapable of reaching one: `portfolio_risk` imports

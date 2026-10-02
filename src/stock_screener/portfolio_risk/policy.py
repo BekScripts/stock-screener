@@ -151,6 +151,15 @@ class RiskPolicy:
         max_risk_metric_age_seconds: How stale a risk metric may be. None means no
             freshness bound — P1.1 defines no production threshold for this and
             will not invent one.
+        correlation_threshold: The signed correlation at or above which a pair is
+            treated as concentrated. None disables the control. Positive
+            correlation only: under a long-only book two names moving oppositely
+            diversify rather than concentrate.
+        max_correlated_pair_exposure: The greatest combined weight a concentrated
+            pair may carry.
+        missing_correlation_policy: What an undefined correlation permits. A
+            zero-variance security has no correlation with anything, which is not
+            the same as having a zero one.
         production_authorized: Whether these limits have been established as
             suitable for live capital. False for every policy in this phase.
     """
@@ -174,6 +183,9 @@ class RiskPolicy:
     missing_volatility_policy: MissingMetricPolicy = MissingMetricPolicy.REJECT_INCREASE
     missing_liquidity_policy: MissingMetricPolicy = MissingMetricPolicy.REJECT_INCREASE
     max_risk_metric_age_seconds: float | None = None
+    correlation_threshold: float | None = None
+    max_correlated_pair_exposure: float | None = None
+    missing_correlation_policy: MissingMetricPolicy = MissingMetricPolicy.REJECT_INCREASE
     production_authorized: bool = False
 
     def __post_init__(self) -> None:
@@ -224,6 +236,26 @@ class RiskPolicy:
             value = getattr(self, name)
             if value is not None and value <= 0:
                 raise PolicyError(f"{name} must be positive when set, got {value!r}")
+        if self.correlation_threshold is not None and not (
+            -1.0 <= self.correlation_threshold <= 1.0
+        ):
+            raise PolicyError(
+                f"correlation_threshold must be between -1 and 1, got "
+                f"{self.correlation_threshold!r}"
+            )
+        if self.max_correlated_pair_exposure is not None and (
+            self.max_correlated_pair_exposure <= 0
+        ):
+            raise PolicyError(
+                f"max_correlated_pair_exposure must be positive when set, got "
+                f"{self.max_correlated_pair_exposure!r}"
+            )
+        if (self.correlation_threshold is None) != (self.max_correlated_pair_exposure is None):
+            raise PolicyError(
+                "correlation_threshold and max_correlated_pair_exposure are set "
+                "together or not at all: a threshold with no limit constrains nothing, "
+                "and a limit with no threshold would apply to every pair"
+            )
         if (
             self.max_portfolio_volatility is not None
             and self.max_portfolio_volatility > MAX_PLAUSIBLE_VOLATILITY
@@ -310,12 +342,25 @@ class RiskPolicy:
                 self.max_position_adv_fraction,
                 self.max_trade_adv_fraction,
                 self.max_risk_metric_age_seconds,
+                self.correlation_threshold,
+                self.max_correlated_pair_exposure,
             )
         ) or bool(self.drawdown_bands)
 
+    @property
+    def uses_correlation_control(self) -> bool:
+        """Whether the pairwise correlation concentration control is configured.
+
+        The correlation block enters the fingerprint only when it does, for the
+        same reason the advanced block does: a policy that sets no threshold is the
+        same policy it was before the control existed, so a V1.1 decision and its
+        golden output still reproduce.
+        """
+        return self.correlation_threshold is not None
+
     def advanced_body(self) -> dict[str, Any]:
-        """The P1.1 limits, for the fingerprint and the record."""
-        return {
+        """The P1.1 limits, plus the P1.2 correlation block where configured."""
+        body: dict[str, Any] = {
             "max_portfolio_volatility": self.max_portfolio_volatility,
             "max_position_adv_fraction": self.max_position_adv_fraction,
             "max_trade_adv_fraction": self.max_trade_adv_fraction,
@@ -324,6 +369,14 @@ class RiskPolicy:
             "missing_liquidity_policy": str(self.missing_liquidity_policy),
             "max_risk_metric_age_seconds": self.max_risk_metric_age_seconds,
         }
+        if self.uses_correlation_control:
+            body["correlation_concentration"] = {
+                "correlation_threshold": self.correlation_threshold,
+                "max_correlated_pair_exposure": self.max_correlated_pair_exposure,
+                "missing_correlation_policy": str(self.missing_correlation_policy),
+                "positive_correlation_only": True,
+            }
+        return body
 
     def fingerprint(self) -> str:
         """The policy's deterministic digest. A changed limit changes it."""
