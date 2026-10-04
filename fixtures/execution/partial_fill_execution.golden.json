@@ -1,0 +1,960 @@
+{
+  "final_book": {
+    "accounting_version": "PORTFOLIO_ACCOUNTING_V2",
+    "attribution_cost_pools": [
+      {
+        "average_cost": "38.00000000",
+        "closed_quantity": "70.00000000",
+        "dividends_received": "0",
+        "fees_paid": "2.0000",
+        "identity": "COMPANY:9001",
+        "is_open": true,
+        "is_unattributed": false,
+        "owner": "ALPHA",
+        "quantity": "130.00000000",
+        "realised_trading_pnl_gross": "137.5000",
+        "total_cost_basis": "4940.0000"
+      },
+      {
+        "average_cost": "22.00000000",
+        "closed_quantity": "0",
+        "dividends_received": "0",
+        "fees_paid": "0",
+        "identity": "COMPANY:9002",
+        "is_open": true,
+        "is_unattributed": false,
+        "owner": "ALPHA",
+        "quantity": "250.00000000",
+        "realised_trading_pnl_gross": "0",
+        "total_cost_basis": "5500.0000"
+      },
+      {
+        "average_cost": "22.00000000",
+        "closed_quantity": "0",
+        "dividends_received": "0",
+        "fees_paid": "0",
+        "identity": "COMPANY:9002",
+        "is_open": true,
+        "is_unattributed": false,
+        "owner": "BETA",
+        "quantity": "150.00000000",
+        "realised_trading_pnl_gross": "0",
+        "total_cost_basis": "3300.0000"
+      },
+      {
+        "average_cost": "15.00000000",
+        "closed_quantity": "0",
+        "dividends_received": "0",
+        "fees_paid": "0",
+        "identity": "COMPANY:9004",
+        "is_open": true,
+        "is_unattributed": false,
+        "owner": "BETA",
+        "quantity": "100.00000000",
+        "realised_trading_pnl_gross": "0",
+        "total_cost_basis": "1500.0000"
+      },
+      {
+        "average_cost": "60.00000000",
+        "closed_quantity": "0",
+        "dividends_received": "0",
+        "fees_paid": "0",
+        "identity": "COMPANY:9005",
+        "is_open": true,
+        "is_unattributed": false,
+        "owner": "ALPHA",
+        "quantity": "50.00000000",
+        "realised_trading_pnl_gross": "0",
+        "total_cost_basis": "3000.0000"
+      }
+    ],
+    "attribution_owners": [
+      "ALPHA",
+      "BETA"
+    ],
+    "cash": "7795.5000",
+    "cash_summary": {
+      "balance": "7795.5000",
+      "deposits": "0",
+      "dividends": "0",
+      "external_flow_net": "0",
+      "fees": "2.0000",
+      "opening": "5000.0000",
+      "purchases": "0",
+      "sales": "2797.5000",
+      "withdrawals": "0"
+    },
+    "closed_positions": [],
+    "cost_basis_policy": "PER_ATTRIBUTION_WEIGHTED_AVERAGE_COST_V1",
+    "dividend_income": "0",
+    "fees_paid": "2.0000",
+    "inception_nav_at_cost": "25900.0000",
+    "last_effective_at": "2026-10-05T15:18:00-04:00",
+    "ledger_head_hash": "6feca1b14dc34e60ba9271eed05122ac00581afe0aee75dd0697d38020bb5a12",
+    "ledger_sequence": 3,
+    "open_position_count": 4,
+    "opening_cost_basis": "20900.0000",
+    "pool_cost_basis_total": "18240.0000",
+    "pool_realised_total": "137.5000",
+    "positions": [
+      {
+        "attribution": [
+          {
+            "quantity": "130.00000000",
+            "strategy_id": "ALPHA"
+          }
+        ],
+        "average_cost": "38.00000000",
+        "cost_basis_policy": "PER_ATTRIBUTION_WEIGHTED_AVERAGE_COST_V1",
+        "dividends_received": "0",
+        "fees_paid": "2.0000",
+        "identity": {
+          "identity_id": 9001,
+          "kind": "COMPANY",
+          "symbol": "EXT"
+        },
+        "label": "COMPANY:9001",
+        "pools": [
+          {
+            "average_cost": "38.00000000",
+            "closed_quantity": "70.00000000",
+            "dividends_received": "0",
+            "fees_paid": "2.0000",
+            "identity": "COMPANY:9001",
+            "is_open": true,
+            "is_unattributed": false,
+            "owner": "ALPHA",
+            "quantity": "130.00000000",
+            "realised_trading_pnl_gross": "137.5000",
+            "total_cost_basis": "4940.0000"
+          }
+        ],
+        "quantity": "130.00000000",
+        "realised_pnl": "137.5000",
+        "total_cost": "4940.0000"
+      },
+      {
+        "attribution": [
+          {
+            "quantity": "250.00000000",
+            "strategy_id": "ALPHA"
+          },
+          {
+            "quantity": "150.00000000",
+            "strategy_id": "BETA"
+          }
+        ],
+        "average_cost": "22.00000000",
+        "cost_basis_policy": "PER_ATTRIBUTION_WEIGHTED_AVERAGE_COST_V1",
+        "dividends_received": "0",
+        "fees_paid": "0",
+        "identity": {
+          "identity_id": 9002,
+          "kind": "COMPANY",
+          "symbol": "RED"
+        },
+        "label": "COMPANY:9002",
+        "pools": [
+          {
+            "average_cost": "22.00000000",
+            "closed_quantity": "0",
+            "dividends_received": "0",
+            "fees_paid": "0",
+            "identity": "COMPANY:9002",
+            "is_open": true,
+            "is_unattributed": false,
+            "owner": "ALPHA",
+            "quantity": "250.00000000",
+            "realised_trading_pnl_gross": "0",
+            "total_cost_basis": "5500.0000"
+          },
+          {
+            "average_cost": "22.00000000",
+            "closed_quantity": "0",
+            "dividends_received": "0",
+            "fees_paid": "0",
+            "identity": "COMPANY:9002",
+            "is_open": true,
+            "is_unattributed": false,
+            "owner": "BETA",
+            "quantity": "150.00000000",
+            "realised_trading_pnl_gross": "0",
+            "total_cost_basis": "3300.0000"
+          }
+        ],
+        "quantity": "400.00000000",
+        "realised_pnl": "0",
+        "total_cost": "8800.0000"
+      },
+      {
+        "attribution": [
+          {
+            "quantity": "100.00000000",
+            "strategy_id": "BETA"
+          }
+        ],
+        "average_cost": "15.00000000",
+        "cost_basis_policy": "PER_ATTRIBUTION_WEIGHTED_AVERAGE_COST_V1",
+        "dividends_received": "0",
+        "fees_paid": "0",
+        "identity": {
+          "identity_id": 9004,
+          "kind": "COMPANY",
+          "symbol": "INC"
+        },
+        "label": "COMPANY:9004",
+        "pools": [
+          {
+            "average_cost": "15.00000000",
+            "closed_quantity": "0",
+            "dividends_received": "0",
+            "fees_paid": "0",
+            "identity": "COMPANY:9004",
+            "is_open": true,
+            "is_unattributed": false,
+            "owner": "BETA",
+            "quantity": "100.00000000",
+            "realised_trading_pnl_gross": "0",
+            "total_cost_basis": "1500.0000"
+          }
+        ],
+        "quantity": "100.00000000",
+        "realised_pnl": "0",
+        "total_cost": "1500.0000"
+      },
+      {
+        "attribution": [
+          {
+            "quantity": "50.00000000",
+            "strategy_id": "ALPHA"
+          }
+        ],
+        "average_cost": "60.00000000",
+        "cost_basis_policy": "PER_ATTRIBUTION_WEIGHTED_AVERAGE_COST_V1",
+        "dividends_received": "0",
+        "fees_paid": "0",
+        "identity": {
+          "identity_id": 9005,
+          "kind": "COMPANY",
+          "symbol": "HLD"
+        },
+        "label": "COMPANY:9005",
+        "pools": [
+          {
+            "average_cost": "60.00000000",
+            "closed_quantity": "0",
+            "dividends_received": "0",
+            "fees_paid": "0",
+            "identity": "COMPANY:9005",
+            "is_open": true,
+            "is_unattributed": false,
+            "owner": "ALPHA",
+            "quantity": "50.00000000",
+            "realised_trading_pnl_gross": "0",
+            "total_cost_basis": "3000.0000"
+          }
+        ],
+        "quantity": "50.00000000",
+        "realised_pnl": "0",
+        "total_cost": "3000.0000"
+      }
+    ],
+    "realised_pnl": "137.5000",
+    "total_cost_basis": "18240.0000",
+    "unattributed_quantity": "0",
+    "unsupported_actions": []
+  },
+  "journal": {
+    "chain_version": "EXECUTION_JOURNAL_HASH_CHAIN_V1",
+    "head_hash": "8615a45b38af0e897903323eb53dd9e2c4a7e2934e30b2527a02d7394f74fc82",
+    "record_count": 8,
+    "records": [
+      {
+        "chain_version": "EXECUTION_JOURNAL_HASH_CHAIN_V1",
+        "event": {
+          "engine_version": "EXECUTION_ENGINE_V1",
+          "event_id": "PLAN-PARTIAL-COMPANY:9001-SELL:CREATED",
+          "event_type": "ORDER_CREATED",
+          "execution_plan_id": "PLAN-PARTIAL",
+          "fingerprint": "96dc686fb9446634e508a922b84252cbf54b4121f806083f2f8f3e0ddd053a7f",
+          "occurred_at": "2026-10-05T15:10:00-04:00",
+          "order_id": "PLAN-PARTIAL-COMPANY:9001-SELL",
+          "payload": {
+            "order": {
+              "attribution": [
+                {
+                  "quantity": "200.00000000",
+                  "strategy_id": "ALPHA"
+                }
+              ],
+              "authorization_fingerprint": "c24660df4d923a0f2cb9631a5a2a2d4d3486e8fde9173ce56ee112f6ee203ba4",
+              "engine_version": "EXECUTION_ENGINE_V1",
+              "execution_plan_id": "PLAN-PARTIAL",
+              "identity": "COMPANY:9001",
+              "order_id": "PLAN-PARTIAL-COMPANY:9001-SELL",
+              "order_type": "MARKET",
+              "quantity": "200.00000000",
+              "sequence_group": "RELEASE_CASH",
+              "side": "SELL",
+              "sizing_price": "40.00000000",
+              "time_in_force": "DAY"
+            }
+          },
+          "recorded_at": null
+        },
+        "event_fingerprint": "96dc686fb9446634e508a922b84252cbf54b4121f806083f2f8f3e0ddd053a7f",
+        "previous_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+        "record_hash": "725dd577d0e6af19da855000b635f2c93b968ded78971ff8f41c210e889c0e16",
+        "sequence": 1
+      },
+      {
+        "chain_version": "EXECUTION_JOURNAL_HASH_CHAIN_V1",
+        "event": {
+          "engine_version": "EXECUTION_ENGINE_V1",
+          "event_id": "PLAN-PARTIAL-COMPANY:9001-SELL:SUBMITTED",
+          "event_type": "ORDER_SUBMITTED",
+          "execution_plan_id": "PLAN-PARTIAL",
+          "fingerprint": "f1b7b9b8b03cfbc731d2e8f1ed71fad35b8edccdbeb81ce627ddda0e726fa7c0",
+          "occurred_at": "2026-10-05T15:10:00-04:00",
+          "order_id": "PLAN-PARTIAL-COMPANY:9001-SELL",
+          "payload": {
+            "venue": "DETERMINISTIC_PAPER_BROKER"
+          },
+          "recorded_at": null
+        },
+        "event_fingerprint": "f1b7b9b8b03cfbc731d2e8f1ed71fad35b8edccdbeb81ce627ddda0e726fa7c0",
+        "previous_hash": "725dd577d0e6af19da855000b635f2c93b968ded78971ff8f41c210e889c0e16",
+        "record_hash": "f7fc056ed9722b0e8d5e9c8740462180f5ae225a89f8def93a8cb41b966529c6",
+        "sequence": 2
+      },
+      {
+        "chain_version": "EXECUTION_JOURNAL_HASH_CHAIN_V1",
+        "event": {
+          "engine_version": "EXECUTION_ENGINE_V1",
+          "event_id": "PLAN-PARTIAL-COMPANY:9001-SELL:ACKNOWLEDGED",
+          "event_type": "ORDER_ACKNOWLEDGED",
+          "execution_plan_id": "PLAN-PARTIAL",
+          "fingerprint": "b7c68fb0c9436fe67770e6cb6b8a0691aecca9d2bb902b7498c7813da1c10020",
+          "occurred_at": "2026-10-05T15:10:00-04:00",
+          "order_id": "PLAN-PARTIAL-COMPANY:9001-SELL",
+          "payload": {
+            "venue": "DETERMINISTIC_PAPER_BROKER"
+          },
+          "recorded_at": null
+        },
+        "event_fingerprint": "b7c68fb0c9436fe67770e6cb6b8a0691aecca9d2bb902b7498c7813da1c10020",
+        "previous_hash": "f7fc056ed9722b0e8d5e9c8740462180f5ae225a89f8def93a8cb41b966529c6",
+        "record_hash": "8a258bc34f38b6a9c3dcbd174c8a665d181a88cc88a56912c334d1b64792fad4",
+        "sequence": 3
+      },
+      {
+        "chain_version": "EXECUTION_JOURNAL_HASH_CHAIN_V1",
+        "event": {
+          "engine_version": "EXECUTION_ENGINE_V1",
+          "event_id": "PLAN-PARTIAL-COMPANY:9001-SELL:FILL:1",
+          "event_type": "ORDER_FILLED",
+          "execution_plan_id": "PLAN-PARTIAL",
+          "fingerprint": "79f044a538e7799ca9fa2edc647e5625c0de94e7bdfa74a6950a0da86b57da85",
+          "occurred_at": "2026-10-05T15:12:00-04:00",
+          "order_id": "PLAN-PARTIAL-COMPANY:9001-SELL",
+          "payload": {
+            "fill": {
+              "attribution": [
+                {
+                  "quantity": "40.00000000",
+                  "strategy_id": "ALPHA"
+                }
+              ],
+              "effective_at": "2026-10-05T15:12:00-04:00",
+              "fee": "1.00000000",
+              "fill_id": "PLAN-PARTIAL-COMPANY:9001-SELL#1",
+              "identity": "COMPANY:9001",
+              "order_id": "PLAN-PARTIAL-COMPANY:9001-SELL",
+              "price": "40.50000000",
+              "quantity": "40.00000000",
+              "side": "SELL",
+              "source_fingerprint": "a8d7fbf14190118c6cd6a161d476910cb69a3a033a1c707405ecd384cb1c765e",
+              "venue": "DETERMINISTIC_PAPER_BROKER"
+            }
+          },
+          "recorded_at": null
+        },
+        "event_fingerprint": "79f044a538e7799ca9fa2edc647e5625c0de94e7bdfa74a6950a0da86b57da85",
+        "previous_hash": "8a258bc34f38b6a9c3dcbd174c8a665d181a88cc88a56912c334d1b64792fad4",
+        "record_hash": "e7b621cd43b721ef4855950eee359babfc02eaf3c8a86a3fe0e38ea1bef5b69e",
+        "sequence": 4
+      },
+      {
+        "chain_version": "EXECUTION_JOURNAL_HASH_CHAIN_V1",
+        "event": {
+          "engine_version": "EXECUTION_ENGINE_V1",
+          "event_id": "PLAN-PARTIAL-COMPANY:9001-SELL#1:APPLIED",
+          "event_type": "FILL_APPLIED",
+          "execution_plan_id": "PLAN-PARTIAL",
+          "fingerprint": "0107c4e3ee8a854a878b4113232bd177caea1da3b80e7ee6f3f1cfd2924412c2",
+          "occurred_at": "2026-10-05T15:12:00-04:00",
+          "order_id": "PLAN-PARTIAL-COMPANY:9001-SELL",
+          "payload": {
+            "accounting_event_id": "EXEC_FILL:PLAN-PARTIAL-COMPANY:9001-SELL#1",
+            "accounting_sequence": 2,
+            "accounting_state_fingerprint": "267da038532ae2acb448274d7f50ec24af4310cdbaed385526798c170e189615",
+            "fill_id": "PLAN-PARTIAL-COMPANY:9001-SELL#1"
+          },
+          "recorded_at": null
+        },
+        "event_fingerprint": "0107c4e3ee8a854a878b4113232bd177caea1da3b80e7ee6f3f1cfd2924412c2",
+        "previous_hash": "e7b621cd43b721ef4855950eee359babfc02eaf3c8a86a3fe0e38ea1bef5b69e",
+        "record_hash": "1e8683ef87266f9c840638c4d02b87947f6f66b1dda38484b989ec317d1cc589",
+        "sequence": 5
+      },
+      {
+        "chain_version": "EXECUTION_JOURNAL_HASH_CHAIN_V1",
+        "event": {
+          "engine_version": "EXECUTION_ENGINE_V1",
+          "event_id": "PLAN-PARTIAL-COMPANY:9001-SELL:FILL:2",
+          "event_type": "ORDER_FILLED",
+          "execution_plan_id": "PLAN-PARTIAL",
+          "fingerprint": "890ea89eabbddc15ddc42ff1e08b05498498506a2e37732853ddbb49be3cfd18",
+          "occurred_at": "2026-10-05T15:18:00-04:00",
+          "order_id": "PLAN-PARTIAL-COMPANY:9001-SELL",
+          "payload": {
+            "fill": {
+              "attribution": [
+                {
+                  "quantity": "30.00000000",
+                  "strategy_id": "ALPHA"
+                }
+              ],
+              "effective_at": "2026-10-05T15:18:00-04:00",
+              "fee": "1.00000000",
+              "fill_id": "PLAN-PARTIAL-COMPANY:9001-SELL#2",
+              "identity": "COMPANY:9001",
+              "order_id": "PLAN-PARTIAL-COMPANY:9001-SELL",
+              "price": "39.25000000",
+              "quantity": "30.00000000",
+              "side": "SELL",
+              "source_fingerprint": "75a8901cf60ed2f3932db7f0ab90e4089d6c9055cbcb20cee1c2d44c2feca04d",
+              "venue": "DETERMINISTIC_PAPER_BROKER"
+            }
+          },
+          "recorded_at": null
+        },
+        "event_fingerprint": "890ea89eabbddc15ddc42ff1e08b05498498506a2e37732853ddbb49be3cfd18",
+        "previous_hash": "1e8683ef87266f9c840638c4d02b87947f6f66b1dda38484b989ec317d1cc589",
+        "record_hash": "4bccc1c68158efe17e68ffa33f4325eab5c841b4cb84c67f9ad46804d31eece5",
+        "sequence": 6
+      },
+      {
+        "chain_version": "EXECUTION_JOURNAL_HASH_CHAIN_V1",
+        "event": {
+          "engine_version": "EXECUTION_ENGINE_V1",
+          "event_id": "PLAN-PARTIAL-COMPANY:9001-SELL#2:APPLIED",
+          "event_type": "FILL_APPLIED",
+          "execution_plan_id": "PLAN-PARTIAL",
+          "fingerprint": "9333a0621efa29315c8913e4328fda66c74103d3f2cea1e7c51c99f8bfcb83eb",
+          "occurred_at": "2026-10-05T15:18:00-04:00",
+          "order_id": "PLAN-PARTIAL-COMPANY:9001-SELL",
+          "payload": {
+            "accounting_event_id": "EXEC_FILL:PLAN-PARTIAL-COMPANY:9001-SELL#2",
+            "accounting_sequence": 3,
+            "accounting_state_fingerprint": "6387ef13479c24699fd9c98788bf0c57527ae8da4ec7da68c934907e977cc5c8",
+            "fill_id": "PLAN-PARTIAL-COMPANY:9001-SELL#2"
+          },
+          "recorded_at": null
+        },
+        "event_fingerprint": "9333a0621efa29315c8913e4328fda66c74103d3f2cea1e7c51c99f8bfcb83eb",
+        "previous_hash": "4bccc1c68158efe17e68ffa33f4325eab5c841b4cb84c67f9ad46804d31eece5",
+        "record_hash": "101f0e9d96de568cbdb0a1a78a9d7249264fdcdbe697e54be61a0abd8bf1eac0",
+        "sequence": 7
+      },
+      {
+        "chain_version": "EXECUTION_JOURNAL_HASH_CHAIN_V1",
+        "event": {
+          "engine_version": "EXECUTION_ENGINE_V1",
+          "event_id": "PLAN-PARTIAL-COMPANY:9001-SELL:CANCELLED",
+          "event_type": "ORDER_CANCELLED",
+          "execution_plan_id": "PLAN-PARTIAL",
+          "fingerprint": "0537af9c228d744e38c49a701de0fef1e2e9c181c5e66f15eeb7facf218af349",
+          "occurred_at": "2026-10-05T15:30:00-04:00",
+          "order_id": "PLAN-PARTIAL-COMPANY:9001-SELL",
+          "payload": {
+            "reason": "OPERATOR_CANCELLED"
+          },
+          "recorded_at": null
+        },
+        "event_fingerprint": "0537af9c228d744e38c49a701de0fef1e2e9c181c5e66f15eeb7facf218af349",
+        "previous_hash": "101f0e9d96de568cbdb0a1a78a9d7249264fdcdbe697e54be61a0abd8bf1eac0",
+        "record_hash": "8615a45b38af0e897903323eb53dd9e2c4a7e2934e30b2527a02d7394f74fc82",
+        "sequence": 8
+      }
+    ]
+  },
+  "manifest": {
+    "bindings": {
+      "accounting_generation": "PORTFOLIO_LEDGER_GENERATION_1",
+      "accounting_version": "PORTFOLIO_ACCOUNTING_V2",
+      "code_commit": null,
+      "execution_plan_fingerprint": "c24660df4d923a0f2cb9631a5a2a2d4d3486e8fde9173ce56ee112f6ee203ba4",
+      "final_accounting_state": "6387ef13479c24699fd9c98788bf0c57527ae8da4ec7da68c934907e977cc5c8",
+      "initial_accounting_state": "9db394cf3b8b73eaa1d12f0f0ddb29b9f962777c799eadcb1262c5cd6d5e5f25",
+      "journal_anchor_fingerprint": "b83d14eca142259db353cfe73241ee9e0d16c03b15e46e28719f5f3e75080e80",
+      "journal_generation": "EXECUTION_JOURNAL_GENERATION_1",
+      "journal_head": "8615a45b38af0e897903323eb53dd9e2c4a7e2934e30b2527a02d7394f74fc82",
+      "journal_sequence": 8,
+      "paper_snapshot_fingerprints": [
+        "a8d7fbf14190118c6cd6a161d476910cb69a3a033a1c707405ecd384cb1c765e",
+        "75a8901cf60ed2f3932db7f0ab90e4089d6c9055cbcb20cee1c2d44c2feca04d"
+      ],
+      "plan_report_fingerprint": "3ccf68b7c4a34519f5068e919d66850e0a921a295b566d84fcd5a57ad6cbcbef"
+    },
+    "engine": {
+      "engine_version": "EXECUTION_ENGINE_V1",
+      "fill_attribution": "PROPORTIONAL_FILL_ATTRIBUTION_V1",
+      "journal_chain": "EXECUTION_JOURNAL_HASH_CHAIN_V1",
+      "never_does": [
+        "contact a broker, paper or live",
+        "hold a broker credential",
+        "place a live order",
+        "place a remote paper order",
+        "introduce randomness into a fill",
+        "estimate market impact",
+        "optimise an execution parameter",
+        "maintain cash, positions or P&L of its own",
+        "change the book without an admitted accounting FillEvent"
+      ],
+      "order_contracts": {
+        "durable_identity": "(kind, identity_id); a ticker is metadata",
+        "fractional_quantities": "SUPPORTED \u2014 positive Decimal, 8 places",
+        "order_types": [
+          "MARKET"
+        ],
+        "short_selling": "NOT_SUPPORTED",
+        "sides": [
+          "BUY",
+          "SELL"
+        ],
+        "time_in_force": [
+          "DAY"
+        ]
+      },
+      "paper_fill_model": "PAPER_REFERENCE_PRICE_FILL_V1",
+      "paper_fill_policy": "PAPER_FULL_FILL_V1",
+      "required_accounting_version": "PORTFOLIO_ACCOUNTING_V2",
+      "sequencing": "SELLS_BEFORE_BUYS_V1",
+      "what_this_is": "a deterministic correctness simulator. Given the same inputs it produces the same orders, the same fills and the same book, every time, which is what makes an execution bug findable.",
+      "what_this_is_not": "This is not a realistic fill simulator. It models no spread, no slippage, no market impact, no volume participation, no latency and no queue position. A backtest run through it will be optimistic by exactly the costs it does not model, and that gap is not small."
+    },
+    "error_codes": [
+      "ACCOUNTING_ADMISSION_FAILED",
+      "EXECUTION_ANCHOR_FINGERPRINT_MISMATCH",
+      "EXECUTION_ANCHOR_INVALID",
+      "EXECUTION_ANCHOR_MISSING",
+      "EXECUTION_AUTHORIZATION_MISMATCH",
+      "EXECUTION_BOOK_MISMATCH",
+      "EXECUTION_EVENT_ID_CONFLICT",
+      "EXECUTION_EVENT_INVALID",
+      "EXECUTION_GENERATION_MISMATCH",
+      "EXECUTION_JOURNAL_HASH_CHAIN_MISMATCH",
+      "EXECUTION_JOURNAL_HEAD_ANCHOR_MISMATCH",
+      "EXECUTION_JOURNAL_SEQUENCE_GAP",
+      "EXECUTION_JOURNAL_TRUNCATION_DETECTED",
+      "EXECUTION_PARTIAL_RECORD",
+      "EXECUTION_PERSISTENCE_VERIFY_FAILED",
+      "EXECUTION_RECOVERY_REQUIRED",
+      "EXECUTION_STATE_DRIFT",
+      "FILL_ATTRIBUTION_DOES_NOT_SUM",
+      "FILL_ATTRIBUTION_UNAUTHORIZED",
+      "FILL_ID_CONFLICT",
+      "FILL_INVALID",
+      "FORBIDDEN_EXECUTION_NAMESPACE",
+      "INVALID_EXECUTION_PRICE",
+      "INVALID_ORDER_STATE_TRANSITION",
+      "ORDER_ALREADY_TERMINAL",
+      "ORDER_INVALID",
+      "ORDER_NOT_FOUND",
+      "ORDER_OVERFILL",
+      "PAPER_EXECUTION_PRICE_MISSING",
+      "PAPER_POLICY_REJECTED",
+      "PAPER_SNAPSHOT_BEFORE_ACKNOWLEDGEMENT",
+      "PLAN_ALREADY_TERMINAL",
+      "PLAN_INVALID",
+      "SIZING_SNAPSHOT_INCOMPLETE",
+      "STALE_EXECUTION_INTENT",
+      "UNAUTHORIZED_ORDER",
+      "UNSUPPORTED_EXECUTION_ACCOUNTING_VERSION",
+      "UNSUPPORTED_ORDER_SIDE",
+      "UNSUPPORTED_ORDER_TYPE",
+      "UNSUPPORTED_TIME_IN_FORCE"
+    ],
+    "external_paper_broker": "NOT_IMPLEMENTED",
+    "invariants": [
+      "an order changes no holding, no cash and no NAV",
+      "only an admitted accounting FillEvent changes the book",
+      "an approved portfolio creates no order by itself",
+      "an execution intent creates no order by itself",
+      "every order originates from an authorised execution plan",
+      "cumulative filled quantity never exceeds the ordered quantity",
+      "a fill maps to exactly one accounting event, derived from its id",
+      "fill attribution sums exactly to the filled quantity",
+      "the broker holds no cash, no positions and no P&L"
+    ],
+    "live_broker": "NOT_IMPLEMENTED",
+    "live_trading": "NOT_AUTHORIZED",
+    "manifest_fingerprint": "74edc8880f7d404baaabf32066084732c7fbbd3abd1a56548757eeef35f49f51",
+    "manifest_version": "EXECUTION_MANIFEST_V1",
+    "not_guaranteed": [
+      "COORDINATED_LOCAL_ROLLBACK_DETECTION: a journal and its local anchor rolled back together to a mutually consistent earlier state cannot be detected from local files alone. The same limit applies to the accounting ledger, and closing either needs an independently trusted external anchor.",
+      "EXECUTION REALISM: no spread, slippage, market impact, volume participation, latency or queue position is modelled. A strategy run through this engine will look better than it would trade."
+    ],
+    "order_lifecycle": {
+      "note": "the lifecycle is walked even when the broker is in-process. Collapsing states because a local simulation could would leave the first remote adapter exercising transitions nothing had tested.",
+      "states": [
+        "CREATED",
+        "SUBMITTED",
+        "ACKNOWLEDGED",
+        "PARTIALLY_FILLED",
+        "FILLED",
+        "CANCELLED",
+        "REJECTED"
+      ],
+      "terminal": [
+        "CANCELLED",
+        "FILLED",
+        "REJECTED"
+      ],
+      "transitions": {
+        "ACKNOWLEDGED": [
+          "CANCELLED",
+          "FILLED",
+          "PARTIALLY_FILLED",
+          "REJECTED"
+        ],
+        "CANCELLED": [],
+        "CREATED": [
+          "SUBMITTED"
+        ],
+        "FILLED": [],
+        "PARTIALLY_FILLED": [
+          "CANCELLED",
+          "FILLED",
+          "PARTIALLY_FILLED"
+        ],
+        "REJECTED": [],
+        "SUBMITTED": [
+          "ACKNOWLEDGED",
+          "CANCELLED",
+          "REJECTED"
+        ]
+      }
+    },
+    "paper_market": {
+      "availability": "explicit; absent means fill the remainder. Never a random fraction.",
+      "consequence": "a strategy run through this engine will look better than it would trade, by roughly the costs listed above. The engine exists to prove the order lifecycle and the accounting handoff are correct, not to estimate a return.",
+      "fees": "explicit per security; default zero. No commission is invented.",
+      "fill_policy": "PAPER_FULL_FILL_V1",
+      "model": "PAPER_REFERENCE_PRICE_FILL_V1",
+      "not_modelled": [
+        "bid-ask spread",
+        "slippage",
+        "market impact",
+        "volume participation",
+        "latency",
+        "queue position",
+        "partial-day price paths",
+        "order expiry across sessions"
+      ],
+      "price_source": "the explicit execution snapshot, and nothing else",
+      "sizing_price_fallback": "NONE \u2014 a missing execution price leaves the order working rather than filling at the price that sized it, which would make every rebalance execute at exactly its planned level"
+    },
+    "policies": {
+      "engine": "EXECUTION_ENGINE_V1",
+      "fill_attribution": "PROPORTIONAL_FILL_ATTRIBUTION_V1",
+      "journal_anchor": "EXECUTION_JOURNAL_HEAD_ANCHOR_V1",
+      "journal_chain": "EXECUTION_JOURNAL_HASH_CHAIN_V1",
+      "order_sequencing": "SELLS_BEFORE_BUYS_V1",
+      "paper_fill_model": "PAPER_REFERENCE_PRICE_FILL_V1",
+      "required_accounting_version": "PORTFOLIO_ACCOUNTING_V2",
+      "store": "EXECUTION_STORE_V1"
+    },
+    "refusals": [
+      "an order type or time in force outside the frozen baseline",
+      "an order the active plan does not authorise",
+      "an execution intent stale against the current book",
+      "a book of the wrong ledger generation or accounting version",
+      "a new execution book under PORTFOLIO_ACCOUNTING_V1",
+      "a state transition outside the frozen table",
+      "a fill that would overfill its order",
+      "a fill id reused with different content",
+      "a market order with no execution price",
+      "an execution snapshot predating the order's acknowledgement",
+      "a buy the book's cash cannot fund",
+      "a journal shorter than its anchor witnesses"
+    ],
+    "venue": "DETERMINISTIC_PAPER_BROKER"
+  },
+  "order_state": {
+    "applications": {
+      "PLAN-PARTIAL-COMPANY:9001-SELL#1": "APPLIED",
+      "PLAN-PARTIAL-COMPANY:9001-SELL#2": "APPLIED"
+    },
+    "fills": [
+      {
+        "accounting_event_id": "EXEC_FILL:PLAN-PARTIAL-COMPANY:9001-SELL#1",
+        "attribution": [
+          {
+            "quantity": "40.00000000",
+            "strategy_id": "ALPHA"
+          }
+        ],
+        "effective_at": "2026-10-05T15:12:00-04:00",
+        "fee": "1.00000000",
+        "fill_fingerprint": "d5e899a2e811effa25efc213bb170c3d2b8b0235f1ab23b3680badb642fc2ae0",
+        "fill_id": "PLAN-PARTIAL-COMPANY:9001-SELL#1",
+        "identity": "COMPANY:9001",
+        "notional": "1620.00000000",
+        "order_id": "PLAN-PARTIAL-COMPANY:9001-SELL",
+        "price": "40.50000000",
+        "quantity": "40.00000000",
+        "side": "SELL",
+        "source_fingerprint": "a8d7fbf14190118c6cd6a161d476910cb69a3a033a1c707405ecd384cb1c765e",
+        "venue": "DETERMINISTIC_PAPER_BROKER"
+      },
+      {
+        "accounting_event_id": "EXEC_FILL:PLAN-PARTIAL-COMPANY:9001-SELL#2",
+        "attribution": [
+          {
+            "quantity": "30.00000000",
+            "strategy_id": "ALPHA"
+          }
+        ],
+        "effective_at": "2026-10-05T15:18:00-04:00",
+        "fee": "1.00000000",
+        "fill_fingerprint": "006642e1a9bd6dcd3613d23d6dbf2579beb45958161c4a77eaf4f951b1230ece",
+        "fill_id": "PLAN-PARTIAL-COMPANY:9001-SELL#2",
+        "identity": "COMPANY:9001",
+        "notional": "1177.50000000",
+        "order_id": "PLAN-PARTIAL-COMPANY:9001-SELL",
+        "price": "39.25000000",
+        "quantity": "30.00000000",
+        "side": "SELL",
+        "source_fingerprint": "75a8901cf60ed2f3932db7f0ab90e4089d6c9055cbcb20cee1c2d44c2feca04d",
+        "venue": "DETERMINISTIC_PAPER_BROKER"
+      }
+    ],
+    "journal_head": "8615a45b38af0e897903323eb53dd9e2c4a7e2934e30b2527a02d7394f74fc82",
+    "journal_sequence": 8,
+    "orders": [
+      {
+        "cumulative_fee": "2.00000000",
+        "cumulative_filled_quantity": "70.00000000",
+        "fill_count": 2,
+        "identity": "COMPANY:9001",
+        "is_terminal": true,
+        "order_id": "PLAN-PARTIAL-COMPANY:9001-SELL",
+        "ordered_quantity": "200.00000000",
+        "reason": "OPERATOR_CANCELLED",
+        "remaining_quantity": "130.00000000",
+        "side": "SELL",
+        "state": "CANCELLED",
+        "vwap_fill_price": "39.96428571"
+      }
+    ],
+    "pending_fill_ids": []
+  },
+  "plan": {
+    "as_of": "2026-10-05T15:00:00-04:00",
+    "attribution_rule": "PROPORTIONAL_FILL_ATTRIBUTION_V1",
+    "bindings": {
+      "approved_portfolio": "apapapapapapapapapapapapapapapapapapapapapapapapapapapapapapapap",
+      "book": {
+        "accounting_engine_version": "PORTFOLIO_ACCOUNTING_V2",
+        "accounting_state_fingerprint": "9db394cf3b8b73eaa1d12f0f0ddb29b9f962777c799eadcb1262c5cd6d5e5f25",
+        "ledger_generation": "PORTFOLIO_LEDGER_GENERATION_1",
+        "ledger_head": "36045461646a45604e8002304161e55fe03dcc4a9c135b068211c18641d0c08b",
+        "ledger_sequence": 1
+      },
+      "execution_intents": "063986b9f426eac68c4c4050ad81e8850f105002e9bf8573c7a3740e6de6ac0a",
+      "sizing_snapshot": "62f8e538897b632f2a3a6a83b39262bc3e5ce0c11bc8adcb18e349dcf9b622de",
+      "valued_snapshot": "vsvsvsvsvsvsvsvsvsvsvsvsvsvsvsvsvsvsvsvsvsvsvsvsvsvsvsvsvsvsvsvs"
+    },
+    "created_at": "2026-10-05T15:00:00-04:00",
+    "engine_version": "EXECUTION_ENGINE_V1",
+    "execution_plan_id": "PLAN-PARTIAL",
+    "note": "a plan authorises orders; it does not create or submit them. Submitting is an explicit, separate call.",
+    "order_count": 1,
+    "orders": [
+      {
+        "attribution": [
+          {
+            "quantity": "200.00000000",
+            "strategy_id": "ALPHA"
+          }
+        ],
+        "engine_version": "EXECUTION_ENGINE_V1",
+        "execution_plan_id": "PLAN-PARTIAL",
+        "identity": "COMPANY:9001",
+        "order_id": "PLAN-PARTIAL-COMPANY:9001-SELL",
+        "order_type": "MARKET",
+        "quantity": "200.00000000",
+        "sequence_group": "RELEASE_CASH",
+        "side": "SELL",
+        "sizing_price": "40.00000000",
+        "time_in_force": "DAY"
+      }
+    ],
+    "orders_detail": [
+      {
+        "attribution": [
+          {
+            "quantity": "200.00000000",
+            "strategy_id": "ALPHA"
+          }
+        ],
+        "authorization_fingerprint": "c24660df4d923a0f2cb9631a5a2a2d4d3486e8fde9173ce56ee112f6ee203ba4",
+        "changes_cash": false,
+        "changes_holdings": false,
+        "created_at": "2026-10-05T15:00:00-04:00",
+        "engine_version": "EXECUTION_ENGINE_V1",
+        "execution_plan_id": "PLAN-PARTIAL",
+        "identity": "COMPANY:9001",
+        "note": "an order is inert. Only an admitted accounting FillEvent changes holdings, cash or NAV.",
+        "notional": "8000.00000000",
+        "order_fingerprint": "d68096859d3477653e73d356a4aa4fcb62f218acddb1b1765563be575d24ca45",
+        "order_id": "PLAN-PARTIAL-COMPANY:9001-SELL",
+        "order_type": "MARKET",
+        "quantity": "200.00000000",
+        "sequence_group": "RELEASE_CASH",
+        "side": "SELL",
+        "sizing_price": "40.00000000",
+        "symbol": "EXT",
+        "time_in_force": "DAY"
+      }
+    ],
+    "plan_fingerprint": "c24660df4d923a0f2cb9631a5a2a2d4d3486e8fde9173ce56ee112f6ee203ba4",
+    "sequencing_rule": "SELLS_BEFORE_BUYS_V1"
+  },
+  "plan_report": {
+    "accounting": {
+      "authority": "holdings, cash, NAV and P&L are accounting's alone. This report names the book's state before and after so the two can be reconciled, and duplicates none of its figures.",
+      "engine_version": "PORTFOLIO_ACCOUNTING_V2",
+      "final_state_fingerprint": "6387ef13479c24699fd9c98788bf0c57527ae8da4ec7da68c934907e977cc5c8",
+      "initial_state_fingerprint": "9db394cf3b8b73eaa1d12f0f0ddb29b9f962777c799eadcb1262c5cd6d5e5f25",
+      "ledger_generation": "PORTFOLIO_LEDGER_GENERATION_1"
+    },
+    "attribution_rule": "PROPORTIONAL_FILL_ATTRIBUTION_V1",
+    "drift_detected": false,
+    "engine_version": "EXECUTION_ENGINE_V1",
+    "execution_plan_id": "PLAN-PARTIAL",
+    "execution_snapshot_fingerprints": [
+      "a8d7fbf14190118c6cd6a161d476910cb69a3a033a1c707405ecd384cb1c765e",
+      "75a8901cf60ed2f3932db7f0ab90e4089d6c9055cbcb20cee1c2d44c2feca04d"
+    ],
+    "filled_notional": "2797.50000000",
+    "filled_quantity_total": "70.00000000",
+    "journal": {
+      "head": "8615a45b38af0e897903323eb53dd9e2c4a7e2934e30b2527a02d7394f74fc82",
+      "pending_fill_ids": [],
+      "sequence": 8
+    },
+    "order_count": 1,
+    "orders": [
+      {
+        "fill_count": 2,
+        "filled_notional": "2797.50000000",
+        "filled_quantity": "70.00000000",
+        "identity": "COMPANY:9001",
+        "is_terminal": true,
+        "lifecycle": [
+          {
+            "accounting_event_id": "EXEC_FILL:PLAN-PARTIAL-COMPANY:9001-SELL#1",
+            "application": "APPLIED",
+            "attribution": [
+              {
+                "quantity": "40.00000000",
+                "strategy_id": "ALPHA"
+              }
+            ],
+            "effective_at": "2026-10-05T15:12:00-04:00",
+            "fee": "1.00000000",
+            "fill_id": "PLAN-PARTIAL-COMPANY:9001-SELL#1",
+            "price": "40.50000000",
+            "quantity": "40.00000000"
+          },
+          {
+            "accounting_event_id": "EXEC_FILL:PLAN-PARTIAL-COMPANY:9001-SELL#2",
+            "application": "APPLIED",
+            "attribution": [
+              {
+                "quantity": "30.00000000",
+                "strategy_id": "ALPHA"
+              }
+            ],
+            "effective_at": "2026-10-05T15:18:00-04:00",
+            "fee": "1.00000000",
+            "fill_id": "PLAN-PARTIAL-COMPANY:9001-SELL#2",
+            "price": "39.25000000",
+            "quantity": "30.00000000"
+          }
+        ],
+        "note": "fill prices are volume-weighted. No P&L appears here: realised and unrealised P&L and NAV are accounting's figures, and a second copy would eventually disagree with the first.",
+        "order_id": "PLAN-PARTIAL-COMPANY:9001-SELL",
+        "order_type": "MARKET",
+        "ordered_quantity": "200.00000000",
+        "planned_notional": "8000.00000000",
+        "reason": "OPERATOR_CANCELLED",
+        "remaining_quantity": "130.00000000",
+        "report_fingerprint": "52c925a2cee67fdf439efd0ccf5fc82f0b433f1a7383eee16a6cfce68e8c0b0e",
+        "sequence_group": "RELEASE_CASH",
+        "side": "SELL",
+        "sizing_price": "40.00000000",
+        "terminal_state": "CANCELLED",
+        "time_in_force": "DAY",
+        "total_fees": "2.00000000",
+        "vwap_fill_price": "39.96428571"
+      }
+    ],
+    "orders_cancelled": 1,
+    "orders_filled": 0,
+    "orders_open": 0,
+    "orders_partially_filled": 1,
+    "orders_rejected": 0,
+    "performance_claim": "NONE",
+    "plan_fingerprint": "c24660df4d923a0f2cb9631a5a2a2d4d3486e8fde9173ce56ee112f6ee203ba4",
+    "plan_status": "PARTIALLY_COMPLETED",
+    "planned_notional": "8000.00000000",
+    "report_fingerprint": "3ccf68b7c4a34519f5068e919d66850e0a921a295b566d84fcd5a57ad6cbcbef",
+    "sequencing_rule": "SELLS_BEFORE_BUYS_V1",
+    "total_fees": "2.00000000"
+  },
+  "refusal": null,
+  "store": {
+    "anchor": {
+      "anchor_fingerprint": "b83d14eca142259db353cfe73241ee9e0d16c03b15e46e28719f5f3e75080e80",
+      "anchor_head": "8615a45b38af0e897903323eb53dd9e2c4a7e2934e30b2527a02d7394f74fc82",
+      "anchor_sequence": 8,
+      "anchor_version": "EXECUTION_JOURNAL_HEAD_ANCHOR_V1",
+      "consistent": true,
+      "coordinated_rollback_detection": "NOT_GUARANTEED_WITHOUT_EXTERNAL_ANCHOR",
+      "detail": null,
+      "journal_head": "8615a45b38af0e897903323eb53dd9e2c4a7e2934e30b2527a02d7394f74fc82",
+      "journal_sequence": 8,
+      "recoverable": true,
+      "status": "CONSISTENT"
+    },
+    "chain": {
+      "chain_version": "EXECUTION_JOURNAL_HASH_CHAIN_V1",
+      "failure": null,
+      "head_hash": "8615a45b38af0e897903323eb53dd9e2c4a7e2934e30b2527a02d7394f74fc82",
+      "record_count": 8,
+      "verified": true
+    },
+    "coordinated_rollback_detection": "NOT_GUARANTEED_WITHOUT_EXTERNAL_ANCHOR",
+    "engine_version": "EXECUTION_ENGINE_V1",
+    "generation": "EXECUTION_JOURNAL_GENERATION_1",
+    "record_count": 8,
+    "store_version": "EXECUTION_STORE_V1",
+    "tail_completeness_established": true,
+    "truncation_detected": false,
+    "verified": true
+  }
+}

@@ -36,9 +36,14 @@ appears without the run or the test that produced it.
 
 ## Current phase
 
-**P1.4 — attribution and durability hardening** is the current checkpoint, on
-`feat/p1-portfolio-risk-engine`, branched from the armed H2 commit (tagged
-`h2-prospective-capture-v2-armed`).
+**P2.0 — broker-neutral order lifecycle and deterministic paper execution** is
+the current checkpoint, on `feat/p2-execution-engine`.
+
+**P1 is complete and frozen** at `p1-portfolio-authority-complete`
+(`b87e7c96`), which closes the portfolio programme at P1.4. From that tag the
+portfolio layer is the sole authority over holdings, cash and P&L, and nothing
+above it may impersonate that authority. `feat/p1-portfolio-risk-engine` remains
+frozen at the same commit; P2 branched from it.
 
 | Programme | State |
 | --- | --- |
@@ -50,6 +55,9 @@ appears without the run or the test that produced it.
 | P1.2 | **MULTI-STRATEGY CAPITAL / CORRELATION / RISK BUDGETS** — `PORTFOLIO_RISK_ENGINE_V1_2` |
 | P1.3 | **ACCOUNTING AUTHORITY COMPLETE** — `PORTFOLIO_ACCOUNTING_V1` |
 | P1.4 | **ATTRIBUTION / DURABILITY HARDENING** — `PORTFOLIO_ACCOUNTING_V2` |
+| P1 | **PORTFOLIO AUTHORITY COMPLETE** — tag `p1-portfolio-authority-complete` |
+| P2 execution | **ACTIVE** |
+| P2.0 | **BROKER-NEUTRAL ORDER LIFECYCLE / LOCAL PAPER EXECUTION** — `EXECUTION_ENGINE_V1` |
 | Production risk thresholds | **NOT AUTHORIZED** |
 | Production strategy budgets | **NOT AUTHORIZED** |
 | Production correlation thresholds | **NOT AUTHORIZED** |
@@ -78,6 +86,80 @@ bypass or override argument — asserted by a test walking every signature, beca
 the rule is worth exactly what it is worth on the day someone wants it not to hold.
 Only the future broker adapter will hold credentials or submit an order; every
 layer above it is structurally incapable of reaching one.
+
+### P2.0 — an authorised target becomes a fill, and nothing else does
+
+`EXECUTION_ENGINE_V1` is the first layer whose output could, once a real broker
+adapter exists, move money. It therefore starts from two separate claims, both
+load-bearing.
+
+**An order is not a position.** Creating, submitting or acknowledging one changes
+no holding, no cash and no NAV. Only an admitted accounting `FillEvent` changes
+the book, and the paper broker holds no cash, positions or P&L of its own —
+buying power *is* accounting's cash. A simulated broker with its own balances
+would be two books that agree until they do not.
+
+**A target is not an order.** An `ApprovedPortfolio` and an `ExecutionIntent` are
+inert. Orders exist only inside an `ExecutionPlan`, which binds the targets, the
+intents, the sizing snapshot, the valued snapshot and the book. There is no
+`force`, no `unsafe_submit` and no arbitrary-order path, asserted by a test over
+the broker's own signatures.
+
+**`PORTFOLIO_ACCOUNTING_V2` is demanded, never inherited.** P1.4 left V1 as the
+accounting default so existing ledgers kept their meaning; accepting that default
+here would open new execution books under the pooled-basis convention P1.4 exists
+to replace, and nobody would notice until two strategies entered one security at
+different prices.
+
+**The frozen baseline** is `MARKET`, `DAY`, long-only, positive `Decimal`
+quantities to eight places. Anything else is refused by name rather than
+approximated. `SELLS_BEFORE_BUYS_V1` sequences exits and reductions ahead of
+entries, because a no-margin book cannot fund purchases until sales release cash;
+within a group, durable identity decides. No strategy is prioritised.
+
+**The sizing price is not a fill price.** Quantity is `|notional delta| / sizing
+price` from an explicit snapshot; what the order fills at comes from the venue. A
+market order with no execution price is `PAPER_EXECUTION_PRICE_MISSING` — the
+sizing price is never substituted, because that fallback would make every
+rebalance execute at exactly its planned level and the simulation could never
+show a cost.
+
+**The handoff is two facts, not one.** A fill is durable execution evidence
+before the book is touched, and the handoff is confirmed only after the book is
+durable. A crash between them leaves the fill `PENDING`, and recovery admits it
+under an accounting event id *derived* from the fill id — so a second admission
+is a no-op rather than a second trade. Crash recovery was verified in both
+directions: fill-durable-without-accounting, and accounting-applied-without-
+confirmation.
+
+Two defects were found by building that path. The broker was appending to the
+journal *and* the store was committing the same event, so every event looked like
+a retry and the anchor never advanced past 1 — the broker is now a pure event
+producer and durability belongs entirely to the store. And the plan digested each
+order's authorisation fingerprint, which is the plan's own digest, making the two
+mutually recursive; order *content* and the back-reference to the plan are now
+separate.
+
+**Insufficient cash is never overridden.** If fill prices move against a buy,
+accounting refuses and execution fails closed. No overdraft, no fabricated cash,
+no automatic resize — resizing would mean trading a quantity the risk engine
+never approved.
+
+**The journal applies P1.4's lessons from the start**: append-only, hash-chained,
+with a mandatory head anchor written on every committed event rather than when
+somebody remembers, and admissibility decided before any durable write. Order
+state is derived by replay, never stored.
+
+**Not guaranteed, and stated as such.** A journal and its local anchor rolled
+back together validate cleanly; local files cannot establish that they are the
+latest state of themselves. And the engine models no execution cost at all — no
+spread, slippage, impact, participation or latency — so a strategy run through it
+will look better than it would trade. Both appear in the manifest, because a
+simulated return that does not disclose its cost assumptions invites being read
+as a forecast.
+
+**Live trading is NOT AUTHORIZED.** No live broker adapter, no external paper
+brokerage, no credential anywhere in the package.
 
 ### P1.4 — exact per-strategy basis, and a ledger that knows how long it is
 
@@ -3109,6 +3191,35 @@ care — nothing has a foreign key *to* it, so dropping it cascades to nothing.
 
 ## Known limitations
 
+**No execution realism at all (P2.0).** The paper engine models no bid-ask
+spread, no slippage, no market impact, no volume participation, no latency and no
+queue position. A strategy run through it will look better than it would trade,
+by roughly those costs, and the gap is not small. This is the engine's scope
+rather than a defect — it exists to prove the order lifecycle and the accounting
+handoff are correct, not to estimate a return — and it is the whole of P2.1. Any
+figure produced through it must be read with that disclosed.
+
+**Coordinated local rollback of an execution journal and its anchor is not
+detectable (P2.0).** The same limitation as the accounting ledger's, for the same
+reason: local files cannot establish that they are the latest state of
+themselves. An independently trusted external anchor would close both.
+
+**Order expiry is not simulated (P2.0).** `DAY` is the only time in force and
+nothing expires an order at a session boundary. A plan is executed within one
+session's worth of snapshots, and a caller wanting multi-session behaviour has to
+model it outside the engine.
+
+**One plan per execution journal generation (P2.0).** Running a second plan
+against the same book needs a new execution store, and there is no cross-plan
+order view. Adequate for a single rebalance; a continuously trading system would
+need a journal that spans plans.
+
+**Journal events must arrive in non-decreasing occurrence order (P2.0).** The
+journal is ordered by occurrence, so a caller sequencing a sell's fill after a
+later buy's submission is refused. That matches the sequence a no-margin book
+actually requires — sells must fill before buys are funded — so it is a
+constraint on callers rather than an internal one, but it is a real constraint.
+
 **Coordinated local rollback of a ledger and its anchor is not detectable
 (P1.4).** A ledger and its local head anchor rolled back *together* to a mutually
 consistent earlier state validate cleanly. Anyone able to delete ledger records
@@ -4820,6 +4931,14 @@ Not a backlog. These exclusions are deliberate.
 
 **Do not build without being asked:**
 
+- a live broker adapter, or an external paper brokerage of any kind — not even
+  read-only. P2.0's broker is deterministic and local, and external brokerage
+  comes only after the internal semantics are frozen
+- randomness in a paper fill, a slippage or market-impact model, or any
+  execution-parameter optimisation — those are P2.1 and need a version
+- TWAP, VWAP scheduling, participation algorithms, smart routing or icebergs
+- a broker that maintains its own cash, positions, P&L or buying power
+- an unauthorised-order path: no `force`, no `unsafe_submit`, no arbitrary submit
 - an accounting path that writes a risk target into a holding, or any `apply` /
   `execute` seam between `portfolio_risk` and `portfolio_accounting`
 - a reconciliation auto-repair, an "adopt external" flag, or a cash tolerance

@@ -96,6 +96,10 @@ from stock_screener.evidence import (
     EvidenceUnavailableError,
     inspect_sec_evidence_dir,
 )
+from stock_screener.execution import ExecutionError, ExecutionStore
+from stock_screener.execution import execution_manifest as execution_manifest_body
+from stock_screener.execution import load_request as load_execution_request
+from stock_screener.execution import run_paper_execution as run_paper_execution_request
 from stock_screener.hysteresis_experiment import (
     EXPERIMENT_DIR as H2_EXPERIMENT_DIR,
 )
@@ -8016,3 +8020,157 @@ def books_migrate_attribution_command(
         output.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         typer.echo("")
         typer.echo(f"  written: {output}")
+
+
+# --------------------------------------------------------------------------- #
+# P2.0 — paper execution. Deterministic, local, and no broker of any kind.
+# --------------------------------------------------------------------------- #
+
+execution_app = typer.Typer(
+    help="Deterministic local paper execution. Reaches no broker, live or paper.",
+    no_args_is_help=True,
+)
+app.add_typer(execution_app, name="execution")
+
+
+@execution_app.command("paper-run")
+def execution_paper_run_command(
+    request: Annotated[
+        Path, typer.Argument(help="A JSON request: opening book, intents, sizing and steps.")
+    ],
+    root: Annotated[
+        Path, typer.Option("--root", help="Where .portfolio and .execution are written.")
+    ],
+    output: Annotated[
+        Path | None, typer.Option("--output", help="Write the full result as JSON here.")
+    ] = None,
+) -> None:
+    """Run a paper execution end to end. Contacts no broker.
+
+    Every price, availability and fee comes from the request. The engine opens no
+    socket, holds no credential and introduces no randomness — the same request
+    always produces the same orders, fills and book.
+
+    This is a deterministic correctness simulator, not a realistic fill
+    simulator: it models no spread, slippage, market impact, participation or
+    latency, so a strategy run through it will look better than it would trade.
+    """
+    try:
+        body = load_execution_request(request)
+        result = run_paper_execution_request(body, root=root)
+    except (ExecutionError, AccountingError) as exc:
+        typer.echo(f"STOPPED [{exc.code}]: {exc.detail}")
+        raise typer.Exit(code=1) from exc
+
+    report = result["plan_report"]
+    typer.echo("")
+    typer.echo(f"  plan                 : {report['execution_plan_id']}")
+    typer.echo(f"  status               : {report['plan_status']}")
+    typer.echo(f"  sequencing           : {report['sequencing_rule']}")
+    typer.echo(
+        f"  orders               : {report['order_count']} planned, "
+        f"{report['orders_filled']} filled, "
+        f"{report['orders_partially_filled']} partial, "
+        f"{report['orders_cancelled']} cancelled, "
+        f"{report['orders_rejected']} rejected"
+    )
+    typer.echo("")
+    for row in report["orders"]:
+        typer.echo(
+            f"  {row['sequence_group']:<13} {row['side']:<4} {row['identity']:<14} "
+            f"ordered {row['ordered_quantity']:>16} filled {row['filled_quantity']:>16} "
+            f"vwap {row['vwap_fill_price'] or '-':>14} {row['terminal_state']}"
+        )
+    typer.echo("")
+    typer.echo(f"  planned notional     : {report['planned_notional']}")
+    typer.echo(f"  filled notional      : {report['filled_notional']}")
+    typer.echo(f"  total fees           : {report['total_fees']}")
+    typer.echo("")
+    book = result["final_book"]
+    typer.echo(f"  book cash            : {book['cash']}")
+    typer.echo(f"  book cost basis      : {book['total_cost_basis']}")
+    typer.echo(f"  accounting version   : {book['accounting_version']}")
+    typer.echo(f"  journal records      : {result['journal']['record_count']}")
+    typer.echo(f"  journal verified     : {result['store']['verified']}")
+    typer.echo(f"  tail completeness    : {result['store']['tail_completeness_established']}")
+    if result["refusal"]:
+        refusal = result["refusal"]
+        typer.echo("")
+        typer.echo(f"  REFUSED {refusal['order_id']} [{refusal['code']}]")
+        typer.echo(f"  {refusal['detail']}")
+    typer.echo("")
+    typer.echo("  P&L and NAV are not reported here: they belong to the accounting book.")
+    if output is not None:
+        output.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        typer.echo(f"  written: {output}")
+
+
+@execution_app.command("verify-journal")
+def execution_verify_journal_command(
+    root: Annotated[Path, typer.Argument(help="An .execution directory to verify.")],
+) -> None:
+    """Verify an execution journal's hash chain and its head anchor.
+
+    Checks tamper, deletion, reordering and insertion from the records alone, and
+    truncation against the anchor — which a hash chain cannot detect by itself,
+    because a journal missing its tail is a valid shorter chain.
+    """
+    try:
+        store = ExecutionStore(root)
+        result = store.verify()
+    except ExecutionError as exc:
+        typer.echo(f"STOPPED [{exc.code}]: {exc.detail}")
+        raise typer.Exit(code=1) from exc
+    typer.echo("")
+    typer.echo(f"  generation           : {result['generation']}")
+    typer.echo(f"  records              : {result['record_count']}")
+    typer.echo(f"  chain version        : {result['chain']['chain_version']}")
+    typer.echo(f"  chain verified       : {result['verified']}")
+    typer.echo(f"  anchor status        : {result['anchor']['status']}")
+    typer.echo(f"  anchor sequence      : {result['anchor']['anchor_sequence']}")
+    typer.echo(f"  journal sequence     : {result['anchor']['journal_sequence']}")
+    typer.echo(f"  tail completeness    : {result['tail_completeness_established']}")
+    if result["anchor"]["detail"]:
+        typer.echo("")
+        typer.echo(f"  {result['anchor']['detail']}")
+    typer.echo("")
+    typer.echo(
+        "  a journal and its local anchor rolled back together cannot be detected "
+        "from local files; that needs an independently trusted external anchor, "
+        "which this phase does not provide."
+    )
+    if not result["verified"] or not result["tail_completeness_established"]:
+        raise typer.Exit(code=1)
+
+
+@execution_app.command("show-manifest")
+def execution_show_manifest_command() -> None:
+    """Print the execution manifest: every frozen policy, and what is not modelled.
+
+    A simulated execution result is only comparable with another computed under
+    the same rules, so the rules carry a fingerprint.
+    """
+    manifest = execution_manifest_body()
+    typer.echo("")
+    for key, value in sorted(manifest["policies"].items()):
+        typer.echo(f"  {key:<30}: {value}")
+    typer.echo("")
+    typer.echo(f"  manifest fingerprint          : {manifest['manifest_fingerprint']}")
+    typer.echo(f"  live trading                  : {manifest['live_trading']}")
+    typer.echo(f"  live broker                   : {manifest['live_broker']}")
+    typer.echo(f"  external paper broker         : {manifest['external_paper_broker']}")
+    typer.echo("")
+    typer.echo("  order lifecycle:")
+    for state, targets in sorted(manifest["order_lifecycle"]["transitions"].items()):
+        typer.echo(f"    {state:<18} -> {', '.join(targets) or '(terminal)'}")
+    typer.echo("")
+    typer.echo("  invariants:")
+    for line in manifest["invariants"]:
+        typer.echo(f"    - {line}")
+    typer.echo("")
+    typer.echo("  deliberately not modelled:")
+    for line in manifest["paper_market"]["not_modelled"]:
+        typer.echo(f"    - {line}")
+    typer.echo("")
+    for line in manifest["not_guaranteed"]:
+        typer.echo(f"  NOT GUARANTEED: {line}")

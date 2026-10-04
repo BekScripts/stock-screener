@@ -310,6 +310,30 @@ exactly rather than within a tolerance. Risk arithmetic is statistical, where
 `float64` is both faster and honest about the precision available. One adapter
 converts between them, in one direction.
 
+**An order is not a position, and a target is not an order.** Those are two
+separate claims and both are load-bearing. The risk engine authorises targets;
+the execution layer turns authorised deltas into orders; only an admitted
+accounting fill changes the book. Creating, submitting or acknowledging an order
+touches no ledger, and the simulated broker holds no cash, positions or P&L of
+its own — buying power is accounting's cash and holdings are accounting's
+holdings. A broker with its own balances would be two books that agree until they
+do not, and the disagreement would arrive as a reconciliation break whose cause
+is the simulator.
+
+The handoff between the two is where both failure modes are expensive, so the
+fill is deliberately two facts rather than one: *it happened* (durable in the
+execution journal) and *it is in the book* (durable in the ledger). Each is
+durable before the next begins, and the accounting event id is derived from the
+fill id rather than generated — so a crash between them leaves a state recovery
+can finish exactly once, and a retry is a no-op rather than a second trade.
+
+What that layer deliberately does not do is pretend to be realistic. It models no
+spread, no slippage, no market impact, no participation limit and no latency, and
+it says so in its manifest. The point of it is that the same inputs produce the
+same orders and the same book every time, which is what makes an execution bug
+findable; a simulator full of plausible-looking cost models has many more places
+for one to hide.
+
 ## What is deliberately absent
 
 Not every company gets a number. A bank, an ineligible security and a company
