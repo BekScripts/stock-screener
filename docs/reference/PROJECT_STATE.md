@@ -36,9 +36,9 @@ appears without the run or the test that produced it.
 
 ## Current phase
 
-**P1.3 — portfolio state, NAV/P&L accounting and reconciliation** is the current
-checkpoint, on `feat/p1-portfolio-risk-engine`, branched from the armed H2 commit
-(tagged `h2-prospective-capture-v2-armed`).
+**P1.4 — attribution and durability hardening** is the current checkpoint, on
+`feat/p1-portfolio-risk-engine`, branched from the armed H2 commit (tagged
+`h2-prospective-capture-v2-armed`).
 
 | Programme | State |
 | --- | --- |
@@ -48,7 +48,8 @@ checkpoint, on `feat/p1-portfolio-risk-engine`, branched from the armed H2 commi
 | P1.0 | **FOUNDATION COMPLETE** — `PORTFOLIO_RISK_ENGINE_V1` |
 | P1.1 | **ADVANCED SINGLE-PORTFOLIO RISK COMPLETE** — `PORTFOLIO_RISK_ENGINE_V1_1` |
 | P1.2 | **MULTI-STRATEGY CAPITAL / CORRELATION / RISK BUDGETS** — `PORTFOLIO_RISK_ENGINE_V1_2` |
-| P1.3 | **STATE / NAV / P&L / RECONCILIATION COMPLETE** — `PORTFOLIO_ACCOUNTING_V1` |
+| P1.3 | **ACCOUNTING AUTHORITY COMPLETE** — `PORTFOLIO_ACCOUNTING_V1` |
+| P1.4 | **ATTRIBUTION / DURABILITY HARDENING** — `PORTFOLIO_ACCOUNTING_V2` |
 | Production risk thresholds | **NOT AUTHORIZED** |
 | Production strategy budgets | **NOT AUTHORIZED** |
 | Production correlation thresholds | **NOT AUTHORIZED** |
@@ -77,6 +78,81 @@ bypass or override argument — asserted by a test walking every signature, beca
 the rule is worth exactly what it is worth on the day someone wants it not to hold.
 Only the future broker adapter will hold credentials or submit an order; every
 layer above it is structurally incapable of reaching one.
+
+### P1.4 — exact per-strategy basis, and a ledger that knows how long it is
+
+P1.3 closed with two stated limitations. P1.4 closes both, and states plainly what
+is still not guaranteed.
+
+**Strategy cost accounting: per-attribution weighted average.**
+`PORTFOLIO_ACCOUNTING_V2` keeps one weighted-average pool per
+`(identity, owner)` rather than one per security. It is a *major* version because
+the change is not confined to attribution: for `A buys 1 @ 10, B buys 1 @ 20,
+A sells 1 @ 30`, V1 reports global realised 15 and remaining basis 15 where the
+truth is 20 and 20. The portfolio's own figures move, so V1 cannot be reproduced
+from V2's rules and the additive `V1_1`/`V1_2` pattern does not apply.
+
+V1 stays the default. A ledger or request declaring no version replays as V1, so
+books written before P1.4 keep their meaning without a field they could not have
+known to write; V2 is selected explicitly per ledger generation. The P1.3 goldens
+reproduce byte for byte, which required scoping the V2 state fields and freezing
+the V1 manifest's error-code list to the codes the V1 engine can actually raise —
+a V1 manifest claiming a vocabulary its engine does not have would be false, and
+would move a frozen fingerprint every time a later phase added a code.
+
+**The pools are the single authority.** Global quantity, cost basis, realised
+P&L, market value and unrealised P&L are all derived by summing the pools, never
+maintained beside them. Four new identities are enforced exactly on every
+valuation, and `INSUFFICIENT_ATTRIBUTED_POSITION` refuses a sale beyond one
+owner's pool even when the security's global quantity is sufficient.
+
+Two subtleties were resolved in favour of exactness. A pool's unrealised P&L is
+`market value − total_cost_basis`, not `quantity × (mark − average_cost)`:
+`average_cost` is derived at eight places while the basis is authoritative, so
+the second form leaves a quantisation residue that accumulates across pools and
+would surface as a false P&L decomposition failure. For the same reason global
+market value is summed from the pools rather than computed as `quantity × mark`.
+
+A pool that reaches zero keeps its realised P&L and its owner's name, closing the
+second P1.3 limitation. It is never relabelled `UNATTRIBUTED_EXISTING`.
+
+**Migration is `REPLAY_MIGRATION_FROM_EVENTS` or a refusal.** Fills carry price
+and attribution, so replaying a complete V1 ledger from genesis reconstructs each
+owner's pool deterministically. Migrating from a V1 *snapshot* is refused with
+`ATTRIBUTION_BASIS_NOT_RECONSTRUCTABLE`: a V1 state holds one basis per security
+and the owners' entry prices were destroyed at the first co-owned buy. An
+incomplete or unverifiable history is refused the same way. There is no automatic
+migration and the V1 ledger is never mutated.
+
+**Ledger completeness: a mandatory local head anchor.** A hash chain proves its
+records are consistent and cannot prove there were no more of them; P1.3's answer
+was a checkpoint, which depended on somebody remembering to write one. The anchor
+(`PORTFOLIO_LEDGER_HEAD_ANCHOR_V1`) is written on every committed event and binds
+the generation, sequence, ledger head, state fingerprint and engine version.
+`verify()` now reports chain integrity and tail completeness separately, because
+a store written before anchors existed has the first and not the second.
+
+Two defects were found by building the commit path and fixed structurally. A
+semantically-invalid event was being written to disk *before* the state machine
+refused it, which would have left a ledger that could never be replayed again —
+admissibility is now decided before anything durable is written. And the state
+fingerprint included the display symbol, which the ledger deliberately does not
+persist, so an anchor could never match the same ledger read back from disk; the
+digest now covers accounting content only.
+
+**Coordinated local rollback detection: NOT GUARANTEED WITHOUT AN EXTERNAL TRUST
+ANCHOR.** A ledger and its local anchor rolled back together to a mutually
+consistent earlier state validate cleanly. Local files cannot establish that they
+are the latest state of themselves. There is a test asserting this honestly
+rather than one claiming otherwise. `ExternalAnchorSink` is the seam for a future
+independent anchor — a protocol and an in-memory implementation, with no network
+capability anywhere in the accounting package.
+
+**Tax accounting: NOT IMPLEMENTED.** No FIFO, LIFO, specific-lot identification,
+holding periods or wash-sale rules, asserted by a test over every class and
+function name in the package.
+
+**Broker authority: NONE.** Unchanged.
 
 ### P1.3 — what is actually owned, as distinct from what was authorised
 
@@ -3033,30 +3109,45 @@ care — nothing has a foreign key *to* it, so dropping it cascades to nothing.
 
 ## Known limitations
 
-**Weighted-average cost pools basis across strategies (P1.3).** When two
-strategies hold the same security at different prices, each one's *reported* cost
-basis is the pooled average rather than what it actually paid. Portfolio-level
-realised P&L is exact; the per-strategy split is exact only when co-owners
-entered at the same price. This is a property of `WEIGHTED_AVERAGE_COST_V1`
-rather than a bug, and fixing it needs per-strategy tax lots, which changes what
-a position *is* and would thread through every weight in the risk layer. Accepted
-rather than fixed; a strategy-level P&L comparison between co-owners of one
-security should not be read as precise.
+**Coordinated local rollback of a ledger and its anchor is not detectable
+(P1.4).** A ledger and its local head anchor rolled back *together* to a mutually
+consistent earlier state validate cleanly. Anyone able to delete ledger records
+is generally able to rewrite the file beside them, and local files cannot
+establish that they are the latest state of themselves — this is a property of
+where they live, not an implementation gap. Closing it needs an anchor held where
+the ledger's writer cannot reach; `ExternalAnchorSink` is the seam and P1.4
+implements no remote sink. There is a test asserting this limitation honestly
+rather than one claiming otherwise.
 
-**Realised P&L on a fully closed position loses its owner (P1.3).** Once every
-share is sold the ledger no longer records who held it, so that position's
-realised result is reported under `UNATTRIBUTED_EXISTING`. Attributing it to a
-surviving strategy would be a guess.
+**Per-strategy dividend income is not claimed (P1.4).** The event contract states
+an aggregate cash entitlement, so a dividend is credited to the unknown-owner
+pool rather than divided across today's holders — who are not necessarily the
+owners who earned it, since a position sold between the ex-date and the pay date
+still earns it. Global dividend income is exact; per-strategy income is not
+asserted. The event contract was deliberately not widened for this.
 
-**Truncation needs a checkpoint to be detectable (P1.3).** A ledger with its tail
-removed is a valid shorter hash chain. `verify_chain` cannot see it; only
-`PortfolioStore.verify` against a written checkpoint can. A ledger with no
-checkpoint can be truncated and will still verify.
+**An imported position with several owners and one stated basis seeds every pool
+at that basis (P1.4).** An opening balance states a lot's cost per share, not the
+owners' separate entry prices, so each named owner's pool inherits the stated
+figure. That is faithful to what the event asserts; the separate prices are not
+in it and are not invented.
 
-**No tax lots, accrued interest, margin or multi-currency in the books (P1.3).**
-Cash is a single balance in one implied currency. `WEIGHTED_AVERAGE_COST_V1` is an
-accounting basis, not a tax basis: there are no wash-sale rules and no tax
-character. The long-only baseline has no borrowing.
+**No tax accounting (P1.4).** `PER_ATTRIBUTION_WEIGHTED_AVERAGE_COST_V1` is an
+internal accounting basis, not a tax basis: no FIFO, LIFO or specific-lot
+identification, no holding periods, no wash-sale rules and no tax character. A
+test asserts no class or function in the package implements lot selection.
+
+**No accrued interest, margin or multi-currency in the books (P1.3, still open).**
+Cash is a single balance in one implied currency, and the long-only baseline has
+no borrowing.
+
+**V1 accounting carries the limitations P1.4 closed.** `PORTFOLIO_ACCOUNTING_V1`
+remains executable and reproducible, and a V1 ledger still pools cost across
+strategies (so its per-strategy realised P&L is exact only when co-owners entered
+at the same price), still loses the owner of a fully closed position's realised
+P&L, and still needs a checkpoint for truncation detection. These are properties
+of that frozen version, not open defects: the fix is to open new books under V2,
+or to migrate by replaying the events.
 
 **The legacy colocated layout is still supported, and is one failure domain.**
 Every corpus harvested before B2.5 — the BEK corpus included — keeps its
@@ -4734,9 +4825,15 @@ Not a backlog. These exclusions are deliberate.
 - a reconciliation auto-repair, an "adopt external" flag, or a cash tolerance
   defaulted to anything but zero
 - a second supported corporate action, tax lots, FIFO or specific-lot
-  identification — each is a new `COST_BASIS_POLICY` version, never an edit
+  identification — each is a new cost-basis version, never an edit
 - a SQLite or SQLAlchemy ledger backend; the file format is what makes the
   append-only guarantee structural rather than a matter of discipline
+- an automatic V1-to-V2 accounting migration, or any migration from a V1
+  snapshot: the per-owner bases are not in it and must not be fabricated
+- a head anchor that can move backward, or an optional-anchor commit path
+- a network client inside `portfolio_accounting`; a remote external anchor
+  implements `ExternalAnchorSink` outside the package and is injected
+- any claim that local files alone make the ledger rollback-proof
 - a second LLM provider, or a second execution path for a job
 - scheduled or automatic deep research, report diffing, alerts, notifications
 - charts, portfolios, positions, price targets

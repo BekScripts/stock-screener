@@ -319,7 +319,7 @@ def value_portfolio(
         assert mark is not None  # noqa: S101 - established by value_positions
         market_value = coverage.valued[key]
         cost_basis = quantise_cash(position.total_cost)
-        row_unrealised = quantise_cash(market_value - cost_basis)
+        row_unrealised = position.unrealised_pnl(mark.price)
         unrealised = quantise_cash(unrealised + row_unrealised)
         rows.append(
             PositionValuation(

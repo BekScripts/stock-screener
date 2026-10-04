@@ -25,6 +25,7 @@ byte, because nothing here reads a clock, a database or a network.
 from __future__ import annotations
 
 from dataclasses import replace
+from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 
 from .errors import AccountingError, Code
@@ -37,13 +38,16 @@ from .events import (
     ExternalCashFlowEvent,
     FillEvent,
     OpeningBalanceEvent,
+    OpeningPosition,
     PortfolioEvent,
     Side,
     SplitEvent,
 )
 from .money import quantise_cash
+from .pools import PooledPosition, PoolSaleAllocation
 from .positions import PositionState, SaleAllocation
 from .state import PortfolioState
+from .versions import ACCOUNTING_V2, AccountingVersion, resolve_version
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -52,6 +56,7 @@ if TYPE_CHECKING:
 
 __all__ = [
     "ACCOUNTING_ENGINE_VERSION",
+    "CURRENT_ACCOUNTING_VERSION",
     "AppliedEvent",
     "apply_event",
     "replay",
@@ -60,6 +65,14 @@ __all__ = [
 #: The accounting contract. A change to how an event moves state is a new
 #: version, because a replay under different rules is not the same portfolio.
 ACCOUNTING_ENGINE_VERSION = "PORTFOLIO_ACCOUNTING_V1"
+
+#: What a new ledger should be opened under. V1 remains executable and
+#: reproducible; it is not what new books should use, because its per-strategy
+#: realised P&L is exact only when co-owners entered at the same price.
+CURRENT_ACCOUNTING_VERSION = ACCOUNTING_V2
+
+#: An opening position's import carries no transaction cost of its own.
+ZERO_FEES = Decimal(0)
 
 
 class AppliedEvent:
@@ -80,7 +93,7 @@ class AppliedEvent:
         state: PortfolioState,
         sequence: int,
         effect: dict[str, Any],
-        allocation: SaleAllocation | None = None,
+        allocation: SaleAllocation | PoolSaleAllocation | None = None,
     ) -> None:
         """Record the application.
 
@@ -102,6 +115,41 @@ class AppliedEvent:
             "effect": dict(self.effect),
             "allocation": self.allocation.as_json() if self.allocation else None,
         }
+
+
+def _opening_position(state: PortfolioState, opening: OpeningPosition) -> Any:
+    """Build an imported holding under the state's accounting version.
+
+    Under V2 each named owner gets its own pool, each seeded at the basis the
+    event states. Where an opening position names several owners but one
+    `cost_basis_per_share`, every pool inherits that figure — which is faithful
+    to what the event asserts rather than a guess at who paid what. An opening
+    balance states a lot's cost; it does not record the owners' separate entry
+    prices, and inventing them would be exactly the fabrication §24 forbids.
+
+    Args:
+        state: The state being established, for its version.
+        opening: The imported position.
+
+    Returns:
+        A `PooledPosition` under V2, a `PositionState` under V1.
+    """
+    if not state.uses_cost_pools:
+        return PositionState(
+            identity=opening.identity,
+            quantity=opening.quantity,
+            total_cost=quantise_cash(opening.quantity * opening.cost_basis_per_share),
+            attribution={row.strategy_id: row.quantity for row in opening.attribution},
+        )
+    position = PooledPosition(identity=opening.identity)
+    for row in sorted(opening.attribution, key=lambda slice_: slice_.strategy_id):
+        position = position.buy(
+            quantity=row.quantity,
+            price=opening.cost_basis_per_share,
+            fees=ZERO_FEES,
+            attribution=(row,),
+        )
+    return position
 
 
 def _apply_opening_balance(
@@ -142,12 +190,7 @@ def _apply_opening_balance(
                 after.opening_cost_basis + opening.quantity * opening.cost_basis_per_share
             ),
         )
-        position = PositionState(
-            identity=opening.identity,
-            quantity=opening.quantity,
-            total_cost=quantise_cash(opening.quantity * opening.cost_basis_per_share),
-            attribution={row.strategy_id: row.quantity for row in opening.attribution},
-        )
+        position = _opening_position(state, opening)
         position.check_attribution()
         after = after.with_position(position)
     return after, {
@@ -165,7 +208,7 @@ def _apply_opening_balance(
 
 def _apply_fill(
     state: PortfolioState, event: FillEvent
-) -> tuple[PortfolioState, dict[str, Any], SaleAllocation | None]:
+) -> tuple[PortfolioState, dict[str, Any], SaleAllocation | PoolSaleAllocation | None]:
     """Apply a fill.
 
     Args:
@@ -323,7 +366,16 @@ def _apply_cash_dividend(
         The state after and what it recorded.
     """
     assert event.identity is not None  # noqa: S101 - established by the event
-    position = state.position(event.identity).credit_dividend(event.cash_amount)
+    holding = state.position(event.identity)
+    if isinstance(holding, PooledPosition):
+        # The event contract carries no dividend attribution, so the credit lands
+        # in the unknown-owner pool rather than being divided across today's
+        # holders — who are not necessarily the owners who earned it. Global
+        # dividend income stays exact either way, which is what the identities
+        # check; what is deliberately not claimed is per-strategy income.
+        position: Any = holding.credit_dividend(event.cash_amount)
+    else:
+        position = holding.credit_dividend(event.cash_amount)
     summary = replace(
         state.cash_summary,
         dividends=quantise_cash(state.cash_summary.dividends + event.cash_amount),
@@ -433,7 +485,7 @@ def apply_event(state: PortfolioState, event: PortfolioEvent, *, sequence: int) 
             break an invariant. Nothing partial is returned — a refused event
             leaves the caller's state untouched.
     """
-    allocation: SaleAllocation | None = None
+    allocation: SaleAllocation | PoolSaleAllocation | None = None
     if isinstance(event, OpeningBalanceEvent):
         after, effect = _apply_opening_balance(state, event)
     elif isinstance(event, FillEvent):
@@ -465,6 +517,7 @@ def replay(
     ledger: PortfolioLedger | Sequence[LedgerRecord],
     *,
     through_sequence: int | None = None,
+    accounting_version: str | AccountingVersion | None = None,
 ) -> PortfolioState:
     """Derive state by replaying a ledger.
 
@@ -475,13 +528,19 @@ def replay(
     Args:
         ledger: The ledger, or its records.
         through_sequence: Replay only up to this record, for an as-of state.
+        accounting_version: Which rules to replay under. Defaults to V1, so a
+            ledger written before P1.4 keeps its meaning without carrying a
+            version field it could not have known to write. Pass V2 for
+            per-attribution cost pools.
 
     Returns:
         The state the records imply.
 
     Raises:
         AccountingError: `LEDGER_HASH_CHAIN_MISMATCH` or `LEDGER_SEQUENCE_GAP` if
-            the records do not verify, or whatever an event's application raises.
+            the records do not verify, `ACCOUNTING_VERSION_UNKNOWN` for a version
+            this build does not implement, or whatever an event's application
+            raises.
     """
     from .ledger import verify_chain
 
@@ -493,7 +552,7 @@ def replay(
             str(failure["code"]),
             f"the ledger cannot be replayed: {failure['detail']}",
         )
-    state = PortfolioState()
+    state = PortfolioState(accounting_version=str(resolve_version(accounting_version)))
     head = records[0].previous_hash if records else state.ledger_head_hash
     for record in records:
         if through_sequence is not None and record.sequence > through_sequence:

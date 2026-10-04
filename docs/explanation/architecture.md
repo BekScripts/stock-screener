@@ -283,6 +283,27 @@ place, so the break stays open until someone decides what event explains it. Tha
 decision then enters the ledger as an event, which is the only mechanism by which
 holdings change.
 
+Who owns what is accounted the same way. A global weighted-average cost is
+exact for the portfolio and misleading for its strategies the moment two of them
+enter the same security at different prices — and, less obviously, wrong for the
+portfolio too, because the pooled average also decides what the remaining basis
+is. So each `(security, owner)` pair keeps its own weighted-average pool, and
+every global figure is derived by summing them rather than maintained beside
+them. Two independently mutating authorities would eventually disagree, and the
+disagreement would present as a reconciliation failure rather than as the bug it
+is. None of this is tax accounting: there is no lot selection, no holding period
+and no wash-sale rule, because those answer a question this engine does not ask.
+
+The same instinct governs the ledger's durability. A hash chain proves its
+records are consistent and cannot prove there were no more of them — a truncated
+ledger is a perfectly valid shorter chain. A mandatory head anchor records how
+far the ledger actually got, so a shorter one is detected rather than accepted,
+and it never moves backward: lowering it to match would erase the only evidence
+that something is missing. What it cannot do is detect a ledger and its anchor
+rolled back *together*, because local files cannot establish that they are the
+latest state of themselves. That limit is documented rather than papered over,
+and closing it needs an anchor held where the ledger's writer cannot reach.
+
 Accounting also uses different arithmetic on purpose. Exactness is the point of a
 cash balance, so every figure there is a `Decimal` and the identities are compared
 exactly rather than within a tolerance. Risk arithmetic is statistical, where

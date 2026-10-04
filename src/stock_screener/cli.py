@@ -143,7 +143,11 @@ from stock_screener.pit import (
 )
 from stock_screener.portfolio_accounting import AccountingError, PortfolioStore, accounting_manifest
 from stock_screener.portfolio_accounting import evaluate_request as evaluate_accounting_request
+from stock_screener.portfolio_accounting import load_ledger as load_accounting_ledger
 from stock_screener.portfolio_accounting import load_request as load_accounting_request
+from stock_screener.portfolio_accounting import (
+    migrate_from_events as migrate_accounting_from_events,
+)
 from stock_screener.portfolio_risk import EXAMPLE_POLICY_V1 as EXAMPLE_PORTFOLIO_POLICY
 from stock_screener.portfolio_risk import IntentError as PortfolioIntentError
 from stock_screener.portfolio_risk import (
@@ -7925,3 +7929,90 @@ def books_show_manifest_command() -> None:
     typer.echo("  this engine never:")
     for line in manifest["never_does"]:
         typer.echo(f"    - {line}")
+
+
+@books_app.command("verify-anchor")
+def books_verify_anchor_command(
+    root: Annotated[Path, typer.Argument(help="A .portfolio directory to check.")],
+    accounting_version: Annotated[
+        str | None,
+        typer.Option("--accounting-version", help="Rules to replay under. Defaults to V1."),
+    ] = None,
+) -> None:
+    """Check the durable head anchor against the stored ledger.
+
+    This is the check a hash chain cannot make on its own. A ledger missing its
+    last records is a perfectly valid shorter chain; the anchor records how far
+    the ledger actually got, so a shorter one is detected instead of accepted.
+
+    Reads only. It advances nothing and never moves an anchor backward.
+    """
+    try:
+        store = PortfolioStore(root, accounting_version=accounting_version)
+        result = store.classify()
+    except AccountingError as exc:
+        typer.echo(f"STOPPED [{exc.code}]: {exc.detail}")
+        raise typer.Exit(code=1) from exc
+    typer.echo("")
+    typer.echo(f"  generation           : {store.generation}")
+    typer.echo(f"  accounting version   : {store.accounting_version}")
+    typer.echo(f"  anchor sequence      : {result['anchor_sequence']}")
+    typer.echo(f"  ledger sequence      : {result['ledger_sequence']}")
+    typer.echo(f"  anchor head          : {str(result['anchor_head'] or '-')[:16]}…")
+    typer.echo(f"  ledger head          : {str(result['ledger_head'])[:16]}…")
+    typer.echo(f"  status               : {result['status']}")
+    if result["detail"]:
+        typer.echo("")
+        typer.echo(f"  {result['detail']}")
+    typer.echo("")
+    typer.echo(
+        "  coordinated rollback of the ledger AND its local anchor to a mutually "
+        "consistent older state is NOT detectable from local files; that needs an "
+        "independently trusted external anchor, which this phase does not provide."
+    )
+    if not result["consistent"]:
+        raise typer.Exit(code=1)
+
+
+@books_app.command("migrate-attribution")
+def books_migrate_attribution_command(
+    request: Annotated[Path, typer.Argument(help="A JSON request whose events to replay.")],
+    output: Annotated[
+        Path | None, typer.Option("--output", help="Write the migration report here.")
+    ] = None,
+) -> None:
+    """Reconstruct per-attribution cost pools by replaying a V1 ledger's events.
+
+    Reinterprets the same events under the new basis; it mutates nothing and the
+    V1 ledger stays replayable under V1. If the event history is incomplete the
+    command refuses rather than estimating the historical per-owner bases.
+    """
+    try:
+        body = load_accounting_request(request)
+        report = migrate_accounting_from_events(load_accounting_ledger(body["events"]))
+    except AccountingError as exc:
+        typer.echo(f"STOPPED [{exc.code}]: {exc.detail}")
+        raise typer.Exit(code=1) from exc
+    typer.echo("")
+    typer.echo(f"  mode                 : {report['mode']}")
+    typer.echo(f"  {report['from_version']} -> {report['to_version']}")
+    typer.echo(f"  events replayed      : {report['event_count']}")
+    typer.echo(f"  owners               : {', '.join(report['owners'])}")
+    typer.echo("")
+    for pool in report["pools"]:
+        typer.echo(
+            f"  {pool['owner']:<24} qty {pool['quantity']:>16} "
+            f"basis/share {pool['average_cost']:>16} "
+            f"realised {pool['realised_trading_pnl_gross']}"
+        )
+    typer.echo("")
+    before, after = report["before"], report["after"]
+    typer.echo(f"  cost basis  : {before['total_cost_basis']} -> {after['total_cost_basis']}")
+    typer.echo(f"  realised    : {before['realised_pnl']} -> {after['realised_pnl']}")
+    typer.echo(f"  cash unchanged : {report['differences']['cash_unchanged']}")
+    typer.echo("")
+    typer.echo(f"  {report['differences']['interpretation']}")
+    if output is not None:
+        output.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        typer.echo("")
+        typer.echo(f"  written: {output}")

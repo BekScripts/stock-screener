@@ -35,13 +35,26 @@ target into a holding, or touch a research database.
 
 from __future__ import annotations
 
-from .accounting import ACCOUNTING_ENGINE_VERSION, AppliedEvent, apply_event, replay
+from .accounting import (
+    ACCOUNTING_ENGINE_VERSION,
+    CURRENT_ACCOUNTING_VERSION,
+    AppliedEvent,
+    apply_event,
+    replay,
+)
 from .adapter import (
     DECIMAL_TO_FLOAT_SCALE,
     RISK_ADAPTER_VERSION,
     seam_policy,
     to_float,
     to_risk_snapshot,
+)
+from .anchor import (
+    ANCHOR_VERSION,
+    AnchorStatus,
+    LedgerHeadAnchor,
+    classify_anchor,
+    state_fingerprint,
 )
 from .attribution import (
     ATTRIBUTION_POLICY,
@@ -56,7 +69,14 @@ from .corporate_actions import (
     classify_action,
     refuse_unsupported,
 )
-from .errors import ACCOUNTING_ERROR_CODES, AccountingError, Code
+from .errors import (
+    ACCOUNTING_ERROR_CODES,
+    ANCHOR_ERROR_CODES,
+    V1_ERROR_CODES,
+    V2_ERROR_CODES,
+    AccountingError,
+    Code,
+)
 from .events import (
     UNATTRIBUTED,
     UNSUPPORTED_ACTIONS,
@@ -74,8 +94,16 @@ from .events import (
     StrategySlice,
     event_fingerprint,
 )
+from .external_anchor import (
+    EXTERNAL_ANCHOR_CONTRACT,
+    ExternalAnchorRecord,
+    ExternalAnchorSink,
+    InMemoryExternalAnchor,
+    compare_external_anchor,
+)
 from .fingerprint import (
     ACCOUNTING_MANIFEST_VERSION,
+    ACCOUNTING_MANIFEST_VERSION_V2,
     accounting_manifest,
     manifest_fingerprint,
 )
@@ -86,6 +114,12 @@ from .ledger import (
     PortfolioLedger,
     chain_link,
     verify_chain,
+)
+from .migration import (
+    MIGRATION_MODE,
+    MigrationReport,
+    migrate_from_events,
+    refuse_snapshot_migration,
 )
 from .money import (
     CASH_SCALE,
@@ -101,10 +135,14 @@ from .money import (
     quantise_quantity,
 )
 from .persistence import (
+    ANCHOR_FILENAME,
+    DEFAULT_GENERATION,
     FORBIDDEN_ROOTS,
     STORE_VERSION,
+    AppendResult,
     Checkpoint,
     PortfolioStore,
+    RecoveryOutcome,
     event_from_json,
 )
 from .pnl import (
@@ -113,6 +151,12 @@ from .pnl import (
     PositionValuation,
     ValuedPortfolioSnapshot,
     value_portfolio,
+)
+from .pools import (
+    PER_ATTRIBUTION_COST_POLICY,
+    AttributionCostPool,
+    PooledPosition,
+    PoolSaleAllocation,
 )
 from .positions import COST_BASIS_POLICY, PositionState, SaleAllocation, allocate_sale
 from .reconciliation import (
@@ -126,7 +170,7 @@ from .reconciliation import (
     statement_from,
 )
 from .run import evaluate_request, load_ledger, load_request
-from .state import CashSummary, PortfolioState
+from .state import AnyPosition, CashSummary, PortfolioState
 from .valuation import (
     DEFAULT_STALENESS_LIMIT_HOURS,
     MARK_POLICY_ID,
@@ -136,22 +180,42 @@ from .valuation import (
     marks_from,
     value_positions,
 )
+from .versions import (
+    ACCOUNTING_V1,
+    ACCOUNTING_V2,
+    DEFAULT_ACCOUNTING_VERSION,
+    AccountingVersion,
+    resolve_version,
+    version_policy,
+)
 
 __all__ = [
     "ACCOUNTING_ENGINE_VERSION",
     "ACCOUNTING_ERROR_CODES",
     "ACCOUNTING_MANIFEST_VERSION",
+    "ACCOUNTING_MANIFEST_VERSION_V2",
+    "ACCOUNTING_V1",
+    "ACCOUNTING_V2",
+    "ANCHOR_ERROR_CODES",
+    "ANCHOR_FILENAME",
+    "ANCHOR_VERSION",
     "ATTRIBUTION_POLICY",
     "CASH_SCALE",
     "CORPORATE_ACTION_POLICY",
     "COST_BASIS_POLICY",
+    "CURRENT_ACCOUNTING_VERSION",
     "DECIMAL_TO_FLOAT_SCALE",
+    "DEFAULT_ACCOUNTING_VERSION",
+    "DEFAULT_GENERATION",
     "DEFAULT_STALENESS_LIMIT_HOURS",
+    "EXTERNAL_ANCHOR_CONTRACT",
     "FORBIDDEN_ROOTS",
     "GENESIS_HASH",
     "LEDGER_CHAIN_VERSION",
     "MARK_POLICY_ID",
+    "MIGRATION_MODE",
     "MONEY_POLICY_ID",
+    "PER_ATTRIBUTION_COST_POLICY",
     "PNL_POLICY_ID",
     "PRICE_SCALE",
     "QUANTITY_SCALE",
@@ -161,9 +225,16 @@ __all__ = [
     "SUPPORTED_ACTIONS",
     "UNATTRIBUTED",
     "UNSUPPORTED_ACTIONS",
+    "V1_ERROR_CODES",
+    "V2_ERROR_CODES",
     "ZERO",
     "AccountingError",
+    "AccountingVersion",
+    "AnchorStatus",
+    "AnyPosition",
+    "AppendResult",
     "AppliedEvent",
+    "AttributionCostPool",
     "AttributionReport",
     "Break",
     "BreakSeverity",
@@ -174,16 +245,23 @@ __all__ = [
     "Code",
     "CorporateActionEvent",
     "EventType",
+    "ExternalAnchorRecord",
+    "ExternalAnchorSink",
     "ExternalCashFlowEvent",
     "ExternalPosition",
     "ExternalStatement",
     "FillEvent",
+    "InMemoryExternalAnchor",
+    "LedgerHeadAnchor",
     "LedgerRecord",
     "MarkPrice",
     "MarkPriceSnapshot",
+    "MigrationReport",
     "OpeningBalanceEvent",
     "OpeningPosition",
     "PnlDecomposition",
+    "PoolSaleAllocation",
+    "PooledPosition",
     "PortfolioEvent",
     "PortfolioLedger",
     "PortfolioState",
@@ -191,6 +269,7 @@ __all__ = [
     "PositionState",
     "PositionValuation",
     "ReconciliationResult",
+    "RecoveryOutcome",
     "SaleAllocation",
     "Side",
     "SplitEvent",
@@ -206,6 +285,8 @@ __all__ = [
     "attribute_portfolio",
     "chain_link",
     "classify_action",
+    "classify_anchor",
+    "compare_external_anchor",
     "evaluate_request",
     "event_fingerprint",
     "event_from_json",
@@ -214,18 +295,23 @@ __all__ = [
     "load_request",
     "manifest_fingerprint",
     "marks_from",
+    "migrate_from_events",
     "money_policy",
     "quantise_cash",
     "quantise_price",
     "quantise_quantity",
     "reconcile",
+    "refuse_snapshot_migration",
     "refuse_unsupported",
     "replay",
+    "resolve_version",
     "seam_policy",
+    "state_fingerprint",
     "statement_from",
     "to_float",
     "to_risk_snapshot",
     "value_portfolio",
     "value_positions",
     "verify_chain",
+    "version_policy",
 ]

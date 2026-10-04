@@ -148,10 +148,87 @@ class AttributionReport:
         }
 
 
+def _attribute_from_pools(
+    state: PortfolioState, snapshot: ValuedPortfolioSnapshot
+) -> AttributionReport:
+    """Divide a valued portfolio using each owner's own cost pool.
+
+    Nothing is apportioned here. Each figure is read from the pool that produced
+    it — the basis the owner actually paid, the result it actually realised — so
+    the parts sum to the whole by construction rather than by a division that has
+    to be checked afterwards. That is the difference the V2 basis buys.
+
+    Args:
+        state: The replayed state, which holds the pools.
+        snapshot: The valuation, which holds the marks.
+
+    Returns:
+        The attribution report.
+    """
+    marks = {row.identity.key: row.mark_price for row in snapshot.positions}
+    buckets: dict[str, dict[str, Any]] = {}
+    for pool in state.cost_pools():
+        bucket = buckets.setdefault(
+            pool.owner,
+            {
+                "market_value": ZERO,
+                "cost_basis": ZERO,
+                "realised_pnl": ZERO,
+                "unrealised_pnl": ZERO,
+                "holdings": {},
+            },
+        )
+        bucket["cost_basis"] = quantise_cash(bucket["cost_basis"] + pool.total_cost_basis)
+        bucket["realised_pnl"] = quantise_cash(
+            bucket["realised_pnl"] + pool.realised_trading_pnl_gross
+        )
+        mark = marks.get(pool.identity.key)
+        if mark is not None and pool.is_open:
+            value = pool.market_value(mark)
+            bucket["market_value"] = quantise_cash(bucket["market_value"] + value)
+            bucket["unrealised_pnl"] = quantise_cash(
+                bucket["unrealised_pnl"] + pool.unrealised_pnl(mark)
+            )
+            bucket["holdings"][pool.identity.label] = value
+
+    nav = quantise_cash(snapshot.nav)
+    rows = tuple(
+        StrategyAttribution(
+            strategy_id=owner,
+            market_value=buckets[owner]["market_value"],
+            cost_basis=buckets[owner]["cost_basis"],
+            unrealised_pnl=buckets[owner]["unrealised_pnl"],
+            realised_pnl=buckets[owner]["realised_pnl"],
+            weight=(quantise_cash(buckets[owner]["market_value"] / nav) if nav > ZERO else ZERO),
+            holdings=buckets[owner]["holdings"],
+            is_unattributed=owner == UNATTRIBUTED,
+        )
+        for owner in sorted(buckets)
+    )
+    report = AttributionReport(
+        strategies=rows,
+        attributed_market_value=quantise_cash(
+            sum((row.market_value for row in rows if not row.is_unattributed), ZERO)
+        ),
+        unattributed_market_value=quantise_cash(
+            sum((row.market_value for row in rows if row.is_unattributed), ZERO)
+        ),
+        cash=quantise_cash(snapshot.cash),
+        nav=nav,
+    )
+    report.check(state)
+    return report
+
+
 def attribute_portfolio(
     state: PortfolioState, snapshot: ValuedPortfolioSnapshot
 ) -> AttributionReport:
     """Divide a valued portfolio across the strategies that own it.
+
+    Under V2 every figure comes from the owner's own cost pool. Under V1 the
+    single pooled basis is divided by quantity share, which is exact only when
+    co-owners entered at the same price — the limitation V2 exists to close, and
+    preserved here so a V1 ledger keeps reporting what it reported.
 
     Args:
         state: The replayed state, which holds the attribution.
@@ -164,6 +241,8 @@ def attribute_portfolio(
         AccountingError: `ATTRIBUTION_RECONCILIATION_FAILED` if attribution has
             drifted from the holdings.
     """
+    if state.uses_cost_pools:
+        return _attribute_from_pools(state, snapshot)
     marks = {row.identity.key: row for row in snapshot.positions}
     buckets: dict[str, dict[str, Any]] = {}
 

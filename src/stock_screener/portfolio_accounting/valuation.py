@@ -273,7 +273,11 @@ def value_positions(
         if mark is None:
             missing.append(position.identity)
             continue
-        value = quantise_cash(position.quantity * mark.price)
+        # Asked of the position rather than computed here: a V2 holding sums
+        # its attribution pools, and two quantisations of the parts need not
+        # equal one quantisation of the whole. Letting the position answer is
+        # what keeps the portfolio identities exact under both versions.
+        value = position.market_value(mark.price)
         valued[key] = value
         total = quantise_cash(total + value)
         if key in stale_keys:

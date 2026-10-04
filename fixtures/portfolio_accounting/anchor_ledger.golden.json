@@ -1,0 +1,68 @@
+{
+  "accounting_version": "PORTFOLIO_ACCOUNTING_V2",
+  "anchor_fingerprint": "e3de63bb3a05b398aeabab33d7c1b93d96ff05404c8172da8a0b809416f28968",
+  "anchor_trail": [
+    {
+      "anchor_fingerprint": "77134e869a5df750ed0a47e24a6a71c83044aaf31f8f898387c3474cf42364cb",
+      "ledger_head_hash": "bbe7bea0d3421fba11939d6a4e79a51390c1d941c69eded9828ba2cf64d59dab",
+      "previous_anchor_fingerprint": null,
+      "sequence": 1
+    },
+    {
+      "anchor_fingerprint": "60b173fe3ba98396d06924a05aefd408949ff2d20bf2ff902455abddc21fbc82",
+      "ledger_head_hash": "eeda65eef0939343fd03d15c23a6a5a7656f98b40634b845ae77c94545a5a7a7",
+      "previous_anchor_fingerprint": "77134e869a5df750ed0a47e24a6a71c83044aaf31f8f898387c3474cf42364cb",
+      "sequence": 2
+    },
+    {
+      "anchor_fingerprint": "1afe65a0c0d74fa673d21ce59e8a0a768905f581398c08ab4afb53852ee5476a",
+      "ledger_head_hash": "3fc7200b7f1bf14f0d19bed358cbee5759da3f41f7e89ee0d164d4649fc549dd",
+      "previous_anchor_fingerprint": "60b173fe3ba98396d06924a05aefd408949ff2d20bf2ff902455abddc21fbc82",
+      "sequence": 3
+    },
+    {
+      "anchor_fingerprint": "e3de63bb3a05b398aeabab33d7c1b93d96ff05404c8172da8a0b809416f28968",
+      "ledger_head_hash": "fc3218dc1c865db6f093dc6e1414f29a5fa2a487d32c71721980e68fd1b5514f",
+      "previous_anchor_fingerprint": "1afe65a0c0d74fa673d21ce59e8a0a768905f581398c08ab4afb53852ee5476a",
+      "sequence": 4
+    }
+  ],
+  "anchor_version": "PORTFOLIO_LEDGER_HEAD_ANCHOR_V1",
+  "checkpoints_required_for_completeness": false,
+  "commits": [
+    {
+      "sequence": 1,
+      "written": true
+    },
+    {
+      "sequence": 2,
+      "written": true
+    },
+    {
+      "sequence": 3,
+      "written": true
+    },
+    {
+      "sequence": 4,
+      "written": true
+    }
+  ],
+  "coordinated_rollback_detection": "NOT_GUARANTEED_WITHOUT_EXTERNAL_ANCHOR",
+  "final_sequence": 4,
+  "label": "ANCHORED_LEDGER_V2",
+  "ledger_generation": "PORTFOLIO_LEDGER_GENERATION_1",
+  "ledger_head": "fc3218dc1c865db6f093dc6e1414f29a5fa2a487d32c71721980e68fd1b5514f",
+  "recovery_on_reopen": {
+    "detail": null,
+    "from_sequence": 4,
+    "recovered": false,
+    "status": "CONSISTENT",
+    "to_sequence": 4
+  },
+  "state": {
+    "cash": "259119.0000",
+    "realised_pnl": "375.0000",
+    "total_cost_basis": "6250.0000"
+  },
+  "state_fingerprint": "b160df38ad899eadcce38ab313e78d6e6a5a43648f63b88f52ae4e7c14c7c6a5"
+}

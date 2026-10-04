@@ -15,13 +15,15 @@ reconciliation break to be investigated, not a number to be overwritten.
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Union
 
 from .errors import AccountingError, Code
 from .events import UNATTRIBUTED
 from .ledger import GENESIS_HASH
 from .money import ZERO, quantise_cash
-from .positions import COST_BASIS_POLICY, PositionState
+from .pools import PooledPosition
+from .positions import PositionState
+from .versions import DEFAULT_ACCOUNTING_VERSION, AccountingVersion, resolve_version
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -29,7 +31,17 @@ if TYPE_CHECKING:
 
     from stock_screener.portfolio_risk import SecurityIdentity
 
+    from .pools import AttributionCostPool
+
+#: A holding under either accounting version. V1's `PositionState` and V2's
+#: `PooledPosition` present the same contract — quantity, total cost, average
+#: cost, realised, attribution — so everything downstream of the state machine
+#: reads a portfolio without branching on the version. What differs is where the
+#: cost basis lives, and that is settled inside the position itself.
+AnyPosition = Union["PositionState", "PooledPosition"]
+
 __all__ = [
+    "AnyPosition",
     "CashSummary",
     "PortfolioState",
 ]
@@ -112,6 +124,8 @@ class PortfolioState:
             because the inception NAV this engine can state is a cost-basis NAV:
             an opening balance supplies what positions cost, never what they
             were worth, so a market-value inception would have to be invented.
+        accounting_version: Which rules produced this state. A V1 state keeps one
+            basis per security; a V2 state keeps one per attribution owner.
         ledger_sequence: The last ledger record replayed.
         ledger_head_hash: That record's chain hash, so a state can be bound to
             exactly the history it came from.
@@ -123,12 +137,13 @@ class PortfolioState:
 
     cash: Decimal = ZERO
     cash_summary: CashSummary = field(default_factory=CashSummary)
-    positions: Mapping[tuple[str, int], PositionState] = field(default_factory=dict)
-    closed_positions: Mapping[tuple[str, int], PositionState] = field(default_factory=dict)
+    positions: Mapping[tuple[str, int], AnyPosition] = field(default_factory=dict)
+    closed_positions: Mapping[tuple[str, int], AnyPosition] = field(default_factory=dict)
     realised_pnl: Decimal = ZERO
     dividend_income: Decimal = ZERO
     fees_paid: Decimal = ZERO
     opening_cost_basis: Decimal = ZERO
+    accounting_version: str = DEFAULT_ACCOUNTING_VERSION
     ledger_sequence: int = 0
     ledger_head_hash: str = GENESIS_HASH
     last_effective_at: str | None = None
@@ -167,7 +182,84 @@ class PortfolioState:
         """What the open holdings cost."""
         return quantise_cash(sum((row.total_cost for row in self.positions.values()), ZERO))
 
-    def position(self, identity: SecurityIdentity) -> PositionState:
+    @property
+    def version(self) -> AccountingVersion:
+        """The accounting version as an enum."""
+        return resolve_version(self.accounting_version)
+
+    @property
+    def uses_cost_pools(self) -> bool:
+        """Whether holdings keep a basis per attribution owner."""
+        return self.version.uses_cost_pools
+
+    def empty_position(self, identity: SecurityIdentity) -> AnyPosition:
+        """A holding of nothing, of the kind this version uses.
+
+        Args:
+            identity: The security.
+
+        Returns:
+            An empty `PooledPosition` under V2, an empty `PositionState` under V1.
+        """
+        if self.uses_cost_pools:
+            return PooledPosition(identity=identity)
+        return PositionState(identity=identity)
+
+    def cost_pools(self) -> tuple[AttributionCostPool, ...]:
+        """Every retained cost pool, open or closed, in a deterministic order.
+
+        Closed pools are included: a strategy that realised a result on a
+        security it no longer holds still realised it, and dropping the pool
+        would lose the owner of that history.
+
+        Returns:
+            The pools, empty under V1 which has none.
+        """
+        pools: list[AttributionCostPool] = []
+        for source in (self.positions, self.closed_positions):
+            for key in sorted(source):
+                holding = source[key]
+                if isinstance(holding, PooledPosition):
+                    pools.extend(holding.retained_pools())
+        return tuple(pools)
+
+    def pool_owners(self) -> tuple[str, ...]:
+        """Every owner appearing in any retained pool."""
+        return tuple(sorted({pool.owner for pool in self.cost_pools()}))
+
+    def check_pool_invariants(self) -> None:
+        """Verify every global figure still equals the sum of its pools.
+
+        Raises:
+            AccountingError: `ATTRIBUTION_RECONCILIATION_FAILED` if a position's
+                derived globals disagree with its pools, or if the portfolio's
+                cost basis and realised totals disagree with the pools summed
+                across every position.
+        """
+        if not self.uses_cost_pools:
+            return
+        for source in (self.positions, self.closed_positions):
+            for key in sorted(source):
+                holding = source[key]
+                if isinstance(holding, PooledPosition):
+                    holding.check_invariants()
+        pools = self.cost_pools()
+        basis = quantise_cash(sum((pool.total_cost_basis for pool in pools), ZERO))
+        if basis != self.total_cost_basis:
+            raise AccountingError(
+                Code.ATTRIBUTION_RECONCILIATION_FAILED,
+                f"global cost basis is {self.total_cost_basis} but the attribution "
+                f"pools sum to {basis}",
+            )
+        realised = quantise_cash(sum((pool.realised_trading_pnl_gross for pool in pools), ZERO))
+        if realised != quantise_cash(self.realised_pnl):
+            raise AccountingError(
+                Code.ATTRIBUTION_RECONCILIATION_FAILED,
+                f"global realised P&L is {quantise_cash(self.realised_pnl)} but the "
+                f"attribution pools sum to {realised}",
+            )
+
+    def position(self, identity: SecurityIdentity) -> AnyPosition:
         """The holding for an identity, open or not.
 
         Args:
@@ -177,9 +269,9 @@ class PortfolioState:
             The position, or an empty one when nothing has ever been held.
         """
         existing = self.positions.get(identity.key) or self.closed_positions.get(identity.key)
-        return existing or PositionState(identity=identity)
+        return existing if existing is not None else self.empty_position(identity)
 
-    def with_position(self, position: PositionState) -> PortfolioState:
+    def with_position(self, position: AnyPosition) -> PortfolioState:
         """Return the state with one position replaced.
 
         A position that has gone to zero moves to `closed_positions`, so an
@@ -228,6 +320,7 @@ class PortfolioState:
                 unattributed position, or a broken cash identity.
         """
         self.check_cash_identity()
+        self.check_pool_invariants()
         if quantise_cash(self.cash) < ZERO:
             raise AccountingError(
                 Code.INSUFFICIENT_CASH,
@@ -255,11 +348,33 @@ class PortfolioState:
         )
 
     def as_json(self) -> dict[str, Any]:
-        """Return the state as a JSON-safe mapping."""
+        """Return the state as a JSON-safe mapping.
+
+        The per-attribution fields appear only under V2. A V1 state serialises
+        exactly as P1.3 serialised it — the version boundary is not allowed to
+        move an existing ledger's reported shape any more than it moves its
+        figures.
+        """
+        body = self._as_json_v1()
+        if self.uses_cost_pools:
+            pools = self.cost_pools()
+            body["accounting_version"] = self.accounting_version
+            body["attribution_cost_pools"] = [pool.as_json() for pool in pools]
+            body["attribution_owners"] = list(self.pool_owners())
+            body["pool_cost_basis_total"] = str(
+                quantise_cash(sum((pool.total_cost_basis for pool in pools), ZERO))
+            )
+            body["pool_realised_total"] = str(
+                quantise_cash(sum((pool.realised_trading_pnl_gross for pool in pools), ZERO))
+            )
+        return body
+
+    def _as_json_v1(self) -> dict[str, Any]:
+        """The shape P1.3 wrote, unchanged."""
         return {
             "cash": str(quantise_cash(self.cash)),
             "cash_summary": self.cash_summary.as_json(),
-            "cost_basis_policy": COST_BASIS_POLICY,
+            "cost_basis_policy": self.version.basis_policy,
             "positions": [self.positions[key].as_json() for key in sorted(self.positions)],
             "closed_positions": [
                 self.closed_positions[key].as_json() for key in sorted(self.closed_positions)

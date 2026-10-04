@@ -101,6 +101,29 @@ class PositionState:
             StrategySlice(strategy_id=key, quantity=self.attribution[key]) for key in self.owners
         )
 
+    def market_value(self, mark: Decimal) -> Decimal:
+        """This holding at a mark.
+
+        Args:
+            mark: The price per share.
+
+        Returns:
+            `quantity * mark`, quantised to cash. V1 keeps one basis per
+            security, so there are no pools to sum and this is the whole figure.
+        """
+        return quantise_cash(self.quantity * mark)
+
+    def unrealised_pnl(self, mark: Decimal) -> Decimal:
+        """This holding's mark-to-market result.
+
+        Args:
+            mark: The price per share.
+
+        Returns:
+            `market value - total cost`.
+        """
+        return quantise_cash(self.market_value(mark) - self.total_cost)
+
     def check_attribution(self) -> None:
         """Verify attribution still sums to the quantity.
 
