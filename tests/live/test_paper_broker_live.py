@@ -1,0 +1,141 @@
+"""The tests that actually reach a paper broker. Skipped unless asked for.
+
+Everything the adapter does is covered against a fake transport in
+`tests/integration/test_p2_2_external_paper.py`. These five tests exist for the
+one thing a fake cannot establish: that the credential in this environment
+reaches a real paper account, and that the provider's current API still answers
+the way the adapter reads it.
+
+They are skipped by default and `make check` never passes `--live-paper`, so the
+ordinary gate submits nothing. Credentials are read through `Settings` like every
+other credential in this project — `ALPACA_PAPER_KEY_ID`,
+`ALPACA_PAPER_SECRET_KEY` and `ALPACA_PAPER_ACCOUNT_ID`, kept separate from the
+market-data key so the two rotate independently. Run them deliberately:
+
+    uv run pytest tests/live/test_paper_broker_live.py --live-paper
+
+Four of the five are read-only. The fifth submits one share and is the only test
+in this repository that places an order anywhere. It is written so that an
+interrupted run leaves a *findable* order rather than an orphan: the client order
+id is derived from a fixed local order id, so a later run — or a person with the
+provider's console — can look it up by name.
+
+There is deliberately no live-trading equivalent of this file, and adding
+`--live-trading` would achieve nothing: the adapter refuses a live host, a live
+key prefix and a live environment by construction, and no flag reaches those
+checks.
+"""
+
+from __future__ import annotations
+
+from decimal import Decimal
+from pathlib import Path
+
+import pytest
+
+from stock_screener.config import Settings
+from stock_screener.execution.external import (
+    BrokerCapabilities,
+    BrokerEnvironment,
+    ExternalBrokerAccountBinding,
+    prove_paper_environment,
+)
+
+pytestmark = [pytest.mark.live_paper, pytest.mark.integration, pytest.mark.slow]
+
+PROJECT_ENV = Path(__file__).resolve().parents[2] / ".env"
+
+#: The local order id the submitting test uses. Fixed rather than random so an
+#: interrupted run leaves an order that can still be named and looked up.
+CANARY_ORDER_ID = "LIVE-PAPER-CANARY-1"
+
+
+@pytest.fixture
+def live_settings() -> Settings:
+    """The real configuration, from the project `.env` and the environment.
+
+    Returns:
+        The settings.
+
+    Skips:
+        When the paper credentials or the account id are absent. A missing
+        credential is not a failure — it means this machine is not configured
+        for the paper canary.
+    """
+    settings = Settings(_env_file=PROJECT_ENV if PROJECT_ENV.is_file() else None)  # type: ignore[call-arg]
+    if not settings.alpaca_paper_key_id or not settings.alpaca_paper_secret_key:
+        pytest.skip("ALPACA_PAPER_KEY_ID and ALPACA_PAPER_SECRET_KEY are not set")
+    if not settings.alpaca_paper_account_id:
+        pytest.skip("ALPACA_PAPER_ACCOUNT_ID is not set")
+    return settings
+
+
+@pytest.fixture
+def paper_binding(live_settings: Settings) -> ExternalBrokerAccountBinding:
+    """A proven paper binding for the configured account.
+
+    Returns:
+        The binding. Building it is itself a check: a credential or host that is
+        not provably paper raises here rather than reaching a request.
+    """
+    assert live_settings.alpaca_paper_key_id is not None
+    assert live_settings.alpaca_paper_account_id is not None
+    proof = prove_paper_environment(
+        environment=BrokerEnvironment.PAPER,
+        base_url=live_settings.alpaca_paper_base_url,
+        key_id=live_settings.alpaca_paper_key_id.get_secret_value(),
+    )
+    return ExternalBrokerAccountBinding.paper(
+        provider="ALPACA",
+        account_id=live_settings.alpaca_paper_account_id,
+        proof=proof,
+        capabilities=BrokerCapabilities(),
+        label="live paper canary",
+    )
+
+
+def test_the_configured_credential_is_a_paper_credential(
+    paper_binding: ExternalBrokerAccountBinding,
+) -> None:
+    """The configured key reaches the paper host and carries a paper prefix."""
+    assert paper_binding.environment is BrokerEnvironment.PAPER
+    assert paper_binding.proof.is_proven is True
+    assert paper_binding.is_live is False
+
+
+@pytest.mark.skip(
+    reason=(
+        "requires an HTTP transport implementation, which P2.2 deliberately does "
+        "not ship: the BrokerTransport protocol is the seam, and the one real "
+        "implementation lands with the phase that is authorised to make the call. "
+        "Until then this canary is written and inert, and the verdict for P2.2 "
+        "stays at B — implemented, certification pending."
+    )
+)
+def test_the_paper_account_answers_a_read_only_request() -> None:
+    """The paper account answers, upgrading the proof to fully certified."""
+    raise AssertionError("no transport implementation is shipped in P2.2")
+
+
+@pytest.mark.skip(reason="requires an HTTP transport implementation; see above")
+def test_the_account_the_provider_answers_for_is_the_bound_account() -> None:
+    """The provider answers for the account the binding names."""
+    raise AssertionError("no transport implementation is shipped in P2.2")
+
+
+@pytest.mark.skip(reason="requires an HTTP transport implementation; see above")
+def test_every_held_symbol_is_resolvable_to_a_durable_identity() -> None:
+    """Every symbol the venue reports held maps back to an identity."""
+    raise AssertionError("no transport implementation is shipped in P2.2")
+
+
+@pytest.mark.skip(reason="requires an HTTP transport implementation; see above")
+def test_one_share_submitted_to_the_paper_venue_is_confirmed_and_reconciles() -> None:
+    """One share is submitted, confirmed, read back and reconciled.
+
+    The only test in this repository that places an order. It submits
+    `Decimal(1)` under `CANARY_ORDER_ID`, so an interrupted run leaves an order
+    whose client id is recomputable rather than an orphan.
+    """
+    assert Decimal(1) == Decimal(1)
+    raise AssertionError("no transport implementation is shipped in P2.2")

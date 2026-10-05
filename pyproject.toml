@@ -196,6 +196,7 @@ markers = [
     "integration: touches a real dependency (DB, network, filesystem)",
     "slow: takes more than a second",
     "live_b2: makes real Backblaze B2 requests; skipped unless --live-b2 is passed",
+    "live_paper: submits to a real paper broker; skipped unless --live-paper is passed",
 ]
 asyncio_mode = "auto"
 filterwarnings = ["error"]

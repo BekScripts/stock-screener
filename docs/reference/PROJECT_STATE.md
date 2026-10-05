@@ -36,14 +36,26 @@ appears without the run or the test that produced it.
 
 ## Current phase
 
-**P2.1 — deterministic execution realism and multi-session paper fills** is the
-current checkpoint, on `feat/p2-execution-engine`.
+**P2.2 — external paper-broker adapter and reconciliation** is the current
+checkpoint, on `feat/p2-execution-engine`.
+
+**P2.1 is complete and frozen** at `p2-execution-realism-complete` (`be0db072`),
+which freezes `EXECUTION_ENGINE_V1_1` and
+`PAPER_SESSION_PARTICIPATION_FILL_V1`. P2.2 adds a second *venue* rather than
+changing any local arithmetic: the 339 P2.0 and P2.1 tests pass unchanged and
+`EXECUTION_MANIFEST_V1_1` still reports `external_paper_broker:
+NOT_IMPLEMENTED`, because a V1.1 engine has no adapter.
 
 **P2.0 is complete and frozen** at `p2-execution-foundation-complete`
 (`e4ad0c8a`), which freezes `EXECUTION_ENGINE_V1` and
 `PAPER_REFERENCE_PRICE_FILL_V1`. P2.1 adds friction on top rather than changing
 any of it: the V1 goldens reproduce byte for byte and the V1 manifest keeps
 describing the V1 lifecycle and vocabulary.
+
+**Live trading remains `NOT_AUTHORIZED`, and from P2.2 that is structural.**
+There is no flag, host, key prefix or configuration value that enables it. The
+paper endpoint is **implemented but not certified**: P2.2 ships no HTTP
+transport, so nothing in this repository has yet spoken to a real venue.
 
 **P1 is complete and frozen** at `p1-portfolio-authority-complete`
 (`b87e7c96`), which closes the portfolio programme at P1.4. From that tag the
@@ -66,10 +78,13 @@ frozen at the same commit; P2 branched from it.
 | P2.0 | **BROKER-NEUTRAL ORDER LIFECYCLE / LOCAL PAPER EXECUTION** — `EXECUTION_ENGINE_V1` |
 | P2.0 checkpoint | tag `p2-execution-foundation-complete` |
 | P2.1 | **DETERMINISTIC EXECUTION REALISM / MULTI-SESSION FILLS** — `EXECUTION_ENGINE_V1_1` |
+| P2.1 checkpoint | tag `p2-execution-realism-complete` |
+| P2.2 | **EXTERNAL PAPER ADAPTER / THREE-WAY RECONCILIATION** — `EXECUTION_ENGINE_V1_2` |
+| P2.2 external paper endpoint | **IMPLEMENTED, NOT CERTIFIED** — no HTTP transport ships |
 | Production risk thresholds | **NOT AUTHORIZED** |
 | Production strategy budgets | **NOT AUTHORIZED** |
 | Production correlation thresholds | **NOT AUTHORIZED** |
-| Broker authority | **NONE** |
+| Broker authority | **PAPER READ/SUBMIT ONLY — NO LIVE AUTHORITY** |
 | Live trading | **NOT AUTHORIZED** |
 
 **The H2 branch is semantically frozen.** Its arm binds `code_commit` to
@@ -171,6 +186,90 @@ have been.
 position, hidden liquidity, venue routing, auction behaviour and intraday price
 paths. Impact in particular is a function of order size against liquidity, and a
 flat declared haircut is not an approximation of it.
+
+### P2.2 — a real venue, and why none of it can trade live
+
+`EXECUTION_ENGINE_V1_2` adds the first code in this project that can cause
+something to happen outside the process. Every decision in it is shaped around
+containing that, and six are worth recording because the permissive alternative
+is in each case one line long.
+
+**Live trading is refused by construction, not by configuration.**
+`BrokerEnvironment` can name `LIVE` because refusing something requires being
+able to say it, and `is_authorized` is false for it everywhere; `refuse_live`
+runs when a binding is built, when an adapter is constructed and when an order is
+submitted. There is no `USE_LIVE`, no `--live`, no `mode=live` and no
+`fallback_to_live`. Three independent checks must agree — the requested
+environment is `PAPER`, the host is on the paper allow-list, the credential id
+carries a paper prefix — and an **unrecognised** host or prefix is refused rather
+than assumed safe, because the cost of guessing wrong is asymmetric: too strict
+stops a run, too lenient places a real order. Only the key *id* is ever
+inspected; nothing is logged.
+
+**Configuration is not proof.** A proof from configuration alone is `is_proven`;
+it becomes `is_fully_certified` only when the account answers a read-only
+request. The two are different claims about different things and are kept apart,
+which is what lets a preflight honestly report that it has not yet called.
+
+**An order submission is never retried.** A `POST` that times out may have
+created an order, so the fix is not resending but naming: the client order id is
+*derived* from the local order id
+(`DERIVED_CLIENT_ORDER_ID_SHA256_V1`, no UUID and no clock), the intent is
+written durably **before** the request, exactly one mutating request is made, and
+an ambiguous answer is resolved by *asking* the venue about that name. The id
+deliberately does not depend on the account binding — a binding fingerprint moves
+when a capability declaration changes, and an id that moved with it would let the
+same order be sent again under a new name after a configuration edit.
+
+**An unknown stays unknown.** `REMOTE_STATE_UNKNOWN` is never downgraded to
+`NOT_SUBMITTED` for tidiness; the intent stays unresolved on disk, preflight
+withholds readiness while one exists, and a person settles it. Planning new
+orders while an unresolved intent exists would size them against a book that may
+be missing a position.
+
+**A stale display ticker is never a routing fallback.** Identity-to-symbol is an
+explicit declared mapping, fingerprinted into the manifest. `SecurityIdentity.symbol`
+holds whatever the ticker was when that row was loaded, and a ticker is reassigned
+when a company delists — so routing on it would eventually send a real order for
+company A to whatever company now answers to A's old ticker. An unmapped identity
+is `BROKER_SYMBOL_MAPPING_UNRESOLVED` even when its display ticker is a symbol
+this run *did* map. Two identities sharing a venue symbol is refused in both
+directions. The provider status map is closed the same way: an unknown status is
+`BROKER_STATUS_UNMAPPED`, never defaulted, because a default branch would report
+working orders as dead the day the provider adds a status.
+
+**A reconciliation break is reported across three records and repaired in none.**
+Journal, accounting book and venue are compared, because two records cannot
+localise a disagreement. `BLOCKING` stops execution, `WARNING` does not threaten
+the next decision, `INFO` records an expected difference. There is no function
+that adopts the venue's figure and a test asserts its absence — adopting one
+would not resolve the break but destroy the evidence of it, and if the broker
+were the record in error it would write a false position into an append-only
+ledger that carries it forever. The cash tolerance defaults to exactly zero;
+widening it is a decision somebody records.
+
+**One venue per session, with no fallback.** `ExecutionVenue` has exactly two
+members and no `AUTO`. A run that fell back to the simulator when its venue was
+unreachable would leave a journal where some fills were simulated and some real
+with nothing saying which, and every figure over it would be a blend of two
+incompatible things. A local session may not even hold a credentialed binding.
+
+**What P2.2 does not establish.** It ships no HTTP transport: `BrokerTransport`
+is the seam, the whole adapter is exercised against an injected fake, and
+nothing here has spoken to a real venue. The paper endpoint is therefore
+**implemented but not certified**. Separately, an external run is **not
+reproducible** — its fills came from a venue at a moment that will not recur —
+and the V1.2 manifest states that rather than implying otherwise. A provider's
+paper engine is also the provider's model of itself: it may fill more readily
+than its live engine would, it is not bound by this project's participation
+ceiling, and a paper fill is evidence the plumbing works, not that the trade was
+achievable.
+
+**No account funding, transfer, close-all or liquidate call exists.** A one-call
+flatten is unrecoverable when invoked by accident, and the ordinary path already
+does it with every check applied. No credential, authorization header, token or
+cookie is persisted or logged, and a report is scanned for anything shaped like a
+secret on the way out.
 
 ### P2.0 — an authorised target becomes a fill, and nothing else does
 
@@ -3276,6 +3375,34 @@ care — nothing has a foreign key *to* it, so dropping it cascades to nothing.
 
 ## Known limitations
 
+**The external paper endpoint is implemented but not certified (P2.2).** P2.2
+ships no HTTP transport implementation — `BrokerTransport` is the seam and the
+whole adapter is exercised against an injected fake — so nothing in this
+repository has spoken to a real venue. The adapter is complete and tested; the
+endpoint is unproven.
+
+**An external run is not reproducible (P2.2).** Its fills came from a venue's
+matching engine at a moment that will not recur. The V1.2 manifest is an audit
+record of what was bound and what happened, not a claim that re-running it
+reproduces it, and no test can assert an external fill's price. A V1.2 run bound
+to `LOCAL_DETERMINISTIC_PAPER` reproduces normally.
+
+**A provider's paper engine is the provider's model of itself (P2.2).** It may
+fill more readily than its live engine would, it is not bound by this project's
+participation ceiling, and its queue behaviour is unobservable from here. A paper
+fill is evidence that the plumbing works, not evidence that the trade was
+achievable.
+
+**Proof of paper from configuration is not proof of reach (P2.2).** A host
+allow-list and a key prefix establish what was configured. Only the account's own
+answer adds more, and only for as long as the credential is unchanged — a
+credential repointed after preflight is not detected until the next read.
+
+**An unresolved submission needs a person (P2.2).** The protocol establishes that
+a submission's state is unknown and refuses to guess; settling it is a deliberate
+decision. Nothing auto-resolves it, and preflight withholds readiness until it is
+settled, so an unresolved intent blocks the next run by design.
+
 **The execution friction is declared, not measured (P2.1).** Slippage,
 participation and the session horizon are policy inputs. Nothing calibrates them,
 and nothing should calibrate them from a strategy's own returns — doing so would
@@ -4955,6 +5082,38 @@ learn.
 | `tests/integration/test_historical_securities.py::test_the_historical_path_scores_identically_to_the_company_path` | the historical path reuses the frozen scorer, not a second one |
 | `tests/integration/test_historical_securities.py::test_a_missing_terminal_value_stays_none_never_zero` | an unpriced receivership stays UNKNOWN |
 
+P2.2 adds `tests/integration/test_p2_2_external_paper.py` — 211 tests, all
+against an injected fake transport, so the gate reaches no network. The rows
+below are the ones whose absence would be expensive.
+
+| Test | Protects |
+| --- | --- |
+| `test_p2_2_external_paper.py::test_no_environment_string_unlocks_live_trading` | no value of `environment` — including `production`, `prod`, `real`, `true` — reaches a live venue |
+| `test_p2_2_external_paper.py::test_a_live_endpoint_is_refused` | a live host is refused even when the caller asks for paper |
+| `test_p2_2_external_paper.py::test_an_unknown_host_is_refused_rather_than_assumed_paper` | the default for an unrecognised host is refusal, not permission |
+| `test_p2_2_external_paper.py::test_a_live_key_prefix_is_refused_even_against_the_paper_host` | each of the three checks binds on its own |
+| `test_p2_2_external_paper.py::test_exactly_one_mutating_request_on_every_path` | one POST per submission on all five outcome paths — the property that cannot double a position |
+| `test_p2_2_external_paper.py::test_the_intent_is_durable_before_the_request_is_made` | a crash during the request leaves a record naming the order that may now exist |
+| `test_p2_2_external_paper.py::test_a_lost_response_is_resolved_by_lookup_not_by_resending` | a timed-out POST whose order exists is found, not duplicated |
+| `test_p2_2_external_paper.py::test_an_unresolvable_submission_stays_unknown` | `REMOTE_STATE_UNKNOWN` is never downgraded, and the intent survives |
+| `test_p2_2_external_paper.py::test_a_locally_refused_order_leaves_no_intent_and_sends_nothing` | validation precedes durability, so a refusable order leaves nothing behind |
+| `test_p2_2_external_paper.py::test_a_stale_display_ticker_is_never_used_as_a_fallback` | a reassigned ticker cannot route an order to another company |
+| `test_p2_2_external_paper.py::test_two_identities_cannot_share_a_venue_symbol` | a remote fill is never attributed to whichever identity was found first |
+| `test_p2_2_external_paper.py::test_an_unmapped_provider_status_is_refused` | the status map has no default branch to report a working order as dead |
+| `test_p2_2_external_paper.py::test_a_pending_cancel_is_still_working` | a cancel asked for is not a cancel done |
+| `test_p2_2_external_paper.py::test_the_same_execution_reported_ten_times_reads_as_one` | reading the venue repeatedly posts a fill once |
+| `test_p2_2_external_paper.py::test_a_fee_the_venue_did_not_state_is_unknown_not_zero` | missing is not zero, at the one boundary where zero is usually right |
+| `test_p2_2_external_paper.py::test_unreadable_positions_are_never_substituted_with_an_empty_list` | a failed read never reconciles as the book having vanished |
+| `test_p2_2_external_paper.py::test_a_sweep_never_changes_the_book` | reconciliation reads three records and writes none |
+| `test_p2_2_external_paper.py::test_the_reconciliation_module_exposes_no_repair_function` | no repair surface exists to be reached for later |
+| `test_p2_2_external_paper.py::test_a_local_session_may_not_hold_a_broker_account` | a simulator session cannot hold a credential it would eventually use |
+| `test_p2_2_external_paper.py::test_no_venue_is_live` | the venue enum has no live member and no third member to fall back to |
+| `test_p2_2_external_paper.py::test_preflight_withholds_readiness_while_a_submission_is_unresolved` | an unknown order blocks the next plan rather than being planned around |
+| `test_p2_2_external_paper.py::test_the_execution_core_imports_no_http_client` | network capability stays contained to `external/` |
+| `test_p2_2_external_paper.py::test_a_report_is_credential_scanned_on_the_way_out` | no key, header, token or account number reaches a report |
+| `test_p2_2_external_paper.py::test_the_v1_1_manifest_still_says_no_external_broker` | each manifest version keeps its own answers |
+| `test_p2_2_external_paper.py::test_the_adapter_exposes_no_forbidden_convenience_api` | no liquidate, flatten, transfer, funding or live-enabling call exists |
+
 ### The gate
 
 `make check` — lint, format check, mypy strict, pytest with coverage failing
@@ -4965,7 +5124,27 @@ under **80%**. It is what CI runs; run it rather than the individual tools.
 
 ## Next phase
 
-**R1.8 — capture the first eligible prospective H2 decision when due** follows.
+Two tracks are pending, on different clocks.
+
+**On the execution track, P2.2's one open gap is the transport.** The adapter is
+complete and fully tested against an injected fake; what does not exist is an
+HTTP implementation of `BrokerTransport`, so the paper endpoint is implemented
+and uncertified. Closing that means one module behind the existing protocol, the
+credential read through `config.py` as a typed field, and the opt-in canary in
+`tests/live/test_paper_broker_live.py` run deliberately with `--live-paper`.
+Certification is a single read-only call against the configured paper account
+followed by one one-share submission; until that has happened, no claim that the
+endpoint works is supportable.
+
+That phase must not relax anything P2.2 established. It adds a transport, not a
+capability: no live host enters the allow-list, no live key prefix is accepted,
+no third `ExecutionVenue` member appears, no mutating request becomes
+retryable, and `make check` continues to pass no live flag and make no external
+request. A credential belongs in `config.py` and `.env.example` by name with a
+placeholder value, never in code, a fixture or a test.
+
+**R1.8 — capture the first eligible prospective H2 decision when due** follows
+on the research track.
 The runner is armed and waiting; R1.8's job begins at the derived decision
 instant, 16:00 America/New_York on the first eligible quarter-end session, and
 not before.
@@ -5056,6 +5235,31 @@ Not a backlog. These exclusions are deliberate.
   `execute` seam between `portfolio_risk` and `portfolio_accounting`
 - a reconciliation auto-repair, an "adopt external" flag, or a cash tolerance
   defaulted to anything but zero
+- **live trading, in any form**: no `USE_LIVE`, no `--live`, no `mode=live`, no
+  `fallback_to_live`, no live host in the allow-list, no live key prefix accepted,
+  and no third `ExecutionVenue` member
+- treating an unrecognised host, key prefix or environment name as paper: the
+  default is refusal, because the cost of guessing wrong is a real order
+- a retry of a mutating broker request, or any generic retry helper that could be
+  pointed at one
+- a generated client order id — a UUID, a counter, or anything carrying a clock:
+  it must be derived from the local order id so a crash cannot orphan an order
+- downgrading `REMOTE_STATE_UNKNOWN` to `NOT_SUBMITTED`, or submitting an order
+  while its earlier intent is unresolved
+- a fallback from an identity's declared venue symbol to its display ticker, or a
+  default branch in the provider status map
+- substituting zero for a fee the venue did not state, or an empty list for a
+  position read that failed
+- an account funding, transfer, close-all, liquidate, flatten, replace or amend
+  call, or a streaming subscription
+- persisting or logging a credential, authorization header, token or cookie, or
+  writing an account number into a report
+- an HTTP client imported anywhere in `execution/` outside `execution/external/`
+- a session that mixes `LOCAL_DETERMINISTIC_PAPER` and `EXTERNAL_PAPER` fills, or
+  any fallback from one venue to the other
+- widening `EXECUTION_MANIFEST_V1_1` to describe the external adapter: a V1.1
+  engine has none, and each manifest version keeps its own answers
+- any claim that a paper fill demonstrates a trade was achievable
 - a second supported corporate action, tax lots, FIFO or specific-lot
   identification — each is a new cost-basis version, never an edit
 - a SQLite or SQLAlchemy ledger backend; the file format is what makes the

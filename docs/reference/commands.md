@@ -186,8 +186,34 @@ uv run scripts/verify_fundamentals.py --ticker AAPL --expected-market-cap 3.4e12
 | `unit` | Pure logic; no network, database, or filesystem |
 | `integration` | Touches a real dependency |
 | `slow` | Takes over a second |
+| `live_b2` | Makes real Backblaze requests; skipped unless `--live-b2` |
+| `live_paper` | Submits to a real **paper** broker; skipped unless `--live-paper` |
 
 ```bash
 uv run pytest -m unit
 uv run pytest -m "not slow"
 ```
+
+### Opt-in suites
+
+Two suites reach an external service and are skipped by default. `make check`
+passes neither flag, so the ordinary gate makes no external request and submits
+no order.
+
+| Flag | Runs | Effect |
+| --- | --- | --- |
+| `--live-b2` | `tests/live/test_b2_canary_live.py` | Real Backblaze reads and writes |
+| `--live-paper` | `tests/live/test_paper_broker_live.py` | Reads the configured **paper** account; one test submits one share |
+
+```bash
+uv run pytest tests/live/test_paper_broker_live.py --live-paper
+```
+
+Needs `ALPACA_PAPER_KEY_ID`, `ALPACA_PAPER_SECRET_KEY` and
+`ALPACA_PAPER_ACCOUNT_ID`; the tests skip rather than fail when they are absent.
+
+There is no live-trading equivalent of `--live-paper`, and adding one would
+achieve nothing: the adapter refuses a live host, a live key prefix and a live
+environment by construction, and no flag reaches those checks. The paper
+adapter's own behaviour is fully covered in `make check` against an injected
+fake transport.

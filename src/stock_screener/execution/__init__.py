@@ -35,7 +35,7 @@ rather than a second trade.
 every committed event rather than when somebody remembers. A journal shorter than
 its anchor is detected instead of accepted.
 
-What this package never does: contact a broker, hold a credential, place a live or
+What this core never does: contact a broker, hold a credential, place a live or
 remote paper order, introduce randomness into a fill, estimate market impact,
 optimise an execution parameter, or keep a book of its own.
 
@@ -44,6 +44,16 @@ No spread, no slippage, no impact, no participation, no latency, no queue. A
 strategy run through it will look better than it would trade, by roughly those
 costs. The manifest says so, because a simulated return that does not disclose
 its cost assumptions invites being read as a forecast.
+
+**One subpackage is the exception, and only in one direction.**
+`stock_screener.execution.external` (`EXECUTION_ENGINE_V1_2`) reaches a
+provider's **paper** venue. It is the only place in this package that can make a
+network request, and the containment is the point: the modules above import no
+HTTP client, take no credential and have no code path to one, which a test
+asserts by scanning their imports. Live trading remains unauthorised there too —
+not by policy but by construction, with no flag, host, key prefix or
+configuration value that would enable it. See that subpackage's own
+documentation for what it refuses and what it cannot promise.
 """
 
 from __future__ import annotations

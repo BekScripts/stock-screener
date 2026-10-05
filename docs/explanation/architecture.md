@@ -352,6 +352,42 @@ day to a date — a Friday residual belongs to Monday, and arithmetic would have
 placed a child order on a day the market was shut and filled it against a
 snapshot that cannot exist.
 
+**The first code that can act outside this process is one subpackage, and that
+containment is the design.** `execution/external/` reaches a provider's paper
+venue; every module above it imports no HTTP client and takes no credential,
+which a test asserts by reading their imports. The adapter receives its
+transport by injection and never builds one, so the whole of it — including
+every failure a venue can produce — is exercised in the ordinary gate with no
+network at all.
+
+Two decisions inside it are worth stating, because the permissive alternatives
+are each one line long. The first is that **live trading is refused by
+construction rather than by configuration.** There is no flag, host, key prefix
+or setting that enables it; a live host and a live key prefix are each rejected
+on their own, an *unrecognised* host or prefix is rejected too rather than
+assumed safe, and a session's venue enum has no third member to fall back to.
+The reason for refusing the unrecognised case is that the cost of guessing wrong
+is asymmetric: being too strict stops a run, and being too lenient places a real
+order.
+
+The second is that **an order submission is never retried.** A request that
+times out may or may not have created an order, so repeating it is how a
+duplicate position appears. Instead the order is given a name before the request
+is made — derived from the local order id, so it survives a crash that loses
+every in-memory fact — the intent is written durably first, exactly one request
+is sent, and an ambiguous answer is resolved by *asking* the venue about that
+name. When asking does not settle it, the answer is "unknown" and it stays
+unknown: the intent remains on disk, preflight refuses to plan anything new, and
+a person decides. That is slower than a retry and it is the only version that
+cannot double a position.
+
+The same refusal to be helpful governs what comes back. A reconciliation
+compares three records — journal, book, venue — because two cannot localise a
+disagreement, and it repairs none of them. Adopting the broker's figure would
+not resolve a break; it would destroy the evidence that there was one, and if the
+broker was the record in error it would write a false position into a ledger
+that keeps it forever.
+
 ## What is deliberately absent
 
 Not every company gets a number. A bank, an ineligible security and a company

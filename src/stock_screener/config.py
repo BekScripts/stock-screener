@@ -201,6 +201,48 @@ class Settings(BaseSettings):
             "https://paper-api.alpaca.markets or every request returns 401."
         ),
     )
+    alpaca_paper_key_id: SecretStr | None = Field(
+        default=None,
+        description=(
+            "Paper-trading key id for the external execution adapter, separate "
+            "from `alpaca_api_key` because that one is a market-data credential "
+            "and these two must be rotatable independently. The adapter inspects "
+            "only this id's prefix, never the secret: a `PK` prefix is paper and "
+            "an `AK` prefix is refused as "
+            "`LIVE_TRADING_NOT_AUTHORIZED`."
+        ),
+    )
+    alpaca_paper_secret_key: SecretStr | None = Field(
+        default=None,
+        description=(
+            "Paper-trading secret for the external execution adapter. Never "
+            "logged, never fingerprinted and never written to a report."
+        ),
+    )
+    alpaca_paper_account_id: str | None = Field(
+        default=None,
+        description=(
+            "Which paper account the local book describes. Held so the adapter "
+            "can refuse a reply from any other account as "
+            "`BROKER_ACCOUNT_MISMATCH` — a credential rotated to a second paper "
+            "account would otherwise have its positions reconciled against this "
+            "book, and the break would read as a trading error rather than a "
+            "wiring one. Stored as a fingerprint once a binding is built."
+        ),
+    )
+    alpaca_paper_base_url: str = Field(
+        default="https://paper-api.alpaca.markets",
+        description=(
+            "Where the external execution adapter submits. Defaults to the paper "
+            "host and is checked against a paper allow-list on every binding, so "
+            "pointing it at a live endpoint does not enable live trading — it "
+            "fails as `LIVE_TRADING_NOT_AUTHORIZED`, and an unrecognised host "
+            "fails as `BROKER_ENVIRONMENT_NOT_PROVEN_PAPER` rather than being "
+            "assumed safe. Distinct from `alpaca_trading_base_url`, which serves "
+            "the asset list and defaults to the live host for that read-only "
+            "purpose."
+        ),
+    )
     alpaca_data_base_url: str = "https://data.alpaca.markets"
     alpaca_feed: Literal["iex", "sip"] = Field(
         default="iex",

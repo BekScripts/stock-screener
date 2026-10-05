@@ -20,6 +20,7 @@ __all__ = [
     "DAY_EXPIRY_POLICY",
     "EXECUTION_ENGINE_VERSION",
     "EXECUTION_ENGINE_VERSION_V1_1",
+    "EXECUTION_ENGINE_VERSION_V1_2",
     "FILL_ATTRIBUTION_RULE",
     "JOURNAL_CHAIN_VERSION",
     "ORDER_SEQUENCING_RULE",
@@ -43,6 +44,16 @@ EXECUTION_ENGINE_VERSION = "EXECUTION_ENGINE_V1"
 #: different quantities and a different number of orders, so neither can be
 #: reproduced from the other's rules.
 EXECUTION_ENGINE_VERSION_V1_1 = "EXECUTION_ENGINE_V1_1"
+
+#: The P2.2 contract, which adds a second *venue*: a provider's paper endpoint.
+#: A separate version because it changes something more fundamental than a
+#: price. V1 and V1.1 are reproducible — the same inputs give the same fills
+#: forever. A V1.2 run at an external venue is not: its fills came from a real
+#: market at a real moment, and nothing in this repository can reproduce them.
+#: The local fill model is unchanged, so a V1.2 run bound to the local venue is
+#: a V1.1 run under a new name; it is the external binding that makes the
+#: difference, which is why the venue is recorded in every artefact.
+EXECUTION_ENGINE_VERSION_V1_2 = "EXECUTION_ENGINE_V1_2"
 
 #: Which accounting rules a new execution-managed book must use. Named rather
 #: than defaulted: P1.4 left V1 as the accounting default so pre-existing ledgers

@@ -77,23 +77,44 @@ if TYPE_CHECKING:
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:
-    """`--live-b2` opts in to the tests that make real Backblaze requests."""
+    """Opt-ins for the two suites that reach a real external service."""
     parser.addoption(
         "--live-b2",
         action="store_true",
         default=False,
         help="run tests marked live_b2 against the configured Backblaze bucket",
     )
+    parser.addoption(
+        "--live-paper",
+        action="store_true",
+        default=False,
+        help=(
+            "run tests marked live_paper against the configured PAPER broker "
+            "account. These submit real paper orders, so `make check` never "
+            "passes this flag. There is no live-trading equivalent of this "
+            "option, and adding one would not be sufficient to enable live "
+            "trading — the adapter refuses a live environment by construction."
+        ),
+    )
 
 
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
-    """Skip `live_b2` tests unless explicitly opted in. `make check` never opts in."""
-    if config.getoption("--live-b2"):
-        return
-    skip = pytest.mark.skip(reason="live Backblaze test; pass --live-b2 to run it")
-    for item in items:
-        if "live_b2" in item.keywords:
-            item.add_marker(skip)
+    """Skip the opt-in suites unless asked for. `make check` never opts in.
+
+    This is what keeps `make check` free of external side effects: the paper
+    adapter's own behaviour is covered against an injected fake transport, and
+    only the tests that would place a real paper order carry `live_paper`.
+    """
+    for option, marker, service in (
+        ("--live-b2", "live_b2", "Backblaze"),
+        ("--live-paper", "live_paper", "paper broker"),
+    ):
+        if config.getoption(option):
+            continue
+        skip = pytest.mark.skip(reason=f"live {service} test; pass {option} to run it")
+        for item in items:
+            if marker in item.keywords:
+                item.add_marker(skip)
 
 
 #: Every variable `Settings` reads. A field added to `Settings` without a line
@@ -108,6 +129,10 @@ _SETTINGS_ENV_VARS = (
     "FUNDAMENTALS_PROVIDER",
     "FIXTURE_PATH",
     "ALPACA_API_KEY",
+    "ALPACA_PAPER_KEY_ID",
+    "ALPACA_PAPER_SECRET_KEY",
+    "ALPACA_PAPER_ACCOUNT_ID",
+    "ALPACA_PAPER_BASE_URL",
     "ALPACA_SECRET_KEY",
     "ALPACA_TRADING_BASE_URL",
     "ALPACA_DATA_BASE_URL",
