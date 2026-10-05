@@ -1,0 +1,92 @@
+{
+  "label": "COST-SELL",
+  "note": "The SELL mirror of the BUY fixture. Same quote and slippage on a 100-share SELL: touch 99, fill 98.901. Spread cost 100, slippage 9.9, shortfall 109.9. The slippage differs from the BUY's 10.1 because the bps apply to the bid rather than the ask, which is the correct asymmetry.",
+  "execution_plan_id": "COST-SELL",
+  "as_of": "2026-10-02T16:00:00-04:00",
+  "created_at": "2026-10-02T16:00:00-04:00",
+  "first_session": "2026-10-02",
+  "approved_portfolio_fingerprint": "apapapapapapapapapapapapapapapapapapapapapapapapapapapapapapapap",
+  "valued_snapshot_fingerprint": "vsvsvsvsvsvsvsvsvsvsvsvsvsvsvsvsvsvsvsvsvsvsvsvsvsvsvsvsvsvsvsvs",
+  "securities": [
+    {
+      "label": "BIGPOS",
+      "kind": "COMPANY",
+      "identity_id": 8101,
+      "symbol": "BIG"
+    }
+  ],
+  "execution_policy": {
+    "policy_id": "COST-SELL_POLICY",
+    "adverse_slippage_bps": "10",
+    "max_volume_participation": "1",
+    "maximum_execution_sessions": 1,
+    "spread_required": true,
+    "volume_required": true
+  },
+  "calendar": {
+    "name": "EXAMPLE_CALENDAR",
+    "sessions": [
+      "2026-10-02",
+      "2026-10-05",
+      "2026-10-06",
+      "2026-10-08"
+    ]
+  },
+  "opening": {
+    "event_id": "PAPER-OB",
+    "effective_at": "2026-10-02T09:30:00-04:00",
+    "source_id": "PAPER_BOOK_IMPORT",
+    "source_fingerprint": "fp-open",
+    "cash": "0.0000",
+    "positions": [
+      {
+        "identity": "BIGPOS",
+        "quantity": "100.00000000",
+        "cost_basis_per_share": "90.00000000",
+        "attribution": [
+          {
+            "strategy_id": "ALPHA",
+            "quantity": "100.00000000"
+          }
+        ]
+      }
+    ]
+  },
+  "intents": [
+    {
+      "identity": "BIGPOS",
+      "action": "EXIT",
+      "current_weight": 0.2,
+      "target_weight": 0.0,
+      "notional_delta": -10000.0,
+      "strategy_id": "ALPHA"
+    }
+  ],
+  "sizing": {
+    "as_of": "2026-10-02T16:00:00-04:00",
+    "nav": "500000.0000",
+    "cash": "0.0000",
+    "source": "SESSION_CLOSE",
+    "prices": [
+      {
+        "identity": "BIGPOS",
+        "price": "100.00000000"
+      }
+    ]
+  },
+  "market_sessions": [
+    {
+      "session": "2026-10-02",
+      "as_of": "2026-10-02T16:00:00-04:00",
+      "source": "PAPER",
+      "quotes": [
+        {
+          "identity": "BIGPOS",
+          "bid": "99.00000000",
+          "ask": "101.00000000",
+          "observed_share_volume": "1000000"
+        }
+      ]
+    }
+  ]
+}

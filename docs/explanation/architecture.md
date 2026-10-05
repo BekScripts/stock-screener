@@ -327,12 +327,30 @@ durable before the next begins, and the accounting event id is derived from the
 fill id rather than generated — so a crash between them leaves a state recovery
 can finish exactly once, and a retry is a no-op rather than a second trade.
 
-What that layer deliberately does not do is pretend to be realistic. It models no
-spread, no slippage, no market impact, no participation limit and no latency, and
-it says so in its manifest. The point of it is that the same inputs produce the
-same orders and the same book every time, which is what makes an execution bug
-findable; a simulator full of plausible-looking cost models has many more places
-for one to hide.
+The friction that layer does model is deliberately narrow and deliberately
+declared. It crosses the quoted spread, applies an adverse slippage somebody
+chose, and caps each fill at a share of the session's traded volume — and every
+one of those numbers is an input with a fingerprint rather than something the
+engine derived. That matters more than it looks: a cost model fitted to make a
+backtest match an observed result becomes a free parameter of the strategy, and
+the strategy's apparent edge then partly comes from the assumption picked to
+flatter it. So nothing in the package reads a return to choose a cost.
+
+What it still does not model is impact, latency and queue position, and the
+manifest says so. Impact in particular is a function of an order's own size
+against available liquidity; a flat haircut is not an approximation of that, and
+a large order will look cheaper than it would trade. The point of the engine is
+that the same inputs produce the same orders, fills and book every time, which is
+what makes an execution bug findable — a simulator full of plausible-looking cost
+models has many more places for one to hide.
+
+The time dimension is where the second real correction landed. A DAY order lives
+for one session, so it now *ends* at that session's close and a residual reaches
+the next session as a new child order rather than by the old one surviving
+overnight. The next session comes from an explicit calendar, never from adding a
+day to a date — a Friday residual belongs to Monday, and arithmetic would have
+placed a child order on a day the market was shut and filled it against a
+snapshot that cannot exist.
 
 ## What is deliberately absent
 

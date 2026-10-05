@@ -98,8 +98,11 @@ from stock_screener.evidence import (
 )
 from stock_screener.execution import ExecutionError, ExecutionStore
 from stock_screener.execution import execution_manifest as execution_manifest_body
+from stock_screener.execution import load_realism_request as load_realism_execution_request
 from stock_screener.execution import load_request as load_execution_request
+from stock_screener.execution import realism_manifest as realism_manifest_body
 from stock_screener.execution import run_paper_execution as run_paper_execution_request
+from stock_screener.execution import run_session_execution as run_session_execution_request
 from stock_screener.hysteresis_experiment import (
     EXPERIMENT_DIR as H2_EXPERIMENT_DIR,
 )
@@ -8170,6 +8173,127 @@ def execution_show_manifest_command() -> None:
     typer.echo("")
     typer.echo("  deliberately not modelled:")
     for line in manifest["paper_market"]["not_modelled"]:
+        typer.echo(f"    - {line}")
+    typer.echo("")
+    for line in manifest["not_guaranteed"]:
+        typer.echo(f"  NOT GUARANTEED: {line}")
+
+
+@execution_app.command("paper-run-realism")
+def execution_paper_run_realism_command(
+    request: Annotated[
+        Path,
+        typer.Argument(help="A JSON request: opening book, policy, calendar, sessions."),
+    ],
+    root: Annotated[
+        Path, typer.Option("--root", help="Where .portfolio and .execution are written.")
+    ],
+    output: Annotated[
+        Path | None, typer.Option("--output", help="Write the full result as JSON here.")
+    ] = None,
+) -> None:
+    """Run a V1.1 multi-session paper execution. Contacts no broker.
+
+    Crosses the quoted spread, applies the declared adverse slippage, respects a
+    share-volume participation ceiling shared across the session, expires DAY
+    orders at each close and rolls residuals into new calendar-derived children.
+
+    Every quote, volume, fee and session comes from the request. No value in the
+    friction policy is calibrated from any strategy's returns, and the engine
+    still models no market impact, latency or queue position.
+    """
+    try:
+        body = load_realism_execution_request(request)
+        result = run_session_execution_request(body, root=root)
+    except (ExecutionError, AccountingError) as exc:
+        typer.echo(f"STOPPED [{exc.code}]: {exc.detail}")
+        raise typer.Exit(code=1) from exc
+
+    realism = result["realism_report"]
+    totals = result["cost_report"]["totals"]
+    typer.echo("")
+    typer.echo(f"  plan                 : {realism['execution_plan_id']}")
+    typer.echo(f"  status               : {result['plan_status']}")
+    typer.echo(f"  fill model           : {realism['fill_model']}")
+    typer.echo(f"  policy fingerprint   : {realism['execution_policy_fingerprint'][:16]}…")
+    typer.echo(f"  sessions used        : {', '.join(realism['sessions_used']) or '-'}")
+    typer.echo(f"  child orders         : {realism['child_order_count']}")
+    typer.echo(f"  expiries             : {realism['expiry_count']}")
+    typer.echo(f"  unfilled residual    : {realism['unfilled_residual']}")
+    typer.echo("")
+    for label, rows in result["session_outcomes"].items():
+        for row in rows:
+            typer.echo(
+                f"  {row['session']}  gen{row['generation']}  {label:<14} "
+                f"auth {row['authorized_quantity']:>15} filled {row['filled_quantity']:>15} "
+                f"residual {row['residual_after']:>15} "
+                f"{'EXPIRED' if row['expired'] else ''}"
+            )
+    typer.echo("")
+    for row in result["cost_report"]["per_session"]:
+        typer.echo(
+            f"  {row['session']}  {row['side']:<4} bid {row['bid']} ask {row['ask']} "
+            f"mid {row['mid']} -> fill {row['fill_price']}"
+        )
+        typer.echo(
+            f"              filled {row['filled_quantity']} of ceiling "
+            f"{row['participation_ceiling']} (participation {row['actual_participation']})"
+        )
+    typer.echo("")
+    typer.echo(f"  spread cost          : {totals['spread_cost']}")
+    typer.echo(f"  slippage cost        : {totals['slippage_cost']}")
+    typer.echo(f"  fees                 : {totals['fees']}")
+    typer.echo(f"  shortfall            : {totals['implementation_shortfall']}")
+    typer.echo(f"  total execution cost : {totals['total_execution_cost']}")
+    typer.echo("")
+    typer.echo(f"  book cash            : {result['final_book']['cash']}")
+    typer.echo(f"  book cost basis      : {result['final_book']['total_cost_basis']}")
+    typer.echo(f"  journal verified     : {result['store']['verified']}")
+    typer.echo(f"  tail completeness    : {result['store']['tail_completeness_established']}")
+    if result["refusal"]:
+        refusal = result["refusal"]
+        typer.echo("")
+        typer.echo(f"  REFUSED {refusal['order_id']} [{refusal['code']}]")
+        typer.echo(f"  {refusal['detail']}")
+    typer.echo("")
+    typer.echo(
+        "  the cost above is already inside the prices the book paid. It is not "
+        "posted as a separate expense, and no P&L or NAV appears here."
+    )
+    if output is not None:
+        output.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        typer.echo(f"  written: {output}")
+
+
+@execution_app.command("show-realism-manifest")
+def execution_show_realism_manifest_command() -> None:
+    """Print the V1.1 manifest: the friction modelled, and what still is not.
+
+    The example policy's numbers exercise code paths and are not validated
+    execution assumptions — they are marked `NOT_PRODUCTION_AUTHORIZED`.
+    """
+    from stock_screener.execution import EXAMPLE_REALISM_POLICY, ExecutionCalendar
+
+    manifest = realism_manifest_body(
+        policy=EXAMPLE_REALISM_POLICY,
+        calendar=ExecutionCalendar.of(["2026-10-02", "2026-10-05"], name="EXAMPLE"),
+    )
+    typer.echo("")
+    for key, value in sorted(manifest["policies"].items()):
+        typer.echo(f"  {key:<30}: {value}")
+    typer.echo("")
+    policy_body = manifest["execution_policy"]
+    typer.echo(f"  adverse slippage              : {policy_body['adverse_slippage_bps']} bps")
+    typer.echo(f"  max volume participation      : {policy_body['max_volume_participation']}")
+    typer.echo(f"  maximum execution sessions    : {policy_body['maximum_execution_sessions']}")
+    typer.echo(f"  authorization                 : {policy_body['authorization']}")
+    typer.echo(f"  slippage direction            : {policy_body['slippage_direction']}")
+    typer.echo("")
+    typer.echo(f"  manifest fingerprint          : {manifest['manifest_fingerprint']}")
+    typer.echo(f"  live trading                  : {manifest['live_trading']}")
+    typer.echo("")
+    typer.echo("  invariants:")
+    for line in manifest["invariants"]:
         typer.echo(f"    - {line}")
     typer.echo("")
     for line in manifest["not_guaranteed"]:

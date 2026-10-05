@@ -20,6 +20,7 @@ from .events import (
     OrderAcknowledgedEvent,
     OrderCancelledEvent,
     OrderCreatedEvent,
+    OrderExpiredEvent,
     OrderFilledEvent,
     OrderRejectedEvent,
     OrderSubmittedEvent,
@@ -69,6 +70,19 @@ def identity_from_label(label: str) -> Any:
             f"{label!r} is not a durable identity label of the form KIND:id",
         )
     return SecurityIdentity(kind=kind, identity_id=int(raw))
+
+
+def _optional_decimal(value: Any) -> Decimal | None:
+    """Parse an optional Decimal from its persisted form.
+
+    Args:
+        value: The string, or None.
+
+    Returns:
+        The Decimal, or None. None is preserved rather than becoming zero: a
+        missing quote is not a quote of nothing.
+    """
+    return None if value is None else Decimal(str(value))
 
 
 def order_from_json(payload: Mapping[str, Any]) -> Order:
@@ -140,6 +154,7 @@ def event_from_json(payload: Mapping[str, Any]) -> ExecutionEvent:
         return OrderCreatedEvent(
             event_type=ExecutionEventType.ORDER_CREATED,
             order=order_from_json(body["order"]),
+            session=body.get("session"),
             **common,
         )
     if event_type == ExecutionEventType.ORDER_SUBMITTED:
@@ -155,9 +170,23 @@ def event_from_json(payload: Mapping[str, Any]) -> ExecutionEvent:
             **common,
         )
     if event_type == ExecutionEventType.ORDER_FILLED:
+        market = body.get("market", {})
         return OrderFilledEvent(
             event_type=ExecutionEventType.ORDER_FILLED,
             fill=_fill_from_json(body["fill"]),
+            session=market.get("session"),
+            bid=_optional_decimal(market.get("bid")),
+            ask=_optional_decimal(market.get("ask")),
+            touch_price=_optional_decimal(market.get("touch_price")),
+            observed_share_volume=_optional_decimal(market.get("observed_share_volume")),
+            participation_ceiling=_optional_decimal(market.get("participation_ceiling")),
+            **common,
+        )
+    if event_type == ExecutionEventType.ORDER_EXPIRED:
+        return OrderExpiredEvent(
+            event_type=ExecutionEventType.ORDER_EXPIRED,
+            session=str(body["session"]),
+            residual_quantity=Decimal(str(body.get("residual_quantity", "0"))),
             **common,
         )
     if event_type == ExecutionEventType.ORDER_CANCELLED:

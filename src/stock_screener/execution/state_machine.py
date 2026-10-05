@@ -11,11 +11,16 @@ terminal states are terminal by construction:
 
     CREATED          -> SUBMITTED
     SUBMITTED        -> ACKNOWLEDGED | REJECTED | CANCELLED
-    ACKNOWLEDGED     -> PARTIALLY_FILLED | FILLED | CANCELLED | REJECTED
-    PARTIALLY_FILLED -> PARTIALLY_FILLED | FILLED | CANCELLED
+    ACKNOWLEDGED     -> PARTIALLY_FILLED | FILLED | CANCELLED | REJECTED | EXPIRED
+    PARTIALLY_FILLED -> PARTIALLY_FILLED | FILLED | CANCELLED | EXPIRED
     FILLED           -> (terminal)
     CANCELLED        -> (terminal)
     REJECTED         -> (terminal)
+    EXPIRED          -> (terminal)
+
+`EXPIRED` arrived in V1.1. A `FILLED` order never expires — there is nothing left
+to expire — and an `EXPIRED` order never fills again, which is the whole content
+of "DAY".
 
 The lifecycle is walked even when the broker is in-process and answers
 instantly. Collapsing `CREATED -> FILLED` because a local simulation can do it in
@@ -45,6 +50,7 @@ if TYPE_CHECKING:
 
 __all__ = [
     "TERMINAL_STATES",
+    "V1_STATES",
     "VALID_TRANSITIONS",
     "OrderState",
     "OrderStatus",
@@ -76,6 +82,20 @@ class OrderState(StrEnum):
     REJECTED = "REJECTED"
     """Never worked. Terminal, and nothing traded."""
 
+    EXPIRED = "EXPIRED"
+    """The session it lived for has closed with quantity outstanding. Terminal.
+
+    Kept distinct from `CANCELLED` deliberately. A cancellation is a decision
+    somebody made; an expiry is the DAY lifetime ending, which happens to every
+    unfilled DAY order whether anyone intervenes or not. Reporting them as one
+    state would make an unattended rollover indistinguishable from an operator
+    pulling an order, and only one of those needs looking into.
+
+    Residual quantity reaches a later session as a *new* child DAY order, never
+    by reviving this one — a DAY order that survived overnight would not be a DAY
+    order.
+    """
+
 
 #: The only moves this engine permits. Anything absent is refused by name.
 VALID_TRANSITIONS: Mapping[OrderState, frozenset[OrderState]] = {
@@ -89,28 +109,73 @@ VALID_TRANSITIONS: Mapping[OrderState, frozenset[OrderState]] = {
             OrderState.FILLED,
             OrderState.CANCELLED,
             OrderState.REJECTED,
+            OrderState.EXPIRED,
         }
     ),
     OrderState.PARTIALLY_FILLED: frozenset(
-        {OrderState.PARTIALLY_FILLED, OrderState.FILLED, OrderState.CANCELLED}
+        {
+            OrderState.PARTIALLY_FILLED,
+            OrderState.FILLED,
+            OrderState.CANCELLED,
+            OrderState.EXPIRED,
+        }
     ),
     OrderState.FILLED: frozenset(),
     OrderState.CANCELLED: frozenset(),
     OrderState.REJECTED: frozenset(),
+    OrderState.EXPIRED: frozenset(),
 }
 
 #: States nothing may leave. A terminal order is settled history.
 TERMINAL_STATES: frozenset[OrderState] = frozenset(
-    {OrderState.FILLED, OrderState.CANCELLED, OrderState.REJECTED}
+    {
+        OrderState.FILLED,
+        OrderState.CANCELLED,
+        OrderState.REJECTED,
+        OrderState.EXPIRED,
+    }
 )
 
 
-def transition_table() -> dict[str, Any]:
+#: The states and moves the V1 engine had, frozen with P2.0. V1 has no expiry
+#: because nothing in it ends a session, so a V1 manifest that listed `EXPIRED`
+#: would describe a transition that version can never take.
+V1_STATES: tuple[OrderState, ...] = (
+    OrderState.CREATED,
+    OrderState.SUBMITTED,
+    OrderState.ACKNOWLEDGED,
+    OrderState.PARTIALLY_FILLED,
+    OrderState.FILLED,
+    OrderState.CANCELLED,
+    OrderState.REJECTED,
+)
+
+
+def transition_table(*, include_expiry: bool = True) -> dict[str, Any]:
     """Describe the lifecycle, for the manifest and for documentation.
+
+    Args:
+        include_expiry: Whether to describe V1.1's `EXPIRED` state. False gives
+            the V1 table exactly as P2.0 froze it.
 
     Returns:
         The states, the permitted moves and the terminal set.
     """
+    if not include_expiry:
+        allowed = set(V1_STATES)
+        return {
+            "states": [str(state) for state in V1_STATES],
+            "transitions": {
+                str(source): sorted(str(target) for target in VALID_TRANSITIONS[source] & allowed)
+                for source in V1_STATES
+            },
+            "terminal": sorted(str(state) for state in TERMINAL_STATES if state in allowed),
+            "note": (
+                "the lifecycle is walked even when the broker is in-process. "
+                "Collapsing states because a local simulation could would leave the "
+                "first remote adapter exercising transitions nothing had tested."
+            ),
+        }
     return {
         "states": [str(state) for state in OrderState],
         "transitions": {
@@ -118,6 +183,11 @@ def transition_table() -> dict[str, Any]:
             for source, targets in VALID_TRANSITIONS.items()
         },
         "terminal": sorted(str(state) for state in TERMINAL_STATES),
+        "expiry": (
+            "EXPIRED is distinct from CANCELLED: a cancellation is a decision, an "
+            "expiry is the DAY lifetime ending. A FILLED order never expires, and "
+            "an EXPIRED order never fills again."
+        ),
         "note": (
             "the lifecycle is walked even when the broker is in-process. "
             "Collapsing states because a local simulation could would leave the "

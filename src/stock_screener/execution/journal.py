@@ -488,6 +488,10 @@ class ExecutionJournal:
             OrderFilledEvent,
         )
 
+        # ORDER_EXPIRED needs no special case: like a cancellation it is a pure
+        # state transition, and `resulting_state` plus the frozen table decide
+        # whether it is legal from where the order currently stands.
+
         statuses: dict[str, OrderStatus] = {}
         fills: dict[str, ExecutionFill] = {}
         applications: dict[str, FillApplication] = {}

@@ -586,12 +586,23 @@ def test_the_lifecycle_is_walked_rather_than_collapsed(tmp_path: Path) -> None:
 
 
 @pytest.mark.integration
-def test_the_transition_table_is_frozen() -> None:
-    table = transition_table()
+def test_the_v1_transition_table_is_frozen() -> None:
+    # Asked for explicitly. V1.1 added EXPIRED, and the V1 manifest keeps
+    # describing the shorter lifecycle because nothing in V1 ends a session.
+    table = transition_table(include_expiry=False)
 
     assert table["transitions"]["CREATED"] == ["SUBMITTED"]
     assert table["transitions"]["FILLED"] == []
     assert table["terminal"] == ["CANCELLED", "FILLED", "REJECTED"]
+    assert "EXPIRED" not in table["states"]
+
+
+@pytest.mark.integration
+def test_the_v1_manifest_still_describes_the_v1_lifecycle() -> None:
+    lifecycle = execution_manifest()["order_lifecycle"]
+
+    assert "EXPIRED" not in lifecycle["states"]
+    assert lifecycle["terminal"] == ["CANCELLED", "FILLED", "REJECTED"]
 
 
 @pytest.mark.integration

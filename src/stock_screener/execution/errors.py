@@ -15,6 +15,8 @@ from __future__ import annotations
 
 __all__ = [
     "EXECUTION_ERROR_CODES",
+    "V1_1_ADDED_ERROR_CODES",
+    "V1_ERROR_CODES",
     "Code",
     "ExecutionError",
 ]
@@ -36,6 +38,17 @@ class Code:
     UNSUPPORTED_ORDER_SIDE = "UNSUPPORTED_ORDER_SIDE"
     ORDER_INVALID = "ORDER_INVALID"
     ORDER_NOT_FOUND = "ORDER_NOT_FOUND"
+    # execution realism (V1.1)
+    INVALID_EXECUTION_POLICY = "INVALID_EXECUTION_POLICY"
+    INVALID_PAPER_QUOTE = "INVALID_PAPER_QUOTE"
+    PAPER_QUOTE_REQUIRED = "PAPER_QUOTE_REQUIRED"
+    PAPER_VOLUME_REQUIRED = "PAPER_VOLUME_REQUIRED"
+    PAPER_MARKET_SESSION_MISMATCH = "PAPER_MARKET_SESSION_MISMATCH"
+    PARTICIPATION_CAPACITY_EXHAUSTED = "PARTICIPATION_CAPACITY_EXHAUSTED"
+    ORDER_ALREADY_EXPIRED = "ORDER_ALREADY_EXPIRED"
+    EXECUTION_WINDOW_EXHAUSTED = "EXECUTION_WINDOW_EXHAUSTED"
+    UNKNOWN_EXECUTION_SESSION = "UNKNOWN_EXECUTION_SESSION"
+    EXECUTION_COST_DECOMPOSITION_VIOLATED = "EXECUTION_COST_DECOMPOSITION_VIOLATED"
     # sizing
     INVALID_EXECUTION_PRICE = "INVALID_EXECUTION_PRICE"
     SIZING_SNAPSHOT_INCOMPLETE = "SIZING_SNAPSHOT_INCOMPLETE"
@@ -74,12 +87,35 @@ class Code:
     PLAN_ALREADY_TERMINAL = "PLAN_ALREADY_TERMINAL"
 
 
+#: What the V1.1 engine adds. Separate because a V1 run genuinely cannot raise
+#: any of them: it has no quote, no volume, no participation ceiling, no expiry
+#: and no multi-session horizon. Listing them in a V1 manifest would claim a
+#: vocabulary that version does not have, and would move a fingerprint P2.0
+#: froze every time a later phase adds a code.
+V1_1_ADDED_ERROR_CODES: frozenset[str] = frozenset(
+    {
+        "EXECUTION_COST_DECOMPOSITION_VIOLATED",
+        "EXECUTION_WINDOW_EXHAUSTED",
+        "INVALID_EXECUTION_POLICY",
+        "INVALID_PAPER_QUOTE",
+        "ORDER_ALREADY_EXPIRED",
+        "PAPER_MARKET_SESSION_MISMATCH",
+        "PAPER_QUOTE_REQUIRED",
+        "PAPER_VOLUME_REQUIRED",
+        "PARTICIPATION_CAPACITY_EXHAUSTED",
+        "UNKNOWN_EXECUTION_SESSION",
+    }
+)
+
 EXECUTION_ERROR_CODES: frozenset[str] = frozenset(
     value
     for name, value in vars(Code).items()
     if not name.startswith("_") and isinstance(value, str)
 )
-"""Every code this module declares."""
+"""Every code this module declares, across both engine versions."""
+
+#: What the V1 engine can raise: everything except the V1.1 additions.
+V1_ERROR_CODES: frozenset[str] = EXECUTION_ERROR_CODES - V1_1_ADDED_ERROR_CODES
 
 
 class ExecutionError(ValueError):

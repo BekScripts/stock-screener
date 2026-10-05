@@ -45,6 +45,7 @@ __all__ = [
     "OrderAcknowledgedEvent",
     "OrderCancelledEvent",
     "OrderCreatedEvent",
+    "OrderExpiredEvent",
     "OrderFilledEvent",
     "OrderRejectedEvent",
     "OrderSubmittedEvent",
@@ -65,6 +66,9 @@ class ExecutionEventType(StrEnum):
 
     ORDER_CANCELLED = "ORDER_CANCELLED"
     ORDER_REJECTED = "ORDER_REJECTED"
+    ORDER_EXPIRED = "ORDER_EXPIRED"
+    """A DAY order's session closed with quantity outstanding. V1.1 only."""
+
     FILL_APPLIED = "FILL_APPLIED"
     """The accounting layer has durably admitted a fill. Recorded separately from
     the fill itself: this is what makes the handoff recoverable."""
@@ -166,6 +170,9 @@ class OrderCreatedEvent(ExecutionEvent):
     """
 
     order: Order | None = None
+    session: str | None = None
+    """Which session a V1.1 child order lives for. Absent under V1, and omitted
+    from the payload when absent so a V1 journal serialises exactly as it did."""
 
     def __post_init__(self) -> None:
         """Refuse a creation event with no order.
@@ -182,7 +189,10 @@ class OrderCreatedEvent(ExecutionEvent):
     def payload(self) -> dict[str, Any]:
         """The order's content and the authorisation it claims."""
         assert self.order is not None  # noqa: S101 - established above
-        return {"order": self.order.body()}
+        body: dict[str, Any] = {"order": self.order.body()}
+        if self.session is not None:
+            body["session"] = self.session
+        return body
 
     def resulting_state(self) -> OrderState:
         """`CREATED`."""
@@ -351,6 +361,18 @@ class OrderFilledEvent(ExecutionEvent):
     """
 
     fill: ExecutionFill | None = None
+    session: str | None = None
+    """The session this filled in. V1.1 only."""
+
+    bid: Decimal | None = None
+    ask: Decimal | None = None
+    touch_price: Decimal | None = None
+    observed_share_volume: Decimal | None = None
+    participation_ceiling: Decimal | None = None
+    """The market context the fill traded against, carried so the cost report can
+    be rebuilt from the journal alone rather than from snapshots a later process
+    might not have. All absent under V1 and omitted from the payload, so a V1
+    journal serialises exactly as it did."""
 
     def __post_init__(self) -> None:
         """Refuse a fill event with no fill.
@@ -370,9 +392,24 @@ class OrderFilledEvent(ExecutionEvent):
             )
 
     def payload(self) -> dict[str, Any]:
-        """The fill's body."""
+        """The fill's body, plus the V1.1 market context when present."""
         assert self.fill is not None  # noqa: S101 - established above
-        return {"fill": self.fill.body()}
+        body: dict[str, Any] = {"fill": self.fill.body()}
+        context = {
+            "session": self.session,
+            "bid": None if self.bid is None else str(self.bid),
+            "ask": None if self.ask is None else str(self.ask),
+            "touch_price": None if self.touch_price is None else str(self.touch_price),
+            "observed_share_volume": (
+                None if self.observed_share_volume is None else str(self.observed_share_volume)
+            ),
+            "participation_ceiling": (
+                None if self.participation_ceiling is None else str(self.participation_ceiling)
+            ),
+        }
+        if any(value is not None for value in context.values()):
+            body["market"] = context
+        return body
 
 
 @dataclass(frozen=True)
@@ -411,6 +448,50 @@ class OrderRejectedEvent(ExecutionEvent):
     def resulting_state(self) -> OrderState:
         """`REJECTED`."""
         return OrderState.REJECTED
+
+
+@dataclass(frozen=True)
+class OrderExpiredEvent(ExecutionEvent):
+    """A DAY order's session closed with quantity outstanding.
+
+    Distinct from a cancellation. Nothing decided this; the order's one-session
+    lifetime simply ended, and the residual reaches the next session as a new
+    child order rather than by this one surviving.
+
+    Attributes:
+        session: The session that closed.
+        residual_quantity: What never filled. Recorded so the next child's
+            authorised quantity can be checked against the journal rather than
+            recomputed from somewhere else.
+    """
+
+    session: str = ""
+    residual_quantity: Decimal = Decimal(0)
+
+    def __post_init__(self) -> None:
+        """Refuse an expiry that cannot say which session ended.
+
+        Raises:
+            ExecutionError: `EXECUTION_EVENT_INVALID` if the session is absent.
+        """
+        super().__post_init__()
+        if not self.session:
+            raise ExecutionError(
+                Code.EXECUTION_EVENT_INVALID,
+                "an expiry event must name the session whose close ended the order",
+            )
+
+    def payload(self) -> dict[str, Any]:
+        """The session and the residual."""
+        return {
+            "session": self.session,
+            "residual_quantity": str(quantise_quantity(self.residual_quantity)),
+            "reason": "DAY_SESSION_CLOSED",
+        }
+
+    def resulting_state(self) -> OrderState:
+        """`EXPIRED`."""
+        return OrderState.EXPIRED
 
 
 @dataclass(frozen=True)

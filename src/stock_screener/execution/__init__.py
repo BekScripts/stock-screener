@@ -67,8 +67,23 @@ from .authorization import (
     intents_fingerprint,
     require_supported_accounting_version,
 )
+from .calendar import CALENDAR_CONTRACT, ExecutionCalendar
+from .cost import (
+    COST_REPORT_CONTRACT,
+    ExecutionCostReport,
+    IdentityCost,
+    SessionFillCost,
+    build_cost_report,
+    cost_of_fill,
+)
 from .engine import ExecutionSession, RecoveryOutcome
-from .errors import EXECUTION_ERROR_CODES, Code, ExecutionError
+from .errors import (
+    EXECUTION_ERROR_CODES,
+    V1_1_ADDED_ERROR_CODES,
+    V1_ERROR_CODES,
+    Code,
+    ExecutionError,
+)
 from .events import (
     ExecutionEvent,
     ExecutionEventType,
@@ -78,6 +93,7 @@ from .events import (
     OrderAcknowledgedEvent,
     OrderCancelledEvent,
     OrderCreatedEvent,
+    OrderExpiredEvent,
     OrderFilledEvent,
     OrderRejectedEvent,
     OrderSubmittedEvent,
@@ -91,7 +107,13 @@ from .journal import (
     chain_link,
     verify_journal,
 )
-from .manifest import EXECUTION_MANIFEST_VERSION, execution_manifest, manifest_fingerprint
+from .manifest import (
+    EXECUTION_MANIFEST_VERSION,
+    EXECUTION_MANIFEST_VERSION_V1_1,
+    execution_manifest,
+    manifest_fingerprint,
+    realism_manifest,
+)
 from .models import (
     SUPPORTED_ORDER_TYPES,
     SUPPORTED_TIME_IN_FORCE,
@@ -103,6 +125,7 @@ from .models import (
 )
 from .paper_broker import VENUE, DeterministicPaperBroker
 from .paper_market import ExecutionPrice, PaperExecutionSnapshot, paper_market_policy
+from .participation import PARTICIPATION_CONTRACT, SessionCapacity, capacity_for
 from .persistence import (
     ANCHOR_FILENAME,
     DEFAULT_JOURNAL_GENERATION,
@@ -119,33 +142,63 @@ from .planner import (
     plan_execution,
     sequence_group_of,
 )
+from .realism_policy import (
+    EXAMPLE_REALISM_POLICY,
+    REALISM_POLICY_CONTRACT,
+    PaperExecutionPolicy,
+)
+from .realism_run import load_realism_request, run_session_execution
 from .reports import ExecutionPlanReport, OrderReport, build_plan_report
 from .run import evaluate_request, load_request, run_paper_execution
 from .serde import event_from_json, order_from_json
+from .session_broker import (
+    SESSION_VENUE,
+    SessionPaperBroker,
+    build_child_order,
+    child_order_id,
+)
+from .session_engine import SessionExecutionOutcome, SessionExecutionSession
+from .session_market import (
+    PaperMarketSessionSnapshot,
+    SessionQuote,
+    fill_price_for,
+    touch_price_for,
+)
 from .state_machine import (
     TERMINAL_STATES,
+    V1_STATES,
     VALID_TRANSITIONS,
     OrderState,
     OrderStatus,
     transition_table,
 )
 from .versions import (
+    DAY_EXPIRY_POLICY,
     EXECUTION_ENGINE_VERSION,
+    EXECUTION_ENGINE_VERSION_V1_1,
     FILL_ATTRIBUTION_RULE,
     JOURNAL_CHAIN_VERSION,
     ORDER_SEQUENCING_RULE,
     PAPER_FILL_MODEL,
     PAPER_FILL_POLICY,
+    PAPER_SESSION_FILL_MODEL,
     REQUIRED_ACCOUNTING_VERSION,
+    SESSION_ROLLOVER_POLICY,
     engine_policy,
 )
 
 __all__ = [
     "ANCHOR_FILENAME",
+    "CALENDAR_CONTRACT",
+    "COST_REPORT_CONTRACT",
+    "DAY_EXPIRY_POLICY",
     "DEFAULT_JOURNAL_GENERATION",
+    "EXAMPLE_REALISM_POLICY",
     "EXECUTION_ENGINE_VERSION",
+    "EXECUTION_ENGINE_VERSION_V1_1",
     "EXECUTION_ERROR_CODES",
     "EXECUTION_MANIFEST_VERSION",
+    "EXECUTION_MANIFEST_VERSION_V1_1",
     "FILL_ATTRIBUTION_RULE",
     "FORBIDDEN_ROOTS",
     "GENESIS_HASH",
@@ -154,12 +207,20 @@ __all__ = [
     "ORDER_SEQUENCING_RULE",
     "PAPER_FILL_MODEL",
     "PAPER_FILL_POLICY",
+    "PAPER_SESSION_FILL_MODEL",
+    "PARTICIPATION_CONTRACT",
+    "REALISM_POLICY_CONTRACT",
     "REQUIRED_ACCOUNTING_VERSION",
     "SEQUENCE_GROUPS",
+    "SESSION_ROLLOVER_POLICY",
+    "SESSION_VENUE",
     "STORE_VERSION",
     "SUPPORTED_ORDER_TYPES",
     "SUPPORTED_TIME_IN_FORCE",
     "TERMINAL_STATES",
+    "V1_1_ADDED_ERROR_CODES",
+    "V1_ERROR_CODES",
+    "V1_STATES",
     "VALID_TRANSITIONS",
     "VENUE",
     "AdmissionResult",
@@ -168,6 +229,8 @@ __all__ = [
     "Code",
     "CommitResult",
     "DeterministicPaperBroker",
+    "ExecutionCalendar",
+    "ExecutionCostReport",
     "ExecutionError",
     "ExecutionEvent",
     "ExecutionEventType",
@@ -182,12 +245,14 @@ __all__ = [
     "ExecutionStore",
     "FillApplication",
     "FillAppliedEvent",
+    "IdentityCost",
     "JournalAnchorStatus",
     "JournalRecord",
     "Order",
     "OrderAcknowledgedEvent",
     "OrderCancelledEvent",
     "OrderCreatedEvent",
+    "OrderExpiredEvent",
     "OrderFilledEvent",
     "OrderLedger",
     "OrderRejectedEvent",
@@ -197,32 +262,50 @@ __all__ = [
     "OrderStatus",
     "OrderSubmittedEvent",
     "OrderType",
+    "PaperExecutionPolicy",
     "PaperExecutionSnapshot",
+    "PaperMarketSessionSnapshot",
     "PlanStatus",
     "RecoveryOutcome",
+    "SessionCapacity",
+    "SessionExecutionOutcome",
+    "SessionExecutionSession",
+    "SessionFillCost",
+    "SessionPaperBroker",
+    "SessionQuote",
     "SizingPrice",
     "TimeInForce",
     "admit_fill",
     "allocate_partial_fill",
+    "build_child_order",
+    "build_cost_report",
     "build_plan_report",
+    "capacity_for",
     "chain_link",
+    "child_order_id",
     "classify_journal_anchor",
+    "cost_of_fill",
     "engine_policy",
     "evaluate_request",
     "event_from_json",
     "execution_manifest",
+    "fill_price_for",
     "fingerprint_of",
     "intents_fingerprint",
+    "load_realism_request",
     "load_request",
     "manifest_fingerprint",
     "order_from_json",
     "order_state_fingerprint",
     "paper_market_policy",
     "plan_execution",
+    "realism_manifest",
     "require_supported_accounting_version",
     "run_paper_execution",
+    "run_session_execution",
     "sequence_group_of",
     "to_accounting_fill_event",
+    "touch_price_for",
     "transition_table",
     "verify_journal",
 ]

@@ -36,8 +36,14 @@ appears without the run or the test that produced it.
 
 ## Current phase
 
-**P2.0 — broker-neutral order lifecycle and deterministic paper execution** is
-the current checkpoint, on `feat/p2-execution-engine`.
+**P2.1 — deterministic execution realism and multi-session paper fills** is the
+current checkpoint, on `feat/p2-execution-engine`.
+
+**P2.0 is complete and frozen** at `p2-execution-foundation-complete`
+(`e4ad0c8a`), which freezes `EXECUTION_ENGINE_V1` and
+`PAPER_REFERENCE_PRICE_FILL_V1`. P2.1 adds friction on top rather than changing
+any of it: the V1 goldens reproduce byte for byte and the V1 manifest keeps
+describing the V1 lifecycle and vocabulary.
 
 **P1 is complete and frozen** at `p1-portfolio-authority-complete`
 (`b87e7c96`), which closes the portfolio programme at P1.4. From that tag the
@@ -58,6 +64,8 @@ frozen at the same commit; P2 branched from it.
 | P1 | **PORTFOLIO AUTHORITY COMPLETE** — tag `p1-portfolio-authority-complete` |
 | P2 execution | **ACTIVE** |
 | P2.0 | **BROKER-NEUTRAL ORDER LIFECYCLE / LOCAL PAPER EXECUTION** — `EXECUTION_ENGINE_V1` |
+| P2.0 checkpoint | tag `p2-execution-foundation-complete` |
+| P2.1 | **DETERMINISTIC EXECUTION REALISM / MULTI-SESSION FILLS** — `EXECUTION_ENGINE_V1_1` |
 | Production risk thresholds | **NOT AUTHORIZED** |
 | Production strategy budgets | **NOT AUTHORIZED** |
 | Production correlation thresholds | **NOT AUTHORIZED** |
@@ -86,6 +94,83 @@ bypass or override argument — asserted by a test walking every signature, beca
 the rule is worth exactly what it is worth on the day someone wants it not to hold.
 Only the future broker adapter will hold credentials or submit an order; every
 layer above it is structurally incapable of reaching one.
+
+### P2.1 — what execution costs, and what DAY actually means
+
+`EXECUTION_ENGINE_V1_1` adds friction to P2.0's lifecycle and corrects one thing
+P2.0 got wrong. V1 remains frozen and reproducible; V1.1 is selected by supplying
+a policy, a calendar and session snapshots.
+
+**The friction is declared, never calibrated.** Slippage, participation and the
+session horizon are inputs on a fingerprinted `PaperExecutionPolicy`, and nothing
+in the package reads a return, a price history or a P&L figure to choose one. That
+restraint is the point: a cost model fitted to make a backtest match an observed
+result becomes a free parameter of the strategy, and the strategy's apparent edge
+then partly comes from the assumption chosen to flatter it. Every example value is
+`NOT_PRODUCTION_AUTHORIZED`.
+
+**Spread and slippage are strictly adverse.** A buy crosses to the ask and is
+worsened from there; a sell crosses to the bid and is worsened from there. A
+negative slippage is refused by name — a model that could improve a fill is a
+model that can manufacture edge. A crossed quote is `INVALID_PAPER_QUOTE` rather
+than normalised, and a missing quote side is `PAPER_QUOTE_REQUIRED` with **no
+fallback to a sizing price, close or last trade**: substituting one price for a
+quote silently removes the spread cost this model exists to charge.
+
+**Participation is global to `(identity, session)` and derived from durable
+fills.** The ceiling is `observed_share_volume * participation`, in *shares* — not
+P1's average dollar volume, which would misprice it by a factor of the price —
+and it is shared across every child touching that security that session rather
+than granted per order. Consumption is read back out of the journal keyed by fill
+id, so a replayed fill consumes capacity once; a counter would double-consume on
+every retry, and retries are the normal consequence of a crash.
+
+**DAY now means DAY.** P2.0 let a DAY order live indefinitely, which was simply
+wrong. A session close with quantity outstanding now produces `EXPIRED`,
+terminally, kept distinct from `CANCELLED` because a cancellation is a decision
+and an expiry is a lifetime ending — conflating them would make an unattended
+rollover indistinguishable from an operator pulling an order.
+
+**Residual rolls as new child orders, never by reviving an expired one.** Each
+child's id is a digest over the plan, the security, the session, the generation
+and the authorised residual, which makes creation idempotent across a crash and a
+fabricated child impossible to pass. Children are authorised by *derivation*
+rather than list membership, because a plan cannot enumerate children whose count
+depends on fills that have not happened. Residual comes from admitted fills, not
+submitted quantity — a child sent for 400 that filled 250 leaves 750 of a 1,000
+parent, not 600. The next session comes from an explicit `ExecutionCalendar`:
+Friday rolls to Monday and a pre-holiday residual to the day after, and `date + 1`
+would have placed a child on a day the market was shut.
+
+**The horizon is finite.** An exhausted session budget leaves the plan
+`PARTIALLY_COMPLETED`, which is a real outcome. Unbounded rollover would keep
+trading against a portfolio decision made arbitrarily long ago.
+
+**Cost is decomposed exactly and posted to nothing.** `shortfall == spread +
+slippage` is enforced on every report, not asserted in prose. The book already
+received the actual fill price and the actual fee, so the cost is *already* inside
+cash, cost basis and realised P&L — posting a spread or slippage expense
+alongside would charge it twice and make NAV wrong by exactly the amount being
+reported. The reports explain the prices the book holds; they do not adjust them.
+
+**One timing semantic.** A snapshot is a completed session whose execution
+opportunity is its own `as_of`; bid, ask, volume and fill all belong to that
+instant and no fill is backdated inside the session. Using a whole session's
+volume while dating the fill earlier would spend information the fill could not
+have had — the same leakage the research layer exists to prevent.
+
+Two structural problems surfaced while building this. The V1 manifest began
+reporting V1.1's lifecycle and codes, so the manifest and the transition table are
+now versioned and each reports what *that* engine can actually do — a V1 order
+genuinely cannot expire. And `require_authorizes` could not see a child order at
+all, because children are derived rather than listed; `require_authorizes_child`
+recomputes the deterministic id, which is a stronger check than membership would
+have been.
+
+**Still not modelled**, and stated in the manifest: market impact, latency, queue
+position, hidden liquidity, venue routing, auction behaviour and intraday price
+paths. Impact in particular is a function of order size against liquidity, and a
+flat declared haircut is not an approximation of it.
 
 ### P2.0 — an authorised target becomes a fill, and nothing else does
 
@@ -3191,23 +3276,41 @@ care — nothing has a foreign key *to* it, so dropping it cascades to nothing.
 
 ## Known limitations
 
-**No execution realism at all (P2.0).** The paper engine models no bid-ask
-spread, no slippage, no market impact, no volume participation, no latency and no
-queue position. A strategy run through it will look better than it would trade,
-by roughly those costs, and the gap is not small. This is the engine's scope
-rather than a defect — it exists to prove the order lifecycle and the accounting
-handoff are correct, not to estimate a return — and it is the whole of P2.1. Any
-figure produced through it must be read with that disclosed.
+**The execution friction is declared, not measured (P2.1).** Slippage,
+participation and the session horizon are policy inputs. Nothing calibrates them,
+and nothing should calibrate them from a strategy's own returns — doing so would
+make the cost model a free parameter of the strategy and its apparent edge partly
+an artefact of the assumption chosen. Every example value is
+`NOT_PRODUCTION_AUTHORIZED`, and a realistic figure needs an execution-cost study
+this programme has not performed.
+
+**No market impact, latency or queue position (P2.1).** V1.1 models quoted
+spread, declared adverse slippage and share-volume participation. It does not
+model impact, which is a function of an order's own size against available
+liquidity — a flat haircut is not an approximation of it, and a large order will
+be simulated as cheaper than it would trade. Latency, queue position, hidden
+liquidity, venue routing and auction behaviour are likewise absent.
+
+**One intraday execution opportunity per session (P2.1).** A session snapshot is
+a single opportunity at its `as_of`, so an order cannot work the session's price
+path. That is what keeps the timing semantics honest — using a whole session's
+volume while dating a fill earlier inside it would be leakage — but it also means
+intra-session timing cannot be studied here.
+
+**A session with no snapshot stops that security's rollover (P2.1).** No child is
+created for a session the request supplied no market for, because a child with
+nothing to fill against would expire having never had a chance. The outcome
+reports `NO_MARKET_SNAPSHOT_FOR_SESSION` rather than skipping to a later session.
+
+**V1 execution carries the limitations P2.1 closed.** `EXECUTION_ENGINE_V1`
+remains executable and reproducible, and a V1 run still models no execution cost
+at all and still lets a DAY order live indefinitely. Those are properties of that
+frozen version, not open defects: the fix is to run new work under V1.1.
 
 **Coordinated local rollback of an execution journal and its anchor is not
 detectable (P2.0).** The same limitation as the accounting ledger's, for the same
 reason: local files cannot establish that they are the latest state of
 themselves. An independently trusted external anchor would close both.
-
-**Order expiry is not simulated (P2.0).** `DAY` is the only time in force and
-nothing expires an order at a session boundary. A plan is executed within one
-session's worth of snapshots, and a caller wanting multi-session behaviour has to
-model it outside the engine.
 
 **One plan per execution journal generation (P2.0).** Running a second plan
 against the same book needs a new execution store, and there is no cross-plan
@@ -4932,10 +5035,20 @@ Not a backlog. These exclusions are deliberate.
 **Do not build without being asked:**
 
 - a live broker adapter, or an external paper brokerage of any kind — not even
-  read-only. P2.0's broker is deterministic and local, and external brokerage
-  comes only after the internal semantics are frozen
-- randomness in a paper fill, a slippage or market-impact model, or any
-  execution-parameter optimisation — those are P2.1 and need a version
+  read-only. The broker is deterministic and local, and external brokerage comes
+  only after the internal semantics are frozen
+- randomness in a paper fill, under any name
+- a market-impact model, latency simulation, queue position, hidden liquidity,
+  venue routing or auction behaviour — each is a new engine version, never an
+  edit to V1.1
+- any execution-parameter optimisation, or a friction value calibrated from a
+  strategy's returns
+- a negative slippage, a price-improvement branch, or a participation ceiling
+  above 1
+- reviving an expired DAY order, or any order that spans two sessions
+- a next-session rule other than the explicit calendar — never `date + 1`
+- posting spread, slippage or shortfall into the accounting book as an expense:
+  the price the book paid already contains it
 - TWAP, VWAP scheduling, participation algorithms, smart routing or icebergs
 - a broker that maintains its own cash, positions, P&L or buying power
 - an unauthorised-order path: no `force`, no `unsafe_submit`, no arbitrary submit

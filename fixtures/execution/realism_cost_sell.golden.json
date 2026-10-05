@@ -1,0 +1,588 @@
+{
+  "cost_report": {
+    "accounting_effect": "NONE",
+    "accounting_note": "the book already received the actual fill price and the actual fee, so this cost is already inside cash, cost basis and realised P&L. Posting a spread or slippage expense alongside would charge it twice and make NAV wrong by exactly the amount reported here. These figures explain the prices the book holds; they do not adjust them.",
+    "contract": "EXECUTION_COST_REPORT_V1",
+    "engine_version": "EXECUTION_ENGINE_V1_1",
+    "execution_plan_id": "COST-SELL",
+    "fill_model": "PAPER_SESSION_PARTICIPATION_FILL_V1",
+    "identities": [
+      "implementation_shortfall = spread_cost + slippage_cost",
+      "total_execution_cost = implementation_shortfall + fees",
+      "total_execution_cost = spread_cost + slippage_cost + fees"
+    ],
+    "per_identity": [
+      {
+        "fees": "0",
+        "filled_quantity": "100.00000000",
+        "identity": "COMPANY:8101",
+        "implementation_shortfall": "109.90000000",
+        "planned_quantity": "100.00000000",
+        "remaining_quantity": "0",
+        "sessions_used": 1,
+        "slippage_cost": "9.90000000",
+        "spread_cost": "100.00000000",
+        "total_execution_cost": "109.90000000",
+        "vwap_fill_price": "98.90100000"
+      }
+    ],
+    "per_session": [
+      {
+        "actual_participation": "0.00010000",
+        "ask": "101.00000000",
+        "bid": "99.00000000",
+        "fee": "0",
+        "fill_id": "COMPANY:8101@2026-10-02#G1:3a089731038db26c#1",
+        "fill_price": "98.90100000",
+        "filled_quantity": "100.00000000",
+        "identity": "COMPANY:8101",
+        "implementation_shortfall": "109.90000000",
+        "mid": "100.00000000",
+        "observed_share_volume": "1000000.00000000",
+        "participation_ceiling": "1000000.00000000",
+        "session": "2026-10-02",
+        "side": "SELL",
+        "slippage_cost": "9.90000000",
+        "spread_cost": "100.00000000",
+        "total_execution_cost": "109.90000000"
+      }
+    ],
+    "policy_fingerprint": "43fe9824174b222dc2f0db18329e1006b36997785d53e3e02041f12617c79d33",
+    "report_fingerprint": "f263277df31e3f6c660e8dbc623bd82f41434a73509e0dc32a07d6ec79836066",
+    "sessions": [
+      "2026-10-02"
+    ],
+    "totals": {
+      "fees": "0",
+      "implementation_shortfall": "109.90000000",
+      "slippage_cost": "9.90000000",
+      "spread_cost": "100.00000000",
+      "total_execution_cost": "109.90000000"
+    }
+  },
+  "final_book": {
+    "accounting_version": "PORTFOLIO_ACCOUNTING_V2",
+    "attribution_cost_pools": [
+      {
+        "average_cost": "0",
+        "closed_quantity": "100.00000000",
+        "dividends_received": "0",
+        "fees_paid": "0",
+        "identity": "COMPANY:8101",
+        "is_open": false,
+        "is_unattributed": false,
+        "owner": "ALPHA",
+        "quantity": "0",
+        "realised_trading_pnl_gross": "890.1000",
+        "total_cost_basis": "0"
+      }
+    ],
+    "attribution_owners": [
+      "ALPHA"
+    ],
+    "cash": "9890.1000",
+    "cash_summary": {
+      "balance": "9890.1000",
+      "deposits": "0",
+      "dividends": "0",
+      "external_flow_net": "0",
+      "fees": "0",
+      "opening": "0",
+      "purchases": "0",
+      "sales": "9890.1000",
+      "withdrawals": "0"
+    },
+    "closed_positions": [
+      {
+        "attribution": [],
+        "average_cost": "0",
+        "cost_basis_policy": "PER_ATTRIBUTION_WEIGHTED_AVERAGE_COST_V1",
+        "dividends_received": "0",
+        "fees_paid": "0",
+        "identity": {
+          "identity_id": 8101,
+          "kind": "COMPANY",
+          "symbol": "BIG"
+        },
+        "label": "COMPANY:8101",
+        "pools": [
+          {
+            "average_cost": "0",
+            "closed_quantity": "100.00000000",
+            "dividends_received": "0",
+            "fees_paid": "0",
+            "identity": "COMPANY:8101",
+            "is_open": false,
+            "is_unattributed": false,
+            "owner": "ALPHA",
+            "quantity": "0",
+            "realised_trading_pnl_gross": "890.1000",
+            "total_cost_basis": "0"
+          }
+        ],
+        "quantity": "0",
+        "realised_pnl": "890.1000",
+        "total_cost": "0"
+      }
+    ],
+    "cost_basis_policy": "PER_ATTRIBUTION_WEIGHTED_AVERAGE_COST_V1",
+    "dividend_income": "0",
+    "fees_paid": "0",
+    "inception_nav_at_cost": "9000.0000",
+    "last_effective_at": "2026-10-02T16:00:00-04:00",
+    "ledger_head_hash": "da98763054a08f080c33a6d7876366ac2681cbe9d64bc261f2d220bad2ba79f9",
+    "ledger_sequence": 2,
+    "open_position_count": 0,
+    "opening_cost_basis": "9000.0000",
+    "pool_cost_basis_total": "0",
+    "pool_realised_total": "890.1000",
+    "positions": [],
+    "realised_pnl": "890.1000",
+    "total_cost_basis": "0",
+    "unattributed_quantity": "0",
+    "unsupported_actions": []
+  },
+  "manifest": {
+    "bindings": {
+      "accounting_generation": "PORTFOLIO_LEDGER_GENERATION_1",
+      "accounting_version": "PORTFOLIO_ACCOUNTING_V2",
+      "calendar_fingerprint": "d067c99c0fb0a52c7254830f93f7e25cbbb50feb0a6bff42b457a5dcd09aefd1",
+      "code_commit": null,
+      "cost_report_fingerprint": "f263277df31e3f6c660e8dbc623bd82f41434a73509e0dc32a07d6ec79836066",
+      "execution_plan_fingerprint": "99f53eca4348fce6d889280692ddb8061b3771a848571176969fe140f323f004",
+      "execution_policy_fingerprint": "43fe9824174b222dc2f0db18329e1006b36997785d53e3e02041f12617c79d33",
+      "final_accounting_state": "78a925cd5ed0ad35a815e177fefab8818dab78b684d527333551f89611a997bc",
+      "initial_accounting_state": "47c965bd32439fbf4ebc17ee18ef59261c9f3b401f88091119f665a840cce20a",
+      "journal_anchor_fingerprint": "c6c4379bf1a1751240a17aaeb20f1c868c98018c3c50a6d6c116e51ce5fdaa71",
+      "journal_generation": "EXECUTION_JOURNAL_GENERATION_1",
+      "journal_head": "438876775757b3fe0b14d8c161e6275dea4a8eff1e07772122fbf962cb4c7255",
+      "journal_sequence": 5,
+      "realism_report_fingerprint": "fe76d8cfcbea6c5413bbe5f3f6882db396c6d852cba08405c8742222e07237e8",
+      "session_snapshot_fingerprints": [
+        "fa6826ebf1dabcd22f43ab6c6848a4effafc356e218718d8fc34a6e9f4789e01"
+      ]
+    },
+    "calendar": {
+      "calendar_fingerprint": "d067c99c0fb0a52c7254830f93f7e25cbbb50feb0a6bff42b457a5dcd09aefd1",
+      "contract": "EXECUTION_SESSION_CALENDAR_V1",
+      "first": "2026-10-02",
+      "last": "2026-10-08",
+      "name": "EXAMPLE_CALENDAR",
+      "session_count": 4,
+      "sessions": [
+        "2026-10-02",
+        "2026-10-05",
+        "2026-10-06",
+        "2026-10-08"
+      ]
+    },
+    "error_codes": [
+      "ACCOUNTING_ADMISSION_FAILED",
+      "EXECUTION_ANCHOR_FINGERPRINT_MISMATCH",
+      "EXECUTION_ANCHOR_INVALID",
+      "EXECUTION_ANCHOR_MISSING",
+      "EXECUTION_AUTHORIZATION_MISMATCH",
+      "EXECUTION_BOOK_MISMATCH",
+      "EXECUTION_COST_DECOMPOSITION_VIOLATED",
+      "EXECUTION_EVENT_ID_CONFLICT",
+      "EXECUTION_EVENT_INVALID",
+      "EXECUTION_GENERATION_MISMATCH",
+      "EXECUTION_JOURNAL_HASH_CHAIN_MISMATCH",
+      "EXECUTION_JOURNAL_HEAD_ANCHOR_MISMATCH",
+      "EXECUTION_JOURNAL_SEQUENCE_GAP",
+      "EXECUTION_JOURNAL_TRUNCATION_DETECTED",
+      "EXECUTION_PARTIAL_RECORD",
+      "EXECUTION_PERSISTENCE_VERIFY_FAILED",
+      "EXECUTION_RECOVERY_REQUIRED",
+      "EXECUTION_STATE_DRIFT",
+      "EXECUTION_WINDOW_EXHAUSTED",
+      "FILL_ATTRIBUTION_DOES_NOT_SUM",
+      "FILL_ATTRIBUTION_UNAUTHORIZED",
+      "FILL_ID_CONFLICT",
+      "FILL_INVALID",
+      "FORBIDDEN_EXECUTION_NAMESPACE",
+      "INVALID_EXECUTION_POLICY",
+      "INVALID_EXECUTION_PRICE",
+      "INVALID_ORDER_STATE_TRANSITION",
+      "INVALID_PAPER_QUOTE",
+      "ORDER_ALREADY_EXPIRED",
+      "ORDER_ALREADY_TERMINAL",
+      "ORDER_INVALID",
+      "ORDER_NOT_FOUND",
+      "ORDER_OVERFILL",
+      "PAPER_EXECUTION_PRICE_MISSING",
+      "PAPER_MARKET_SESSION_MISMATCH",
+      "PAPER_POLICY_REJECTED",
+      "PAPER_QUOTE_REQUIRED",
+      "PAPER_SNAPSHOT_BEFORE_ACKNOWLEDGEMENT",
+      "PAPER_VOLUME_REQUIRED",
+      "PARTICIPATION_CAPACITY_EXHAUSTED",
+      "PLAN_ALREADY_TERMINAL",
+      "PLAN_INVALID",
+      "SIZING_SNAPSHOT_INCOMPLETE",
+      "STALE_EXECUTION_INTENT",
+      "UNAUTHORIZED_ORDER",
+      "UNKNOWN_EXECUTION_SESSION",
+      "UNSUPPORTED_EXECUTION_ACCOUNTING_VERSION",
+      "UNSUPPORTED_ORDER_SIDE",
+      "UNSUPPORTED_ORDER_TYPE",
+      "UNSUPPORTED_TIME_IN_FORCE"
+    ],
+    "execution_policy": {
+      "adverse_slippage_bps": "10",
+      "authorization": "NOT_PRODUCTION_AUTHORIZED",
+      "calibration": "NONE \u2014 every value is declared by the caller. Nothing in this package reads a return, a price history or a P&L figure to choose one, because a cost model fitted to make a strategy look good is a free parameter of that strategy.",
+      "engine_version": "EXECUTION_ENGINE_V1_1",
+      "expiry_policy": "DAY_ORDER_SESSION_EXPIRY_V1",
+      "fill_model": "PAPER_SESSION_PARTICIPATION_FILL_V1",
+      "market_impact": "NOT_MODELLED \u2014 impact is a function of an order's size against available liquidity. This is a flat declared haircut and is not the same thing.",
+      "max_volume_participation": "1",
+      "maximum_execution_sessions": 1,
+      "policy_fingerprint": "43fe9824174b222dc2f0db18329e1006b36997785d53e3e02041f12617c79d33",
+      "policy_id": "COST-SELL_POLICY",
+      "policy_version": "PAPER_EXECUTION_POLICY_V1",
+      "production_authorized": false,
+      "rollover_policy": "CHILD_DAY_ORDER_ROLLOVER_V1",
+      "slippage_direction": "ADVERSE_ONLY",
+      "spread_required": true,
+      "volume_required": true
+    },
+    "external_paper_broker": "NOT_IMPLEMENTED",
+    "invariants": [
+      "an order changes no holding, no cash and no NAV",
+      "only an admitted accounting FillEvent changes the book",
+      "every order originates from an authorised execution plan",
+      "cumulative filled quantity never exceeds the ordered quantity",
+      "a fill maps to exactly one accounting event, derived from its id",
+      "fill attribution sums exactly to the filled quantity",
+      "the broker holds no cash, no positions and no P&L",
+      "a buy never fills below the ask; a sell never fills above the bid",
+      "implementation shortfall = spread cost + slippage cost",
+      "total execution cost = shortfall + fees = spread + slippage + fees",
+      "total fills in one (identity, session) never exceed that session's participation ceiling",
+      "a DAY order never survives its session; EXPIRED is terminal",
+      "residual quantity reaches a later session as a new child order"
+    ],
+    "live_broker": "NOT_IMPLEMENTED",
+    "live_trading": "NOT_AUTHORIZED",
+    "manifest_fingerprint": "419c5d3871f5ab097bb40f91a676ff2f986708088cdfab186d786d91cd1349c8",
+    "manifest_version": "EXECUTION_MANIFEST_V1_1",
+    "not_guaranteed": [
+      "COORDINATED_LOCAL_ROLLBACK_DETECTION: a journal and its local anchor rolled back together to a mutually consistent earlier state cannot be detected from local files alone.",
+      "EXECUTION REALISM BEYOND THIS MODEL: spread, declared adverse slippage and session participation are modelled. Market impact, latency, queue position, hidden liquidity, venue routing, auction behaviour and intraday price paths are not. The friction here is a declared haircut, not a measurement, and no value in the policy is calibrated from any strategy's returns."
+    ],
+    "order_lifecycle": {
+      "expiry": "EXPIRED is distinct from CANCELLED: a cancellation is a decision, an expiry is the DAY lifetime ending. A FILLED order never expires, and an EXPIRED order never fills again.",
+      "note": "the lifecycle is walked even when the broker is in-process. Collapsing states because a local simulation could would leave the first remote adapter exercising transitions nothing had tested.",
+      "states": [
+        "CREATED",
+        "SUBMITTED",
+        "ACKNOWLEDGED",
+        "PARTIALLY_FILLED",
+        "FILLED",
+        "CANCELLED",
+        "REJECTED",
+        "EXPIRED"
+      ],
+      "terminal": [
+        "CANCELLED",
+        "EXPIRED",
+        "FILLED",
+        "REJECTED"
+      ],
+      "transitions": {
+        "ACKNOWLEDGED": [
+          "CANCELLED",
+          "EXPIRED",
+          "FILLED",
+          "PARTIALLY_FILLED",
+          "REJECTED"
+        ],
+        "CANCELLED": [],
+        "CREATED": [
+          "SUBMITTED"
+        ],
+        "EXPIRED": [],
+        "FILLED": [],
+        "PARTIALLY_FILLED": [
+          "CANCELLED",
+          "EXPIRED",
+          "FILLED",
+          "PARTIALLY_FILLED"
+        ],
+        "REJECTED": [],
+        "SUBMITTED": [
+          "ACKNOWLEDGED",
+          "CANCELLED",
+          "REJECTED"
+        ]
+      }
+    },
+    "policies": {
+      "cost_report": "EXECUTION_COST_REPORT_V1",
+      "engine": "EXECUTION_ENGINE_V1_1",
+      "expiry": "DAY_ORDER_SESSION_EXPIRY_V1",
+      "fill_attribution": "PROPORTIONAL_FILL_ATTRIBUTION_V1",
+      "fill_model": "PAPER_SESSION_PARTICIPATION_FILL_V1",
+      "journal_anchor": "EXECUTION_JOURNAL_HEAD_ANCHOR_V1",
+      "journal_chain": "EXECUTION_JOURNAL_HASH_CHAIN_V1",
+      "order_sequencing": "SELLS_BEFORE_BUYS_V1",
+      "participation": "SESSION_SHARE_VOLUME_PARTICIPATION_V1",
+      "realism_policy": "PAPER_EXECUTION_POLICY_V1",
+      "required_accounting_version": "PORTFOLIO_ACCOUNTING_V2",
+      "rollover": "CHILD_DAY_ORDER_ROLLOVER_V1",
+      "store": "EXECUTION_STORE_V1"
+    },
+    "refusals": [
+      "a crossed quote (ask below bid)",
+      "a missing quote side when a spread is required",
+      "an unknown session volume when a volume is required",
+      "a negative adverse slippage",
+      "a participation ceiling outside (0, 1]",
+      "a snapshot describing a different session than the order's",
+      "a fill against an expired order",
+      "a child order beyond the policy's session horizon",
+      "a session the calendar does not contain",
+      "a buy the book's cash cannot fund"
+    ],
+    "v1_1_added_error_codes": [
+      "EXECUTION_COST_DECOMPOSITION_VIOLATED",
+      "EXECUTION_WINDOW_EXHAUSTED",
+      "INVALID_EXECUTION_POLICY",
+      "INVALID_PAPER_QUOTE",
+      "ORDER_ALREADY_EXPIRED",
+      "PAPER_MARKET_SESSION_MISMATCH",
+      "PAPER_QUOTE_REQUIRED",
+      "PAPER_VOLUME_REQUIRED",
+      "PARTICIPATION_CAPACITY_EXHAUSTED",
+      "UNKNOWN_EXECUTION_SESSION"
+    ],
+    "venue": "DETERMINISTIC_SESSION_PAPER_BROKER"
+  },
+  "order_state": {
+    "applications": {
+      "COMPANY:8101@2026-10-02#G1:3a089731038db26c#1": "APPLIED"
+    },
+    "fills": [
+      {
+        "accounting_event_id": "EXEC_FILL:COMPANY:8101@2026-10-02#G1:3a089731038db26c#1",
+        "attribution": [
+          {
+            "quantity": "100.00000000",
+            "strategy_id": "ALPHA"
+          }
+        ],
+        "effective_at": "2026-10-02T16:00:00-04:00",
+        "fee": "0",
+        "fill_fingerprint": "7c426b7f35fea80f056c99a3700aa0349668c6f3d0458c2f02e80e7e2a8f6878",
+        "fill_id": "COMPANY:8101@2026-10-02#G1:3a089731038db26c#1",
+        "identity": "COMPANY:8101",
+        "notional": "9890.10000000",
+        "order_id": "COMPANY:8101@2026-10-02#G1:3a089731038db26c",
+        "price": "98.90100000",
+        "quantity": "100.00000000",
+        "side": "SELL",
+        "source_fingerprint": "fa6826ebf1dabcd22f43ab6c6848a4effafc356e218718d8fc34a6e9f4789e01",
+        "venue": "DETERMINISTIC_SESSION_PAPER_BROKER"
+      }
+    ],
+    "journal_head": "438876775757b3fe0b14d8c161e6275dea4a8eff1e07772122fbf962cb4c7255",
+    "journal_sequence": 5,
+    "orders": [
+      {
+        "cumulative_fee": "0",
+        "cumulative_filled_quantity": "100.00000000",
+        "fill_count": 1,
+        "identity": "COMPANY:8101",
+        "is_terminal": true,
+        "order_id": "COMPANY:8101@2026-10-02#G1:3a089731038db26c",
+        "ordered_quantity": "100.00000000",
+        "reason": null,
+        "remaining_quantity": "0",
+        "side": "SELL",
+        "state": "FILLED",
+        "vwap_fill_price": "98.90100000"
+      }
+    ],
+    "pending_fill_ids": []
+  },
+  "plan": {
+    "as_of": "2026-10-02T16:00:00-04:00",
+    "attribution_rule": "PROPORTIONAL_FILL_ATTRIBUTION_V1",
+    "bindings": {
+      "approved_portfolio": "apapapapapapapapapapapapapapapapapapapapapapapapapapapapapapapap",
+      "book": {
+        "accounting_engine_version": "PORTFOLIO_ACCOUNTING_V2",
+        "accounting_state_fingerprint": "47c965bd32439fbf4ebc17ee18ef59261c9f3b401f88091119f665a840cce20a",
+        "ledger_generation": "PORTFOLIO_LEDGER_GENERATION_1",
+        "ledger_head": "46349ad268ade3c3e19ef711e1e59abad28219d77c2ceafd149024e30b90c9a5",
+        "ledger_sequence": 1
+      },
+      "execution_intents": "0c6962f9749460b8d5dd3855a83fd6e68400d5245b94298996430b5ca05610c4",
+      "sizing_snapshot": "ca677d1cf770157a1d8e56eb61aa1c82983da8be63587e61c445d2c612b4013e",
+      "valued_snapshot": "vsvsvsvsvsvsvsvsvsvsvsvsvsvsvsvsvsvsvsvsvsvsvsvsvsvsvsvsvsvsvsvs"
+    },
+    "created_at": "2026-10-02T16:00:00-04:00",
+    "engine_version": "EXECUTION_ENGINE_V1",
+    "execution_plan_id": "COST-SELL",
+    "note": "a plan authorises orders; it does not create or submit them. Submitting is an explicit, separate call.",
+    "order_count": 1,
+    "orders": [
+      {
+        "attribution": [
+          {
+            "quantity": "100.00000000",
+            "strategy_id": "ALPHA"
+          }
+        ],
+        "engine_version": "EXECUTION_ENGINE_V1",
+        "execution_plan_id": "COST-SELL",
+        "identity": "COMPANY:8101",
+        "order_id": "COST-SELL-COMPANY:8101-SELL",
+        "order_type": "MARKET",
+        "quantity": "100.00000000",
+        "sequence_group": "RELEASE_CASH",
+        "side": "SELL",
+        "sizing_price": "100.00000000",
+        "time_in_force": "DAY"
+      }
+    ],
+    "orders_detail": [
+      {
+        "attribution": [
+          {
+            "quantity": "100.00000000",
+            "strategy_id": "ALPHA"
+          }
+        ],
+        "authorization_fingerprint": "99f53eca4348fce6d889280692ddb8061b3771a848571176969fe140f323f004",
+        "changes_cash": false,
+        "changes_holdings": false,
+        "created_at": "2026-10-02T16:00:00-04:00",
+        "engine_version": "EXECUTION_ENGINE_V1",
+        "execution_plan_id": "COST-SELL",
+        "identity": "COMPANY:8101",
+        "note": "an order is inert. Only an admitted accounting FillEvent changes holdings, cash or NAV.",
+        "notional": "10000.00000000",
+        "order_fingerprint": "b346dbdb32b40d980fc8560bf48f8ef22c5ba205958b7920a6844bd0213cf757",
+        "order_id": "COST-SELL-COMPANY:8101-SELL",
+        "order_type": "MARKET",
+        "quantity": "100.00000000",
+        "sequence_group": "RELEASE_CASH",
+        "side": "SELL",
+        "sizing_price": "100.00000000",
+        "symbol": "BIG",
+        "time_in_force": "DAY"
+      }
+    ],
+    "plan_fingerprint": "99f53eca4348fce6d889280692ddb8061b3771a848571176969fe140f323f004",
+    "sequencing_rule": "SELLS_BEFORE_BUYS_V1"
+  },
+  "plan_status": "COMPLETED",
+  "realism_report": {
+    "accounting_effect": "NONE",
+    "calendar_fingerprint": "d067c99c0fb0a52c7254830f93f7e25cbbb50feb0a6bff42b457a5dcd09aefd1",
+    "child_order_count": 1,
+    "drift_detected": false,
+    "engine_version": "EXECUTION_ENGINE_V1_1",
+    "execution_plan_id": "COST-SELL",
+    "execution_policy_fingerprint": "43fe9824174b222dc2f0db18329e1006b36997785d53e3e02041f12617c79d33",
+    "expiry_count": 0,
+    "fill_model": "PAPER_SESSION_PARTICIPATION_FILL_V1",
+    "participation": [
+      {
+        "actual_participation": "0.00010000",
+        "ask": "101.00000000",
+        "bid": "99.00000000",
+        "fee": "0",
+        "fill_id": "COMPANY:8101@2026-10-02#G1:3a089731038db26c#1",
+        "fill_price": "98.90100000",
+        "filled_quantity": "100.00000000",
+        "identity": "COMPANY:8101",
+        "implementation_shortfall": "109.90000000",
+        "mid": "100.00000000",
+        "observed_share_volume": "1000000.00000000",
+        "participation_ceiling": "1000000.00000000",
+        "session": "2026-10-02",
+        "side": "SELL",
+        "slippage_cost": "9.90000000",
+        "spread_cost": "100.00000000",
+        "total_execution_cost": "109.90000000"
+      }
+    ],
+    "performance_claim": "NONE",
+    "plan_status": "COMPLETED",
+    "realism_report_fingerprint": "fe76d8cfcbea6c5413bbe5f3f6882db396c6d852cba08405c8742222e07237e8",
+    "session_count": 1,
+    "session_outcomes": [
+      {
+        "authorized_quantity": "100.00000000",
+        "expired": false,
+        "filled_quantity": "100.00000000",
+        "generation": 1,
+        "order_id": "COMPANY:8101@2026-10-02#G1:3a089731038db26c",
+        "participation_ceiling": "1000000.00000000",
+        "reason": null,
+        "residual_after": "0",
+        "session": "2026-10-02"
+      }
+    ],
+    "sessions_used": [
+      "2026-10-02"
+    ],
+    "totals": {
+      "fees": "0",
+      "implementation_shortfall": "109.90000000",
+      "slippage_cost": "9.90000000",
+      "spread_cost": "100.00000000",
+      "total_execution_cost": "109.90000000"
+    },
+    "unfilled_residual": "0"
+  },
+  "refusal": null,
+  "session_outcomes": {
+    "COMPANY:8101": [
+      {
+        "authorized_quantity": "100.00000000",
+        "expired": false,
+        "filled_quantity": "100.00000000",
+        "generation": 1,
+        "order_id": "COMPANY:8101@2026-10-02#G1:3a089731038db26c",
+        "participation_ceiling": "1000000.00000000",
+        "reason": null,
+        "residual_after": "0",
+        "session": "2026-10-02"
+      }
+    ]
+  },
+  "store": {
+    "anchor": {
+      "anchor_fingerprint": "c6c4379bf1a1751240a17aaeb20f1c868c98018c3c50a6d6c116e51ce5fdaa71",
+      "anchor_head": "438876775757b3fe0b14d8c161e6275dea4a8eff1e07772122fbf962cb4c7255",
+      "anchor_sequence": 5,
+      "anchor_version": "EXECUTION_JOURNAL_HEAD_ANCHOR_V1",
+      "consistent": true,
+      "coordinated_rollback_detection": "NOT_GUARANTEED_WITHOUT_EXTERNAL_ANCHOR",
+      "detail": null,
+      "journal_head": "438876775757b3fe0b14d8c161e6275dea4a8eff1e07772122fbf962cb4c7255",
+      "journal_sequence": 5,
+      "recoverable": true,
+      "status": "CONSISTENT"
+    },
+    "chain": {
+      "chain_version": "EXECUTION_JOURNAL_HASH_CHAIN_V1",
+      "failure": null,
+      "head_hash": "438876775757b3fe0b14d8c161e6275dea4a8eff1e07772122fbf962cb4c7255",
+      "record_count": 5,
+      "verified": true
+    },
+    "coordinated_rollback_detection": "NOT_GUARANTEED_WITHOUT_EXTERNAL_ANCHOR",
+    "engine_version": "EXECUTION_ENGINE_V1",
+    "generation": "EXECUTION_JOURNAL_GENERATION_1",
+    "record_count": 5,
+    "store_version": "EXECUTION_STORE_V1",
+    "tail_completeness_established": true,
+    "truncation_detected": false,
+    "verified": true
+  }
+}

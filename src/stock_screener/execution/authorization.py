@@ -372,6 +372,102 @@ class ExecutionPlan:
                 f"plan authorises {held.fingerprint()[:16]}… under that id",
             )
 
+    def parent_for(self, identity_key: tuple[str, int]) -> Order:
+        """The planned order a child works the residual of.
+
+        Args:
+            identity_key: The security's durable key.
+
+        Returns:
+            The planned order.
+
+        Raises:
+            ExecutionError: `UNAUTHORIZED_ORDER` if the plan authorises nothing
+                for that security. A child for an unplanned security would be a
+                trade the risk engine never approved.
+        """
+        for order in self.orders:
+            if order.identity.key == identity_key:
+                return order
+        raise ExecutionError(
+            Code.UNAUTHORIZED_ORDER,
+            f"plan {self.execution_plan_id} authorises nothing for "
+            f"{identity_key}, so no child order may work a residual in it",
+        )
+
+    def require_authorizes_child(self, child: Order, *, session: str, generation: int) -> None:
+        """Refuse a child order this plan did not derive.
+
+        A child is not in the plan's own order list — the number of children
+        depends on fills that have not happened when the plan is made. So
+        authorisation is by *derivation* instead: the child's id is a digest over
+        the plan fingerprint, the security, the session, the generation and the
+        authorised residual, and recomputing it here proves the child came from
+        this plan working that residual in that session rather than from
+        somewhere else.
+
+        That check is what makes a hand-crafted child impossible to pass. Raising
+        a child's quantity, moving it to another session or pointing it at
+        another security all change the digest, so none of them can keep the id.
+
+        Args:
+            child: The child order offered.
+            session: The session it claims to live for.
+            generation: Which child it claims to be.
+
+        Raises:
+            ExecutionError: `UNAUTHORIZED_ORDER` if the child names another plan
+                or an unplanned security, or if its side differs from the
+                parent's; `EXECUTION_AUTHORIZATION_MISMATCH` if its
+                authorisation is stale, its quantity exceeds the parent's, or
+                its id is not the one this plan would derive.
+        """
+        from .session_broker import child_order_id
+
+        if child.execution_plan_id != self.execution_plan_id:
+            raise ExecutionError(
+                Code.UNAUTHORIZED_ORDER,
+                f"{child.order_id} names plan {child.execution_plan_id!r} and this "
+                f"is {self.execution_plan_id!r}",
+            )
+        if child.authorization_fingerprint != self.fingerprint():
+            raise ExecutionError(
+                Code.EXECUTION_AUTHORIZATION_MISMATCH,
+                f"{child.order_id} carries authorisation "
+                f"{child.authorization_fingerprint[:16]}… and this plan hashes to "
+                f"{self.fingerprint()[:16]}…",
+            )
+        parent = self.parent_for(child.identity.key)
+        if child.side is not parent.side:
+            raise ExecutionError(
+                Code.UNAUTHORIZED_ORDER,
+                f"{child.order_id} is a {child.side} and the plan authorises a "
+                f"{parent.side} in {child.identity.label}",
+            )
+        if child.quantity > parent.quantity:
+            raise ExecutionError(
+                Code.EXECUTION_AUTHORIZATION_MISMATCH,
+                f"{child.order_id} is for {child.quantity} and the plan authorises "
+                f"{parent.quantity} in total for {child.identity.label}. A child "
+                "may work a residual; it may not exceed the whole authorisation.",
+            )
+        expected = child_order_id(
+            plan_fingerprint=self.fingerprint(),
+            identity_label=child.identity.label,
+            session=session,
+            generation=generation,
+            authorized_residual=child.quantity,
+        )
+        if child.order_id != expected:
+            raise ExecutionError(
+                Code.EXECUTION_AUTHORIZATION_MISMATCH,
+                f"{child.order_id} is not the child id this plan derives for "
+                f"{child.identity.label} in session {session} generation "
+                f"{generation} at quantity {child.quantity} (expected "
+                f"{expected}). The id is a digest over those inputs, so a child "
+                "that changed any of them cannot keep it.",
+            )
+
     def require_matches_authority(
         self,
         *,

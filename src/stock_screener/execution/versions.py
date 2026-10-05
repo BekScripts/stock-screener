@@ -17,19 +17,32 @@ from __future__ import annotations
 from typing import Any
 
 __all__ = [
+    "DAY_EXPIRY_POLICY",
     "EXECUTION_ENGINE_VERSION",
+    "EXECUTION_ENGINE_VERSION_V1_1",
     "FILL_ATTRIBUTION_RULE",
     "JOURNAL_CHAIN_VERSION",
     "ORDER_SEQUENCING_RULE",
     "PAPER_FILL_MODEL",
     "PAPER_FILL_POLICY",
+    "PAPER_SESSION_FILL_MODEL",
     "QUANTITY_SCALE_PLACES",
     "REQUIRED_ACCOUNTING_VERSION",
+    "SESSION_ROLLOVER_POLICY",
     "engine_policy",
 ]
 
-#: The execution engine contract.
+#: The P2.0 execution engine contract. Frozen: it models no execution cost at
+#: all, and its goldens must keep reproducing byte for byte.
 EXECUTION_ENGINE_VERSION = "EXECUTION_ENGINE_V1"
+
+#: The P2.1 contract, which adds spread crossing, deterministic adverse
+#: slippage, share-volume participation, real DAY expiry and calendar-derived
+#: multi-session rollover. A separate version because every one of those changes
+#: what a fill *is*: the same plan under V1 and V1.1 produces different prices,
+#: different quantities and a different number of orders, so neither can be
+#: reproduced from the other's rules.
+EXECUTION_ENGINE_VERSION_V1_1 = "EXECUTION_ENGINE_V1_1"
 
 #: Which accounting rules a new execution-managed book must use. Named rather
 #: than defaulted: P1.4 left V1 as the accounting default so pre-existing ledgers
@@ -41,9 +54,25 @@ REQUIRED_ACCOUNTING_VERSION = "PORTFOLIO_ACCOUNTING_V2"
 #: which is the only sequencing a no-margin book can actually execute.
 ORDER_SEQUENCING_RULE = "SELLS_BEFORE_BUYS_V1"
 
-#: How a market paper order is priced: at the explicit price the execution
-#: snapshot supplies, and at nothing else.
+#: How a V1 market paper order is priced: at the explicit price the execution
+#: snapshot supplies, and at nothing else. No spread, no slippage, no capacity.
 PAPER_FILL_MODEL = "PAPER_REFERENCE_PRICE_FILL_V1"
+
+#: How a V1.1 market paper order is priced and sized: crossing the quoted spread,
+#: worsened by a declared adverse slippage, and capped by a share-volume
+#: participation ceiling shared across every order touching that security in that
+#: session. Still fully deterministic — the friction is computed from explicit
+#: inputs, not drawn from anywhere.
+PAPER_SESSION_FILL_MODEL = "PAPER_SESSION_PARTICIPATION_FILL_V1"
+
+#: How a DAY order ends when a session closes with quantity outstanding. Named
+#: because the alternative — letting it survive — is what P2.0 did, and the
+#: difference is the whole point of V1.1's lifecycle change.
+DAY_EXPIRY_POLICY = "DAY_ORDER_SESSION_EXPIRY_V1"
+
+#: How residual quantity reaches a later session: as a new child DAY order, never
+#: by extending the life of an expired one.
+SESSION_ROLLOVER_POLICY = "CHILD_DAY_ORDER_ROLLOVER_V1"
 
 #: What quantity a paper fill takes when the snapshot states no availability
 #: limit: all of the remaining quantity.
