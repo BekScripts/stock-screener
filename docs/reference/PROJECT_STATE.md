@@ -53,9 +53,27 @@ any of it: the V1 goldens reproduce byte for byte and the V1 manifest keeps
 describing the V1 lifecycle and vocabulary.
 
 **Live trading remains `NOT_AUTHORIZED`, and from P2.2 that is structural.**
-There is no flag, host, key prefix or configuration value that enables it. The
-paper endpoint is **implemented but not certified**: P2.2 ships no HTTP
-transport, so nothing in this repository has yet spoken to a real venue.
+There is no flag, host, key prefix or configuration value that enables it.
+
+**P2.2C adds the concrete paper transport.** `AlpacaPaperHttpTransport`
+(`ALPACA_PAPER_HTTPS_TRANSPORT_V1`) is the one real `BrokerTransport`: host-locked
+to `paper-api.alpaca.markets` in its constructor, `trust_env=False` so no
+environment variable can re-route a submission, redirects refused, and no retry
+loop anywhere in the module. Execution semantics are unchanged —
+`EXECUTION_ENGINE_V1_2` is not bumped, because a concrete implementation of an
+abstract seam moves no figure.
+
+**The paper endpoint is `IMPLEMENTED, CERTIFICATION PENDING`.** Nothing in this
+repository has spoken to a real venue. Two independent blockers:
+
+- no `ALPACA_PAPER_*` credential is configured on this machine, so the read-only
+  preflight has nothing to authenticate with; and
+- contact with the documented Alpaca surface exposed three adapter defects,
+  recorded rather than fixed because each needs a contract change. The blocking
+  one is `read_fills`, which filters FILL activities by `client_order_id` where
+  Alpaca's documented filter is `order_id` — on a real account the parameter is
+  ignored, so the read returns unrelated fills and attributes them to one order,
+  defeating per-order exactly-once ingestion.
 
 **P1 is complete and frozen** at `p1-portfolio-authority-complete`
 (`b87e7c96`), which closes the portfolio programme at P1.4. From that tag the
@@ -80,7 +98,9 @@ frozen at the same commit; P2 branched from it.
 | P2.1 | **DETERMINISTIC EXECUTION REALISM / MULTI-SESSION FILLS** — `EXECUTION_ENGINE_V1_1` |
 | P2.1 checkpoint | tag `p2-execution-realism-complete` |
 | P2.2 | **EXTERNAL PAPER ADAPTER / THREE-WAY RECONCILIATION** — `EXECUTION_ENGINE_V1_2` |
-| P2.2 external paper endpoint | **IMPLEMENTED, NOT CERTIFIED** — no HTTP transport ships |
+| P2.2C | **CONCRETE PAPER TRANSPORT PRESENT** — `ALPACA_PAPER_HTTPS_TRANSPORT_V1` |
+| P2.2 external paper endpoint | **IMPLEMENTED, CERTIFICATION PENDING** — no real venue contacted |
+| P2.2 adapter defects | **3 RECORDED, UNFIXED** — one blocks certification |
 | Production risk thresholds | **NOT AUTHORIZED** |
 | Production strategy budgets | **NOT AUTHORIZED** |
 | Production correlation thresholds | **NOT AUTHORIZED** |
@@ -270,6 +290,60 @@ flatten is unrecoverable when invoked by accident, and the ordinary path already
 does it with every check applied. No credential, authorization header, token or
 cookie is persisted or logged, and a report is scanned for anything shaped like a
 secret on the way out.
+
+### P2.2C — the transport, and three things the real API taught us
+
+`ALPACA_PAPER_HTTPS_TRANSPORT_V1` is the first code here that opens a socket to
+a broker. The engine version does **not** move: a concrete implementation of an
+abstract seam changes no figure, and bumping it would invalidate artefacts to
+record that nothing happened.
+
+**The host lock lives in the constructor.** `approved_paper_origin` runs before
+a credential is attached and before any socket exists, so a misconfigured
+transport fails at build time rather than at submit time, and cannot be
+re-pointed afterwards. It refuses a live or brokerage host by name, and refuses
+as *not provably paper* a non-HTTPS scheme, userinfo in the URL, an explicit
+non-443 port, an IP literal, `localhost`, any unknown host, and a request path
+given as an absolute URL.
+
+**`trust_env=False` is the least obvious line in the module.** With httpx's
+default, `HTTPS_PROXY` or `ALL_PROXY` would route every request — order
+submissions included — through whatever host that variable named, while the URL
+still read `paper-api.alpaca.markets`. A host lock an environment variable can
+tunnel out of is not a host lock.
+
+**Two refusals happen before any I/O.** A payload JSON cannot represent (a
+`Decimal`, a NaN) and an absolute-URL path both raise rather than classify,
+because the request provably did not arrive. The first version of this module
+had the encode inside the try block, which turned a local serialisation bug into
+a *network ambiguity* — and an ambiguity strands a submission intent and blocks
+the next run. Encoding above the try is the whole fix.
+
+**Nothing classifies to a definite failure.** Every transport-level error maps to
+an outcome whose `is_ambiguous` is true, so a timeout on a `POST` stays unknown
+rather than becoming failed. Failure details name the exception's class, never
+its message, which can carry the full request URL.
+
+**Evidence excludes the request.** Each reply carries the provider's
+`X-Request-ID` where present, an allow-list of safe response headers, and a
+fingerprint over status, those headers and the normalised body. Request headers
+are excluded by construction: the request carried the credential, and a digest
+over it would be a credential derivative in an audit record forever.
+
+Then the part worth recording most. **Contact with the documented API exposed
+three defects in the P2.2 adapter**, none of which the fake-transport suite could
+have found, because a fake answers whatever it is told to:
+
+| Defect | Reality | Consequence |
+| --- | --- | --- |
+| `read_fills` sends `client_order_id` to `/v2/account/activities/FILL` | the documented filter is `order_id`, the provider UUID | the parameter is ignored; the read returns the account's other fills and stamps each with this order's client id. Defeats per-order exactly-once ingestion. **Blocks certification.** |
+| `cancel_order` builds `DELETE /v2/orders/{client_order_id}` | the path parameter is the provider UUID | a cancel would 404. Fails closed, and cleanup uses a compensating order rather than a cancel, so it is off the certification path. |
+| `PROVIDER_CONFIRMS_PAPER` checks `is_paper` | `GET /v2/account` has no such field; paper and live differ only by host | the gate passes by absence. Substantively sound — paper-ness rests on host lock, auth success and account match — but the name overstates the evidence. |
+
+They are **recorded, not fixed.** Each needs a contract change, and bundling one
+into a transport-certification commit would make the diff unreviewable as either
+thing. The lesson is the one worth keeping: a fake transport proves the shape of
+a protocol and says nothing about whether the protocol matches the provider.
 
 ### P2.0 — an authorised target becomes a fill, and nothing else does
 
@@ -3375,11 +3449,34 @@ care — nothing has a foreign key *to* it, so dropping it cascades to nothing.
 
 ## Known limitations
 
-**The external paper endpoint is implemented but not certified (P2.2).** P2.2
-ships no HTTP transport implementation — `BrokerTransport` is the seam and the
-whole adapter is exercised against an injected fake — so nothing in this
-repository has spoken to a real venue. The adapter is complete and tested; the
-endpoint is unproven.
+**The external paper endpoint is implemented but not certified (P2.2C).** The
+concrete HTTPS transport exists and is verified offline against
+`httpx.MockTransport`, but nothing in this repository has spoken to a real
+venue. Two independent blockers: no `ALPACA_PAPER_*` credential is configured,
+and the `read_fills` defect below would break exactly-once fill ingestion on a
+real account.
+
+**Per-order fill retrieval is wrong against the real Alpaca API (P2.2C).**
+`read_fills` filters `/v2/account/activities/FILL` by `client_order_id`; the
+documented filter is `order_id`, the provider UUID. The parameter is ignored, so
+on any account with other activity the read returns unrelated fills and labels
+them with one order's client id. Found by reading the API documentation, not by
+the test suite — a fake transport answers whatever it is told to, so it can
+confirm a protocol's shape and never its correspondence to the provider.
+Recorded rather than fixed, because the fix changes `read_fills`'s signature and
+§2 of the phase brief forbids hiding a contract change in a transport commit.
+
+**`cancel_order` cancels by the wrong identifier (P2.2C).** It builds
+`DELETE /v2/orders/{client_order_id}` where Alpaca's path parameter is the
+provider UUID. It fails closed with a 404, and cleanup uses a compensating
+authorised order rather than a cancel, so it is off the certification path.
+
+**`PROVIDER_CONFIRMS_PAPER` passes by absence (P2.2C).** Alpaca's account object
+carries no `is_paper` field — paper and live are distinguished only by host — so
+a gate written as "fail if `is_paper is False`" can never fail. Paper-ness is
+genuinely established by the host lock, a successful authentication and the
+account-id match; the gate's name claims provider attestation that does not
+exist.
 
 **An external run is not reproducible (P2.2).** Its fills came from a venue's
 matching engine at a moment that will not recur. The V1.2 manifest is an audit
@@ -5114,6 +5211,31 @@ below are the ones whose absence would be expensive.
 | `test_p2_2_external_paper.py::test_the_v1_1_manifest_still_says_no_external_broker` | each manifest version keeps its own answers |
 | `test_p2_2_external_paper.py::test_the_adapter_exposes_no_forbidden_convenience_api` | no liquidate, flatten, transfer, funding or live-enabling call exists |
 
+P2.2C adds `tests/unit/test_alpaca_paper_transport.py` (80 tests, `httpx.MockTransport`,
+no socket) and `tests/integration/test_p2_2c_paper_preflight.py` (27 tests). The
+rows below are the ones whose absence would be expensive.
+
+| Test | Protects |
+| --- | --- |
+| `test_alpaca_paper_transport.py::test_a_live_or_brokerage_host_is_refused_by_name` | the transport cannot be constructed against a live or brokerage host |
+| `test_alpaca_paper_transport.py::test_anything_not_provably_the_paper_origin_is_refused` | a non-HTTPS scheme, userinfo, a non-443 port, an IP literal, `localhost` and an unknown host all fail closed |
+| `test_alpaca_paper_transport.py::test_a_live_host_is_refused_before_any_request_is_made` | the refusal precedes any request, so no credential is ever sent to a live host |
+| `test_alpaca_paper_transport.py::test_an_absolute_url_as_a_path_cannot_leave_the_locked_origin` | a client with a base_url still honours an absolute target; this is the check that stops it |
+| `test_alpaca_paper_transport.py::test_the_production_client_is_locked_down` | redirects off and `trust_env` off — an environment variable cannot re-route a submission |
+| `test_alpaca_paper_transport.py::test_a_redirect_is_refused_rather_than_followed` | a 3xx never moves an order request to another origin |
+| `test_alpaca_paper_transport.py::test_a_timeout_leaves_a_mutation_unknown_not_failed` | the distinction the whole submission protocol rests on |
+| `test_alpaca_paper_transport.py::test_a_failed_mutation_is_attempted_exactly_once` | no retry of a `POST`, on any failure class |
+| `test_alpaca_paper_transport.py::test_the_transport_module_contains_no_retry_loop` | no retry surface exists in the module to be reached for later |
+| `test_alpaca_paper_transport.py::test_a_decimal_in_the_payload_is_refused_before_anything_is_sent` | a local serialisation bug never becomes a network ambiguity that strands an intent |
+| `test_alpaca_paper_transport.py::test_the_credentials_never_appear_in_a_classified_failure` | an exception's text is never rendered into a durable record |
+| `test_alpaca_paper_transport.py::test_only_allow_listed_headers_are_recorded` | a `Set-Cookie` or `Authorization` response header is never retained |
+| `test_alpaca_paper_transport.py::test_the_credentials_are_absent_from_the_evidence_fingerprint_body` | the evidence digest is over the response, never the credentialed request |
+| `test_p2_2c_paper_preflight.py::test_the_preflight_makes_no_mutating_request` | the preflight is read-only, asserted by counting methods |
+| `test_p2_2c_paper_preflight.py::test_another_account_withholds_readiness` | authenticating against some paper account is not proof it is this book's |
+| `test_p2_2c_paper_preflight.py::test_an_account_mismatch_submits_nothing` | a mismatch stops before any mutation |
+| `test_p2_2c_paper_preflight.py::test_the_artefact_carries_no_account_number` | neither the account id nor the account number reaches the artefact |
+| `test_p2_2c_paper_preflight.py::test_the_artefact_states_what_it_does_not_establish` | the artefact discloses that no provider field attests paper-ness |
+
 ### The gate
 
 `make check` — lint, format check, mypy strict, pytest with coverage failing
@@ -5126,22 +5248,35 @@ under **80%**. It is what CI runs; run it rather than the individual tools.
 
 Two tracks are pending, on different clocks.
 
-**On the execution track, P2.2's one open gap is the transport.** The adapter is
-complete and fully tested against an injected fake; what does not exist is an
-HTTP implementation of `BrokerTransport`, so the paper endpoint is implemented
-and uncertified. Closing that means one module behind the existing protocol, the
-credential read through `config.py` as a typed field, and the opt-in canary in
-`tests/live/test_paper_broker_live.py` run deliberately with `--live-paper`.
-Certification is a single read-only call against the configured paper account
-followed by one one-share submission; until that has happened, no claim that the
-endpoint works is supportable.
+**On the execution track, the transport now exists and three adapter defects
+block certification.** P2.2C delivered `AlpacaPaperHttpTransport` and the
+read-only preflight command; what remains is a defect-fix phase, then
+certification.
 
-That phase must not relax anything P2.2 established. It adds a transport, not a
-capability: no live host enters the allow-list, no live key prefix is accepted,
-no third `ExecutionVenue` member appears, no mutating request becomes
-retryable, and `make check` continues to pass no live flag and make no external
-request. A credential belongs in `config.py` and `.env.example` by name with a
-placeholder value, never in code, a fixture or a test.
+**P2.2D must fix the three defects, in their own commit.** `read_fills` must
+take the provider order id and filter `/v2/account/activities/FILL` by
+`order_id`, using the activity `id` as the remote evidence id — that is a
+signature change, and it is what unblocks exactly-once fill ingestion.
+`cancel_order` must cancel by the provider UUID, which means it needs the
+confirmed remote order id rather than a local order id. And
+`PROVIDER_CONFIRMS_PAPER` should be renamed to what it actually checks, or
+replaced by a gate that asserts the origin that answered — a gate that cannot
+fail is worse than no gate, because it reports evidence nobody gathered.
+
+**Certification follows, and needs an operator.** It needs
+`ALPACA_PAPER_KEY_ID`, `ALPACA_PAPER_SECRET_KEY` and `ALPACA_PAPER_ACCOUNT_ID`
+configured against a clean, reconciled paper account; the read-only preflight
+reaching `PAPER_BROKER_READY`; then one authorised MARKET/DAY canary order
+through the full chain — accounting V2 book, authorised plan, submission
+protocol, transport — during a live session, its fill ingested exactly once,
+reconciled three ways, and cleaned up with a compensating authorised order.
+
+Neither phase may relax anything P2.2 or P2.2C established: no live host in the
+allow-list, no live key prefix accepted, no third `ExecutionVenue` member, no
+mutating request made retryable, no `trust_env=True`, and `make check`
+continuing to pass no live flag and make no external request. A credential
+belongs in `config.py` and `.env.example` by name with a placeholder value,
+never in code, a fixture or a test.
 
 **R1.8 — capture the first eligible prospective H2 decision when due** follows
 on the research track.
@@ -5255,6 +5390,25 @@ Not a backlog. These exclusions are deliberate.
 - persisting or logging a credential, authorization header, token or cookie, or
   writing an account number into a report
 - an HTTP client imported anywhere in `execution/` outside `execution/external/`
+- `trust_env=True` on the paper transport's client, or any client construction
+  that lets `HTTPS_PROXY` / `ALL_PROXY` re-route a submission
+- `follow_redirects=True` on the paper transport, or following a 3xx on any
+  mutation
+- a second `BrokerTransport` implementation that is not host-locked in its
+  constructor, or any way to re-point an existing transport after construction
+- a retry loop inside the transport module, for any HTTP method
+- classifying a local failure — a serialisation error, a host-lock violation —
+  as a transport outcome: it would be marked ambiguous and strand an intent
+- rendering an exception's message, a request URL, or any request header into a
+  detail string, an evidence body or an artefact
+- fingerprinting a request: the evidence digest is over the response only,
+  because the request carried the credential
+- a response-header deny-list in place of the allow-list
+- reusing `alpaca_api_key` / `alpaca_secret_key` as paper trading credentials:
+  they are a market-data credential and `alpaca_trading_base_url` defaults to the
+  live host
+- making `ALPACA_PAPER_ACCOUNT_ID` optional: authenticating against some paper
+  account proves nothing about whether it is this book's
 - a session that mixes `LOCAL_DETERMINISTIC_PAPER` and `EXTERNAL_PAPER` fills, or
   any fallback from one venue to the other
 - widening `EXECUTION_MANIFEST_V1_1` to describe the external adapter: a V1.1

@@ -105,37 +105,46 @@ def test_the_configured_credential_is_a_paper_credential(
 
 @pytest.mark.skip(
     reason=(
-        "requires an HTTP transport implementation, which P2.2 deliberately does "
-        "not ship: the BrokerTransport protocol is the seam, and the one real "
-        "implementation lands with the phase that is authorised to make the call. "
-        "Until then this canary is written and inert, and the verdict for P2.2 "
-        "stays at B — implemented, certification pending."
+        "P2.2C ships the transport, so this is no longer blocked on code: it is "
+        "blocked on an operator. Reaching the account read-only is what "
+        "`stock-screener execution external-paper-preflight --confirm` does, and "
+        "running it needs ALPACA_PAPER_KEY_ID, ALPACA_PAPER_SECRET_KEY and "
+        "ALPACA_PAPER_ACCOUNT_ID against a clean paper account."
     )
 )
 def test_the_paper_account_answers_a_read_only_request() -> None:
     """The paper account answers, upgrading the proof to fully certified."""
-    raise AssertionError("no transport implementation is shipped in P2.2")
+    raise AssertionError("run the external-paper-preflight command instead")
 
 
-@pytest.mark.skip(reason="requires an HTTP transport implementation; see above")
+@pytest.mark.skip(reason="covered by the external-paper-preflight command; see above")
 def test_the_account_the_provider_answers_for_is_the_bound_account() -> None:
     """The provider answers for the account the binding names."""
-    raise AssertionError("no transport implementation is shipped in P2.2")
+    raise AssertionError("run the external-paper-preflight command instead")
 
 
-@pytest.mark.skip(reason="requires an HTTP transport implementation; see above")
+@pytest.mark.skip(reason="covered by the external-paper-preflight command; see above")
 def test_every_held_symbol_is_resolvable_to_a_durable_identity() -> None:
     """Every symbol the venue reports held maps back to an identity."""
-    raise AssertionError("no transport implementation is shipped in P2.2")
+    raise AssertionError("run the external-paper-preflight command instead")
 
 
-@pytest.mark.skip(reason="requires an HTTP transport implementation; see above")
+@pytest.mark.skip(
+    reason=(
+        "BLOCKED ON A DEFECT, not on a transport. P2.2C found that read_fills "
+        "filters /v2/account/activities/FILL by client_order_id while Alpaca's "
+        "documented filter is order_id, so on a real account the read returns "
+        "unrelated fills and attributes them to one order. Submitting a canary "
+        "before that is fixed would ingest another order's fills into the book. "
+        "P2.2D fixes it; this canary runs after."
+    )
+)
 def test_one_share_submitted_to_the_paper_venue_is_confirmed_and_reconciles() -> None:
     """One share is submitted, confirmed, read back and reconciled.
 
-    The only test in this repository that places an order. It submits
+    The only test in this repository that would place an order. It submits
     `Decimal(1)` under `CANARY_ORDER_ID`, so an interrupted run leaves an order
     whose client id is recomputable rather than an orphan.
     """
     assert Decimal(1) == Decimal(1)
-    raise AssertionError("no transport implementation is shipped in P2.2")
+    raise AssertionError("blocked on the read_fills defect; see the skip reason")

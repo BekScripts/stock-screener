@@ -8298,3 +8298,57 @@ def execution_show_realism_manifest_command() -> None:
     typer.echo("")
     for line in manifest["not_guaranteed"]:
         typer.echo(f"  NOT GUARANTEED: {line}")
+
+
+@execution_app.command("external-paper-preflight")
+def execution_external_paper_preflight_command(
+    confirm: Annotated[
+        bool,
+        typer.Option(
+            "--confirm",
+            help=(
+                "Required. This command leaves the machine: it makes read-only "
+                "HTTPS requests to the configured Alpaca PAPER host. It submits "
+                "nothing and cancels nothing."
+            ),
+        ),
+    ] = False,
+) -> None:
+    """Prove the configured Alpaca PAPER account answers, without trading.
+
+    Read-only, and the first request this project makes to a broker of any
+    kind. It builds the concrete transport — which refuses to exist against a
+    live host — then reads the account, its positions and its open orders, and
+    checks that the account the provider answers for is the one the binding
+    names.
+
+    It makes zero mutating requests. There is no flag on this command that
+    would submit an order, and no flag anywhere that would reach a live venue.
+    """
+    from stock_screener.execution.external import AlpacaPaperPreflightRun
+
+    settings = _bootstrap()
+    if not confirm:
+        typer.echo(
+            "refusing without --confirm: this makes read-only HTTPS requests to the "
+            "configured Alpaca PAPER host. Nothing is submitted."
+        )
+        raise typer.Exit(code=1)
+
+    try:
+        run = AlpacaPaperPreflightRun.from_settings(settings)
+    except ExecutionError as exc:
+        typer.echo(f"STOPPED: {exc}")
+        raise typer.Exit(code=1) from exc
+
+    try:
+        report = run.execute()
+    finally:
+        run.close()
+
+    typer.echo("")
+    for line in report.summary_lines():
+        typer.echo(f"  {line}")
+    typer.echo("")
+    typer.echo("PREFLIGHT PASSED" if report.ready else "PREFLIGHT FAILED")
+    raise typer.Exit(code=0 if report.ready else 1)

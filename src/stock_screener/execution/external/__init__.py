@@ -64,12 +64,27 @@ from .environment import (
     prove_paper_environment,
     refuse_live,
 )
+from .http_transport import (
+    CONNECT_TIMEOUT_SECONDS,
+    KEY_ID_HEADER,
+    READ_TIMEOUT_SECONDS,
+    SAFE_RESPONSE_HEADERS,
+    SECRET_KEY_HEADER,
+    TRANSPORT_VERSION,
+    AlpacaPaperHttpTransport,
+    approved_paper_origin,
+)
 from .manifest import EXECUTION_MANIFEST_VERSION_V1_2, external_manifest
 from .models import (
     ExternalExecutionFill,
     ExternalOrderSnapshot,
     ExternalPaperAccountSnapshot,
     ExternalPosition,
+)
+from .paper_preflight import (
+    PREFLIGHT_ARTEFACT_VERSION,
+    AlpacaPaperPreflightRun,
+    PaperPreflightReport,
 )
 from .preflight import PREFLIGHT_GATES, READY_VERDICT, PaperBrokerReadiness, preflight
 from .reconciliation import (
@@ -111,6 +126,7 @@ from .transport import (
     FakeTransport,
     RequestMethod,
     TransportOutcome,
+    canonical_evidence,
     read_with_retry,
 )
 
@@ -122,24 +138,33 @@ __all__ = [
     "CLIENT_ID_DERIVATION",
     "CLIENT_ID_NAMESPACE",
     "CLIENT_ID_PREFIX",
+    "CONNECT_TIMEOUT_SECONDS",
     "CREDENTIAL_PATTERNS",
     "EXECUTION_MANIFEST_VERSION_V1_2",
     "EXTERNAL_RECONCILIATION_POLICY",
+    "KEY_ID_HEADER",
     "LIVE_HOSTS",
     "ORDERS_PATH",
     "PAPER_HOSTS",
     "PAPER_KEY_PREFIXES",
     "POSITIONS_PATH",
+    "PREFLIGHT_ARTEFACT_VERSION",
     "PREFLIGHT_GATES",
     "PROVIDER",
     "PROVIDER_STATUS_MAP",
     "READY_VERDICT",
     "READ_RETRY_LIMIT",
+    "READ_TIMEOUT_SECONDS",
+    "SAFE_RESPONSE_HEADERS",
+    "SECRET_KEY_HEADER",
     "STATUS_MAP_POLICY",
     "SUBMISSION_PROTOCOL",
     "SYMBOL_MAPPING_POLICY",
+    "TRANSPORT_VERSION",
     "VENUE_BINDING_POLICY",
     "AlpacaPaperAdapter",
+    "AlpacaPaperHttpTransport",
+    "AlpacaPaperPreflightRun",
     "BrokerCapabilities",
     "BrokerEnvironment",
     "BrokerResponse",
@@ -157,6 +182,7 @@ __all__ = [
     "ExternalReconciliationResult",
     "FakeTransport",
     "PaperBrokerReadiness",
+    "PaperPreflightReport",
     "ReconciliationVerdict",
     "RequestMethod",
     "StatusReading",
@@ -169,6 +195,8 @@ __all__ = [
     "VenueBinding",
     "VenueSymbol",
     "account_fingerprint",
+    "approved_paper_origin",
+    "canonical_evidence",
     "check_no_credentials",
     "client_order_id_for",
     "external_manifest",

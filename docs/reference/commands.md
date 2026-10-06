@@ -205,6 +205,19 @@ no order.
 | `--live-b2` | `tests/live/test_b2_canary_live.py` | Real Backblaze reads and writes |
 | `--live-paper` | `tests/live/test_paper_broker_live.py` | Reads the configured **paper** account; one test submits one share |
 
+The one command that reaches a broker is separate from the test suites:
+
+```bash
+stock-screener execution external-paper-preflight --confirm
+```
+
+It is read-only — every request is a `GET`, and it reports its own mutating
+request count as zero so a reader can check rather than trust. It refuses
+without `--confirm`, refuses without `ALPACA_PAPER_KEY_ID`,
+`ALPACA_PAPER_SECRET_KEY` and `ALPACA_PAPER_ACCOUNT_ID`, and cannot be pointed
+at a live host: the transport will not construct against one. There is no
+corresponding command that submits an order.
+
 ```bash
 uv run pytest tests/live/test_paper_broker_live.py --live-paper
 ```

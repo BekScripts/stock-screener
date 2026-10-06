@@ -22,11 +22,13 @@ deliberately no generic retry wrapper that could be pointed at a mutation.
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
+from decimal import Decimal
 from enum import StrEnum
 from typing import Any, Protocol, runtime_checkable
 
 from stock_screener.execution.errors import Code, ExecutionError
+from stock_screener.execution.fingerprint import fingerprint_of
 
 __all__ = [
     "READ_RETRY_LIMIT",
@@ -35,12 +37,39 @@ __all__ = [
     "FakeTransport",
     "RequestMethod",
     "TransportOutcome",
+    "canonical_evidence",
     "read_with_retry",
 ]
 
 #: How many times a read may be retried. Bounded, because an unbounded loop
 #: against a rate-limited provider is a way to get a credential suspended.
 READ_RETRY_LIMIT = 3
+
+
+def canonical_evidence(value: Any) -> Any:
+    """Normalise a provider payload so a digest over it is stable.
+
+    Every number is rendered as a string. A provider sends its figures as
+    strings already, but a payload that mixed `"10"` and `10` across two reads
+    of the same state would otherwise fingerprint differently and read as the
+    venue having changed its answer. Keys are left to `fingerprint_of`, which
+    sorts them.
+
+    Args:
+        value: A decoded JSON payload, or any part of one.
+
+    Returns:
+        The normalised form.
+    """
+    if isinstance(value, bool) or value is None:
+        return value
+    if isinstance(value, int | float | Decimal):
+        return str(value)
+    if isinstance(value, dict):
+        return {str(k): canonical_evidence(v) for k, v in value.items()}
+    if isinstance(value, list | tuple):
+        return [canonical_evidence(item) for item in value]
+    return value
 
 
 class RequestMethod(StrEnum):
@@ -90,6 +119,15 @@ class BrokerResponse:
         body: The decoded payload, where there was one.
         detail: A sanitised description of a failure.
         attempts: How many times the request was made.
+        request_id: The provider's own id for this request, where it sent one.
+            Operational metadata only — it is reported so an ambiguous
+            submission can be raised with the provider, and it is never read by
+            any decision, never part of a financial figure, and never a
+            credential.
+        safe_headers: The response headers this adapter is willing to record.
+            An allow-list, not a filter: a header is absent unless it was
+            explicitly deemed safe, because a deny-list grows a leak the day a
+            provider adds a header.
     """
 
     outcome: TransportOutcome
@@ -97,6 +135,8 @@ class BrokerResponse:
     body: Any = None
     detail: str | None = None
     attempts: int = 1
+    request_id: str | None = None
+    safe_headers: tuple[tuple[str, str], ...] = ()
 
     @property
     def ok(self) -> bool:
@@ -130,6 +170,34 @@ class BrokerResponse:
             TransportOutcome.RATE_LIMITED,
         }
 
+    def evidence_body(self) -> dict[str, Any]:
+        """Return what this reply is evidence of, for fingerprinting.
+
+        Deliberately built from the *response* only: the status, the headers
+        that were allow-listed, and the normalised body. Request headers are
+        excluded by construction, because the request carried the credential and
+        a digest over it would be a credential derivative sitting in an audit
+        record forever.
+
+        Returns:
+            The evidence body.
+        """
+        return {
+            "outcome": str(self.outcome),
+            "status_code": self.status_code,
+            "safe_headers": [list(pair) for pair in self.safe_headers],
+            "body": canonical_evidence(self.body),
+        }
+
+    def evidence_fingerprint(self) -> str:
+        """Digest this reply so an artefact can name what it saw.
+
+        Returns:
+            The digest. Carries no credential, since `evidence_body` excludes
+            every request header.
+        """
+        return fingerprint_of(self.evidence_body())
+
     def as_json(self) -> dict[str, Any]:
         """Return the reply as a JSON-safe mapping. Carries no credential."""
         return {
@@ -139,6 +207,9 @@ class BrokerResponse:
             "is_ambiguous": self.is_ambiguous,
             "detail": self.detail,
             "attempts": self.attempts,
+            "request_id": self.request_id,
+            "safe_headers": [list(pair) for pair in self.safe_headers],
+            "evidence_fingerprint": self.evidence_fingerprint(),
         }
 
 
@@ -311,20 +382,8 @@ def read_with_retry(
     for attempt in range(1, limit + 1):
         last = transport.request(RequestMethod.GET, path, params=params)
         if last.ok or last.not_found:
-            return BrokerResponse(
-                outcome=last.outcome,
-                status_code=last.status_code,
-                body=last.body,
-                detail=last.detail,
-                attempts=attempt,
-            )
+            return replace(last, attempts=attempt)
         if attempt < limit and backoff_seconds > 0:
             sleep(backoff_seconds * attempt)
     assert last is not None  # noqa: S101 - the loop runs at least once
-    return BrokerResponse(
-        outcome=last.outcome,
-        status_code=last.status_code,
-        body=last.body,
-        detail=last.detail,
-        attempts=limit,
-    )
+    return replace(last, attempts=limit)
