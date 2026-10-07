@@ -1,0 +1,100 @@
+"""Every refusal the operations control plane can issue.
+
+Separate from the execution codes because the two answer different questions.
+An execution code says an order could not be built or sent; an operational code
+says the system was not in a state where acting was permitted at all. Collapsing
+them would make "the venue refused this order" indistinguishable from "this
+process was killed", and those need different responses.
+"""
+
+from __future__ import annotations
+
+__all__ = [
+    "OPERATIONS_ERROR_CODES",
+    "Code",
+    "OperationsError",
+]
+
+
+class Code:
+    """Every refusal the operations control plane can issue."""
+
+    # arming: whether the coordinator may operate at all
+    PAPER_OPERATIONS_NOT_ARMED = "PAPER_OPERATIONS_NOT_ARMED"
+    PAPER_OPERATIONS_AUTHORIZATION_EXPIRED = "PAPER_OPERATIONS_AUTHORIZATION_EXPIRED"
+    PAPER_OPERATIONS_AUTHORIZATION_INVALID = "PAPER_OPERATIONS_AUTHORIZATION_INVALID"
+    OPERATIONS_ACCOUNT_BINDING_MISMATCH = "OPERATIONS_ACCOUNT_BINDING_MISMATCH"
+    LIVE_OPERATIONS_NOT_AUTHORIZED = "LIVE_OPERATIONS_NOT_AUTHORIZED"
+
+    # the kill switch
+    PAPER_OPERATIONS_KILLED = "PAPER_OPERATIONS_KILLED"
+    PAPER_OPERATIONS_PAUSED = "PAPER_OPERATIONS_PAUSED"
+    CONTROL_STATE_UNVERIFIABLE = "CONTROL_STATE_UNVERIFIABLE"
+    KILLED_WITH_UNRESOLVED_REMOTE_ORDER = "KILLED_WITH_UNRESOLVED_REMOTE_ORDER"
+    KILL_RESUME_NOT_AUTHORIZED = "KILL_RESUME_NOT_AUTHORIZED"
+
+    # scheduling
+    OPERATIONS_RUN_NOT_DUE = "OPERATIONS_RUN_NOT_DUE"
+    MISSED_OPERATIONAL_RUN = "MISSED_OPERATIONAL_RUN"
+    OPERATIONS_SESSION_NOT_ELIGIBLE = "OPERATIONS_SESSION_NOT_ELIGIBLE"
+    UNKNOWN_OPERATIONS_SESSION = "UNKNOWN_OPERATIONS_SESSION"
+    INVALID_OPERATIONS_SCHEDULE = "INVALID_OPERATIONS_SCHEDULE"
+
+    # run identity and concurrency
+    RUN_ALREADY_ACTIVE = "RUN_ALREADY_ACTIVE"
+    RUN_ALREADY_COMPLETED = "RUN_ALREADY_COMPLETED"
+    RUN_LEASE_HELD_ELSEWHERE = "RUN_LEASE_HELD_ELSEWHERE"
+    RUN_LEASE_NOT_HELD = "RUN_LEASE_NOT_HELD"
+    OPERATIONS_RUN_IDENTITY_MISMATCH = "OPERATIONS_RUN_IDENTITY_MISMATCH"
+    INVALID_OPERATIONS_RUN_TRANSITION = "INVALID_OPERATIONS_RUN_TRANSITION"
+
+    # inputs
+    STALE_OPERATIONAL_INPUT = "STALE_OPERATIONAL_INPUT"
+    REQUIRED_OPERATIONAL_INPUT_MISSING = "REQUIRED_OPERATIONAL_INPUT_MISSING"
+    INVALID_FRESHNESS_POLICY = "INVALID_FRESHNESS_POLICY"
+
+    # health
+    OPERATIONS_HEALTH_NOT_READY = "OPERATIONS_HEALTH_NOT_READY"
+    BLOCKED_PROVIDER_UNAVAILABLE = "BLOCKED_PROVIDER_UNAVAILABLE"
+    BLOCKED_RECONCILIATION_BREAK = "BLOCKED_RECONCILIATION_BREAK"
+    BLOCKED_REMOTE_STATE_UNKNOWN = "BLOCKED_REMOTE_STATE_UNKNOWN"
+    BLOCKED_LOCAL_INTEGRITY = "BLOCKED_LOCAL_INTEGRITY"
+    BLOCKED_OPEN_INCIDENT = "BLOCKED_OPEN_INCIDENT"
+
+    # the control store
+    OPERATIONS_STORE_INVALID = "OPERATIONS_STORE_INVALID"
+    OPERATIONS_PARTIAL_RECORD = "OPERATIONS_PARTIAL_RECORD"
+    OPERATIONS_JOURNAL_CHAIN_BROKEN = "OPERATIONS_JOURNAL_CHAIN_BROKEN"
+    OPERATIONS_JOURNAL_TRUNCATED = "OPERATIONS_JOURNAL_TRUNCATED"
+    OPERATIONS_ANCHOR_REGRESSION = "OPERATIONS_ANCHOR_REGRESSION"
+    FORBIDDEN_OPERATIONS_NAMESPACE = "FORBIDDEN_OPERATIONS_NAMESPACE"
+
+    # authority
+    OPERATIONS_AUTHORITY_EXCEEDED = "OPERATIONS_AUTHORITY_EXCEEDED"
+    VENUE_FALLBACK_NOT_AUTHORIZED = "VENUE_FALLBACK_NOT_AUTHORIZED"
+    INCIDENT_AUTO_REPAIR_NOT_AUTHORIZED = "INCIDENT_AUTO_REPAIR_NOT_AUTHORIZED"
+
+
+OPERATIONS_ERROR_CODES: frozenset[str] = frozenset(
+    value
+    for name, value in vars(Code).items()
+    if not name.startswith("_") and isinstance(value, str)
+)
+
+
+class OperationsError(Exception):
+    """A refusal from the operations control plane.
+
+    Attributes:
+        code: Which refusal, from `Code`.
+    """
+
+    def __init__(self, code: str, message: str) -> None:
+        """Build the error.
+
+        Args:
+            code: The refusal code.
+            message: What went wrong and why it matters. Never a credential.
+        """
+        self.code = code
+        super().__init__(f"{code}: {message}")

@@ -138,6 +138,14 @@ frozen at the same commit; P2 branched from it.
 | P2.2D | **CERTIFICATION DEFECTS CLOSED** — fills, cancel, paper proof, single-read evidence |
 | P2.2E | **EXTERNAL PAPER CANARY EXECUTED** — one authorised order, filled, reconciled, closed |
 | P2.2 external paper endpoint | **EXTERNAL PAPER EXECUTION CERTIFIED** — ALPACA PAPER |
+| P2.2 checkpoint | tag `p2-external-paper-certified` |
+| P2.3 | **PAPER OPERATIONS CONTROL PLANE** — `PAPER_OPERATIONS_ENGINE_V1` |
+| P2.3 default operational state | **NOT_ARMED / FAIL CLOSED** |
+| P2.3 kill switch | **PERSISTENT** — survives restart; corrupt state fails closed |
+| P2.3 auto liquidation | **NONE** |
+| P2.3 automatic reconciliation repair | **NONE** |
+| P2.3 provider outage fallback | **NONE** |
+| P2.3 scheduled-run backfill | **NONE** |
 | Live trading | **NOT IMPLEMENTED, NOT AUTHORIZED** |
 | Production risk thresholds | **NOT AUTHORIZED** |
 | Production strategy budgets | **NOT AUTHORIZED** |
@@ -382,6 +390,96 @@ They are **recorded, not fixed.** Each needs a contract change, and bundling one
 into a transport-certification commit would make the diff unreviewable as either
 thing. The lesson is the one worth keeping: a fake transport proves the shape of
 a protocol and says nothing about whether the protocol matches the provider.
+
+### P2.3 — the control plane, which is almost entirely refusal
+
+P2.2 proved one authorised external paper execution can be made safe. P2.3 is
+what makes running it again, unattended, also safe — and the striking thing
+about the package is how little of it does anything. Most of it declines.
+
+**It gains no authority, structurally.** `PaperOperationsCoordinator` takes
+planning and submission as an injected callable. It cannot invent a target, an
+order, a fill, a position, a cash balance or a risk approval because it has no
+code that could build one. That is a stronger guarantee than a convention, and
+it is why the coordinator can be trusted to sit beside execution and accounting
+without becoming a second authority over either.
+
+**The default is no, and corruption is not permission.** A fresh install is
+`NOT_ARMED`. A missing kill-switch file is `KILLED`; so is an unparseable one, a
+tampered one, and one naming a state this build does not recognise. The
+inversion is the whole design: any other default lets a disk error grant the
+right to trade. Control-state writes are read back and compared before being
+trusted, because for a kill switch "I wrote it" and "it is there" are different
+claims and only the second survives a power loss.
+
+**Arming permits a coordinator, never an order.** This distinction is the one
+most tempting to lose, because an operations grant is the broadest permission in
+the system. If arming could authorise an order then one operator action would
+stand between a scheduled process and an arbitrary trade. Instead every order
+still needs portfolio → risk → `ExecutionPlan` → `Order`, unchanged. A grant
+names one account fingerprint — a wildcard would keep authorising after a
+credential was repointed, exactly when it must stop — and `expires_at` has no
+invented default, because a grant that silently expired would strand the
+scheduler and one that never expires outlives its reason.
+
+**A kill stops activity; it does not trade.** It blocks submissions and cancels
+open orders it can *prove* it placed. It never liquidates a position: a filled
+position is an accounting fact an authorised decision created, and only another
+authorised decision may unwind it. A kill that flattened the book would be the
+largest unreviewed trade the system ever made, at the exact moment something is
+already known to be wrong. It never touches an order it cannot prove it owns —
+that is somebody else's. And the state is written *before* the venue is
+contacted, so a provider outage cannot stop the system becoming killed.
+
+An owned order whose fate cannot be established yields
+`KILLED_WITH_UNRESOLVED_REMOTE_ORDER`, strictly worse than `KILLED` and never
+collapsed into it — there may be a working order nobody is tracking. Leaving a
+kill requires a clean reconciliation, no open blocking incident and no
+unresolved owned order; `RunState.KILLED` has no outgoing edge, so a restart is
+not a recovery.
+
+**Permission is not cached.** The kill switch is re-read before every single
+order, not once per run, and the gate counts its own checks so a test can assert
+it ran per submission. An operator who kills mid-run must not have to wait for
+the run to finish.
+
+**A run is identified, not generated.** The run id is a digest of the slot's
+semantic inputs and carries no clock, so invoking the scheduler twice for one
+slot recovers the first run instead of starting a competitor — a UUID would make
+every invocation a new run, which is the easiest way to turn one scheduled
+decision into two orders. A durable lease admits one mutation-capable run per
+account, and a stale lease is never taken on age: a stale lease and a crashed run
+are the same observation from outside, and the crashed run may already have
+submitted.
+
+**Nothing is substituted for missing truth.** A stale input blocks rather than
+being traded on. A missing one blocks rather than being guessed or carried over
+from the last run. An unreachable venue blocks rather than falling back to the
+local deterministic broker — the venue is bound for the run. A missed slot is
+recorded and never run late, because an order planned against yesterday's
+prices is a new unreviewed decision wearing an old authorisation. A
+reconciliation break blocks and is never repaired. A `REMOTE_STATE_UNKNOWN`
+blocks the whole account rather than being isolated so other names keep trading.
+
+**There is no `DEGRADED` path to a mutation.** Only `HEALTHY` permits a
+submission. Every "degraded but probably fine" exception anyone has written is
+the one that later turned out to have been the problem. A required check that
+did not *run* fails the report rather than being assumed passed: a check that
+never ran has established nothing.
+
+**Severity is behaviour, not tone.** `CRITICAL_AUTO_KILL_REASONS` is frozen and
+short — account mismatch, paper environment unproven, live trading not
+authorised, ledger or journal integrity failure, duplicate accounting fill,
+unverifiable control state. Each means the system has lost track of what is
+true. Ordinary trouble blocks instead, because escalating routine problems to a
+state needing operator recovery trains an operator to clear kills without
+reading them. An unclassified code defaults to `BLOCKING`: the safe reading of
+"I do not know what this is" is "do not trade".
+
+The journal uses the same chain-plus-mandatory-anchor pattern as the execution
+journal and the accounting ledger, with the same honest limit stated in its own
+`verify()` output: **a coordinated local rollback of the journal and its anchor
+together is undetectable from local files alone.**
 
 ### P2.2E — the canary, and three more things only a real venue could say
 
@@ -3618,6 +3716,21 @@ expects; only the documented surface, or a real call, shows whether that shape
 matches the provider. This is a standing limitation of the test strategy, not a
 bug that was fixed.
 
+**Operational control is not execution quality (P2.3).** The control plane can
+establish that a run was permitted, reconciled and recorded. It says nothing
+about whether the orders it permitted were good ones. Gating is not judgement.
+
+**No unattended soak has been run (P2.3).** The control plane is complete and
+tested offline against a stub environment and an injected clock; no multi-day
+unattended paper operation has happened. Everything known about its behaviour
+under repetition is inference from tests, not observation.
+
+**Coordinated local rollback remains undetectable (P2.3).** The run journal
+inherits the limit the execution journal and accounting ledger already carry: a
+rollback of both the journal and its anchor to a mutually consistent earlier
+state cannot be detected locally. Three journals now share one unclosed gap,
+and an independently trusted anchor would close all three.
+
 **Certification is one observation, not a guarantee (P2.2E).** It establishes
 that this code, against this provider, at one moment, did what it claims. An
 external run is not reproducible — the fills came from a matching engine at a
@@ -5460,6 +5573,46 @@ against a fake venue that models the activities-feed lag the live run exposed).
 | `test_p2_2e_paper_canary.py::test_the_artefact_does_not_claim_reproducibility` | the honest reproducibility language survives |
 | `test_p2_2e_paper_canary.py::test_a_residual_is_closed_by_a_compensating_order` | a stranded position is traded out, not liquidated |
 
+P2.3 adds `tests/integration/test_p2_3_paper_operations.py` (120 tests, all
+offline against a stub environment and an injected clock).
+
+| Test | Protects |
+| --- | --- |
+| `test_p2_3_paper_operations.py::test_a_fresh_install_is_killed` | absent control state is never permission |
+| `test_p2_3_paper_operations.py::test_corrupt_control_state_fails_closed` | an unparseable kill switch resolves to killed |
+| `test_p2_3_paper_operations.py::test_a_tampered_kill_state_fails_closed` | a forged ACTIVE state is refused |
+| `test_p2_3_paper_operations.py::test_a_kill_survives_a_restart` | a restart is not a recovery |
+| `test_p2_3_paper_operations.py::test_resuming_after_a_kill_needs_recovery_not_a_restart` | leaving a kill needs reconciliation and no open blocking incident |
+| `test_p2_3_paper_operations.py::test_a_kill_blocks_submission_and_liquidates_nothing` | a kill is not a liquidation |
+| `test_p2_3_paper_operations.py::test_an_unresolved_owned_order_is_worse_than_a_plain_kill` | the two states are never collapsed |
+| `test_p2_3_paper_operations.py::test_an_authorization_cannot_name_a_live_environment` | no live operations mode exists |
+| `test_p2_3_paper_operations.py::test_an_authorization_cannot_cover_any_account` | a wildcard grant would survive a repointed credential |
+| `test_p2_3_paper_operations.py::test_arming_states_it_authorises_no_order` | arming permits a coordinator, not a trade |
+| `test_p2_3_paper_operations.py::test_an_observe_only_grant_does_not_permit_paper_execution` | a narrow grant is not widened at runtime |
+| `test_p2_3_paper_operations.py::test_a_second_invocation_for_the_same_slot_is_a_no_op` | one scheduled decision never becomes two orders |
+| `test_p2_3_paper_operations.py::test_a_stale_lease_is_not_taken_on_age` | a crashed run may already have submitted |
+| `test_p2_3_paper_operations.py::test_a_killed_run_has_no_legal_exit` | the transition table forbids resuming after a kill |
+| `test_p2_3_paper_operations.py::test_an_executing_run_cannot_go_back_to_planning` | no edge re-submits orders already at the venue |
+| `test_p2_3_paper_operations.py::test_there_is_no_degraded_path_to_a_mutation` | only HEALTHY permits a submission |
+| `test_p2_3_paper_operations.py::test_health_fails_closed_when_a_check_did_not_run` | silence is not a pass |
+| `test_p2_3_paper_operations.py::test_a_provider_outage_blocks_and_never_falls_back` | the local simulator is never a fallback |
+| `test_p2_3_paper_operations.py::test_a_stale_input_blocks_the_run` | an input existing is not evidence it describes the market |
+| `test_p2_3_paper_operations.py::test_an_input_exactly_at_the_limit_is_fresh` | the freshness boundary is explicit and consistent |
+| `test_p2_3_paper_operations.py::test_a_future_dated_input_is_not_fresh` | a future as_of is reported, not clamped |
+| `test_p2_3_paper_operations.py::test_a_missed_slot_is_recorded_and_never_run` | no backfill trading |
+| `test_p2_3_paper_operations.py::test_a_kill_during_the_run_stops_before_the_first_order` | permission is re-read, not cached |
+| `test_p2_3_paper_operations.py::test_a_kill_between_two_orders_keeps_the_first_and_stops_the_second` | the critical mid-run case |
+| `test_p2_3_paper_operations.py::test_the_submission_gate_runs_once_per_order` | the gate is per submission, not per run |
+| `test_p2_3_paper_operations.py::test_remote_state_unknown_blocks_the_whole_account` | ambiguity is not isolated so other names keep trading |
+| `test_p2_3_paper_operations.py::test_a_reconciliation_break_blocks_and_is_never_repaired` | no operational auto-repair |
+| `test_p2_3_paper_operations.py::test_a_blocking_incident_cannot_resolve_itself` | a system that clears its own alarms has none |
+| `test_p2_3_paper_operations.py::test_re_detecting_a_condition_touches_one_incident` | a hundred copies of one problem do not read as a hundred problems |
+| `test_p2_3_paper_operations.py::test_the_run_journal_detects_truncation` | the anchor catches what the chain cannot |
+| `test_p2_3_paper_operations.py::test_an_illegal_transition_is_refused_before_it_is_written` | the P1.4 pre-write lesson |
+| `test_p2_3_paper_operations.py::test_operational_state_cannot_be_written_into_another_domain` | control state never shares a root with evidence or ledgers |
+| `test_p2_3_paper_operations.py::test_a_blocked_run_is_not_reported_as_a_success` | a correct refusal is not an achievement |
+| `test_p2_3_paper_operations.py::test_the_execution_and_accounting_versions_are_not_bumped` | operations did not move execution or accounting semantics |
+
 ### The gate
 
 `make check` — lint, format check, mypy strict, pytest with coverage failing
@@ -5481,16 +5634,23 @@ certification.
 defects are closed, the read-only preflight passes, and one authorised order has
 been through the full chain to a real paper venue and back.
 
-**P2.3 — paper shadow operations — follows.** What P2.2 built is a path that
-works once, deliberately, under a human's hand. What it does not have is
-anything that makes running it repeatedly safe: scheduling, health monitoring,
-incident controls, and a persistent kill switch. Those are the difference
-between a certified capability and an operable one, and none of them should be
-improvised the first time a run misbehaves unattended.
+**P2.3 is complete.** The control plane exists, is tested offline, and has
+never been run unattended.
 
-Nothing in P2.3 may relax what P2.2 established: no live host, no live key
-prefix, no third `ExecutionVenue` member, no retryable mutation, no auto-repair,
-and `make check` continuing to make no external request.
+**P2.4 — a controlled multi-day paper shadow soak — follows.** Everything known
+about this control plane under repetition is inference from tests. A soak is how
+that becomes observation: run it in `OBSERVE_ONLY` across several sessions
+first, collect the incident, reconciliation and health history it accumulates,
+and only then consider scheduled `EXTERNAL_PAPER` runs. The promotion gates
+themselves — what evidence would justify moving from shadow to anything wider —
+should be written down *before* the soak produces data, for the same reason R1.4
+preregistered its hypothesis: criteria chosen after seeing results are not
+criteria.
+
+Nothing in P2.4 may relax what P2.2 and P2.3 established: no live host, no live
+key prefix, no third venue or mode member, no retryable mutation, no
+auto-repair, no venue fallback, no backfill, an operational default of
+`NOT_ARMED`, and `make check` continuing to make no external request.
 
 Neither phase may relax anything P2.2 or P2.2C established: no live host in the
 allow-list, no live key prefix accepted, no third `ExecutionVenue` member, no
@@ -5642,6 +5802,32 @@ Not a backlog. These exclusions are deliberate.
   the response whose values are reported
 - labelling a `status=all` order listing as open or working orders
 - clearing, cancelling or liquidating pre-existing paper positions the user owns
+- a third `OperationsMode` member, or any live operations mode
+- an operational default other than `NOT_ARMED`, or a missing/corrupt control
+  state that resolves to anything but `KILLED`
+- an arming grant that authorises a security, a quantity or an order, or one
+  covering a wildcard account
+- a kill that liquidates a position, cancels an order it cannot prove it owns,
+  or requires the provider to be reachable before becoming durable
+- resuming from `KILLED` by restarting a process, or any outgoing edge from
+  `RunState.KILLED` in the transition table
+- caching kill-switch permission for the duration of a run instead of re-reading
+  it before every order
+- a generated (non-derived) operations run id, or a run id that includes a clock
+- taking a stale run lease on age rather than recovering the recorded run
+- a `DEGRADED` health state that permits a mutation, or treating a required
+  check that did not run as passed
+- falling back to `LOCAL_DETERMINISTIC_PAPER` when the external venue is
+  unreachable
+- backfilling a missed scheduled slot, or submitting a plan built for an earlier
+  session
+- isolating a `REMOTE_STATE_UNKNOWN` so other names keep trading
+- an incident that resolves itself automatically, or any operational auto-repair
+- widening `CRITICAL_AUTO_KILL_REASONS` to ordinary trouble such as a stale
+  input or an unreachable provider
+- writing operational control state into the evidence, research, accounting or
+  execution-journal namespaces
+- a control-state write that is not read back and verified
 - closing a canary position with a cancel, a close-all or a liquidation instead
   of a compensating authorised order
 - a canary that calls the transport directly to trade rather than originating

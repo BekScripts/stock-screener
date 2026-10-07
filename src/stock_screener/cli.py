@@ -29,7 +29,7 @@ from datetime import UTC as _UTC
 from datetime import datetime as _datetime
 from datetime import timedelta as _timedelta
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated
+from typing import TYPE_CHECKING, Annotated, Any
 
 import structlog
 import typer
@@ -8474,3 +8474,316 @@ def execution_external_paper_canary_command(
         else f"CANARY NOT CERTIFIED: {report.outcome}"
     )
     raise typer.Exit(code=0 if settled else 1)
+
+
+paper_ops_app = typer.Typer(
+    help=(
+        "The paper operations control plane. Gates, pauses, kills and reports; it "
+        "invents no target, order or fill, and reaches no live venue."
+    ),
+    no_args_is_help=True,
+)
+app.add_typer(paper_ops_app, name="paper-ops")
+
+
+def _operations_root() -> Path:
+    """Where operational control state lives."""
+    return Path(".operations")
+
+
+def _paper_ops_stores() -> tuple[Any, Any, Any, Any]:
+    """Open the operational stores.
+
+    Returns:
+        The arming store, kill store, incident store and run journal.
+    """
+    from stock_screener.paper_operations import (
+        ArmingStore,
+        IncidentStore,
+        KillSwitchStore,
+        OperationsRunJournal,
+    )
+
+    root = _operations_root()
+    return (
+        ArmingStore(root),
+        KillSwitchStore(root),
+        IncidentStore(root),
+        OperationsRunJournal(root),
+    )
+
+
+@paper_ops_app.command("status")
+def paper_ops_status_command() -> None:
+    """Show the operational state, safe to share.
+
+    Reads local control state only. Makes no network request and carries no
+    credential or account number — the account appears as a fingerprint.
+    """
+    from stock_screener.paper_operations import (
+        OperationsMode,
+        OperationsStatusReport,
+    )
+
+    _bootstrap()
+    arming, kill, incidents, journal = _paper_ops_stores()
+    switch = kill.current()
+    try:
+        grant = arming.current()
+    except ExecutionError:
+        grant = None
+    except Exception:
+        grant = None
+
+    last_run = ""
+    last_success = ""
+    for entry in reversed(journal.entries()):
+        if entry.event_type.value == "RUN_COMPLETED":
+            last_run = last_run or entry.run_id
+            if "COMPLETED" in entry.detail:
+                last_success = last_success or entry.run_id
+    report = OperationsStatusReport(
+        mode=grant.allowed_mode if grant else OperationsMode.OBSERVE_ONLY,
+        armed=grant is not None,
+        authorization_id=grant.authorization_id if grant else "",
+        authorization_expires_at=grant.expires_at if grant else None,
+        kill_state=str(switch.state),
+        kill_reason=switch.reason_code,
+        account_binding_fingerprint=switch.account_binding_fingerprint,
+        last_run=last_run,
+        last_successful_run=last_success,
+        open_incidents=tuple(
+            (incident.incident_id, str(incident.severity))
+            for incident in incidents.open_incidents()
+        ),
+        code_commit="",
+    )
+    typer.echo("")
+    for line in report.summary_lines():
+        typer.echo(f"  {line}")
+
+
+@paper_ops_app.command("arm")
+def paper_ops_arm_command(
+    confirm: Annotated[
+        bool,
+        typer.Option(
+            "--confirm",
+            help=(
+                "Required. Arming permits the coordinator to operate. It authorises "
+                "no security, quantity or order — every order still needs the full "
+                "portfolio, risk and execution chain."
+            ),
+        ),
+    ] = False,
+    mode: Annotated[
+        str,
+        typer.Option("--mode", help="OBSERVE_ONLY or EXTERNAL_PAPER."),
+    ] = "OBSERVE_ONLY",
+    authorization_id: Annotated[
+        str, typer.Option("--id", help="A stable name for this grant.")
+    ] = "operator-grant",
+    expires_at: Annotated[
+        str,
+        typer.Option(
+            "--expires-at",
+            help=(
+                "Optional ISO-8601 expiry. No default is invented: a grant that "
+                "silently expired would strand the scheduler, and one that never "
+                "expires outlives its reason. You choose."
+            ),
+        ),
+    ] = "",
+) -> None:
+    """Arm paper operations, explicitly.
+
+    Displays and binds the provider, the account fingerprint, the operations
+    policy and the commit before recording the grant. There is no live mode and
+    no default-yes.
+    """
+    from stock_screener.execution import fingerprint_of
+    from stock_screener.execution.external import AlpacaPaperPreflightRun
+    from stock_screener.paper_operations import (
+        OperationsMode,
+        PaperOperationsAuthorization,
+        SystemClock,
+        operations_policy,
+    )
+
+    settings = _bootstrap()
+    if not confirm:
+        typer.echo(
+            "refusing without --confirm: arming permits the coordinator to operate "
+            "unattended. It authorises no order by itself."
+        )
+        raise typer.Exit(code=1)
+
+    try:
+        requested = OperationsMode(mode.strip().upper())
+    except ValueError:
+        typer.echo(f"STOPPED: {mode!r} is not an operations mode. There is no live mode.")
+        raise typer.Exit(code=1) from None
+
+    try:
+        run = AlpacaPaperPreflightRun.from_settings(settings)
+    except ExecutionError as exc:
+        typer.echo(f"STOPPED: {exc}")
+        raise typer.Exit(code=1) from exc
+    account = run.binding.binding_fingerprint()
+    run.close()
+
+    clock = SystemClock()
+    grant = PaperOperationsAuthorization(
+        authorization_id=authorization_id,
+        provider="ALPACA",
+        account_binding_fingerprint=account,
+        operations_policy_fingerprint=fingerprint_of(operations_policy()),
+        code_commit=_git_commit(),
+        created_at=clock.iso(),
+        allowed_mode=requested,
+        expires_at=expires_at.strip() or None,
+    )
+    arming, _, _, _ = _paper_ops_stores()
+    arming.arm(grant)
+    typer.echo("")
+    typer.echo("  ARMED")
+    for key, value in sorted(grant.as_json().items()):
+        if key in {"authorises", "live_trading", "contract", "engine_version"}:
+            continue
+        typer.echo(f"    {key:34}: {value}")
+    typer.echo("")
+    typer.echo("  this authorises the coordinator to operate — never a security or order")
+
+
+def _git_commit() -> str:
+    """Read the current commit, for the record.
+
+    Returns:
+        The short commit, or `UNKNOWN` when git cannot be asked.
+    """
+    import subprocess
+
+    try:
+        return subprocess.run(
+            ["git", "rev-parse", "HEAD"],  # noqa: S607
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=10,
+        ).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return "UNKNOWN"
+
+
+@paper_ops_app.command("disarm")
+def paper_ops_disarm_command(
+    reason: Annotated[str, typer.Option("--reason", help="Why, for the record.")] = "",
+) -> None:
+    """Withdraw the operating grant.
+
+    Blocks future scheduled runs. Cancels nothing and touches no position —
+    that is what `kill` does.
+    """
+    from stock_screener.paper_operations import SystemClock
+
+    _bootstrap()
+    arming, _, _, _ = _paper_ops_stores()
+    arming.disarm(clock=SystemClock(), reason=reason)
+    typer.echo("DISARMED — future scheduled runs are not authorised.")
+    typer.echo("Nothing was cancelled and no position was touched. Use `kill` for that.")
+
+
+@paper_ops_app.command("pause")
+def paper_ops_pause_command(
+    reason: Annotated[
+        str, typer.Option("--reason", help="Why, for the record.")
+    ] = "OPERATOR_PAUSE",
+) -> None:
+    """Block new submissions without cancelling anything."""
+    from stock_screener.paper_operations import SystemClock
+
+    _bootstrap()
+    _, kill, _, _ = _paper_ops_stores()
+    switch = kill.pause(clock=SystemClock(), reason_code="OPERATOR_PAUSE", detail=reason)
+    typer.echo(f"PAUSED ({switch.reason_code}) — new submissions blocked.")
+    typer.echo("Nothing was cancelled and no position was touched.")
+
+
+@paper_ops_app.command("kill")
+def paper_ops_kill_command(
+    confirm: Annotated[
+        bool,
+        typer.Option(
+            "--confirm",
+            help=(
+                "Required. Blocks new submissions durably and then attempts to "
+                "cancel open orders this system can prove it placed. It never "
+                "liquidates a position and never touches an unknown order."
+            ),
+        ),
+    ] = False,
+    reason: Annotated[str, typer.Option("--reason", help="Why, for the record.")] = "OPERATOR_KILL",
+) -> None:
+    """Stop paper operations, durably, without trading.
+
+    The local state is written and verified **before** the venue is contacted,
+    so a provider outage cannot prevent the system from becoming killed.
+    """
+    from stock_screener.paper_operations import SystemClock
+
+    _bootstrap()
+    if not confirm:
+        typer.echo(
+            "refusing without --confirm: this durably stops paper operations and "
+            "cancels orders this system placed. It liquidates nothing."
+        )
+        raise typer.Exit(code=1)
+    _, kill, _, _ = _paper_ops_stores()
+    switch = kill.kill(clock=SystemClock(), reason_code="OPERATOR_KILL", detail=reason)
+    typer.echo(f"KILLED ({switch.reason_code}) — recorded locally and verified.")
+    typer.echo("  new submissions      : blocked")
+    typer.echo("  owned open orders    : cancellation is attempted by the coordinator")
+    typer.echo("  unknown orders       : never touched")
+    typer.echo("  positions            : never liquidated")
+    typer.echo("  resuming             : needs reconciliation and an explicit re-arm")
+
+
+@paper_ops_app.command("show-incidents")
+def paper_ops_show_incidents_command(
+    all_incidents: Annotated[
+        bool, typer.Option("--all", help="Include resolved incidents.")
+    ] = False,
+) -> None:
+    """List operational incidents."""
+    _bootstrap()
+    _, _, incidents, _ = _paper_ops_stores()
+    rows = incidents.all() if all_incidents else incidents.open_incidents()
+    if not rows:
+        typer.echo("no incidents" + ("" if all_incidents else " open"))
+        return
+    typer.echo("")
+    for incident in rows:
+        typer.echo(f"  [{incident.severity:8}] {incident.incident_id}  {incident.reason_code}")
+        typer.echo(f"      status  : {incident.status}")
+        typer.echo(f"      detected: {incident.detected_at}")
+        if incident.detail:
+            typer.echo(f"      detail  : {incident.detail}")
+    typer.echo("")
+    typer.echo("  incidents are reported and gating. Nothing here repairs anything.")
+
+
+@paper_ops_app.command("verify-journal")
+def paper_ops_verify_journal_command() -> None:
+    """Verify the operational journal's hash chain and head anchor."""
+    _bootstrap()
+    _, _, _, journal = _paper_ops_stores()
+    try:
+        result = journal.verify()
+    except Exception as exc:
+        typer.echo(f"JOURNAL VERIFICATION FAILED: {exc}")
+        raise typer.Exit(code=1) from exc
+    typer.echo("")
+    for key in ("entries", "head_hash", "anchored_sequence", "chain_verified", "anchor_verified"):
+        typer.echo(f"  {key:20}: {result[key]}")
+    typer.echo("")
+    typer.echo(f"  NOT DETECTABLE: {result['not_detectable']}")

@@ -74,6 +74,7 @@ nav:
       - P1.0 portfolio and risk engine: reference/portfolio-risk-engine.md
       - P1.3 portfolio accounting: reference/portfolio-accounting.md
       - P2.0-P2.2 paper execution engine: reference/execution-engine.md
+      - P2.3 paper operations control plane: reference/paper-operations.md
       - Security identity: reference/security-identity.md
       - Listing evidence: reference/listing-evidence.md
       - Storage layout: reference/storage-layout.md

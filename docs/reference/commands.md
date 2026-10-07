@@ -233,6 +233,36 @@ the account clean, and there is no live equivalent of the flag.
 compensating authorised order, for when an earlier run left one behind. Neither
 form can cancel, liquidate, or touch a position this project did not open.
 
+### Paper operations control plane
+
+```bash
+stock-screener paper-ops status           # local only; no network, no credential
+stock-screener paper-ops arm --confirm --mode EXTERNAL_PAPER
+stock-screener paper-ops disarm --reason "end of day"
+stock-screener paper-ops pause
+stock-screener paper-ops kill --confirm
+stock-screener paper-ops show-incidents
+stock-screener paper-ops verify-journal
+```
+
+`status` reads local control state only and carries no credential or account
+number — the account appears as a fingerprint. On a fresh root it reports
+`armed: False` and `kill state: KILLED`, because absent control state is never
+permission.
+
+`arm` permits the coordinator to operate; it authorises no security, quantity or
+order. `--mode` takes `OBSERVE_ONLY` or `EXTERNAL_PAPER` and there is no live
+mode. `--expires-at` is optional and has no invented default.
+
+`kill` is durable before it is remote: the local state is written and verified
+first, so a provider outage cannot prevent the system from stopping. It never
+liquidates a position and never touches an order it cannot prove it placed.
+`pause` is the narrower action — it blocks submissions and cancels nothing.
+`disarm` blocks future scheduled runs and cancels nothing either.
+
+Both `arm` and `kill` require `--confirm`. See
+[paper operations](paper-operations.md) for the full contract.
+
 ```bash
 uv run pytest tests/live/test_paper_broker_live.py --live-paper
 ```
