@@ -40,13 +40,26 @@ and venue fills.
 
 from __future__ import annotations
 
-from .alpaca import ACCOUNT_PATH, ACTIVITIES_PATH, POSITIONS_PATH, PROVIDER, AlpacaPaperAdapter
+from .alpaca import (
+    ACCOUNT_PATH,
+    ACTIVITIES_PATH,
+    OPEN_ORDER_QUERY,
+    ORDER_HISTORY_QUERY,
+    POSITIONS_PATH,
+    PROVIDER,
+    AlpacaPaperAdapter,
+)
 from .binding import (
     ACCOUNT_FINGERPRINT_SALT,
     ADAPTER_VERSION,
     BrokerCapabilities,
     ExternalBrokerAccountBinding,
     account_fingerprint,
+)
+from .cancellation import (
+    CANCELLATION_PROTOCOL,
+    CancellationOutcome,
+    CancellationResult,
 )
 from .client_ids import (
     CLIENT_ID_DERIVATION,
@@ -86,6 +99,11 @@ from .paper_preflight import (
     AlpacaPaperPreflightRun,
     PaperPreflightReport,
 )
+from .paper_proof import (
+    PAPER_PROOF_VERSION,
+    ProviderPaperEnvironmentProof,
+    origin_fingerprint,
+)
 from .preflight import PREFLIGHT_GATES, READY_VERDICT, PaperBrokerReadiness, preflight
 from .reconciliation import (
     EXTERNAL_RECONCILIATION_POLICY,
@@ -109,6 +127,7 @@ from .status import (
     status_map_policy,
 )
 from .submission import (
+    CANCEL_INTENT_DIRECTORY,
     ORDERS_PATH,
     SUBMISSION_PROTOCOL,
     SubmissionIntent,
@@ -123,6 +142,7 @@ from .transport import (
     READ_RETRY_LIMIT,
     BrokerResponse,
     BrokerTransport,
+    ExternalReadEvidence,
     FakeTransport,
     RequestMethod,
     TransportOutcome,
@@ -135,6 +155,8 @@ __all__ = [
     "ACCOUNT_PATH",
     "ACTIVITIES_PATH",
     "ADAPTER_VERSION",
+    "CANCELLATION_PROTOCOL",
+    "CANCEL_INTENT_DIRECTORY",
     "CLIENT_ID_DERIVATION",
     "CLIENT_ID_NAMESPACE",
     "CLIENT_ID_PREFIX",
@@ -144,9 +166,12 @@ __all__ = [
     "EXTERNAL_RECONCILIATION_POLICY",
     "KEY_ID_HEADER",
     "LIVE_HOSTS",
+    "OPEN_ORDER_QUERY",
     "ORDERS_PATH",
+    "ORDER_HISTORY_QUERY",
     "PAPER_HOSTS",
     "PAPER_KEY_PREFIXES",
+    "PAPER_PROOF_VERSION",
     "POSITIONS_PATH",
     "PREFLIGHT_ARTEFACT_VERSION",
     "PREFLIGHT_GATES",
@@ -169,6 +194,8 @@ __all__ = [
     "BrokerEnvironment",
     "BrokerResponse",
     "BrokerTransport",
+    "CancellationOutcome",
+    "CancellationResult",
     "EnvironmentProof",
     "ExecutionVenue",
     "ExternalBreak",
@@ -179,10 +206,12 @@ __all__ = [
     "ExternalPaperAccountSnapshot",
     "ExternalPaperExecutionReport",
     "ExternalPosition",
+    "ExternalReadEvidence",
     "ExternalReconciliationResult",
     "FakeTransport",
     "PaperBrokerReadiness",
     "PaperPreflightReport",
+    "ProviderPaperEnvironmentProof",
     "ReconciliationVerdict",
     "RequestMethod",
     "StatusReading",
@@ -201,6 +230,7 @@ __all__ = [
     "client_order_id_for",
     "external_manifest",
     "is_our_client_order_id",
+    "origin_fingerprint",
     "preflight",
     "prove_paper_environment",
     "read_provider_status",

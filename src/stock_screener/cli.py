@@ -8342,7 +8342,7 @@ def execution_external_paper_preflight_command(
         raise typer.Exit(code=1) from exc
 
     try:
-        report = run.execute()
+        report = run.execute(now=datetime.now(UTC).isoformat())
     finally:
         run.close()
 

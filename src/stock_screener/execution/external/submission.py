@@ -62,6 +62,7 @@ if TYPE_CHECKING:
     from .transport import BrokerTransport
 
 __all__ = [
+    "CANCEL_INTENT_DIRECTORY",
     "INTENT_DIRECTORY",
     "ORDERS_PATH",
     "RESOLUTION_DIRECTORY",
@@ -85,6 +86,11 @@ INTENT_DIRECTORY = "submission_intents"
 #: Where resolutions live. Separate directory so an intent record is never
 #: rewritten — the log is append-only in both halves.
 RESOLUTION_DIRECTORY = "submission_resolutions"
+
+#: Where cancellation intents live, so a crash during a DELETE leaves a record
+#: naming the order it may have cancelled. Separate from submission intents
+#: because the two are different facts about the same order.
+CANCEL_INTENT_DIRECTORY = "cancellation_intents"
 
 #: The provider path orders are submitted to.
 ORDERS_PATH = "/v2/orders"
@@ -233,6 +239,7 @@ class SubmissionIntentLog:
         _guard_root(self.root)
         self.intents = self.root / INTENT_DIRECTORY
         self.resolutions = self.root / RESOLUTION_DIRECTORY
+        self.cancellations = self.root / CANCEL_INTENT_DIRECTORY
 
     def record_intent(self, intent: SubmissionIntent) -> Path:
         """Write an intent durably, before any request is made.
@@ -301,6 +308,55 @@ class SubmissionIntentLog:
             },
         )
         return path
+
+    def record_cancellation_intent(
+        self,
+        remote_order_id: str,
+        *,
+        requested_at: str,
+        binding_fingerprint: str = "",
+    ) -> Path:
+        """Write a cancellation intent durably, before the DELETE is made.
+
+        Same reasoning as a submission intent, for the same reason: if the
+        process dies between the request and the reply, a record already on disk
+        names the order whose cancellation may or may not have taken. Recording
+        afterwards would lose exactly the cases that need finding.
+
+        Writing the same intent twice is a no-op — a cancellation is idempotent
+        in intent even though the request is not repeated.
+
+        Args:
+            remote_order_id: The venue's order id.
+            requested_at: When the request is being made, ISO-8601.
+            binding_fingerprint: Which account it was to be sent to.
+
+        Returns:
+            Where it was written.
+        """
+        path = self.cancellations / f"{remote_order_id}.json"
+        if path.exists():
+            return path
+        _atomic_write(
+            path,
+            {
+                "remote_order_id": remote_order_id,
+                "requested_at": requested_at,
+                "binding_fingerprint": binding_fingerprint,
+                "protocol": "DURABLE_INTENT_THEN_READ_BACK_NEVER_RESEND_V1",
+            },
+        )
+        return path
+
+    def recorded_cancellations(self) -> tuple[str, ...]:
+        """Every provider order id a cancellation was ever requested for.
+
+        Returns:
+            The ids, ordered.
+        """
+        if not self.cancellations.exists():
+            return ()
+        return tuple(sorted(path.stem for path in self.cancellations.glob("*.json")))
 
     def recorded_intents(self) -> tuple[SubmissionIntent, ...]:
         """Every intent ever recorded, ordered by client order id.

@@ -108,7 +108,9 @@ def venue_handler(
                 200, json=positions or [], headers={"X-Request-ID": "rq-positions"}
             )
         if path == "/v2/orders":
-            return httpx.Response(200, json=orders or [], headers={"X-Request-ID": "rq-orders"})
+            return httpx.Response(
+                200, json=orders or [], headers={"X-Request-ID": "rq-open-orders"}
+            )
         return httpx.Response(404, json={"message": "no such endpoint"})
 
     return calls, handler
@@ -317,8 +319,8 @@ def test_an_order_this_adapter_did_not_mint_is_counted_as_foreign(tmp_path: Path
     report = run.execute()
     run.close()
 
-    assert report.orders_seen == 1
-    assert report.foreign_orders == 1
+    assert report.open_orders_seen == 1
+    assert report.foreign_open_orders == 1
 
 
 def test_an_order_this_adapter_minted_is_not_foreign(tmp_path: Path) -> None:
@@ -340,7 +342,7 @@ def test_an_order_this_adapter_minted_is_not_foreign(tmp_path: Path) -> None:
     report = run.execute()
     run.close()
 
-    assert report.foreign_orders == 0
+    assert report.foreign_open_orders == 0
 
 
 def test_an_unresolved_intent_withholds_readiness(tmp_path: Path) -> None:
@@ -374,22 +376,17 @@ def test_an_unresolved_intent_withholds_readiness(tmp_path: Path) -> None:
 
 
 def test_an_unmapped_declared_identity_withholds_readiness(tmp_path: Path) -> None:
-    from stock_screener.execution.external.alpaca import AlpacaPaperAdapter
-    from stock_screener.execution.external.preflight import preflight
     from stock_screener.portfolio_risk import SecurityIdentity
 
     _, handler = venue_handler()
     run = run_with(handler, tmp_path, mapping=SymbolMapping.of(()))
-    adapter = AlpacaPaperAdapter(transport=run.transport, binding=run.binding, mapping=run.mapping)
+    run.identities = (SecurityIdentity(kind="COMPANY", identity_id=11, symbol="AAPL"),)
 
-    readiness = preflight(
-        adapter,
-        log=run.log,
-        identities=[SecurityIdentity(kind="COMPANY", identity_id=11, symbol="AAPL")],
-    )
+    report = run.execute()
     run.close()
 
-    assert "SYMBOLS_RESOLVED" in dict(readiness.failures)
+    assert report.ready is False
+    assert "SYMBOLS_RESOLVED" in dict(report.failures)
 
 
 def test_a_declared_canary_asset_resolves(tmp_path: Path) -> None:
@@ -457,7 +454,7 @@ def test_the_artefact_records_provider_request_ids(tmp_path: Path) -> None:
     recorded = dict(report.request_ids)
     assert recorded["account"] == "rq-account"
     assert recorded["positions"] == "rq-positions"
-    assert recorded["orders"] == "rq-orders"
+    assert recorded["open_orders"] == "rq-open-orders"
 
 
 def test_the_artefact_records_an_evidence_fingerprint_per_read(tmp_path: Path) -> None:
@@ -468,7 +465,7 @@ def test_the_artefact_records_an_evidence_fingerprint_per_read(tmp_path: Path) -
     run.close()
 
     operations = {operation for operation, _ in report.evidence}
-    assert operations == {"account", "positions", "orders"}
+    assert operations == {"account", "positions", "open_orders"}
     assert all(len(digest) == 64 for _, digest in report.evidence)
 
 
@@ -480,7 +477,7 @@ def test_the_artefact_states_what_it_does_not_establish(tmp_path: Path) -> None:
     run.close()
 
     notes = " ".join(report.limitations)
-    assert "no field saying an account is a paper account" in notes
+    assert "sends no field" in notes
     assert "THREE-WAY RECONCILIATION" in notes
     assert "FILL INGESTION" in notes
 

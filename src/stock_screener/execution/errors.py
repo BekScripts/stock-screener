@@ -99,6 +99,17 @@ class Code:
     REMOTE_FILL_CONFLICT = "REMOTE_FILL_CONFLICT"
     REMOTE_EVENT_ORDER_AMBIGUOUS = "REMOTE_EVENT_ORDER_AMBIGUOUS"
     REMOTE_ORDER_NOT_FOUND = "REMOTE_ORDER_NOT_FOUND"
+    REMOTE_PROVIDER_ORDER_ID_REQUIRED = "REMOTE_PROVIDER_ORDER_ID_REQUIRED"
+    """A provider-side read needs the venue's own order id and was given none.
+
+    Raised rather than falling back to the client order id: the activities
+    endpoint does not filter on that, and sending it would return the account's
+    other fills while looking like it had worked."""
+
+    REMOTE_FILL_ORDER_MISMATCH = "REMOTE_FILL_ORDER_MISMATCH"
+    """An execution the venue returned does not belong to the order it was
+    requested for. Refused rather than ingested — attributing one order's fill
+    to another puts quantity in the book that nothing authorised."""
     EXTERNAL_SUBMISSION_BLOCKED = "EXTERNAL_SUBMISSION_BLOCKED"
     EXTERNAL_VENUE_MISMATCH = "EXTERNAL_VENUE_MISMATCH"
     UNEXPECTED_REMOTE_ORDER = "UNEXPECTED_REMOTE_ORDER"
@@ -142,7 +153,9 @@ V1_2_ADDED_ERROR_CODES: frozenset[str] = frozenset(
         "REMOTE_FILL_CONFLICT",
         "REMOTE_FILL_MISSING_LOCAL",
         "REMOTE_ORDER_MISMATCH",
+        "REMOTE_FILL_ORDER_MISMATCH",
         "REMOTE_ORDER_NOT_FOUND",
+        "REMOTE_PROVIDER_ORDER_ID_REQUIRED",
         "REMOTE_POSITION_MISMATCH",
         "REMOTE_STATE_UNKNOWN",
         "UNEXPECTED_REMOTE_ORDER",

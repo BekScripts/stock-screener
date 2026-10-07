@@ -63,17 +63,31 @@ loop anywhere in the module. Execution semantics are unchanged —
 `EXECUTION_ENGINE_V1_2` is not bumped, because a concrete implementation of an
 abstract seam moves no figure.
 
-**The paper endpoint is `IMPLEMENTED, CERTIFICATION PENDING`.** Nothing in this
-repository has spoken to a real venue. Two independent blockers:
+**P2.2D closed the four certification defects.** `read_fills` now filters by the
+provider `order_id` and validates every returned row against the order it was
+asked about; `cancel_order` cancels by the provider UUID, records a durable
+intent, and proves the outcome by reading the order back rather than trusting a
+`204`; `PROVIDER_CONFIRMS_PAPER` is backed by
+`PROVIDER_PAPER_ENVIRONMENT_PROOF_V1`, which cannot be built from configuration;
+and the preflight reads each endpoint once, binding every reported figure to the
+response whose fingerprint sits beside it. Working orders and order history are
+now separate concepts.
 
-- no `ALPACA_PAPER_*` credential is configured on this machine, so the read-only
-  preflight has nothing to authenticate with; and
-- contact with the documented Alpaca surface exposed three adapter defects,
-  recorded rather than fixed because each needs a contract change. The blocking
-  one is `read_fills`, which filters FILL activities by `client_order_id` where
-  Alpaca's documented filter is `order_id` — on a real account the parameter is
-  ignored, so the read returns unrelated fills and attributes them to one order,
-  defeating per-order exactly-once ingestion.
+**The real read-only preflight PASSES.** Against the configured paper account:
+origin `paper-api.alpaca.markets` reached, credential accepted, the configured
+account matched its binding, paper proof evidence-backed, **3 HTTP requests (all
+GET), 0 mutating requests** — where P2.2C made 6 for the same information. The
+account identifier is deliberately not recorded here: it lives in `.env` and
+reaches artefacts only as a salted fingerprint.
+
+**The paper endpoint is `IMPLEMENTED, CERTIFICATION PENDING`**, and the remaining
+blocker is not code. The configured paper account holds 3 positions (JNJ, MRK,
+SLB) and 3 working stop orders in the same names, none placed by this project.
+Each holding reconciles as `REMOTE_POSITION_MISMATCH` (BLOCKING) and each order
+as `UNEXPECTED_REMOTE_ORDER`; submitting against a book missing those positions
+would size the next trade against money that is not there. The preflight reports
+`canary_ready: False` and names both blockers. Clearing them is the account
+owner's decision and nothing in this repository does it automatically.
 
 **P1 is complete and frozen** at `p1-portfolio-authority-complete`
 (`b87e7c96`), which closes the portfolio programme at P1.4. From that tag the
@@ -99,8 +113,10 @@ frozen at the same commit; P2 branched from it.
 | P2.1 checkpoint | tag `p2-execution-realism-complete` |
 | P2.2 | **EXTERNAL PAPER ADAPTER / THREE-WAY RECONCILIATION** — `EXECUTION_ENGINE_V1_2` |
 | P2.2C | **CONCRETE PAPER TRANSPORT PRESENT** — `ALPACA_PAPER_HTTPS_TRANSPORT_V1` |
-| P2.2 external paper endpoint | **IMPLEMENTED, CERTIFICATION PENDING** — no real venue contacted |
-| P2.2 adapter defects | **3 RECORDED, UNFIXED** — one blocks certification |
+| P2.2C real read-only preflight | **PASSED** — paper host reached, account matched, 0 mutations |
+| P2.2D | **CERTIFICATION DEFECTS CLOSED** — fills, cancel, paper proof, single-read evidence |
+| P2.2 external paper endpoint | **IMPLEMENTED, CERTIFICATION PENDING** — canary not run |
+| P2.2 canary readiness | **BLOCKED** — user-owned pre-existing paper positions/orders |
 | Production risk thresholds | **NOT AUTHORIZED** |
 | Production strategy budgets | **NOT AUTHORIZED** |
 | Production correlation thresholds | **NOT AUTHORIZED** |
@@ -344,6 +360,70 @@ They are **recorded, not fixed.** Each needs a contract change, and bundling one
 into a transport-certification commit would make the diff unreviewable as either
 thing. The lesson is the one worth keeping: a fake transport proves the shape of
 a protocol and says nothing about whether the protocol matches the provider.
+
+### P2.2D — what a fake transport cannot tell you
+
+Four defects, all of which passed 211 fake-transport tests. That is the lesson
+worth keeping from this phase: a fake answers whatever it is told to, so it
+confirms that a protocol has the shape the code expects and says nothing about
+whether that shape matches the provider. Three were found by reading Alpaca's
+documentation; the fourth by running the preflight once against a real account.
+
+**`read_fills` filtered on a parameter the endpoint does not have.** It sent
+`client_order_id` to `/v2/account/activities/FILL`, where the documented filter
+is `order_id`. An unrecognised query parameter is ignored rather than rejected,
+so the read returned the account's FILL activities broadly *while looking
+successful*, and each row was stamped with the requested order's client id. On
+an account with prior activity that posts unrelated trades into the book.
+
+The repair is not a parameter swap. There is no fallback to the client id —
+`REMOTE_PROVIDER_ORDER_ID_REQUIRED`, because the failure mode of a silently
+ignored filter cannot be seen in the reply. The provider id comes from the
+durable submission resolution, so it survives a restart. And since an ignored
+filter is undetectable from the response, every row is now checked against the
+order it was requested for: another order's execution, one naming no order, or
+one in an unmapped symbol is `REMOTE_FILL_ORDER_MISMATCH` and is refused rather
+than attributed. A row that does not positively declare itself a fill is
+skipped, so a dividend or a fee on a mixed page cannot become an execution.
+
+**`cancel_order` used the wrong identifier and believed the status code.** The
+path parameter is the provider UUID, not the client id, so a cancel would have
+404'd; no durable intent was written, so a crash during the request left nothing
+naming the order; and a `204` was treated as terminal, which it is not — a
+cancellation can be accepted and still lose a race to a fill. It now mirrors
+submission exactly: durable intent, one `DELETE`, then the outcome established
+by *reading the order back*. `REMOTE_STILL_OPEN` and `REMOTE_STATE_UNKNOWN` are
+both possible and neither is a cancellation; only the first permits a further
+deliberate attempt, because only it rests on proven state.
+
+**`PROVIDER_CONFIRMS_PAPER` could not fail.** It checked `is_paper is False`,
+and the real account object has no such field — paper and live differ only by
+host. The gate passed by absence, reporting attestation nobody had gathered. A
+gate that cannot fail is worse than no gate: it occupies the place where a check
+should be, and reads in a report as though something was verified. It is now
+backed by a proof that can only be constructed from a successful authenticated
+response from the approved origin that matched this account binding. There is no
+constructor taking configuration, and a response from a live origin raises
+rather than proving anything.
+
+**The preflight read each endpoint twice** — once to fingerprint, once for the
+values — so the artefact's digests described responses it had not reported.
+Neither read was wrong and the artefact was still worthless as evidence.
+`ExternalReadEvidence[T]` now pairs a normalised value with the fingerprint of
+the same response, and against the real account the run makes three requests
+where it made six.
+
+**And the counts were mislabelled.** `status=all` was reported as "orders at
+venue": 50 rows of mostly-terminal history presented as live state. Working
+orders and history are now separate queries and separate concepts, and
+reconciliation cares about working orders — a terminal order from an earlier
+session is history, not a break.
+
+None of this moved `EXECUTION_ENGINE_V1_2`. These were implementation defects in
+how the adapter talks to one provider, not changes to what a fill or an order
+means. `V1_ERROR_CODES` stays at 40 and `V1_1_ERROR_CODES` at 50, so the frozen
+P2.0 and P2.1 manifests do not move; the two new codes join the V1.2 set, which
+no artefact had yet been produced under.
 
 ### P2.0 — an authorised target becomes a fill, and nothing else does
 
@@ -3456,27 +3536,25 @@ venue. Two independent blockers: no `ALPACA_PAPER_*` credential is configured,
 and the `read_fills` defect below would break exactly-once fill ingestion on a
 real account.
 
-**Per-order fill retrieval is wrong against the real Alpaca API (P2.2C).**
-`read_fills` filters `/v2/account/activities/FILL` by `client_order_id`; the
-documented filter is `order_id`, the provider UUID. The parameter is ignored, so
-on any account with other activity the read returns unrelated fills and labels
-them with one order's client id. Found by reading the API documentation, not by
-the test suite — a fake transport answers whatever it is told to, so it can
-confirm a protocol's shape and never its correspondence to the provider.
-Recorded rather than fixed, because the fix changes `read_fills`'s signature and
-§2 of the phase brief forbids hiding a contract change in a transport commit.
+**A fake transport cannot establish provider correspondence (P2.2D).** All four
+defects P2.2D closed had passed 211 fake-transport tests, because a fake answers
+whatever it is told to. Offline tests confirm a protocol has the shape the code
+expects; only the documented surface, or a real call, shows whether that shape
+matches the provider. This is a standing limitation of the test strategy, not a
+bug that was fixed.
 
-**`cancel_order` cancels by the wrong identifier (P2.2C).** It builds
-`DELETE /v2/orders/{client_order_id}` where Alpaca's path parameter is the
-provider UUID. It fails closed with a 404, and cleanup uses a compensating
-authorised order rather than a cancel, so it is off the certification path.
+**The canary is blocked by pre-existing paper state, not by code (P2.2D).** The
+configured account holds 3 positions and 3 working stop orders in JNJ, MRK and
+SLB, none placed by this project. Each reconciles as a BLOCKING break, and
+clearing them is the account owner's decision — nothing here does it
+automatically, and `§24` of the phase brief forbids it.
 
-**`PROVIDER_CONFIRMS_PAPER` passes by absence (P2.2C).** Alpaca's account object
-carries no `is_paper` field — paper and live are distinguished only by host — so
-a gate written as "fail if `is_paper is False`" can never fail. Paper-ness is
-genuinely established by the host lock, a successful authentication and the
-account-id match; the gate's name claims provider attestation that does not
-exist.
+**Making unrelated external state non-blocking would be a semantics change.**
+Reconciliation currently treats any unexplained remote holding as BLOCKING,
+which is correct: it cannot tell a holding somebody else opened from a fill this
+book failed to record. Distinguishing them needs a declared
+acknowledged-external baseline, which is a deliberate change to P2.2's
+reconciliation contract and is out of scope for a repair phase.
 
 **An external run is not reproducible (P2.2).** Its fills came from a venue's
 matching engine at a moment that will not recur. The V1.2 manifest is an audit
@@ -5236,6 +5314,35 @@ rows below are the ones whose absence would be expensive.
 | `test_p2_2c_paper_preflight.py::test_the_artefact_carries_no_account_number` | neither the account id nor the account number reaches the artefact |
 | `test_p2_2c_paper_preflight.py::test_the_artefact_states_what_it_does_not_establish` | the artefact discloses that no provider field attests paper-ness |
 
+P2.2D adds `tests/integration/test_p2_2d_certification_repairs.py` (47 tests).
+Each row below is a defect that passed the fake-transport suite.
+
+| Test | Protects |
+| --- | --- |
+| `test_p2_2d_certification_repairs.py::test_the_fill_query_sends_the_provider_order_id` | the activities filter is the provider `order_id`, which is the only one the endpoint honours |
+| `test_p2_2d_certification_repairs.py::test_the_fill_query_never_sends_a_client_order_id` | the parameter whose silent rejection caused the defect is never sent |
+| `test_p2_2d_certification_repairs.py::test_the_fill_path_never_derives_a_client_order_id` | no fallback exists to be reached for when a filter appears not to work |
+| `test_p2_2d_certification_repairs.py::test_an_unrelated_order_fill_on_the_same_page_is_refused` | an ignored filter cannot attribute another order's fill to this one |
+| `test_p2_2d_certification_repairs.py::test_a_fill_in_an_unmapped_symbol_is_refused` | a fill that cannot be attributed to an identity is never posted |
+| `test_p2_2d_certification_repairs.py::test_a_non_fill_activity_is_ignored_not_posted` | a dividend or fee on a mixed page is not an execution |
+| `test_p2_2d_certification_repairs.py::test_polling_the_same_fill_repeatedly_yields_the_same_single_fill` | repeated retrieval stays exactly once |
+| `test_p2_2d_certification_repairs.py::test_an_order_with_no_recorded_provider_id_cannot_have_fills_read` | fails closed rather than guessing an id |
+| `test_p2_2d_certification_repairs.py::test_a_paper_proof_cannot_be_built_from_configuration` | the gate that could not fail cannot be satisfied by settings |
+| `test_p2_2d_certification_repairs.py::test_a_paper_proof_from_a_live_origin_is_an_incident_not_a_proof` | a successful live-host reply is never paper evidence |
+| `test_p2_2d_certification_repairs.py::test_a_paper_proof_binds_the_response_it_was_built_from` | the proof's digest is the account read's digest |
+| `test_p2_2d_certification_repairs.py::test_the_gate_fails_without_a_proof` | an unapproved origin withholds the gate |
+| `test_p2_2d_certification_repairs.py::test_the_preflight_reads_each_endpoint_exactly_once` | three requests, not six — the fingerprint describes the data reported |
+| `test_p2_2d_certification_repairs.py::test_the_reported_values_and_the_fingerprints_come_from_one_response` | the audit binding the double-read destroyed |
+| `test_p2_2d_certification_repairs.py::test_the_working_order_read_asks_for_open_orders` | `status=open`, so a count labelled "working" is working orders |
+| `test_p2_2d_certification_repairs.py::test_the_preflight_never_fetches_order_history` | terminal history is not a reconciliation input |
+| `test_p2_2d_certification_repairs.py::test_no_mutating_request_is_ever_repeated_by_the_adapter` | the cancel repair introduced no retry |
+| `test_p2_2d_certification_repairs.py::test_the_adapter_sends_exactly_one_delete_per_cancellation_call` | one DELETE per call, structurally |
+| `test_p2_2d_certification_repairs.py::test_cancellation_resolution_makes_no_mutating_request` | recovery reads; it never resends |
+| `test_p2_2d_certification_repairs.py::test_the_frozen_v1_and_v1_1_code_sets_did_not_move` | V1 stays 40 and V1.1 stays 50, so the frozen manifests hold |
+| `test_p2_2_external_paper.py::test_a_clean_delete_status_alone_does_not_prove_cancellation` | a 204 is not a terminal order |
+| `test_p2_2_external_paper.py::test_an_order_that_filled_before_the_cancel_is_reported_filled` | a lost race is FILLED, never CANCELLED |
+| `test_p2_2_external_paper.py::test_a_cancellation_intent_is_durable_before_the_delete` | a crash during the DELETE leaves a record naming the order |
+
 ### The gate
 
 `make check` — lint, format check, mypy strict, pytest with coverage failing
@@ -5253,23 +5360,20 @@ block certification.** P2.2C delivered `AlpacaPaperHttpTransport` and the
 read-only preflight command; what remains is a defect-fix phase, then
 certification.
 
-**P2.2D must fix the three defects, in their own commit.** `read_fills` must
-take the provider order id and filter `/v2/account/activities/FILL` by
-`order_id`, using the activity `id` as the remote evidence id — that is a
-signature change, and it is what unblocks exactly-once fill ingestion.
-`cancel_order` must cancel by the provider UUID, which means it needs the
-confirmed remote order id rather than a local order id. And
-`PROVIDER_CONFIRMS_PAPER` should be renamed to what it actually checks, or
-replaced by a gate that asserts the origin that answered — a gate that cannot
-fail is worse than no gate, because it reports evidence nobody gathered.
+**P2.2D is done.** All four certification defects are closed and the real
+read-only preflight passes.
 
-**Certification follows, and needs an operator.** It needs
-`ALPACA_PAPER_KEY_ID`, `ALPACA_PAPER_SECRET_KEY` and `ALPACA_PAPER_ACCOUNT_ID`
-configured against a clean, reconciled paper account; the read-only preflight
-reaching `PAPER_BROKER_READY`; then one authorised MARKET/DAY canary order
-through the full chain — accounting V2 book, authorised plan, submission
-protocol, transport — during a live session, its fill ingested exactly once,
-reconciled three ways, and cleaned up with a compensating authorised order.
+**P2.2E is the canary, and it needs the account cleared first.** The configured
+paper account holds 3 positions and 3 working stop orders in JNJ, MRK and SLB
+that this project did not place. Until they are gone — or a fresh paper account
+is configured — `canary_ready` is false and submitting would be submitting
+against a book that does not match the venue.
+
+Once clear: one authorised MARKET/DAY canary through the full chain — accounting
+V2 book, authorised plan, submission protocol, transport — during a live
+session; its fill read by provider `order_id` and ingested exactly once;
+polled again to prove no duplicate; reconciled three ways; then cleaned up with
+a compensating authorised order, not a cancel and not a liquidation.
 
 Neither phase may relax anything P2.2 or P2.2C established: no live host in the
 allow-list, no live key prefix accepted, no third `ExecutionVenue` member, no
@@ -5409,6 +5513,18 @@ Not a backlog. These exclusions are deliberate.
   live host
 - making `ALPACA_PAPER_ACCOUNT_ID` optional: authenticating against some paper
   account proves nothing about whether it is this book's
+- filtering provider fill activities by anything but the provider `order_id`, or
+  adding a client-order-id fallback to that path
+- admitting a returned activity without checking it names the order it was
+  requested for: an ignored query filter is invisible in the response
+- adopting a cancellation from a mutation's status code instead of reading the
+  order back, or cancelling by any identifier but the provider order id
+- a paper-environment gate satisfiable from configuration, or any constructor on
+  `ProviderPaperEnvironmentProof` that takes `Settings`
+- reading an endpoint a second time to fingerprint it: the digest must come from
+  the response whose values are reported
+- labelling a `status=all` order listing as open or working orders
+- clearing, cancelling or liquidating pre-existing paper positions the user owns
 - a session that mixes `LOCAL_DETERMINISTIC_PAPER` and `EXTERNAL_PAPER` fills, or
   any fallback from one venue to the other
 - widening `EXECUTION_MANIFEST_V1_1` to describe the external adapter: a V1.1

@@ -39,6 +39,7 @@ from stock_screener.execution.external import (
     BrokerCapabilities,
     BrokerEnvironment,
     BrokerResponse,
+    CancellationOutcome,
     ExecutionVenue,
     ExternalBreakSeverity,
     ExternalBrokerAccountBinding,
@@ -993,12 +994,16 @@ def adapter(
 
 
 def account_transport(
-    *, account: dict[str, Any] | None = None, positions: list[dict[str, Any]] | None = None
+    *,
+    account: dict[str, Any] | None = None,
+    positions: list[dict[str, Any]] | None = None,
+    orders: list[dict[str, Any]] | None = None,
 ) -> FakeTransport:
-    """A transport that answers the account and positions reads."""
+    """A transport that answers the account, positions and working-order reads."""
     transport = FakeTransport()
     transport.script(RequestMethod.GET, ACCOUNT_PATH, answered(account or account_body()))
     transport.script(RequestMethod.GET, POSITIONS_PATH, answered(positions or []))
+    transport.script(RequestMethod.GET, ORDERS_PATH, answered(orders or []))
     return transport
 
 
@@ -1080,13 +1085,29 @@ def test_an_unscripted_route_is_refused_rather_than_silently_succeeding() -> Non
 
 
 def fill_body(
-    *, remote_id: str = "exec-1", quantity: str = "4", price: str = "101.25", sequence: int = 1
+    *,
+    remote_id: str = "exec-1",
+    quantity: str = "4",
+    price: str = "101.25",
+    sequence: int = 1,
+    order_id: str = "remote-1",
+    symbol: str = "AAPL",
+    activity_type: str = "FILL",
+    kind: str = "fill",
 ) -> dict[str, Any]:
-    """A provider execution object."""
+    """A provider execution object, shaped as the real activities endpoint sends it.
+
+    `activity_type` and `type` are present because Alpaca sends them, and the
+    adapter requires one of them: a row that does not positively say it is a
+    fill is not treated as one, so a dividend or a fee on a mixed page cannot
+    be posted as an execution.
+    """
     return {
         "id": remote_id,
-        "order_id": "remote-1",
-        "symbol": "AAPL",
+        "activity_type": activity_type,
+        "type": kind,
+        "order_id": order_id,
+        "symbol": symbol,
         "side": "buy",
         "qty": quantity,
         "price": price,
@@ -1099,7 +1120,7 @@ def test_the_same_execution_reported_ten_times_reads_as_one() -> None:
     transport = FakeTransport()
     transport.script(RequestMethod.GET, ACTIVITIES_PATH, answered([fill_body()] * 10))
 
-    fills = adapter(transport).read_fills("ORD-1")
+    fills = adapter(transport).read_fills(remote_order_id="remote-1")
 
     assert len(fills) == 1
     assert fills[0].quantity == Decimal(4)
@@ -1113,7 +1134,7 @@ def test_two_distinct_executions_both_read() -> None:
         answered([fill_body(remote_id="exec-1"), fill_body(remote_id="exec-2", sequence=2)]),
     )
 
-    fills = adapter(transport).read_fills("ORD-1")
+    fills = adapter(transport).read_fills(remote_order_id="remote-1")
 
     assert [fill.remote_fill_id for fill in fills] == ["exec-1", "exec-2"]
 
@@ -1127,7 +1148,7 @@ def test_one_execution_id_reported_with_two_contents_is_a_conflict() -> None:
     )
 
     with pytest.raises(ExecutionError, match=Code.REMOTE_FILL_CONFLICT):
-        adapter(transport).read_fills("ORD-1")
+        adapter(transport).read_fills(remote_order_id="remote-1")
 
 
 def test_executions_read_in_a_deterministic_order_whatever_the_venue_sends() -> None:
@@ -1148,9 +1169,9 @@ def test_executions_read_in_a_deterministic_order_whatever_the_venue_sends() -> 
         ),
     )
 
-    assert [fill.remote_fill_id for fill in adapter(forwards).read_fills("ORD-1")] == [
-        fill.remote_fill_id for fill in adapter(backwards).read_fills("ORD-1")
-    ]
+    assert [
+        fill.remote_fill_id for fill in adapter(forwards).read_fills(remote_order_id="remote-1")
+    ] == [fill.remote_fill_id for fill in adapter(backwards).read_fills(remote_order_id="remote-1")]
 
 
 def test_an_execution_with_no_durable_id_is_refused() -> None:
@@ -1170,7 +1191,7 @@ def test_an_execution_with_no_durable_id_is_refused() -> None:
 def test_a_fee_the_venue_did_not_state_is_unknown_not_zero() -> None:
     transport = FakeTransport()
     transport.script(RequestMethod.GET, ACTIVITIES_PATH, answered([fill_body()]))
-    fill = adapter(transport).read_fills("ORD-1")[0]
+    fill = adapter(transport).read_fills(remote_order_id="remote-1")[0]
 
     assert fill.fee_is_known is False
     with pytest.raises(ExecutionError, match=Code.BROKER_FILL_FEE_UNKNOWN):
@@ -1180,7 +1201,7 @@ def test_a_fee_the_venue_did_not_state_is_unknown_not_zero() -> None:
 def test_a_declared_fee_does_not_overwrite_what_the_venue_said() -> None:
     transport = FakeTransport()
     transport.script(RequestMethod.GET, ACTIVITIES_PATH, answered([fill_body()]))
-    fill = adapter(transport).read_fills("ORD-1")[0]
+    fill = adapter(transport).read_fills(remote_order_id="remote-1")[0]
 
     declared = fill.with_fee(Decimal("0.00"))
 
@@ -1194,7 +1215,7 @@ def test_a_provider_figure_is_read_as_an_exact_decimal() -> None:
         RequestMethod.GET, ACTIVITIES_PATH, answered([fill_body(quantity="0.3", price="0.1")])
     )
 
-    fill = adapter(transport).read_fills("ORD-1")[0]
+    fill = adapter(transport).read_fills(remote_order_id="remote-1")[0]
 
     assert fill.quantity == Decimal("0.3")
     assert fill.price == Decimal("0.1")
@@ -1214,7 +1235,7 @@ def test_a_malformed_execution_is_refused(broken: dict[str, Any]) -> None:
     transport.script(RequestMethod.GET, ACTIVITIES_PATH, answered([{**fill_body(), **broken}]))
 
     with pytest.raises(ExecutionError, match=Code.EXECUTION_EVENT_INVALID):
-        adapter(transport).read_fills("ORD-1")
+        adapter(transport).read_fills(remote_order_id="remote-1")
 
 
 def test_an_over_fill_is_never_adopted() -> None:
@@ -1565,7 +1586,10 @@ def test_the_venue_enum_has_exactly_two_members() -> None:
 
 def test_a_fully_passing_preflight_is_ready(tmp_path: Path) -> None:
     readiness = preflight(
-        adapter(account_transport()), log=log_at(tmp_path), identities=[AAPL, MSFT]
+        adapter(account_transport()),
+        log=log_at(tmp_path),
+        origin=PAPER_URL,
+        identities=[AAPL, MSFT],
     )
 
     assert readiness.verdict == READY_VERDICT
@@ -1577,20 +1601,22 @@ def test_a_fully_passing_preflight_is_ready(tmp_path: Path) -> None:
 def test_preflight_makes_no_mutating_request(tmp_path: Path) -> None:
     transport = account_transport()
 
-    preflight(adapter(transport), log=log_at(tmp_path))
+    preflight(adapter(transport), log=log_at(tmp_path), origin=PAPER_URL)
 
     assert transport.mutations == []
 
 
 def test_preflight_upgrades_the_proof_to_fully_certified(tmp_path: Path) -> None:
-    readiness = preflight(adapter(account_transport()), log=log_at(tmp_path))
+    readiness = preflight(adapter(account_transport()), log=log_at(tmp_path), origin=PAPER_URL)
 
     assert readiness.proof is not None
     assert readiness.proof.is_fully_certified is True
 
 
 def test_preflight_withholds_readiness_when_the_account_is_unreachable(tmp_path: Path) -> None:
-    readiness = preflight(adapter(FakeTransport(default=unreachable())), log=log_at(tmp_path))
+    readiness = preflight(
+        adapter(FakeTransport(default=unreachable())), log=log_at(tmp_path), origin=PAPER_URL
+    )
 
     assert readiness.is_ready is False
     assert "ACCOUNT_REACHABLE" in dict(readiness.failures)
@@ -1601,7 +1627,7 @@ def test_preflight_withholds_readiness_when_the_account_is_unreachable(tmp_path:
 def test_preflight_withholds_readiness_for_another_account(tmp_path: Path) -> None:
     transport = account_transport(account=account_body(account_id="someone-else"))
 
-    readiness = preflight(adapter(transport), log=log_at(tmp_path))
+    readiness = preflight(adapter(transport), log=log_at(tmp_path), origin=PAPER_URL)
 
     assert "ACCOUNT_MATCHES_BINDING" in dict(readiness.failures)
 
@@ -1609,7 +1635,7 @@ def test_preflight_withholds_readiness_for_another_account(tmp_path: Path) -> No
 def test_preflight_withholds_readiness_when_the_provider_denies_paper(tmp_path: Path) -> None:
     transport = account_transport(account={**account_body(), "is_paper": False})
 
-    readiness = preflight(adapter(transport), log=log_at(tmp_path))
+    readiness = preflight(adapter(transport), log=log_at(tmp_path), origin=PAPER_URL)
 
     assert "PROVIDER_CONFIRMS_PAPER" in dict(readiness.failures)
 
@@ -1617,7 +1643,7 @@ def test_preflight_withholds_readiness_when_the_provider_denies_paper(tmp_path: 
 def test_preflight_withholds_readiness_when_trading_is_blocked(tmp_path: Path) -> None:
     transport = account_transport(account={**account_body(), "trading_blocked": True})
 
-    readiness = preflight(adapter(transport), log=log_at(tmp_path))
+    readiness = preflight(adapter(transport), log=log_at(tmp_path), origin=PAPER_URL)
 
     assert "TRADING_NOT_BLOCKED" in dict(readiness.failures)
 
@@ -1625,7 +1651,9 @@ def test_preflight_withholds_readiness_when_trading_is_blocked(tmp_path: Path) -
 def test_preflight_withholds_readiness_for_an_unmapped_identity(tmp_path: Path) -> None:
     unmapped = SecurityIdentity(kind="COMPANY", identity_id=77, symbol="NVDA")
 
-    readiness = preflight(adapter(account_transport()), log=log_at(tmp_path), identities=[unmapped])
+    readiness = preflight(
+        adapter(account_transport()), log=log_at(tmp_path), origin=PAPER_URL, identities=[unmapped]
+    )
 
     assert "SYMBOLS_RESOLVED" in dict(readiness.failures)
 
@@ -1633,7 +1661,7 @@ def test_preflight_withholds_readiness_for_an_unmapped_identity(tmp_path: Path) 
 def test_preflight_withholds_readiness_while_a_submission_is_unresolved(tmp_path: Path) -> None:
     submit(tmp_path, post=timed_out(), lookups=(unreachable(), unreachable(), unreachable()))
 
-    readiness = preflight(adapter(account_transport()), log=log_at(tmp_path))
+    readiness = preflight(adapter(account_transport()), log=log_at(tmp_path), origin=PAPER_URL)
 
     assert "NO_UNRESOLVED_SUBMISSIONS" in dict(readiness.failures)
     assert readiness.unresolved_orders == ("ORD-1",)
@@ -1644,7 +1672,9 @@ def test_preflight_names_every_failing_gate_not_only_the_first(tmp_path: Path) -
     transport = account_transport(account=account_body(account_id="someone-else"))
     unmapped = SecurityIdentity(kind="COMPANY", identity_id=77, symbol="NVDA")
 
-    readiness = preflight(adapter(transport), log=log_at(tmp_path), identities=[unmapped])
+    readiness = preflight(
+        adapter(transport), log=log_at(tmp_path), origin=PAPER_URL, identities=[unmapped]
+    )
 
     assert len(readiness.failures) >= 3
 
@@ -1750,7 +1780,9 @@ def test_a_report_is_credential_scanned_on_the_way_out(tmp_path: Path) -> None:
     result, _, _ = submit(tmp_path, post=answered(order_body()))
     report = ExternalPaperExecutionReport(
         manifest=external_manifest(venue=VenueBinding.external(binding()), mapping=mapping()),
-        readiness=preflight(adapter(account_transport()), log=log_at(tmp_path, "pf")),
+        readiness=preflight(
+            adapter(account_transport()), log=log_at(tmp_path, "pf"), origin=PAPER_URL
+        ),
         submissions=(result,),
     )
 
@@ -1766,7 +1798,9 @@ def test_a_report_surfaces_an_unknown_submission_first(tmp_path: Path) -> None:
     )
     report = ExternalPaperExecutionReport(
         manifest=external_manifest(venue=VenueBinding.external(binding()), mapping=mapping()),
-        readiness=preflight(adapter(account_transport()), log=log_at(tmp_path, "pf")),
+        readiness=preflight(
+            adapter(account_transport()), log=log_at(tmp_path, "pf"), origin=PAPER_URL
+        ),
         submissions=(result,),
     )
 
@@ -1780,7 +1814,9 @@ def test_a_report_counts_one_mutating_request_per_submission(tmp_path: Path) -> 
     second, _, _ = submit(tmp_path / "second", post=answered(order_body()))
     report = ExternalPaperExecutionReport(
         manifest=external_manifest(venue=VenueBinding.local(), mapping=mapping()),
-        readiness=preflight(adapter(account_transport()), log=log_at(tmp_path, "pf")),
+        readiness=preflight(
+            adapter(account_transport()), log=log_at(tmp_path, "pf"), origin=PAPER_URL
+        ),
         submissions=(first, second),
     )
 
@@ -1798,7 +1834,9 @@ def test_a_report_is_not_clean_when_reconciliation_blocks(tmp_path: Path) -> Non
     )
     report = ExternalPaperExecutionReport(
         manifest=external_manifest(venue=VenueBinding.external(binding()), mapping=mapping()),
-        readiness=preflight(adapter(account_transport()), log=log_at(tmp_path, "pf")),
+        readiness=preflight(
+            adapter(account_transport()), log=log_at(tmp_path, "pf"), origin=PAPER_URL
+        ),
         reconciliation=blocking,
     )
 
@@ -1851,26 +1889,140 @@ def test_the_adapter_exposes_no_forbidden_convenience_api(forbidden: str) -> Non
     assert not hasattr(AlpacaPaperAdapter, forbidden)
 
 
-def test_cancellation_is_a_request_not_a_cancellation() -> None:
-    transport = FakeTransport(default=answered({}, status=204))
-
-    assert adapter(transport).cancel_order("ORD-1") is True
-
-
-def test_an_ambiguous_cancellation_is_not_resent() -> None:
-    transport = FakeTransport(default=timed_out())
-
-    with pytest.raises(ExecutionError, match=Code.REMOTE_STATE_UNKNOWN):
-        adapter(transport).cancel_order("ORD-1")
-
-    assert transport.mutation_count(f"{ORDERS_PATH}/{client_order_id_for('ORD-1')}") == 1
+def cancel_transport(
+    *, delete: BrokerResponse, lookup: BrokerResponse | None = None
+) -> FakeTransport:
+    """A transport scripting one DELETE and the read-back that follows it."""
+    transport = FakeTransport()
+    transport.script(RequestMethod.DELETE, f"{ORDERS_PATH}/remote-1", delete)
+    if lookup is not None:
+        transport.script(RequestMethod.GET, f"{ORDERS_PATH}/remote-1", lookup)
+    return transport
 
 
-def test_cancellation_is_refused_where_the_venue_does_not_support_it() -> None:
+def test_a_cancellation_is_proven_by_reading_not_by_the_delete_status(tmp_path: Path) -> None:
+    transport = cancel_transport(
+        delete=answered({}, status=204),
+        lookup=answered(order_body(status="canceled", filled="0")),
+    )
+
+    result = adapter(transport).cancel_order(
+        remote_order_id="remote-1", log=log_at(tmp_path), requested_at="2026-10-06T14:30:00+00:00"
+    )
+
+    assert result.outcome is CancellationOutcome.REMOTE_CANCELLED
+    assert result.outcome.is_terminal is True
+    assert transport.mutation_count(f"{ORDERS_PATH}/remote-1") == 1
+
+
+def test_a_clean_delete_status_alone_does_not_prove_cancellation(tmp_path: Path) -> None:
+    transport = cancel_transport(
+        delete=answered({}, status=204),
+        lookup=answered(order_body(status="new", filled="0")),
+    )
+
+    result = adapter(transport).cancel_order(
+        remote_order_id="remote-1", log=log_at(tmp_path), requested_at="t"
+    )
+
+    assert result.outcome is CancellationOutcome.REMOTE_STILL_OPEN
+    assert result.outcome.is_terminal is False
+    assert result.outcome.may_request_again is True
+
+
+def test_an_order_that_filled_before_the_cancel_is_reported_filled(tmp_path: Path) -> None:
+    transport = cancel_transport(
+        delete=refused(422, {"message": "order is not cancelable"}),
+        lookup=answered(order_body(status="filled", filled="10")),
+    )
+
+    result = adapter(transport).cancel_order(
+        remote_order_id="remote-1", log=log_at(tmp_path), requested_at="t"
+    )
+
+    assert result.outcome is CancellationOutcome.REMOTE_FILLED
+    assert result.filled_quantity == "10"
+
+
+def test_an_ambiguous_cancellation_is_resolved_by_reading_not_resending(tmp_path: Path) -> None:
+    transport = cancel_transport(
+        delete=timed_out(), lookup=answered(order_body(status="canceled", filled="0"))
+    )
+
+    result = adapter(transport).cancel_order(
+        remote_order_id="remote-1", log=log_at(tmp_path), requested_at="t"
+    )
+
+    assert result.outcome is CancellationOutcome.REMOTE_CANCELLED
+    assert transport.mutation_count(f"{ORDERS_PATH}/remote-1") == 1
+    assert len(transport.mutations) == 1
+
+
+def test_an_unresolvable_cancellation_stays_unknown(tmp_path: Path) -> None:
+    transport = FakeTransport()
+    transport.script(RequestMethod.DELETE, f"{ORDERS_PATH}/remote-1", timed_out())
+    transport.script(
+        RequestMethod.GET, f"{ORDERS_PATH}/remote-1", unreachable(), unreachable(), unreachable()
+    )
+
+    result = adapter(transport).cancel_order(
+        remote_order_id="remote-1", log=log_at(tmp_path), requested_at="t"
+    )
+
+    assert result.outcome is CancellationOutcome.REMOTE_STATE_UNKNOWN
+    assert result.outcome.may_request_again is False
+    assert len(transport.mutations) == 1
+
+
+def test_an_order_the_venue_has_never_heard_of_is_not_a_cancellation(tmp_path: Path) -> None:
+    transport = cancel_transport(delete=answered({}, status=204), lookup=refused(404))
+
+    result = adapter(transport).cancel_order(
+        remote_order_id="remote-1", log=log_at(tmp_path), requested_at="t"
+    )
+
+    assert result.outcome is CancellationOutcome.REMOTE_STATE_UNKNOWN
+
+
+def test_a_cancellation_intent_is_durable_before_the_delete(tmp_path: Path) -> None:
+    log = log_at(tmp_path)
+    seen: list[tuple[str, ...]] = []
+
+    class RecordingTransport(FakeTransport):
+        def request(
+            self,
+            method: RequestMethod,
+            path: str,
+            *,
+            params: dict[str, Any] | None = None,
+            json_body: dict[str, Any] | None = None,
+        ) -> BrokerResponse:
+            if method is RequestMethod.DELETE:
+                seen.append(log.recorded_cancellations())
+                return answered({}, status=204)
+            return answered(order_body(status="canceled", filled="0"))
+
+    adapter(RecordingTransport()).cancel_order(
+        remote_order_id="remote-1", log=log, requested_at="t"
+    )
+
+    assert seen == [("remote-1",)]
+
+
+def test_cancelling_needs_the_provider_order_id(tmp_path: Path) -> None:
+    with pytest.raises(ExecutionError, match=Code.REMOTE_PROVIDER_ORDER_ID_REQUIRED):
+        adapter(FakeTransport()).cancel_order(
+            remote_order_id="   ", log=log_at(tmp_path), requested_at="t"
+        )
+
+
+def test_cancellation_is_refused_where_the_venue_does_not_support_it(tmp_path: Path) -> None:
     bound = binding(cancel_supported=False)
 
     with pytest.raises(ExecutionError, match=Code.BROKER_CAPABILITY_UNSUPPORTED):
-        adapter(FakeTransport(), bound=bound).cancel_order("ORD-1")
+        adapter(FakeTransport(), bound=bound).cancel_order(
+            remote_order_id="remote-1", log=log_at(tmp_path), requested_at="t"
+        )
 
 
 # ---------------------------------------------------------------------------

@@ -32,6 +32,8 @@ from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any
 
 from ..errors import Code, ExecutionError
+from .alpaca import ACCOUNT_PATH
+from .paper_proof import ProviderPaperEnvironmentProof
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -40,7 +42,13 @@ if TYPE_CHECKING:
 
     from .alpaca import AlpacaPaperAdapter
     from .environment import EnvironmentProof
+    from .models import (
+        ExternalOrderSnapshot,
+        ExternalPaperAccountSnapshot,
+        ExternalPosition,
+    )
     from .submission import SubmissionIntentLog
+    from .transport import ExternalReadEvidence
 
 __all__ = [
     "PREFLIGHT_GATES",
@@ -78,6 +86,17 @@ class PaperBrokerReadiness:
             account answered.
         unresolved_orders: Local order ids with an unresolved submission intent.
         account_status: What the provider said about the account.
+        paper_proof: The evidence that satisfied `PROVIDER_CONFIRMS_PAPER`, when
+            one was supplied. Recorded so a reader can check what the gate was
+            satisfied *by* rather than take the gate's word for it.
+        account: The account read, with its own evidence. Returned so a caller
+            reports from the response the gates were decided on rather than
+            re-reading — which is what produced an artefact whose fingerprints
+            described responses it had not reported.
+        positions: The holdings read, with its evidence.
+        open_orders: The working orders read, with its evidence. Working orders
+            only; terminal history is not fetched, because a closed order from
+            an earlier session is not a reconciliation break.
         mutations_made: Always zero. Reported so a test asserts it.
     """
 
@@ -86,6 +105,10 @@ class PaperBrokerReadiness:
     proof: EnvironmentProof | None = None
     unresolved_orders: tuple[str, ...] = ()
     account_status: str = ""
+    paper_proof: ProviderPaperEnvironmentProof | None = None
+    account: ExternalReadEvidence[ExternalPaperAccountSnapshot] | None = None
+    positions: ExternalReadEvidence[tuple[ExternalPosition, ...]] | None = None
+    open_orders: ExternalReadEvidence[tuple[ExternalOrderSnapshot, ...]] | None = None
     mutations_made: int = field(default=0)
 
     @property
@@ -125,6 +148,7 @@ class PaperBrokerReadiness:
             "proof": self.proof.as_json() if self.proof else None,
             "unresolved_orders": list(self.unresolved_orders),
             "account_status": self.account_status,
+            "paper_proof": self.paper_proof.as_json() if self.paper_proof else None,
             "mutations_made": self.mutations_made,
             "live_authorized": False,
         }
@@ -134,42 +158,57 @@ def preflight(
     adapter: AlpacaPaperAdapter,
     *,
     log: SubmissionIntentLog,
+    origin: str,
     identities: Sequence[SecurityIdentity] = (),
+    now: str = "",
 ) -> PaperBrokerReadiness:
     """Decide whether this process may submit to the paper venue.
 
-    Read-only. Every failure is collected rather than raised, so one call names
-    everything that needs fixing.
+    Read-only, and **exactly one request per logical endpoint**: the account,
+    the holdings, and the working orders. The evidence for each is returned on
+    the result, so a caller reports from the same responses these gates were
+    decided on. Nothing here re-reads for a fingerprint.
+
+    Every failure is collected rather than raised, so one call names everything
+    that needs fixing.
 
     Args:
         adapter: The provider adapter, over a proven paper binding.
         log: The durable intent log, checked for unresolved submissions.
-        identities: The securities this run intends to trade. Checked against the
-            declared symbol mapping now, because discovering an unmapped identity
-            mid-plan means a plan that is half submitted.
+        origin: The origin the transport actually reached. Required because the
+            paper proof binds to it, and the `BrokerTransport` protocol
+            deliberately declares no attributes to read it from.
+        identities: The securities this run intends to trade. Checked against
+            the declared symbol mapping now, because discovering an unmapped
+            identity mid-plan means a plan that is half submitted.
+        now: When the run is being made, ISO-8601. Operational metadata only.
 
     Returns:
-        What was established, ready or not.
+        What was established, ready or not, with the read evidence attached.
     """
     passed: list[str] = []
     failures: list[tuple[str, str]] = []
     binding = adapter.binding
-    proof = binding.proof
-    account_status = ""
+    environment_proof = binding.proof
 
-    if proof.is_proven:
+    if environment_proof.is_proven:
         passed.append("ENVIRONMENT_PROVEN_PAPER")
     else:
         failures.append(
             (
                 "ENVIRONMENT_PROVEN_PAPER",
-                "; ".join(proof.failed_checks()) or "the proof does not stand",
+                "; ".join(environment_proof.failed_checks()) or "the proof does not stand",
             )
         )
 
-    snapshot = None
+    account: ExternalReadEvidence[ExternalPaperAccountSnapshot] | None = None
+    positions: ExternalReadEvidence[tuple[ExternalPosition, ...]] | None = None
+    open_orders: ExternalReadEvidence[tuple[ExternalOrderSnapshot, ...]] | None = None
+    paper_proof: ProviderPaperEnvironmentProof | None = None
+    account_status = ""
+
     try:
-        snapshot = adapter.read_account()
+        account = adapter.account_evidence(received_at=now)
     except ExecutionError as exc:
         gate = (
             "ACCOUNT_MATCHES_BINDING"
@@ -180,14 +219,29 @@ def preflight(
         )
         failures.append((gate, str(exc)))
     else:
+        snapshot = account.value
         account_status = snapshot.status
         passed.extend(("ACCOUNT_REACHABLE", "ACCOUNT_MATCHES_BINDING"))
-        if snapshot.is_paper is False:
-            failures.append(
-                ("PROVIDER_CONFIRMS_PAPER", "the provider says this is not a paper account")
+
+        # The paper proof is built from this same response. It cannot be built
+        # from configuration: the gate it replaces checked an `is_paper` field
+        # the provider does not send, so it could never fail and reported
+        # attestation nobody had gathered.
+        try:
+            paper_proof = ProviderPaperEnvironmentProof.from_account_evidence(
+                provider=adapter.binding.provider,
+                origin=origin,
+                endpoint=ACCOUNT_PATH,
+                account_binding_fingerprint=binding.binding_fingerprint(),
+                account_status=snapshot.status,
+                evidence=account,
+                verified_at=now,
             )
+        except ExecutionError as exc:
+            failures.append(("PROVIDER_CONFIRMS_PAPER", str(exc)))
         else:
             passed.append("PROVIDER_CONFIRMS_PAPER")
+
         if snapshot.trading_blocked:
             failures.append(
                 (
@@ -197,12 +251,25 @@ def preflight(
             )
         else:
             passed.append("TRADING_NOT_BLOCKED")
-        proof = replace(
-            proof,
+
+        # The configuration-level proof is upgraded to fully certified now that a
+        # read-only call has confirmed the account. Kept alongside the stronger
+        # ProviderPaperEnvironmentProof rather than replaced by it: this one says
+        # "the configured checks held and the account answered", which is a
+        # different and weaker claim, and collapsing the two would lose the
+        # distinction P1.4 onwards has been careful to keep.
+        environment_proof = replace(
+            environment_proof,
             account_reachable=True,
             account_status=snapshot.status,
-            checks=(*proof.checks, "the paper account answered a read-only request"),
+            checks=(*environment_proof.checks, "the paper account answered a read-only request"),
         )
+
+        try:
+            positions = adapter.positions_evidence(received_at=now)
+            open_orders = adapter.open_orders_evidence(received_at=now)
+        except ExecutionError as exc:
+            failures.append(("ACCOUNT_REACHABLE", str(exc)))
 
     unmapped: list[str] = []
     for identity in identities:
@@ -239,7 +306,11 @@ def preflight(
     return PaperBrokerReadiness(
         passed=tuple(gate for gate in PREFLIGHT_GATES if gate in set(passed)),
         failures=ordered_failures,
-        proof=proof,
+        proof=environment_proof,
         unresolved_orders=tuple(intent.order_id for intent in unresolved),
         account_status=account_status,
+        paper_proof=paper_proof,
+        account=account,
+        positions=positions,
+        open_orders=open_orders,
     )

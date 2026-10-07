@@ -805,6 +805,82 @@ is therefore established by the origin that answered and by the transport being
 unable to exist against any other — proof by host lock and reachability, not by
 provider attestation.
 
+### The four defects P2.2D closed
+
+The first real preflight found three defects, and running it found a fourth.
+Each had passed 211 fake-transport tests, because a fake answers whatever it is
+told to and therefore agrees with whatever the adapter asks for. Only the
+documented provider surface disagreed.
+
+**`read_fills` filtered by the wrong parameter.** It sent `client_order_id` to
+`/v2/account/activities/FILL`, where the documented filter is `order_id` — the
+provider UUID. An unrecognised query parameter is ignored, so the read looked
+successful while returning the account's FILL activities broadly, and each row
+was then stamped with the requested order's client id. On an account with any
+prior activity that posts unrelated trades into this book.
+
+The repair is structural, not a parameter swap. `read_fills` now takes
+`remote_order_id` and there is deliberately **no fallback** to the client id —
+`REMOTE_PROVIDER_ORDER_ID_REQUIRED` rather than a second attempt, because the
+failure mode of a silently-ignored filter is invisible in the response. The
+provider id is resolved from the durable submission resolution the protocol
+already wrote, so it survives a restart. And because an ignored filter cannot be
+detected from the reply, **every returned row is checked against the order it
+was requested for**: a row naming another order, no order, or an unmapped symbol
+is `REMOTE_FILL_ORDER_MISMATCH` and is refused rather than attributed. A row
+that does not positively declare itself a fill — a dividend, a fee, a journal
+entry on a mixed page — is skipped rather than posted as an execution.
+
+**`cancel_order` cancelled by the wrong identifier, and trusted the status
+code.** It built `DELETE /v2/orders/{client_order_id}` where the path parameter
+is the provider UUID, so a cancel would have 404'd. It recorded no durable
+intent, so a crash during the request left nothing naming the order it may have
+cancelled. And it returned the HTTP result as though a `204` meant the order was
+terminal — which it does not: a cancellation can be accepted and still lose a
+race to a fill.
+
+It now mirrors submission: validate, record a durable cancellation intent, send
+**one** `DELETE`, then establish the outcome by *reading the order back*. The
+mutation's own status is never the answer.
+
+| Outcome | Means | May request again |
+| --- | --- | --- |
+| `REMOTE_CANCELLED` | the venue reports it terminal and unfilled | — |
+| `REMOTE_FILLED` | it filled before the cancel landed; the fills stand | — |
+| `REMOTE_STILL_OPEN` | still working, so the cancel is **not** complete | yes — on proven state |
+| `REMOTE_STATE_UNKNOWN` | could not be read back | **no** |
+
+**`PROVIDER_CONFIRMS_PAPER` could not fail.** It checked `is_paper is False`,
+and Alpaca's account object has no `is_paper` field — paper and live are
+distinguished only by host. The gate passed by *absence*, reporting provider
+attestation nobody had gathered. A gate that cannot fail is worse than no gate:
+it occupies the place where a check should be.
+
+It is now backed by `PROVIDER_PAPER_ENVIRONMENT_PROOF_V1`, which can only exist
+as the result of a successful external interaction — the approved paper origin
+answered, the credential authenticated, and the account matched this binding.
+There is no constructor that takes configuration, and a response from a live
+origin raises `LIVE_TRADING_NOT_AUTHORIZED` rather than producing a proof. What
+the proof does not claim is recorded in it: this is host lock plus reachability
+plus account identity, not the provider saying so, and it describes one moment.
+
+**The preflight read every endpoint twice.** Once to fingerprint, once for the
+values it reported — so the digests in the artefact described responses it had
+not reported. Nothing was wrong with either read and the artefact was still
+useless as evidence.
+
+`ExternalReadEvidence[T]` now carries a normalised value and the fingerprint of
+the same response, and `preflight` does the reads and hands the evidence back
+rather than the caller re-reading. Against the real account the run makes
+exactly three requests where it previously made six.
+
+**And the counts were mislabelled.** The preflight asked for `status=all` and
+reported the result as "orders at venue" — on the real account that was 50 rows
+of mostly-terminal history presented as live state. Working orders and order
+history are now separate concepts with separate queries, and reconciliation
+cares about the former: a terminal order from an earlier session is history, not
+a break.
+
 ### Not yet certified
 
 The paper endpoint is **implemented and uncertified**. The transport is complete
@@ -813,16 +889,16 @@ has yet spoken to a real venue. The opt-in canary in
 `tests/live/test_paper_broker_live.py` stays inert behind `--live-paper`, and
 `make check` never passes that flag nor makes any external request.
 
-Certification is additionally blocked by three adapter defects that contact with
-the documented Alpaca surface exposed. They are recorded rather than fixed,
-because each needs a contract change and bundling one into a transport commit
-would make the diff unreviewable:
+The read-only preflight **passes** against a real account: the paper host is
+reached, the credential authenticates, the expected account matches, and the
+paper proof is evidence-backed. What remains is not code.
 
-| Defect | Effect |
-| --- | --- |
-| `read_fills` filters FILL activities by `client_order_id` | Alpaca's documented filter is `order_id` (the provider UUID). The parameter is ignored, so the read returns the account's other fills and labels them all with this order's client id — breaking per-order exactly-once ingestion. **Blocks certification.** |
-| `cancel_order` builds `DELETE /v2/orders/{client_order_id}` | the path parameter is the provider UUID, so a cancel would 404. Fails closed, and cleanup uses a compensating order rather than a cancel, so it is off the certification path. |
-| `PROVIDER_CONFIRMS_PAPER` is vacuous | no `is_paper` field exists to confirm; the gate passes by absence. Sound in substance, overstated in name. |
+A canary needs an account holding nothing this book does not know about. Each
+pre-existing holding reconciles as `REMOTE_POSITION_MISMATCH` (BLOCKING) and
+each foreign working order as `UNEXPECTED_REMOTE_ORDER`, so submitting against
+a book that is missing positions sizes the next trade against money that is not
+there. The preflight reports `canary_ready` and names the blockers; clearing
+them is the account owner's decision and nothing here does it automatically.
 
 ## Deliberately absent
 

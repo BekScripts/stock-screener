@@ -34,6 +34,7 @@ __all__ = [
     "READ_RETRY_LIMIT",
     "BrokerResponse",
     "BrokerTransport",
+    "ExternalReadEvidence",
     "FakeTransport",
     "RequestMethod",
     "TransportOutcome",
@@ -210,6 +211,72 @@ class BrokerResponse:
             "request_id": self.request_id,
             "safe_headers": [list(pair) for pair in self.safe_headers],
             "evidence_fingerprint": self.evidence_fingerprint(),
+        }
+
+
+@dataclass(frozen=True)
+class ExternalReadEvidence[T]:
+    """One normalised read and the evidence for it, from the same response.
+
+    The envelope exists because of a defect worth naming. The first version of
+    the preflight read each endpoint twice — once to fingerprint, once to get
+    the values it reported — so the fingerprint in the artefact was of a
+    *different* response than the figures beside it. Nothing was wrong with
+    either read, and the artefact was still useless as evidence: it bound a
+    digest to data it had not seen.
+
+    So a read now yields one object. The normalised value and the fingerprint
+    come from one response, and a caller cannot accidentally pair them from two.
+
+    Attributes:
+        value: The normalised result.
+        status_code: The status that carried it.
+        request_id: The provider's own request id, where it sent one.
+        safe_headers: The allow-listed response headers.
+        fingerprint: The digest of that same response.
+        received_at: When the read was made, ISO-8601. Operational metadata; it
+            is deliberately absent from the fingerprint so the same observation
+            digests identically whenever it was taken.
+    """
+
+    value: T
+    status_code: int | None
+    fingerprint: str
+    request_id: str | None = None
+    safe_headers: tuple[tuple[str, str], ...] = ()
+    received_at: str = ""
+
+    @classmethod
+    def of(
+        cls, value: T, response: BrokerResponse, *, received_at: str = ""
+    ) -> ExternalReadEvidence[T]:
+        """Wrap a normalised value with the evidence of the response it came from.
+
+        Args:
+            value: The normalised result.
+            response: The reply it was read from.
+            received_at: When the read was made.
+
+        Returns:
+            The envelope.
+        """
+        return cls(
+            value=value,
+            status_code=response.status_code,
+            fingerprint=response.evidence_fingerprint(),
+            request_id=response.request_id,
+            safe_headers=response.safe_headers,
+            received_at=received_at,
+        )
+
+    def as_json(self) -> dict[str, Any]:
+        """Return the evidence as a JSON-safe mapping. Carries no credential."""
+        return {
+            "status_code": self.status_code,
+            "fingerprint": self.fingerprint,
+            "request_id": self.request_id,
+            "safe_headers": [list(pair) for pair in self.safe_headers],
+            "received_at": self.received_at,
         }
 
 
