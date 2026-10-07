@@ -8787,3 +8787,282 @@ def paper_ops_verify_journal_command() -> None:
         typer.echo(f"  {key:20}: {result[key]}")
     typer.echo("")
     typer.echo(f"  NOT DETECTABLE: {result['not_detectable']}")
+
+
+soak_app = typer.Typer(
+    help=(
+        "The armed paper shadow soak. Preregisters the rules, records what the "
+        "control plane did, and scores it against the frozen protocol. It adds "
+        "no trading capability and no authority."
+    ),
+    no_args_is_help=True,
+)
+paper_ops_app.add_typer(soak_app, name="soak")
+
+
+def _soak_schedule() -> Any:
+    """Build the soak's schedule over the declared forward calendar.
+
+    Returns:
+        The schedule. 15:45 ET leaves fifteen minutes before a regular close
+        and is inside the 13:00 ET early closes only if the window is short,
+        which is why the window is checked at arming rather than assumed.
+    """
+    from stock_screener.paper_operations import PaperOperationsSchedule
+    from stock_screener.paper_operations.soak_calendar import soak_calendar
+
+    return PaperOperationsSchedule(
+        schedule_id="PAPER_SHADOW_SOAK_DAILY",
+        timezone="America/New_York",
+        run_at_local="15:45",
+        calendar=soak_calendar(),
+        execution_window_minutes=10,
+    )
+
+
+def _drill_schedule() -> Any:
+    """Build the schedule the drills run against.
+
+    Separate from `_soak_schedule` on purpose. The drills use a fake clock at a
+    fixed instant so they are deterministic, and a schedule whose window is open
+    at that instant is part of the fixture — not something to be inferred from
+    whatever day the operator happens to arm on.
+
+    Returns:
+        A one-session schedule open at the drills' fixed instant.
+    """
+    from stock_screener.execution import ExecutionCalendar
+    from stock_screener.paper_operations import PaperOperationsSchedule
+
+    return PaperOperationsSchedule(
+        schedule_id="PAPER_SHADOW_SOAK_DRILLS",
+        timezone="America/New_York",
+        run_at_local="15:45",
+        calendar=ExecutionCalendar(sessions=("2026-10-07",), name="DRILL_FIXTURE"),
+    )
+
+
+@soak_app.command("arm")
+def paper_ops_soak_arm_command(
+    confirm: Annotated[
+        bool,
+        typer.Option(
+            "--confirm",
+            help=(
+                "Required. This freezes the soak protocol permanently and makes "
+                "read-only HTTPS requests to the configured Alpaca PAPER host to "
+                "establish the account binding. It submits nothing. The protocol "
+                "cannot be changed afterwards."
+            ),
+        ),
+    ] = False,
+) -> None:
+    """Preregister and activate the paper shadow soak. One-way.
+
+    The order is deliberate. The venue is read first, because a soak bound to an
+    account nobody proved is a soak of nothing. The protocol is frozen next, so
+    the thresholds exist before any observation. The drills run after that, and
+    a failing drill stops the whole thing — there is no point preregistering a
+    protocol whose control plane does not refuse correctly. Activation is last,
+    and it is the prospective boundary: no session that closed before it can
+    ever count.
+
+    Nothing here can be undone. `freeze_protocol` refuses a second, different
+    protocol and `activate` refuses a second activation.
+    """
+    import tempfile
+    from datetime import UTC, datetime
+
+    from stock_screener.execution import fingerprint_of
+    from stock_screener.execution.external import AlpacaPaperPreflightRun
+    from stock_screener.paper_operations import (
+        OperationsError,
+        PaperShadowSoakActivation,
+        PaperShadowSoakProtocol,
+        SoakState,
+        SoakStore,
+        operations_policy,
+    )
+    from stock_screener.paper_operations.drills import DrillHarness, run_required_drills
+    from stock_screener.paper_operations.soak_calendar import soak_calendar
+
+    settings = _bootstrap()
+    if not confirm:
+        typer.echo(
+            "refusing without --confirm: this permanently freezes the soak protocol "
+            "and reads the configured Alpaca PAPER account. Nothing is submitted."
+        )
+        raise typer.Exit(code=1)
+
+    now = datetime.now(UTC).isoformat()
+    root = _operations_root()
+    _, _, incidents, journal = _paper_ops_stores()
+    store = SoakStore(root)
+
+    typer.echo("")
+    typer.echo("  1/5  reading the paper account, read-only")
+    try:
+        run = AlpacaPaperPreflightRun.from_settings(settings)
+    except ExecutionError as exc:
+        typer.echo(f"STOPPED: {exc}")
+        raise typer.Exit(code=1) from exc
+    try:
+        preflight = run.execute(now=now)
+    finally:
+        run.close()
+    if not preflight.ready or preflight.paper_proof is None:
+        for gate, why in preflight.failures:
+            typer.echo(f"       {gate}: {why}")
+        typer.echo("STOPPED: the paper account did not establish a clean binding")
+        raise typer.Exit(code=1)
+    account = preflight.paper_proof.account_binding_fingerprint
+    typer.echo(f"       account binding : {account[:16]}…")
+    typer.echo(f"       venue positions : {preflight.positions_seen}")
+    typer.echo(f"       foreign orders  : {preflight.foreign_open_orders}")
+
+    typer.echo("  2/5  checking for unresolved incidents")
+    blocking = [
+        row.incident_id
+        for row in incidents.open_incidents()
+        if row.severity in {"CRITICAL", "BLOCKING"}
+    ]
+    if blocking:
+        typer.echo(f"STOPPED: unresolved incident(s): {blocking}")
+        raise typer.Exit(code=1)
+    journal.verify()
+    typer.echo("       no CRITICAL or BLOCKING incident open; journal verified")
+
+    typer.echo("  3/5  freezing the protocol")
+    calendar = soak_calendar()
+    schedule = _soak_schedule()
+    policy = operations_policy()
+    protocol = PaperShadowSoakProtocol(
+        protocol_id="P2_4_PAPER_SHADOW_SOAK",
+        code_commit=_git_commit(),
+        provider="ALPACA",
+        account_binding_fingerprint=account,
+        schedule_fingerprint=schedule.fingerprint(),
+        calendar_fingerprint=calendar.fingerprint(),
+        health_policy_fingerprint=fingerprint_of(policy),
+        freshness_policy_fingerprint=fingerprint_of(policy),
+    )
+    store.freeze_protocol(protocol)
+    typer.echo(f"       protocol        : {protocol.fingerprint()[:16]}…")
+    typer.echo(f"       required        : {protocol.required_sessions} eligible sessions")
+
+    typer.echo("  4/5  running the six required drills")
+    # The drill roots are throwaway and live outside the operational root. A
+    # drill that wrote into `.operations` would leave half-killed switches and
+    # stub incidents beside the real ones, which is both confusing and the kind
+    # of thing that makes an operator distrust the real records.
+    with tempfile.TemporaryDirectory(prefix="soak-drills-") as scratch:
+        harness = DrillHarness(
+            root=Path(scratch),
+            account=account,
+            now="2026-10-07T19:45:00+00:00",
+            schedule=_drill_schedule(),
+        )
+        try:
+            records = run_required_drills(store, harness=harness, performed_at=now)
+        except OperationsError as exc:
+            store.set_state(SoakState.FAILED, detail=str(exc))
+            typer.echo(f"STOPPED: {exc}")
+            raise typer.Exit(code=1) from exc
+    for record in records:
+        typer.echo(f"       PASS  {record.drill_type}")
+
+    typer.echo("  5/5  activating")
+    # The first declared session strictly after today. `next_session` is not
+    # usable here: it requires its argument to be in the calendar, and the day
+    # somebody arms on usually is not. Strictly after, rather than later today,
+    # because arming mid-session would otherwise make a partly-elapsed day
+    # countable — `qualifies` would refuse it, but the activation record should
+    # not claim it either.
+    later = [session for session in calendar.sessions if session > now[:10]]
+    if not later:
+        typer.echo(
+            "STOPPED: the declared calendar has no session after today, so the soak "
+            "could never collect evidence. Extend SOAK_SESSIONS first."
+        )
+        raise typer.Exit(code=1)
+    first = later[0]
+    activation = PaperShadowSoakActivation(
+        protocol_fingerprint=protocol.fingerprint(),
+        code_commit=_git_commit(),
+        account_binding_fingerprint=account,
+        activated_at=now,
+        first_eligible_session=first,
+        required_sessions=protocol.required_sessions,
+        calendar_fingerprint=calendar.fingerprint(),
+        schedule_fingerprint=schedule.fingerprint(),
+        starting_operations_journal_head=str(journal.verify()["head_hash"]),
+        starting_reconciliation="CLEAN_AT_ARMING",
+        starting_health="PREFLIGHT_PASSED",
+    )
+    store.activate(activation)
+    store.set_state(SoakState.ARMED, detail="preregistered and activated")
+
+    typer.echo("")
+    typer.echo("  SOAK ARMED")
+    typer.echo(f"  activated at           : {now}")
+    typer.echo(f"  first eligible session : {first}")
+    typer.echo(f"  required sessions      : {protocol.required_sessions}")
+    typer.echo(f"  protocol fingerprint   : {protocol.fingerprint()}")
+    typer.echo("")
+    typer.echo("  The thresholds are frozen. No session that closed before now can count.")
+    typer.echo("  This authorises no live trading and no change to any strategy.")
+
+
+@soak_app.command("status")
+def paper_ops_soak_status_command() -> None:
+    """Score the soak against its frozen protocol.
+
+    Takes no threshold arguments, because there is nowhere to pass one: every
+    limit comes from the protocol frozen at arming.
+    """
+    from datetime import UTC, datetime
+
+    from stock_screener.paper_operations import SoakStore, evaluate_soak
+    from stock_screener.paper_operations.soak_calendar import soak_calendar
+
+    _bootstrap()
+    _, _, incidents, _ = _paper_ops_stores()
+    store = SoakStore(_operations_root())
+    if store.protocol() is None:
+        typer.echo("no soak is preregistered; run `paper-ops soak arm --confirm`")
+        raise typer.Exit(code=1)
+
+    report = evaluate_soak(
+        store,
+        calendar=soak_calendar(),
+        schedule=_soak_schedule(),
+        now=datetime.now(UTC).isoformat(),
+        incidents=tuple(incidents.open_incidents()),
+    )
+    typer.echo("")
+    for line in report.summary_lines():
+        typer.echo(f"  {line}")
+    typer.echo("")
+    typer.echo(f"  VERDICT: {report.verdict}")
+
+
+@soak_app.command("show-drills")
+def paper_ops_soak_show_drills_command() -> None:
+    """List the recorded failure drills and what each one observed."""
+    from stock_screener.paper_operations import SoakStore
+
+    _bootstrap()
+    rows = SoakStore(_operations_root()).drills()
+    if not rows:
+        typer.echo("no drills recorded")
+        return
+    typer.echo("")
+    for drill in rows:
+        typer.echo(f"  [{'PASS' if drill.passed else 'FAIL'}] {drill.drill_type}")
+        typer.echo(f"      action   : {drill.action}")
+        typer.echo(f"      expected : {drill.expected}")
+        typer.echo(f"      observed : {drill.observed}")
+        typer.echo(f"      mutations: {drill.external_mutations}")
+        typer.echo(f"      injected : {drill.injected}")
+    typer.echo("")
+    typer.echo("  Every drill is an injected fault. None interrupted a real order.")

@@ -14,6 +14,12 @@ dist/
 .venv/
 venv/
 .env
+
+# Operational control state. Carries account binding fingerprints, kill state,
+# incidents and soak evidence — all specific to one operator's paper account,
+# and none of it repository content. A committed kill switch would also be a
+# kill switch somebody else's checkout inherits.
+.operations/
 .env.*
 !.env.example
 

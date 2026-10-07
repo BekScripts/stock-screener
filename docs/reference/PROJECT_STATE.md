@@ -36,8 +36,10 @@ appears without the run or the test that produced it.
 
 ## Current phase
 
-**P2.2 — external paper-broker adapter and reconciliation** is the current
-checkpoint, on `feat/p2-execution-engine`.
+**P2.4 — the armed paper shadow soak** is the current checkpoint, on
+`feat/p2-execution-engine`. The protocol is frozen, the six required drills have
+been performed, and the soak is collecting prospective evidence. It has produced
+no verdict yet, and will not until the preregistered sessions have happened.
 
 **P2.1 is complete and frozen** at `p2-execution-realism-complete` (`be0db072`),
 which freezes `EXECUTION_ENGINE_V1_1` and
@@ -110,6 +112,62 @@ run-scoped plan id rather than a random one; and fractionability is a property
 of the instrument, so the capability is declared from the asset read instead of
 from a venue-level default.
 
+**P2.3 adds the paper operations control plane.** `PAPER_OPERATIONS_ENGINE_V1`
+in `src/stock_screener/paper_operations/` is the layer that decides whether the
+system may act at all, and most of it is refusal: arming permits a coordinator
+and never an order, absent or corrupt control state reads as `KILLED` rather
+than as permission, permission is re-read before every order instead of cached,
+a run id is derived from the slot so one scheduled decision cannot become two
+orders, a missed slot is recorded and never run late, an unreachable venue
+blocks rather than falling back to the simulator, and no reconciliation break is
+ever repaired automatically. It is versioned apart from `EXECUTION_ENGINE_V1_2`
+and `PORTFOLIO_ACCOUNTING_V2`, neither of which moves because a coordinator
+exists. Checkpoint: tag `p2-paper-operations-complete` (`68709d22`).
+
+**P2.4 arms a preregistered multi-day paper shadow soak.**
+`PAPER_SHADOW_SOAK_PROTOCOL_V1` adds no trading capability and no authority — it
+is a preregistration, a recorder and a scorer, and its point is the distinction
+between a control plane that passes tests and one that has operated.
+
+| | |
+| --- | --- |
+| protocol | `PAPER_SHADOW_SOAK_PROTOCOL_V1`, frozen at arming |
+| required evidence | 20 eligible sessions, derived from the calendar |
+| declared calendar | `US_EQUITY_DECLARED_2026Q4_2027Q1`, 76 forward sessions |
+| scoring | `evaluate_soak` takes no threshold arguments |
+| zero-tolerance gates | 10, each producing `FAIL_SAFETY_VIOLATION` |
+| non-breach gates | 5, each blocking an `A` without being a violation |
+| performance gates | **none** — no gate reads a return, price or slippage |
+| required drills | 6, all performed, all passed, all injected faults |
+| live trading | `NOT_IMPLEMENTED`, `NOT_AUTHORIZED` |
+
+Three properties carry the design. The protocol is **prospective**:
+`SoakStore.qualifies` refuses a record for a session that closed before
+activation, because twenty retrospective sessions chosen after the fact say
+nothing about the twenty-first. The **goalposts cannot move**: every threshold
+lives inside the protocol body so the fingerprint changes if one does, and
+`evaluate_soak` has nowhere to accept a kinder limit — there is no pass-rate
+field anywhere in the report. And **evidence appends**: an observation id is
+content-addressed over the protocol, session, run id and the observation's own
+fingerprint, so an identical re-record is idempotent while a correction gets its
+own file and cannot silently replace the original.
+
+`FAIL` and not-`A` are deliberately different verdicts. A duplicate order, a
+duplicate accounting event, a trade on stale data or a backfilled run is a
+safety violation. An eligible session with no record, or a control plane that
+correctly refused to trade, blocks promotion without being a breach — reporting
+either as a violation would be wrong on the facts and would also be the noise
+that gets real violations ignored.
+
+The six drills are `KILL_RESTART`, `DUPLICATE_SCHEDULER`, `CRASH_RECOVERY`,
+`PROVIDER_UNAVAILABLE`, `REMOTE_STATE_UNKNOWN` and `STALE_INPUT`. Every one is
+an injected fault against a stub environment over a throwaway root, and that is
+a decision rather than a shortcut: the two that matter most are an unreachable
+provider and an unresolved submission, and arranging either against a real venue
+means interrupting a real order — an experiment that can itself cause the
+duplicate it tests for. Each record carries `injected_fault: true`, because an
+injected outage and a real one are different evidence.
+
 **P1 is complete and frozen** at `p1-portfolio-authority-complete`
 (`b87e7c96`), which closes the portfolio programme at P1.4. From that tag the
 portfolio layer is the sole authority over holdings, cash and P&L, and nothing
@@ -140,12 +198,22 @@ frozen at the same commit; P2 branched from it.
 | P2.2 external paper endpoint | **EXTERNAL PAPER EXECUTION CERTIFIED** — ALPACA PAPER |
 | P2.2 checkpoint | tag `p2-external-paper-certified` |
 | P2.3 | **PAPER OPERATIONS CONTROL PLANE** — `PAPER_OPERATIONS_ENGINE_V1` |
+| P2.3 checkpoint | tag `p2-paper-operations-complete` (`68709d22`) |
 | P2.3 default operational state | **NOT_ARMED / FAIL CLOSED** |
 | P2.3 kill switch | **PERSISTENT** — survives restart; corrupt state fails closed |
 | P2.3 auto liquidation | **NONE** |
 | P2.3 automatic reconciliation repair | **NONE** |
 | P2.3 provider outage fallback | **NONE** |
 | P2.3 scheduled-run backfill | **NONE** |
+| P2.4 | **PAPER SHADOW SOAK ARMED** — `PAPER_SHADOW_SOAK_PROTOCOL_V1` |
+| P2.4 soak protocol | **FROZEN AT ARMING** — cannot be changed or re-activated |
+| P2.4 retrospective observations | **REFUSED** — `SOAK_RETROSPECTIVE_OBSERVATION` |
+| P2.4 threshold arguments to the scorer | **NONE** — every limit comes from the protocol |
+| P2.4 pass-rate field | **NONE** — 19 of 20 clean is a failed soak |
+| P2.4 performance gates | **NONE** |
+| P2.4 observation overwrite | **REFUSED** — append-only; corrections supersede |
+| P2.4 verdict at arming | **B — SOAK ARMED, PROSPECTIVE OBSERVATIONS PENDING** |
+| P2.4 checkpoint | tag `p2-paper-shadow-soak-armed` |
 | Live trading | **NOT IMPLEMENTED, NOT AUTHORIZED** |
 | Production risk thresholds | **NOT AUTHORIZED** |
 | Production strategy budgets | **NOT AUTHORIZED** |
@@ -3720,16 +3788,42 @@ bug that was fixed.
 establish that a run was permitted, reconciled and recorded. It says nothing
 about whether the orders it permitted were good ones. Gating is not judgement.
 
-**No unattended soak has been run (P2.3).** The control plane is complete and
-tested offline against a stub environment and an injected clock; no multi-day
-unattended paper operation has happened. Everything known about its behaviour
-under repetition is inference from tests, not observation.
+**The soak is armed and has produced no evidence yet (P2.4).** The protocol is
+frozen and the recorder works, but a preregistration is a promise about how
+future evidence will be judged, not evidence. Everything known about this
+control plane under repetition is still inference from tests. That is the
+condition P2.4 exists to end, and it ends by waiting.
 
-**Coordinated local rollback remains undetectable (P2.3).** The run journal
-inherits the limit the execution journal and accounting ledger already carry: a
-rollback of both the journal and its anchor to a mutually consistent earlier
-state cannot be detected locally. Three journals now share one unclosed gap,
-and an independently trusted anchor would close all three.
+**The drills are injected, not real (P2.4).** They establish the decision the
+control plane makes when a provider is unreachable or a submission's fate is
+unknown; they establish nothing about the provider's behaviour during a genuine
+outage. The P2.2E canary remains the only evidence in this programme that came
+from a real venue, and it found two defects that 211 fake-transport tests had
+passed. A fake transport proves a protocol's shape and nothing about its
+correspondence to reality.
+
+**Twenty sessions is a floor chosen before the data, not a sufficiency proof
+(P2.4).** It is enough to exercise every drill and to see a month of calendar
+variation. It is not enough to bound the rate of a
+failure mode that occurs once a quarter. A clean soak means the control plane
+operated as specified over the preregistered window; it is not a live trading
+authorisation, and this package has no path to one.
+
+**The soak calendar is a declaration, not an observation (P2.4).**
+`SOAK_SESSIONS` is weekdays minus four named closures and two early closes,
+written down before the first of them, because a forward calendar cannot be read
+from stored bars. If
+the exchange closes unexpectedly, a listed session will not happen and the soak
+will show it as an eligible session with no record — which blocks promotion
+until a person says why, and that is the correct outcome.
+
+**Coordinated local rollback remains undetectable (P2.3, P2.4).** The run
+journal inherits the limit the execution journal and accounting ledger already
+carry: a rollback of both the journal and its anchor to a mutually consistent
+earlier state cannot be detected locally. The soak's observation files inherit
+it too. Four records now share one unclosed gap, and an independently trusted
+external anchor would close all four. Nothing on a single filesystem can
+establish this about itself.
 
 **Certification is one observation, not a guarantee (P2.2E).** It establishes
 that this code, against this provider, at one moment, did what it claims. An
@@ -5613,6 +5707,42 @@ offline against a stub environment and an injected clock).
 | `test_p2_3_paper_operations.py::test_a_blocked_run_is_not_reported_as_a_success` | a correct refusal is not an achievement |
 | `test_p2_3_paper_operations.py::test_the_execution_and_accounting_versions_are_not_bumped` | operations did not move execution or accounting semantics |
 
+P2.4 adds `tests/integration/test_p2_4_paper_shadow_soak.py` (58 tests) and
+`tests/integration/test_p2_4_required_drills.py` (26 tests), all offline.
+
+| Test | Protects |
+| --- | --- |
+| `test_p2_4_paper_shadow_soak.py::test_a_session_before_activation_cannot_count` | the prospective boundary, which is the whole design |
+| `test_p2_4_paper_shadow_soak.py::test_a_frozen_protocol_cannot_be_replaced` | the goalposts cannot move after the first observation |
+| `test_p2_4_paper_shadow_soak.py::test_a_soak_cannot_be_activated_twice` | one armed soak, not a series of attempts |
+| `test_p2_4_paper_shadow_soak.py::test_the_gates_live_inside_the_protocol_fingerprint` | a changed threshold changes the fingerprint |
+| `test_p2_4_paper_shadow_soak.py::test_the_report_has_no_pass_rate_field` | 19 of 20 clean is a failed soak, not 95% |
+| `test_p2_4_paper_shadow_soak.py::test_nineteen_clean_sessions_and_one_duplicate_order_fails` | one zero-tolerance breach is not averaged away |
+| `test_p2_4_paper_shadow_soak.py::test_an_observation_is_not_overwritten` | evidence appends; corrections supersede |
+| `test_p2_4_paper_shadow_soak.py::test_recording_the_identical_observation_twice_is_a_no_op` | a retry is safe because the id is content-addressed |
+| `test_p2_4_paper_shadow_soak.py::test_a_correction_preserves_the_original` | a correction cannot silently replace what it corrects |
+| `test_p2_4_paper_shadow_soak.py::test_an_eligible_session_with_no_record_blocks_a_pass` | missing evidence blocks an A without being a breach |
+| `test_p2_4_paper_shadow_soak.py::test_a_missed_session_without_a_trade_is_not_a_failure` | a correct refusal to trade is the system working |
+| `test_p2_4_paper_shadow_soak.py::test_eligible_sessions_are_computed_from_the_calendar` | the denominator is derived, never counted by hand |
+| `test_p2_4_paper_shadow_soak.py::test_the_protocol_states_what_it_does_not_gate_on` | performance is not a gate, so results cannot tune the protocol |
+| `test_p2_4_paper_shadow_soak.py::test_a_hand_edited_observation_is_refused` | a session cannot be made clean by editing JSON |
+| `test_p2_4_paper_shadow_soak.py::test_the_report_is_rebuilt_from_observations_not_a_summary_file` | the verdict is recomputed from evidence, never cached |
+| `test_p2_4_paper_shadow_soak.py::test_a_corrupt_soak_state_never_reads_as_completed` | corrupt state fails closed, like every other control state |
+| `test_p2_4_paper_shadow_soak.py::test_no_soak_artefact_carries_a_credential` | nothing identifying reaches a soak record |
+| `test_p2_4_required_drills.py::test_every_required_drill_passes` | the six failure paths actually behave as the soak assumes |
+| `test_p2_4_required_drills.py::test_a_drill_that_does_not_behave_as_expected_raises` | a failing drill stops arming instead of being filed |
+| `test_p2_4_required_drills.py::test_a_failing_drill_is_still_recorded` | refusing is not the same as hiding |
+| `test_p2_4_required_drills.py::test_the_kill_survives_a_new_store_over_the_same_root` | a restart is not a recovery |
+| `test_p2_4_required_drills.py::test_the_provider_unavailable_drill_blocks_rather_than_substituting` | an outage blocks; the simulator is never substituted |
+| `test_p2_4_required_drills.py::test_the_remote_state_unknown_drill_blocks_the_whole_account` | ambiguity is not isolated |
+| `test_p2_4_required_drills.py::test_a_drill_never_writes_outside_its_own_root` | a drill cannot alter the state the soak is judged on |
+| `test_p2_4_required_drills.py::test_no_soak_command_offers_a_live_flag` | no runtime flag unlocks live trading |
+| `test_p2_4_required_drills.py::test_the_declared_soak_calendar_lists_no_declared_closure` | a closure listed as a session would strand the soak forever |
+| `test_p2_4_required_drills.py::test_no_declared_session_closes_before_the_soak_would_run` | no session is scheduled into a market that already shut |
+| `test_p2_4_required_drills.py::test_the_soak_run_time_is_inside_every_declared_session` | the run time holds on all 76 declared sessions |
+| `test_p2_4_required_drills.py::test_the_first_eligible_session_is_the_next_declared_one` | the day somebody arms on is usually not itself a session |
+| `test_p2_4_required_drills.py::test_the_operational_root_is_not_committable` | `git add -A` must never stage kill state or an account fingerprint |
+
 ### The gate
 
 `make check` — lint, format check, mypy strict, pytest with coverage failing
@@ -5634,23 +5764,44 @@ certification.
 defects are closed, the read-only preflight passes, and one authorised order has
 been through the full chain to a real paper venue and back.
 
-**P2.3 is complete.** The control plane exists, is tested offline, and has
-never been run unattended.
+**P2.3 is complete** at tag `p2-paper-operations-complete` (`68709d22`). The
+control plane exists and is tested offline.
 
-**P2.4 — a controlled multi-day paper shadow soak — follows.** Everything known
-about this control plane under repetition is inference from tests. A soak is how
-that becomes observation: run it in `OBSERVE_ONLY` across several sessions
-first, collect the incident, reconciliation and health history it accumulates,
-and only then consider scheduled `EXTERNAL_PAPER` runs. The promotion gates
-themselves — what evidence would justify moving from shadow to anything wider —
-should be written down *before* the soak produces data, for the same reason R1.4
-preregistered its hypothesis: criteria chosen after seeing results are not
-criteria.
+**P2.4 is armed and waiting.** The protocol is frozen, the six drills are
+performed and recorded, and the recorder is collecting. What remains is not work
+but time: the soak needs 20 eligible sessions from the declared calendar, and
+the first of them had not happened when the protocol was frozen. That ordering
+is the point, not an inconvenience.
 
-Nothing in P2.4 may relax what P2.2 and P2.3 established: no live host, no live
-key prefix, no third venue or mode member, no retryable mutation, no
-auto-repair, no venue fallback, no backfill, an operational default of
-`NOT_ARMED`, and `make check` continuing to make no external request.
+**What finishing P2.4 requires.** Each eligible session produces one observation
+recorded through `SoakStore.record_observation` — run status, orders, fills,
+reconciliation verdict, health state and the incidents raised. Nothing is
+backfilled and nothing is hand-edited; an eligible session with no record stays
+visible as a gap until a person explains it. `paper-ops soak status` scores what
+exists against the frozen protocol and will keep returning
+`B_SOAK_IN_PROGRESS` until the evidence is complete.
+
+**What would end the soak early, and what would not.** A zero-tolerance breach —
+a duplicate remote order, a duplicate accounting event, a trade on stale data, a
+backfilled run, an ignored reconciliation break — ends it as
+`FAIL_SAFETY_VIOLATION` and requires a fix and a *new* soak, because a protocol
+cannot be re-armed. A blocked session, a missed session, or a session where the
+control plane refused to trade does not end it and is not a defect; it is the
+system working, and it blocks only the `A`.
+
+**What a clean soak does not authorise.** `A_PAPER_SHADOW_SOAK_PASSED` means the
+control plane operated as specified over the preregistered window. It is not a
+live trading authorisation and creates no path to one. Any widening past shadow
+paper operation is a separate decision with its own evidence, and the thresholds
+for it are not in this protocol.
+
+Nothing in P2.4 relaxes what P2.2 and P2.3 established, and nothing in finishing
+it may: no live host, no live key prefix, no third venue or mode member, no
+retryable mutation, no auto-repair, no venue fallback, no backfill, an
+operational default of `NOT_ARMED`, and `make check` continuing to make no
+external request. The soak protocol itself adds two more: thresholds may not be
+tuned from observed outcomes, and no observation may be recorded for a session
+that closed before activation.
 
 Neither phase may relax anything P2.2 or P2.2C established: no live host in the
 allow-list, no live key prefix accepted, no third `ExecutionVenue` member, no

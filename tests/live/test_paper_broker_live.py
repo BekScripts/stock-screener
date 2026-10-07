@@ -131,12 +131,14 @@ def test_every_held_symbol_is_resolvable_to_a_durable_identity() -> None:
 
 @pytest.mark.skip(
     reason=(
-        "BLOCKED ON A DEFECT, not on a transport. P2.2C found that read_fills "
-        "filters /v2/account/activities/FILL by client_order_id while Alpaca's "
-        "documented filter is order_id, so on a real account the read returns "
-        "unrelated fills and attributes them to one order. Submitting a canary "
-        "before that is fixed would ingest another order's fills into the book. "
-        "P2.2D fixes it; this canary runs after."
+        "Superseded by the certified canary. The P2.2C defect this test was "
+        "blocked on — read_fills filtering /v2/account/activities/FILL by "
+        "client_order_id instead of the documented order_id — was fixed in "
+        "P2.2D, and P2.2E ran the real two-leg canary against the paper "
+        "account and certified it. Run `stock-screener execution "
+        "external-paper-canary --confirm` rather than this test: the canary "
+        "goes through the full authorization chain and writes a certification "
+        "artefact, which an ad-hoc test does neither of."
     )
 )
 def test_one_share_submitted_to_the_paper_venue_is_confirmed_and_reconciles() -> None:

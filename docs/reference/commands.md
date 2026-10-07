@@ -263,6 +263,32 @@ liquidates a position and never touches an order it cannot prove it placed.
 Both `arm` and `kill` require `--confirm`. See
 [paper operations](paper-operations.md) for the full contract.
 
+### Paper shadow soak
+
+```bash
+stock-screener paper-ops soak arm --confirm   # one-way; freezes the protocol
+stock-screener paper-ops soak status          # scores against the frozen rules
+stock-screener paper-ops soak show-drills
+```
+
+`soak arm` is irreversible and does five things in a fixed order: reads the
+paper account read-only to establish the binding, refuses if any `CRITICAL` or
+`BLOCKING` incident is open, freezes the protocol, runs the six required failure
+drills, and activates. A failing drill stops it before activation — there is no
+point preregistering a protocol whose control plane does not refuse correctly.
+The protocol cannot be changed afterwards and the soak cannot be re-activated.
+
+`soak status` takes no threshold arguments, and that is structural rather than a
+convenience: every limit comes from the protocol frozen at arming, so there is
+nowhere to pass a kinder one. It prints the verdict, which is `B_SOAK_IN_PROGRESS`
+until the required sessions have been observed.
+
+`soak show-drills` prints what each drill did, expected and observed, and marks
+every one as an injected fault. None of them interrupts a real order.
+
+Neither command submits anything, and none of them has a live equivalent. See
+[paper shadow soak](paper-shadow-soak.md) for the protocol.
+
 ```bash
 uv run pytest tests/live/test_paper_broker_live.py --live-paper
 ```
