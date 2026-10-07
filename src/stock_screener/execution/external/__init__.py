@@ -43,6 +43,7 @@ from __future__ import annotations
 from .alpaca import (
     ACCOUNT_PATH,
     ACTIVITIES_PATH,
+    ASSETS_PATH,
     OPEN_ORDER_QUERY,
     ORDER_HISTORY_QUERY,
     POSITIONS_PATH,
@@ -55,6 +56,13 @@ from .binding import (
     BrokerCapabilities,
     ExternalBrokerAccountBinding,
     account_fingerprint,
+)
+from .canary import (
+    CANARY_CLASSIFICATION,
+    CERTIFICATION_ARTEFACT_VERSION,
+    CanaryLeg,
+    ExternalPaperCanary,
+    ExternalPaperCanaryReport,
 )
 from .cancellation import (
     CANCELLATION_PROTOCOL,
@@ -89,6 +97,7 @@ from .http_transport import (
 )
 from .manifest import EXECUTION_MANIFEST_VERSION_V1_2, external_manifest
 from .models import (
+    ExternalAsset,
     ExternalExecutionFill,
     ExternalOrderSnapshot,
     ExternalPaperAccountSnapshot,
@@ -155,8 +164,11 @@ __all__ = [
     "ACCOUNT_PATH",
     "ACTIVITIES_PATH",
     "ADAPTER_VERSION",
+    "ASSETS_PATH",
+    "CANARY_CLASSIFICATION",
     "CANCELLATION_PROTOCOL",
     "CANCEL_INTENT_DIRECTORY",
+    "CERTIFICATION_ARTEFACT_VERSION",
     "CLIENT_ID_DERIVATION",
     "CLIENT_ID_NAMESPACE",
     "CLIENT_ID_PREFIX",
@@ -194,16 +206,20 @@ __all__ = [
     "BrokerEnvironment",
     "BrokerResponse",
     "BrokerTransport",
+    "CanaryLeg",
     "CancellationOutcome",
     "CancellationResult",
     "EnvironmentProof",
     "ExecutionVenue",
+    "ExternalAsset",
     "ExternalBreak",
     "ExternalBreakSeverity",
     "ExternalBrokerAccountBinding",
     "ExternalExecutionFill",
     "ExternalOrderSnapshot",
     "ExternalPaperAccountSnapshot",
+    "ExternalPaperCanary",
+    "ExternalPaperCanaryReport",
     "ExternalPaperExecutionReport",
     "ExternalPosition",
     "ExternalReadEvidence",

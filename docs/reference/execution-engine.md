@@ -881,7 +881,56 @@ history are now separate concepts with separate queries, and reconciliation
 cares about the former: a terminal order from an earlier session is history, not
 a break.
 
-### Not yet certified
+### Certified (P2.2E)
+
+The external paper path is **certified**. One authorised order went to a real
+Alpaca paper account and back, through the whole chain, and the venue finished
+where it started.
+
+`stock-screener execution external-paper-canary --external-paper-canary` runs
+it. The flag is required and there is no corresponding live mode.
+
+What the canary proves that a fake transport cannot:
+
+| | |
+| --- | --- |
+| the authority chain | the order originated from an accounting-V2 book, through an authorised plan, to the submission protocol. The canary never calls the transport to trade. |
+| deterministic identity | the derived client order id was sent, and a lookup by that id returned the same provider order |
+| fill ingestion | the fill was read by provider `order_id` and posted once, under an accounting event id derived from the provider's execution id |
+| exactly once | the executions were re-read and re-admitted; the ledger length, the cash and the position did not move |
+| three-way reconciliation | `RECONCILED` after the fill and after cleanup |
+| cleanup | a second authorised order closed the position — not a cancel, not a liquidation |
+
+Three things the live run taught that the offline suite had not:
+
+**The order status and the activities feed are not simultaneous.** The venue
+reported the order `filled` about twenty milliseconds after submission, and the
+matching FILL activity was not yet queryable. A single activities read straight
+after a terminal status returns nothing, and reading that as "no fill" is wrong
+about a trade that happened — the first run reported `ENTRY_NOT_FILLED` while
+the venue had bought. The executions are now polled in their own bounded loop,
+and an exhausted window is reported rather than concluded from.
+
+**A deterministic client order id makes a canary non-repeatable, by design.**
+The second run derived the same venue-facing id, the venue refused the duplicate,
+the lookup returned the first run's filled order, and accounting refused that
+fill for taking effect before the new book opened. Every layer was correct. The
+resolution is a run-scoped plan id — stable *within* a run, so a retry after a
+crash stays idempotent — not a random one.
+
+**Fractionability is a property of the instrument, not the venue.** A
+venue-level capability default is necessarily wrong for one side or the other,
+so the canary declares it from the asset read: the venue is asked whether the
+symbol is fractionable, and the capability follows that answer.
+
+Two differences are declared rather than absorbed. The fee is a schedule value
+(zero for a US equity here), and the execution still records
+`fee_is_known=False`, because the venue stated none. And the canary declares a
+one-cent cash tolerance with its reason — the venue rounds its cash to whole
+cents, so a fractional fill leaves a sub-cent difference that is rounding, not a
+missing trade. The global default stays exactly zero.
+
+### What certification does not establish
 
 The paper endpoint is **implemented and uncertified**. The transport is complete
 and verified offline against `httpx.MockTransport`; nothing in this repository
@@ -889,16 +938,25 @@ has yet spoken to a real venue. The opt-in canary in
 `tests/live/test_paper_broker_live.py` stays inert behind `--live-paper`, and
 `make check` never passes that flag nor makes any external request.
 
-The read-only preflight **passes** against a real account: the paper host is
-reached, the credential authenticates, the expected account matches, and the
-paper proof is evidence-backed. What remains is not code.
+Certification is one observation, not a guarantee. It establishes that this
+code, against this provider, at one moment, did what it claims. It does not make
+an external run reproducible: the fills came from a venue's matching engine at a
+moment that will not recur, and the artefact says so rather than implying
+otherwise — code and configuration semantics are reproducible, the external
+observations are recorded and fingerprinted, and the provider's responses are
+not recreatable.
 
-A canary needs an account holding nothing this book does not know about. Each
-pre-existing holding reconciles as `REMOTE_POSITION_MISMATCH` (BLOCKING) and
-each foreign working order as `UNEXPECTED_REMOTE_ORDER`, so submitting against
-a book that is missing positions sizes the next trade against money that is not
-there. The preflight reports `canary_ready` and names the blockers; clearing
-them is the account owner's decision and nothing here does it automatically.
+It also says nothing about execution *quality*. A provider's paper engine is the
+provider's model of itself: it may fill more readily than its live engine would,
+it is not bound by this project's participation ceiling, and its queue behaviour
+is unobservable from here. A paper fill is evidence the plumbing works, not
+evidence the trade was achievable.
+
+And a canary needs an account holding nothing this book does not know about.
+Each pre-existing holding reconciles as `REMOTE_POSITION_MISMATCH` (BLOCKING)
+and each foreign working order as `UNEXPECTED_REMOTE_ORDER`. The preflight
+reports `canary_ready` and names the blockers; clearing them is the account
+owner's decision and nothing here does it automatically.
 
 ## Deliberately absent
 

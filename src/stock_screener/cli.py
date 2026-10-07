@@ -8352,3 +8352,125 @@ def execution_external_paper_preflight_command(
     typer.echo("")
     typer.echo("PREFLIGHT PASSED" if report.ready else "PREFLIGHT FAILED")
     raise typer.Exit(code=0 if report.ready else 1)
+
+
+@execution_app.command("external-paper-canary")
+def execution_external_paper_canary_command(
+    confirm: Annotated[
+        bool,
+        typer.Option(
+            "--external-paper-canary",
+            help=(
+                "Required. This SUBMITS A REAL ORDER to the configured Alpaca "
+                "PAPER account: one authorised MARKET/DAY buy of the smallest "
+                "valid quantity, then a compensating authorised sell to close "
+                "it. Paper only — the transport cannot reach a live venue."
+            ),
+        ),
+    ] = False,
+    symbol: Annotated[
+        str,
+        typer.Option("--symbol", help="The venue symbol to trade. Must be explicitly mapped."),
+    ] = "F",
+    identity_id: Annotated[
+        int,
+        typer.Option("--identity-id", help="The durable identity id to map to that symbol."),
+    ] = 11,
+    quantity: Annotated[
+        str,
+        typer.Option(
+            "--quantity",
+            help=(
+                "The authorised quantity. Fractional is used only where the venue "
+                "reports the asset fractionable; it is never silently rounded."
+            ),
+        ),
+    ] = "0.1",
+    close_residual: Annotated[
+        str,
+        typer.Option(
+            "--close-residual",
+            help=(
+                "Close a canary-created holding with one authorised compensating "
+                "order instead of running a new canary. Takes "
+                "`quantity@cost_per_share`, e.g. 0.1@12.078."
+            ),
+        ),
+    ] = "",
+) -> None:
+    """Certify the external paper path by trading one authorised order.
+
+    The order originates from an accounting-V2 book, through an authorised
+    execution plan and the submission protocol, to the paper transport — not
+    from a direct transport call. Its fill is read by provider order id,
+    ingested exactly once, re-polled to prove no duplicate, reconciled three
+    ways, and then closed with a second authorised order.
+
+    Refuses unless the read-only preflight reports the account clean. Nothing
+    here can reach a live venue.
+    """
+    from decimal import Decimal
+
+    from stock_screener.execution.external import (
+        AlpacaPaperPreflightRun,
+        ExternalPaperCanary,
+        SymbolMapping,
+        VenueSymbol,
+    )
+    from stock_screener.portfolio_risk import SecurityIdentity
+
+    settings = _bootstrap()
+    if not confirm:
+        typer.echo(
+            "refusing without --external-paper-canary: this submits a real order to "
+            "the configured PAPER account and then closes it with a second order."
+        )
+        raise typer.Exit(code=1)
+
+    identity = SecurityIdentity(kind="COMPANY", identity_id=identity_id, symbol=symbol)
+    mapping = SymbolMapping.of(
+        [VenueSymbol(kind="COMPANY", identity_id=identity_id, symbol=symbol)]
+    )
+    root = Path(tempfile.mkdtemp(prefix="external-paper-canary-"))
+    try:
+        run = AlpacaPaperPreflightRun.from_settings(
+            settings, store_root=root / "execution", mapping=mapping
+        )
+    except ExecutionError as exc:
+        typer.echo(f"STOPPED: {exc}")
+        raise typer.Exit(code=1) from exc
+
+    run.identities = (identity,)
+    canary = ExternalPaperCanary(run, identity=identity, store_root=root)
+    try:
+        if close_residual:
+            held, _, basis = close_residual.partition("@")
+            report = canary.close_residual(
+                quantity=Decimal(held),
+                cost_basis_per_share=Decimal(basis),
+                now=datetime.now(UTC).isoformat(),
+            )
+        else:
+            report = canary.execute(quantity=Decimal(quantity), now=datetime.now(UTC).isoformat())
+    except ExecutionError as exc:
+        typer.echo(f"STOPPED: {exc}")
+        raise typer.Exit(code=1) from exc
+    finally:
+        run.close()
+
+    typer.echo("")
+    for line in report.summary_lines():
+        typer.echo(f"  {line}")
+    typer.echo("")
+    typer.echo(f"  certification fingerprint: {report.fingerprint()}")
+    typer.echo(f"  records: {root}")
+    typer.echo("")
+    settled = report.certified or report.outcome == "RESIDUAL_CLOSED"
+    typer.echo(
+        "CANARY CERTIFIED"
+        if report.certified
+        else "RESIDUAL CLOSED"
+        if settled
+        else f"CANARY NOT CERTIFIED: {report.outcome}"
+    )
+    raise typer.Exit(code=0 if settled else 1)

@@ -215,8 +215,23 @@ It is read-only — every request is a `GET`, and it reports its own mutating
 request count as zero so a reader can check rather than trust. It refuses
 without `--confirm`, refuses without `ALPACA_PAPER_KEY_ID`,
 `ALPACA_PAPER_SECRET_KEY` and `ALPACA_PAPER_ACCOUNT_ID`, and cannot be pointed
-at a live host: the transport will not construct against one. There is no
-corresponding command that submits an order.
+at a live host: the transport will not construct against one.
+
+The one command that trades is separate again, and opt-in:
+
+```bash
+stock-screener execution external-paper-canary --external-paper-canary
+```
+
+It submits **one** authorised MARKET/DAY buy of the smallest valid quantity and
+then closes it with a compensating authorised sell. Both originate from an
+accounting-V2 book through an authorised plan — the command has no path that
+calls the transport directly to trade. It refuses unless the preflight reports
+the account clean, and there is no live equivalent of the flag.
+
+`--close-residual quantity@cost` closes a canary-created holding with a single
+compensating authorised order, for when an earlier run left one behind. Neither
+form can cancel, liquidate, or touch a position this project did not open.
 
 ```bash
 uv run pytest tests/live/test_paper_broker_live.py --live-paper

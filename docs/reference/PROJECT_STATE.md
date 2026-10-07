@@ -80,14 +80,35 @@ GET), 0 mutating requests** — where P2.2C made 6 for the same information. The
 account identifier is deliberately not recorded here: it lives in `.env` and
 reaches artefacts only as a salted fingerprint.
 
-**The paper endpoint is `IMPLEMENTED, CERTIFICATION PENDING`**, and the remaining
-blocker is not code. The configured paper account holds 3 positions (JNJ, MRK,
-SLB) and 3 working stop orders in the same names, none placed by this project.
-Each holding reconciles as `REMOTE_POSITION_MISMATCH` (BLOCKING) and each order
-as `UNEXPECTED_REMOTE_ORDER`; submitting against a book missing those positions
-would size the next trade against money that is not there. The preflight reports
-`canary_ready: False` and names both blockers. Clearing them is the account
-owner's decision and nothing in this repository does it automatically.
+**P2.2 EXTERNAL PAPER EXECUTION IS CERTIFIED.** On 2026-10-07 one authorised
+order went to the configured Alpaca paper account and back, through the full
+chain, and the venue finished where it started.
+
+| | |
+| --- | --- |
+| provider / environment | ALPACA / PAPER, `paper-api.alpaca.markets` |
+| entry | BUY 0.1 F, confirmed, filled 0.1 @ 12.078 |
+| cleanup | SELL 0.1 F, confirmed, filled 0.1 @ 12.062 |
+| client-order-id lookup | matched the submitted order on both legs |
+| accounting events | one per fill, derived from the provider execution id |
+| duplicate re-poll | admitted 0; ledger length, cash and position unchanged |
+| three-way reconciliation | `RECONCILED` after fill and after cleanup |
+| residual position | 0 — closed by a compensating authorised order |
+| certification fingerprint | `805169ff94055d8afda41d33435664818665ecabec10a106a186bb4126212cfa` |
+| live trading | `NOT_IMPLEMENTED`, `NOT_AUTHORIZED` |
+
+The artefact is `P2_2_EXTERNAL_PAPER_CERTIFICATION_V1`. It is not committed —
+it names provider order and activity ids, which are operational references
+rather than repository content — and its fingerprint is bound here instead.
+
+Three things the live run taught that 318 offline tests had not: the venue
+reports an order `filled` before its FILL activity is queryable, so a single
+activities read after a terminal status returns nothing and must not be read as
+"no fill"; a deterministic client order id makes a canary non-repeatable by
+design, which is every layer behaving correctly and is resolved with a
+run-scoped plan id rather than a random one; and fractionability is a property
+of the instrument, so the capability is declared from the asset read instead of
+from a venue-level default.
 
 **P1 is complete and frozen** at `p1-portfolio-authority-complete`
 (`b87e7c96`), which closes the portfolio programme at P1.4. From that tag the
@@ -115,12 +136,13 @@ frozen at the same commit; P2 branched from it.
 | P2.2C | **CONCRETE PAPER TRANSPORT PRESENT** — `ALPACA_PAPER_HTTPS_TRANSPORT_V1` |
 | P2.2C real read-only preflight | **PASSED** — paper host reached, account matched, 0 mutations |
 | P2.2D | **CERTIFICATION DEFECTS CLOSED** — fills, cancel, paper proof, single-read evidence |
-| P2.2 external paper endpoint | **IMPLEMENTED, CERTIFICATION PENDING** — canary not run |
-| P2.2 canary readiness | **BLOCKED** — user-owned pre-existing paper positions/orders |
+| P2.2E | **EXTERNAL PAPER CANARY EXECUTED** — one authorised order, filled, reconciled, closed |
+| P2.2 external paper endpoint | **EXTERNAL PAPER EXECUTION CERTIFIED** — ALPACA PAPER |
+| Live trading | **NOT IMPLEMENTED, NOT AUTHORIZED** |
 | Production risk thresholds | **NOT AUTHORIZED** |
 | Production strategy budgets | **NOT AUTHORIZED** |
 | Production correlation thresholds | **NOT AUTHORIZED** |
-| Broker authority | **PAPER READ/SUBMIT ONLY — NO LIVE AUTHORITY** |
+| Broker authority | **PAPER READ/SUBMIT, CERTIFIED — NO LIVE AUTHORITY** |
 | Live trading | **NOT AUTHORIZED** |
 
 **The H2 branch is semantically frozen.** Its arm binds `code_commit` to
@@ -360,6 +382,59 @@ They are **recorded, not fixed.** Each needs a contract change, and bundling one
 into a transport-certification commit would make the diff unreviewable as either
 thing. The lesson is the one worth keeping: a fake transport proves the shape of
 a protocol and says nothing about whether the protocol matches the provider.
+
+### P2.2E — the canary, and three more things only a real venue could say
+
+One authorised order, out and back. What it certifies is deliberately not that
+HTTP works: it is that the authority chain holds. The order originated from an
+accounting-V2 book, through a plan bound to that book's state, to the submission
+protocol, to the transport. The canary has no path that calls the transport to
+trade, because a canary that did would prove connectivity and nothing about what
+keeps an unauthorised order from existing.
+
+**The activities feed lags the order status.** The venue reported the order
+`filled` about twenty milliseconds after submission and the matching FILL
+activity was not yet queryable. The first run therefore read one empty
+activities page and reported `ENTRY_NOT_FILLED` — while the venue had in fact
+bought 0.1 F. The position was real and had to be closed. Executions are now
+polled in their own bounded loop, and an exhausted window is *reported* rather
+than concluded from, because "I did not see a fill" and "there was no fill" are
+different facts and only one of them is safe to act on.
+
+**A deterministic client order id makes a canary non-repeatable, and every layer
+was right about it.** The second run derived the same venue-facing id; the venue
+refused the duplicate; the lookup returned the first run's filled order; and
+accounting refused that fill with `EVENT_TIME_REGRESSION` because it took effect
+before the new book opened. Three independent refusals, all correct, and
+together they say the plan id was wrong rather than that any of them was. The
+fix is a run-scoped plan id derived from the run's own moment — stable *within* a
+run, so a retry after a crash still derives the same client order id and stays
+idempotent, and different between runs. Not a random id: randomness would have
+bought repeatability by giving up the crash-safety the derivation exists for.
+
+**Fractionability belongs to the instrument, not the venue.** The binding's
+capability default is whole shares, which is right for a venue and necessarily
+wrong for one side or the other of any particular asset. The canary asks the
+venue whether the symbol is fractionable and declares the capability from that
+answer, recording the asset-read fingerprint it relied on. A refusal to trade a
+fraction of a non-fractionable asset remains, and nothing is silently rounded.
+
+Two differences are declared rather than absorbed. The fee is a schedule value —
+zero for a US equity at this venue — and the execution still records
+`fee_is_known=False`, because the venue stated none; the declaration and the
+observation stay distinguishable. And a one-cent cash tolerance is declared with
+its reason: the venue rounds cash to whole cents, so 0.1 share at 12.062 is
+exactly 1.2062 of proceeds reported as 1.21, and the 0.0038 is rounding rather
+than a missing trade. The global default remains exactly zero, because a default
+tolerance is how a drift becomes invisible.
+
+What the certification does not establish is worth keeping in view. It is one
+observation: this code, this provider, one moment. An external run is not
+reproducible, and the artefact says so. And a provider's paper engine is the
+provider's model of itself — it may fill more readily than its live engine
+would, it is not bound by this project's participation ceiling, and its queue
+behaviour is unobservable from here. A paper fill is evidence the plumbing
+works, not evidence the trade was achievable.
 
 ### P2.2D — what a fake transport cannot tell you
 
@@ -3543,11 +3618,30 @@ expects; only the documented surface, or a real call, shows whether that shape
 matches the provider. This is a standing limitation of the test strategy, not a
 bug that was fixed.
 
-**The canary is blocked by pre-existing paper state, not by code (P2.2D).** The
-configured account holds 3 positions and 3 working stop orders in JNJ, MRK and
-SLB, none placed by this project. Each reconciles as a BLOCKING break, and
-clearing them is the account owner's decision — nothing here does it
-automatically, and `§24` of the phase brief forbids it.
+**Certification is one observation, not a guarantee (P2.2E).** It establishes
+that this code, against this provider, at one moment, did what it claims. An
+external run is not reproducible — the fills came from a matching engine at a
+moment that will not recur — and the artefact distinguishes reproducible
+code/config semantics from recorded-but-unrecreatable external observations.
+
+**A provider's paper engine is the provider's model of itself (P2.2E).** It may
+fill more readily than its live engine would, it is not bound by this project's
+participation ceiling, and its queue behaviour is unobservable from here. A
+paper fill is evidence the plumbing works, not evidence the trade was
+achievable. Certification says nothing about execution quality.
+
+**A canary needs an account this book fully accounts for (P2.2E).** Any
+pre-existing holding reconciles as `REMOTE_POSITION_MISMATCH` (BLOCKING) and any
+foreign working order as `UNEXPECTED_REMOTE_ORDER`. The preflight reports
+`canary_ready` and names the blockers; clearing them is the account owner's
+decision, and nothing here does it automatically.
+
+**A canary run is not repeatable without a new run tag (P2.2E).** The client
+order id is derived from the plan id, so a fixed plan id makes every run derive
+the same venue-facing id — which the venue refuses as a duplicate and accounting
+refuses as a past event. That is correct behaviour, and it means the plan id
+must be run-scoped. Randomising it would trade away the crash-idempotency the
+derivation exists for.
 
 **Making unrelated external state non-blocking would be a semantics change.**
 Reconciliation currently treats any unexplained remote holding as BLOCKING,
@@ -5343,6 +5437,29 @@ Each row below is a defect that passed the fake-transport suite.
 | `test_p2_2_external_paper.py::test_an_order_that_filled_before_the_cancel_is_reported_filled` | a lost race is FILLED, never CANCELLED |
 | `test_p2_2_external_paper.py::test_a_cancellation_intent_is_durable_before_the_delete` | a crash during the DELETE leaves a record naming the order |
 
+P2.2E adds `tests/integration/test_p2_2e_paper_canary.py` (27 tests, all offline
+against a fake venue that models the activities-feed lag the live run exposed).
+
+| Test | Protects |
+| --- | --- |
+| `test_p2_2e_paper_canary.py::test_the_canary_survives_the_activities_feed_lagging` | an empty first activities read is not "no fill" |
+| `test_p2_2e_paper_canary.py::test_the_canary_ingests_each_fill_exactly_once` | one accounting event per execution, duplicate poll admits nothing |
+| `test_p2_2e_paper_canary.py::test_the_accounting_event_id_derives_from_the_provider_execution_id` | the derivation that makes re-reading safe |
+| `test_p2_2e_paper_canary.py::test_a_pre_existing_position_blocks_the_canary` | an unaccounted holding stops the run before any order |
+| `test_p2_2e_paper_canary.py::test_a_blocked_canary_submits_nothing` | a failed precondition means zero mutations |
+| `test_p2_2e_paper_canary.py::test_the_canary_submits_exactly_two_orders` | entry and cleanup, and nothing else |
+| `test_p2_2e_paper_canary.py::test_the_canary_never_cancels_anything` | cleanup is a trade, not a cancel |
+| `test_p2_2e_paper_canary.py::test_the_canary_closes_what_it_opened` | no residual left behind |
+| `test_p2_2e_paper_canary.py::test_two_runs_derive_different_client_order_ids` | the run tag, without which a second run adopts the first run's order |
+| `test_p2_2e_paper_canary.py::test_the_run_tag_is_stable_within_a_run` | a retry after a crash stays idempotent |
+| `test_p2_2e_paper_canary.py::test_an_unsuitable_instrument_is_refused` | halted, inactive and non-equity assets fail before an order exists |
+| `test_p2_2e_paper_canary.py::test_asset_fields_default_to_not_permitted` | an omitted provider field reads as "not permitted" |
+| `test_p2_2e_paper_canary.py::test_fractional_is_declared_from_the_asset_read` | the capability follows the instrument, not a venue default |
+| `test_p2_2e_paper_canary.py::test_the_artefact_states_it_is_not_live_trading` | every artefact carries the canary classification |
+| `test_p2_2e_paper_canary.py::test_the_artefact_carries_no_credential_or_account_number` | nothing identifying reaches the certification record |
+| `test_p2_2e_paper_canary.py::test_the_artefact_does_not_claim_reproducibility` | the honest reproducibility language survives |
+| `test_p2_2e_paper_canary.py::test_a_residual_is_closed_by_a_compensating_order` | a stranded position is traded out, not liquidated |
+
 ### The gate
 
 `make check` — lint, format check, mypy strict, pytest with coverage failing
@@ -5360,20 +5477,20 @@ block certification.** P2.2C delivered `AlpacaPaperHttpTransport` and the
 read-only preflight command; what remains is a defect-fix phase, then
 certification.
 
-**P2.2D is done.** All four certification defects are closed and the real
-read-only preflight passes.
+**P2.2 is complete and certified.** The transport exists, the four certification
+defects are closed, the read-only preflight passes, and one authorised order has
+been through the full chain to a real paper venue and back.
 
-**P2.2E is the canary, and it needs the account cleared first.** The configured
-paper account holds 3 positions and 3 working stop orders in JNJ, MRK and SLB
-that this project did not place. Until they are gone — or a fresh paper account
-is configured — `canary_ready` is false and submitting would be submitting
-against a book that does not match the venue.
+**P2.3 — paper shadow operations — follows.** What P2.2 built is a path that
+works once, deliberately, under a human's hand. What it does not have is
+anything that makes running it repeatedly safe: scheduling, health monitoring,
+incident controls, and a persistent kill switch. Those are the difference
+between a certified capability and an operable one, and none of them should be
+improvised the first time a run misbehaves unattended.
 
-Once clear: one authorised MARKET/DAY canary through the full chain — accounting
-V2 book, authorised plan, submission protocol, transport — during a live
-session; its fill read by provider `order_id` and ingested exactly once;
-polled again to prove no duplicate; reconciled three ways; then cleaned up with
-a compensating authorised order, not a cancel and not a liquidation.
+Nothing in P2.3 may relax what P2.2 established: no live host, no live key
+prefix, no third `ExecutionVenue` member, no retryable mutation, no auto-repair,
+and `make check` continuing to make no external request.
 
 Neither phase may relax anything P2.2 or P2.2C established: no live host in the
 allow-list, no live key prefix accepted, no third `ExecutionVenue` member, no
@@ -5525,6 +5642,18 @@ Not a backlog. These exclusions are deliberate.
   the response whose values are reported
 - labelling a `status=all` order listing as open or working orders
 - clearing, cancelling or liquidating pre-existing paper positions the user owns
+- closing a canary position with a cancel, a close-all or a liquidation instead
+  of a compensating authorised order
+- a canary that calls the transport directly to trade rather than originating
+  from an accounting-V2 book and an authorised plan
+- concluding "no fill" from one empty activities read: the venue reports an order
+  filled before its FILL activity is queryable
+- a randomly generated canary plan id: it must be run-scoped and derived, so a
+  retry within a run stays idempotent
+- a venue-level fractional default standing in for the instrument's own
+  `fractionable` flag
+- substituting an observed fee for a declared one, or letting a declared cash
+  tolerance change the global default away from zero
 - a session that mixes `LOCAL_DETERMINISTIC_PAPER` and `EXTERNAL_PAPER` fills, or
   any fallback from one venue to the other
 - widening `EXECUTION_MANIFEST_V1_1` to describe the external adapter: a V1.1

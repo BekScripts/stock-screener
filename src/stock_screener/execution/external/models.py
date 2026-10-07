@@ -44,6 +44,7 @@ if TYPE_CHECKING:
     from ..state_machine import OrderState
 
 __all__ = [
+    "ExternalAsset",
     "ExternalExecutionFill",
     "ExternalOrderSnapshot",
     "ExternalPaperAccountSnapshot",
@@ -475,6 +476,101 @@ class ExternalPosition:
     def as_json(self) -> dict[str, Any]:
         """Return the position as a JSON-safe mapping."""
         return {"symbol": self.symbol, "quantity": str(quantise_quantity(self.quantity))}
+
+
+@dataclass(frozen=True)
+class ExternalAsset:
+    """What the venue says about one tradable instrument.
+
+    Read rather than assumed, because every field here is a precondition the
+    order contract depends on. A canary that picked a symbol and hoped would
+    discover a halted or non-fractionable asset by having its order rejected.
+
+    Attributes:
+        symbol: The venue symbol.
+        tradable: Whether the venue accepts orders in it.
+        fractionable: Whether it accepts a non-integer quantity.
+        status: What the venue says about the listing.
+        asset_class: What the venue calls the class.
+        exchange: Where it lists.
+        shortable: Whether it may be sold short. Recorded and unused — this
+            engine is long-only.
+    """
+
+    symbol: str
+    tradable: bool = False
+    fractionable: bool = False
+    status: str = ""
+    asset_class: str = ""
+    exchange: str = ""
+    shortable: bool = False
+
+    @property
+    def is_us_equity(self) -> bool:
+        """Whether the venue classes this as a US equity."""
+        return self.asset_class.strip().lower() == "us_equity"
+
+    def require_tradable_us_equity(self) -> None:
+        """Refuse an instrument the frozen order contract cannot trade.
+
+        Raises:
+            ExecutionError: `BROKER_ASSET_NOT_TRADABLE` if the venue is not
+                accepting orders in it, the listing is not active, or it is not
+                a US equity. Checked before an order is built rather than
+                discovered from a rejection.
+        """
+        if not self.is_us_equity:
+            raise ExecutionError(
+                Code.BROKER_ASSET_NOT_TRADABLE,
+                f"{self.symbol} is class {self.asset_class!r}; this engine's order "
+                "contract covers US equities only",
+            )
+        if self.status.strip().lower() != "active":
+            raise ExecutionError(
+                Code.BROKER_ASSET_NOT_TRADABLE,
+                f"{self.symbol} has listing status {self.status!r}, not active",
+            )
+        if not self.tradable:
+            raise ExecutionError(
+                Code.BROKER_ASSET_NOT_TRADABLE,
+                f"the venue is not accepting orders in {self.symbol}",
+            )
+
+    def body(self) -> dict[str, Any]:
+        """Return the asset's semantic content."""
+        return {
+            "symbol": self.symbol,
+            "tradable": self.tradable,
+            "fractionable": self.fractionable,
+            "status": self.status,
+            "asset_class": self.asset_class,
+            "exchange": self.exchange,
+        }
+
+    def as_json(self) -> dict[str, Any]:
+        """Return the asset as a JSON-safe mapping."""
+        return self.body()
+
+    @classmethod
+    def from_payload(cls, payload: Mapping[str, Any]) -> ExternalAsset:
+        """Read an asset from a provider payload.
+
+        Args:
+            payload: The provider's asset object.
+
+        Returns:
+            The normalised asset. Every boolean defaults to the conservative
+            answer, so a field the provider omits reads as "not permitted".
+        """
+        return cls(
+            symbol=str(payload.get("symbol", "")),
+            tradable=bool(payload.get("tradable", False)),
+            fractionable=bool(payload.get("fractionable", False)),
+            status=str(payload.get("status", "")),
+            asset_class=str(payload.get("class", payload.get("asset_class", ""))),
+            exchange=str(payload.get("exchange", "")),
+            shortable=bool(payload.get("shortable", False)),
+        )
 
 
 @dataclass(frozen=True)

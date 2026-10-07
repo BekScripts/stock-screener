@@ -34,6 +34,7 @@ from .cancellation import CancellationOutcome, CancellationResult
 from .client_ids import client_order_id_for
 from .environment import refuse_live
 from .models import (
+    ExternalAsset,
     ExternalExecutionFill,
     ExternalOrderSnapshot,
     ExternalPaperAccountSnapshot,
@@ -62,6 +63,7 @@ if TYPE_CHECKING:
 __all__ = [
     "ACCOUNT_PATH",
     "ACTIVITIES_PATH",
+    "ASSETS_PATH",
     "POSITIONS_PATH",
     "PROVIDER",
     "AlpacaPaperAdapter",
@@ -88,6 +90,12 @@ POSITIONS_PATH = "/v2/positions"
 
 #: Read-only executions path.
 ACTIVITIES_PATH = "/v2/account/activities/FILL"
+
+#: Read-only asset path. Every order precondition the frozen contract depends on
+#: — tradable, active, US equity, fractionable — is read from here rather than
+#: assumed, because the alternative is discovering a halted asset from a
+#: rejection after an intent is already durable.
+ASSETS_PATH = "/v2/assets"
 
 
 @dataclass(frozen=True)
@@ -254,6 +262,41 @@ class AlpacaPaperAdapter:
             account_status=evidence.value.status,
             evidence=evidence,
             verified_at=verified_at,
+        )
+
+    def asset_evidence(
+        self, symbol: str, *, received_at: str = ""
+    ) -> ExternalReadEvidence[ExternalAsset]:
+        """Read one instrument's trading status, with that read's evidence.
+
+        Args:
+            symbol: The venue symbol.
+            received_at: When the read was made.
+
+        Returns:
+            The asset and its evidence.
+
+        Raises:
+            ExecutionError: `BROKER_ASSET_NOT_TRADABLE` if the venue has no such
+                asset; `BROKER_UNREACHABLE` if it cannot be read. A failed read
+                is never treated as "tradable" — the conservative default of
+                every field is "not permitted".
+        """
+        response = read_with_retry(
+            self.transport, f"{ASSETS_PATH}/{symbol.strip().upper()}", limit=self.read_limit
+        )
+        if response.not_found:
+            raise ExecutionError(
+                Code.BROKER_ASSET_NOT_TRADABLE,
+                f"the venue lists no asset {symbol!r}",
+            )
+        if not response.ok or not isinstance(response.body, dict):
+            raise ExecutionError(
+                Code.BROKER_UNREACHABLE,
+                f"{symbol}: the asset could not be read ({response.outcome})",
+            )
+        return ExternalReadEvidence.of(
+            ExternalAsset.from_payload(response.body), response, received_at=received_at
         )
 
     def read_order(self, order_id: str) -> ExternalOrderSnapshot | None:
