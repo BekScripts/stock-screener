@@ -76,6 +76,7 @@ nav:
       - P2.0-P2.2 paper execution engine: reference/execution-engine.md
       - P2.3 paper operations control plane: reference/paper-operations.md
       - P2.4 paper shadow soak protocol: reference/paper-shadow-soak.md
+      - S1.0 AlphaTrader strategy authority: reference/strategy-authority.md
       - Security identity: reference/security-identity.md
       - Listing evidence: reference/listing-evidence.md
       - Storage layout: reference/storage-layout.md

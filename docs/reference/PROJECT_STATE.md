@@ -36,20 +36,17 @@ appears without the run or the test that produced it.
 
 ## Current phase
 
-**P2.4's first soak is HALTED at 0 of 20 and the programme is blocked on a
-missing upstream authority**, on `feat/p2-execution-engine`. The protocol froze
-and armed correctly; the first eligible session then exposed that nothing can
-run it. P2.3 defined `OperationsEnvironment` as an injected protocol and no
-concrete implementation was ever built, so the coordinator has no production
-environment to gate.
+**S1.0 — the first AlphaTrader strategy authority** is the current checkpoint,
+on `feat/p2-execution-engine`. `ALPHATRADER_COMPOUNDER_MONTHLY_V1` in
+`src/stock_screener/strategies/` closes the gap P2.3.1 found: the system can now
+*make* a decision, not only authorise, size, route, fill and book one.
 
-The deeper cause is not the missing adapter. **There is no strategy authority in
-this repository.** The only place a `StrategyIntent` is constructed in
-production code is `portfolio_risk.run.load_request`, deserialising a JSON file
-an operator writes. Nothing derives an intent from the universe, the scores, the
-signals or the research record. Seven of the eight authorities an operational
-run needs exist and are production-capable; the first link does not, and it
-cannot be invented as integration plumbing.
+**P2.4's first soak remains HALTED at 0 of 20, permanently.** Its protocol
+`4b50f8b4…` is superseded and its evidence preserved unmodified. The soak was
+blocked because P2.3 defined `OperationsEnvironment` as an injected protocol
+with no concrete implementation — and the deeper cause was that no strategy
+authority existed to supply the first link. That is what S1.0 adds. The
+concrete operations environment is still unbuilt, so P2.4 may not re-arm yet.
 
 **P2.1 is complete and frozen** at `p2-execution-realism-complete` (`be0db072`),
 which freezes `EXECUTION_ENGINE_V1_1` and
@@ -228,7 +225,18 @@ frozen at the same commit; P2 branched from it.
 | P2.4 halt reason | `CONCRETE_OPERATIONS_ENVIRONMENT_MISSING` |
 | P2.4 halt classification | `PROGRAM_INTEGRATION_GAP` |
 | P2.4 V1 protocol `4b50f8b4…` | **SUPERSEDED** — never resumable, never reusable |
-| Strategy authority | **DOES NOT EXIST** — intents are an operator-authored input |
+| S1.0 strategy authority | **ALPHATRADER_COMPOUNDER_MONTHLY_V1** |
+| S1.0 cadence | **MONTHLY**, last market session of the month, at its close |
+| S1.0 selection | **TOP DECILE** by `COMPOUNDER_V1_2` total score |
+| S1.0 target-count rule | `CEIL_ELIGIBLE_OVER_TEN_FLOOR_ONE_V1` |
+| S1.0 tie-break | **durable identity** `(kind, identity_id)` — never a ticker |
+| S1.0 weighting | **EQUAL RELATIVE** `1/K` — a preference, never a size |
+| S1.0 hysteresis | **NONE** — H2's retention rule is not borrowed |
+| S1.0 market-signal overlay | **NONE** |
+| S1.0 sizing authority | **PORTFOLIO_RISK_ENGINE_V1_2** — the strategy sizes nothing |
+| S1.0 AI decision authority | **NONE** |
+| S1.0 environments | **EXTERNAL_PAPER only**; live absent and named forbidden |
+| S1.0 efficacy claim | **NONE** — an authority, not a validated edge |
 | H2 broker-paper orders | **NOT AUTHORISED** — its own frozen ladder says so |
 | Live trading | **NOT IMPLEMENTED, NOT AUTHORIZED** |
 | Production risk thresholds | **NOT AUTHORIZED** |
@@ -3804,8 +3812,31 @@ bug that was fixed.
 establish that a run was permitted, reconciled and recorded. It says nothing
 about whether the orders it permitted were good ones. Gating is not judgement.
 
-**There is no strategy authority (P2.3.1).** The authority chain an
-operational run needs is
+**The strategy authority exists and makes no efficacy claim (S1.0).**
+`ALPHATRADER_COMPOUNDER_MONTHLY_V1` defines who may decide, not what works. No
+backtest result justified any rule in it and nothing was tuned: the decile size,
+the monthly cadence and the equal weighting are the existing frozen research
+convention, used because they already existed. Whether it earns anything is
+unmeasured and is a separate preregistered phase.
+
+**Admissibility rests on one timestamp (S1.0).** A `ScoreSnapshot` does not
+record which filings it read, so the strategy bounds look-ahead with
+`calculated_at <= decision_at`: a run that computed at `T` read the database as
+it stood at `T` and cannot have used anything published later. That is sound and
+coarse. It establishes that nothing postdates the decision, not that every input
+was the best available at it, and it cannot distinguish a backfilled snapshot
+from a prospective one. Per-filing admissibility would need the score to record
+its inputs, which `COMPOUNDER_V1_2` does not and which is frozen.
+
+**ISO-8601 timestamps must be compared as instants (S1.0).** The first draft of
+this layer compared them as strings, which is wrong in both directions:
+`18:00:00+00:00` is 14:00 New York and sorts after a `16:00:00-04:00` close it
+precedes, while `13:00:00-08:00` is 17:00 New York and sorts before the same
+close it follows. The second admits evidence from after the decision. Both
+directions are now asserted.
+
+**The strategy authority chain, for reference.** The chain an operational run
+needs is
 inputs → strategy → portfolio construction → risk → execution plan → broker →
 accounting → reconciliation. Every link from portfolio construction onward
 exists and is production-capable: `portfolio_risk.constructor.construct`,
@@ -5782,6 +5813,37 @@ P2.4 adds `tests/integration/test_p2_4_paper_shadow_soak.py` (58 tests) and
 | `test_p2_4_required_drills.py::test_the_first_eligible_session_is_the_next_declared_one` | the day somebody arms on is usually not itself a session |
 | `test_p2_4_required_drills.py::test_the_operational_root_is_not_committable` | `git add -A` must never stage kill state or an account fingerprint |
 
+S1.0 adds `tests/integration/test_s1_0_strategy_authority.py` (93 tests), all
+offline.
+
+| Test | Protects |
+| --- | --- |
+| `test_s1_0_strategy_authority.py::test_the_look_ahead_check_compares_instants_not_strings` | the string-comparison bug that admits evidence from after the decision |
+| `test_s1_0_strategy_authority.py::test_evidence_in_a_different_offset_before_the_close_is_admissible` | the mirror case, which would withhold good evidence |
+| `test_s1_0_strategy_authority.py::test_evidence_computed_after_the_close_is_refused` | no future input reaches a decision |
+| `test_s1_0_strategy_authority.py::test_no_older_record_is_substituted_for_a_future_one` | no fallback that would be a different decision wearing this fingerprint |
+| `test_s1_0_strategy_authority.py::test_a_record_without_a_timestamp_is_refused_not_dropped` | dropping it would move the decile boundary silently |
+| `test_s1_0_strategy_authority.py::test_a_naive_timestamp_is_refused` | a timestamp whose zone was guessed is worse than one that failed |
+| `test_s1_0_strategy_authority.py::test_the_decile_rule_is_frozen_at_the_boundaries` | the exact target count at N=0,1,9,10,11,19,20,21,100,101 |
+| `test_s1_0_strategy_authority.py::test_ties_resolve_on_durable_identity_not_ticker` | a reassigned symbol cannot reorder the ranking |
+| `test_s1_0_strategy_authority.py::test_reversing_the_input_order_changes_nothing` | the decision is invariant to input ordering |
+| `test_s1_0_strategy_authority.py::test_no_clock_reading_enters_the_decision_identity` | a retry is recognisable as a retry |
+| `test_s1_0_strategy_authority.py::test_a_missing_score_is_never_treated_as_zero_or_a_median` | missing remains missing |
+| `test_s1_0_strategy_authority.py::test_no_decision_due_never_implies_liquidation` | a mid-month session does not exit the portfolio |
+| `test_s1_0_strategy_authority.py::test_month_ends_come_from_the_calendar` | never weekday arithmetic; a Saturday 31st moves the month end |
+| `test_s1_0_strategy_authority.py::test_a_decision_is_never_executable_in_its_own_session` | a close-derived decision is not executed earlier that session |
+| `test_s1_0_strategy_authority.py::test_a_decision_with_no_following_session_is_refused` | a decision nothing can execute is not recorded as actionable |
+| `test_s1_0_strategy_authority.py::test_a_name_just_outside_the_decile_is_not_retained` | no hysteresis; H2's rule is not borrowed |
+| `test_s1_0_strategy_authority.py::test_risk_can_cut_the_strategy_exposure_and_the_strategy_cannot_object` | the risk engine remains the only sizing authority |
+| `test_s1_0_strategy_authority.py::test_the_strategy_package_reads_no_cash_or_buying_power` | the structural reason it cannot size around risk |
+| `test_s1_0_strategy_authority.py::test_the_strategy_package_imports_no_broker` | no order path exists to be reached for later |
+| `test_s1_0_strategy_authority.py::test_the_strategy_package_imports_no_h2_module` | H2 stays frozen and isolated |
+| `test_s1_0_strategy_authority.py::test_a_changed_strategy_fingerprint_is_refused` | an edited strategy does not inherit an old approval |
+| `test_s1_0_strategy_authority.py::test_a_live_environment_cannot_be_granted` | no grant creates live trading |
+| `test_s1_0_strategy_authority.py::test_the_policy_makes_no_efficacy_claim` | the artefact never implies a validated edge |
+| `test_s1_0_strategy_authority.py::test_corrupt_state_is_refused_not_defaulted` | a defaulted previous selection would exit every holding |
+| `test_s1_0_strategy_authority.py::test_the_golden_decision_is_exactly_as_expected` | the whole selection path, pinned |
+
 ### The gate
 
 `make check` — lint, format check, mypy strict, pytest with coverage failing
@@ -5812,14 +5874,22 @@ no concrete `OperationsEnvironment` exists to run it. The V1 protocol
 `4b50f8b4…` is superseded, its evidence preserved unmodified, and it may never
 be resumed or its fingerprint reused.
 
-**The blocking phase is strategy definition, not integration.** A concrete
-operations environment can orchestrate the chain from portfolio construction
-onward, because every one of those authorities exists. It cannot supply the
-first link. Until something in this repository is authorised to turn the
-universe, the scores, the signals or the research record into a `StrategyIntent`
-— with its own point-in-time rules, its own version and its own approval — there
-is nothing for an operational run to gate. That phase must name the strategy,
-not have one appear as a side effect of wiring.
+**S1.0 supplied the missing first link.**
+`ALPHATRADER_COMPOUNDER_MONTHLY_V1` turns the frozen research record into
+`StrategyIntent`s, with its own version, its own point-in-time rules and its own
+paper-only deployment grant. The chain is now complete as *authorities*.
+
+**What remains is the concrete operations environment (P2.3.1 again).** Nothing
+yet implements `OperationsEnvironment`, so no scheduled operational run can
+execute. That is now ordinary wiring: every authority it must orchestrate
+exists, and the P2.2E canary already proved the last three links against a real
+venue. It still needs a runtime root binding the paper account, the accounting
+generation, the execution journal and the selected strategy, plus an explicit
+one-time paper-book bootstrap.
+
+**Only then may P2.4 re-arm,** under a new protocol whose fingerprint binds the
+new qualifying commit. The halted V1 soak stays at 0 of 20 and its fingerprint is
+never reused.
 
 **What finishing P2.4 requires.** Each eligible session produces one observation
 recorded through `SoakStore.record_observation` — run status, orders, fills,

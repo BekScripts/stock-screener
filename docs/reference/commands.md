@@ -289,6 +289,32 @@ every one as an injected fault. None of them interrupts a real order.
 Neither command submits anything, and none of them has a live equivalent. See
 [paper shadow soak](paper-shadow-soak.md) for the protocol.
 
+### Strategy authority
+
+```bash
+stock-screener strategy show-policy
+stock-screener strategy evaluate --session 2026-10-30
+stock-screener strategy evaluate --session 2026-10-30 --state-root .strategy --write-state
+```
+
+`show-policy` prints the frozen policy and its fingerprint. The fingerprint is
+what a deployment grant binds to, so a changed rule stops being authorised
+rather than inheriting the old approval.
+
+`evaluate` reads stored scores and a stored benchmark calendar, decides if the
+session is a month end, and prints the decision and the intents it would hand to
+the portfolio and risk layer. It makes no network request, reaches no broker,
+writes no accounting event and emits no order. On an ordinary mid-month session
+it reports `NO_STRATEGY_DECISION_DUE` and zero intents — which is not an
+instruction to hold nothing.
+
+`--write-state` advances the strategy's memory of its last selection, and is off
+by default: evaluating is a read, and advancing state is a separate deliberate
+act. Without `--state-root` there is no previous selection and no exits are
+reported.
+
+See [strategy authority](strategy-authority.md) for the contract.
+
 ```bash
 uv run pytest tests/live/test_paper_broker_live.py --live-paper
 ```

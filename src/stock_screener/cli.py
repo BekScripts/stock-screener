@@ -9066,3 +9066,172 @@ def paper_ops_soak_show_drills_command() -> None:
         typer.echo(f"      injected : {drill.injected}")
     typer.echo("")
     typer.echo("  Every drill is an injected fault. None interrupted a real order.")
+
+
+strategy_app = typer.Typer(
+    help=(
+        "The AlphaTrader strategy authority. Turns the frozen research record "
+        "into desired exposure; it sizes nothing, reaches no broker and places "
+        "no order."
+    ),
+    no_args_is_help=True,
+)
+app.add_typer(strategy_app, name="strategy")
+
+
+@strategy_app.command("show-policy")
+def strategy_show_policy_command() -> None:
+    """Print the frozen strategy policy and its fingerprint.
+
+    The fingerprint is what a deployment grant binds to, so a changed rule here
+    stops being authorised rather than inheriting the old approval.
+    """
+    from stock_screener.strategies import CompounderMonthlyStrategy
+
+    _bootstrap()
+    strategy = CompounderMonthlyStrategy()
+    typer.echo("")
+    for key, value in strategy.policy().items():
+        typer.echo(f"  {key:26}: {value}")
+    typer.echo("")
+    typer.echo(f"  strategy fingerprint      : {strategy.fingerprint()}")
+
+
+@strategy_app.command("evaluate")
+def strategy_evaluate_command(
+    session_date: Annotated[
+        str,
+        typer.Option(
+            "--session",
+            help="The market session to evaluate, YYYY-MM-DD. The strategy decides only "
+            "on the last session of a month and reports NO_STRATEGY_DECISION_DUE "
+            "otherwise.",
+        ),
+    ],
+    score_date: Annotated[
+        str,
+        typer.Option(
+            "--score-date",
+            help="Which stored cross-section to decide on, YYYY-MM-DD. Defaults to the "
+            "session itself.",
+        ),
+    ] = "",
+    calendar_days: Annotated[
+        int,
+        typer.Option(
+            "--calendar-days",
+            min=40,
+            help="How many days of stored benchmark sessions to build the calendar from. "
+            "Month ends are read from that calendar, never computed from weekdays.",
+        ),
+    ] = 400,
+    state_root: Annotated[
+        str,
+        typer.Option(
+            "--state-root",
+            help="Where this strategy instance's state lives. Without it the run has no "
+            "previous selection and reports no exits.",
+        ),
+    ] = "",
+    write_state: Annotated[
+        bool,
+        typer.Option(
+            "--write-state",
+            help="Record the decision as the new previous selection. Off by default: "
+            "evaluating is a read, and advancing the strategy's memory is a separate "
+            "deliberate act.",
+        ),
+    ] = False,
+) -> None:
+    """Evaluate one session and report the decision it would make.
+
+    Reads stored scores and a stored benchmark calendar. Makes no network
+    request, reaches no broker, writes no accounting event and emits no order.
+    The intents it prints are a request to the portfolio and risk layer, which
+    remains the only sizing authority.
+    """
+    from datetime import date as _date
+    from datetime import timedelta
+
+    from stock_screener.backtest.backfill import market_sessions
+    from stock_screener.execution import ExecutionCalendar
+    from stock_screener.strategies import (
+        StrategyError,
+        StrategyState,
+        StrategyStateStore,
+        evaluate_session,
+        load_bundle,
+        strategy_manifest,
+    )
+
+    settings = _bootstrap()
+    try:
+        wanted_session = _date.fromisoformat(session_date)
+        cross_section = _date.fromisoformat(score_date) if score_date else wanted_session
+    except ValueError as exc:
+        typer.echo(f"STOPPED: {exc}")
+        raise typer.Exit(code=1) from exc
+
+    store = StrategyStateStore(Path(state_root)) if state_root else None
+    previous: StrategyState | None = None
+    if store is not None:
+        try:
+            previous = store.read()
+        except StrategyError as exc:
+            typer.echo(f"STOPPED: {exc}")
+            raise typer.Exit(code=1) from exc
+
+    with _database(settings) as factory, session_scope(factory) as db:
+        sessions = market_sessions(
+            db,
+            settings.benchmark_symbol,
+            start=wanted_session - timedelta(days=calendar_days),
+            end=wanted_session,
+        )
+        if not sessions:
+            typer.echo(
+                "STOPPED: no stored benchmark sessions in that range, so month ends "
+                "cannot be read from a calendar. Run update-benchmark first."
+            )
+            raise typer.Exit(code=1)
+        try:
+            bundle = load_bundle(db, score_date=cross_section)
+        except StrategyError as exc:
+            typer.echo(f"STOPPED: {exc}")
+            raise typer.Exit(code=1) from exc
+
+    # The execution session is the one strictly after the decision, so the
+    # calendar has to extend past it. Stored bars end at the decision session,
+    # which is why the next session is appended from the known calendar only
+    # when one exists — and a decision with none is refused rather than guessed.
+    calendar = ExecutionCalendar(
+        sessions=tuple(day.isoformat() for day in sessions),
+        name=f"BENCHMARK_{settings.benchmark_symbol}",
+    )
+    try:
+        report = evaluate_session(
+            bundle, session=session_date, calendar=calendar, previous=previous
+        )
+    except StrategyError as exc:
+        typer.echo(f"STOPPED: {exc}")
+        raise typer.Exit(code=1) from exc
+
+    typer.echo("")
+    for line in report.summary_lines():
+        typer.echo(f"  {line}")
+    manifest = strategy_manifest(report=report, calendar=calendar, code_commit=_git_commit())
+    typer.echo("")
+    for key in ("manifest_version", "strategy_fingerprint", "decision_fingerprint"):
+        typer.echo(f"  {key:22}: {manifest[key]}")
+    typer.echo("")
+    typer.echo(
+        f"  network calls {manifest['network_calls']}, broker calls "
+        f"{manifest['broker_calls']}, accounting mutations "
+        f"{manifest['accounting_mutations']}, orders {manifest['orders_emitted']}"
+    )
+
+    if write_state and report.decision is not None and store is not None:
+        store.write(StrategyState.from_decision(report.decision))
+        typer.echo(f"  state recorded at {store.path}")
+    elif write_state:
+        typer.echo("  nothing recorded: --write-state needs --state-root and a decision")
