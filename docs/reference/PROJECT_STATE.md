@@ -36,10 +36,20 @@ appears without the run or the test that produced it.
 
 ## Current phase
 
-**P2.4 — the armed paper shadow soak** is the current checkpoint, on
-`feat/p2-execution-engine`. The protocol is frozen, the six required drills have
-been performed, and the soak is collecting prospective evidence. It has produced
-no verdict yet, and will not until the preregistered sessions have happened.
+**P2.4's first soak is HALTED at 0 of 20 and the programme is blocked on a
+missing upstream authority**, on `feat/p2-execution-engine`. The protocol froze
+and armed correctly; the first eligible session then exposed that nothing can
+run it. P2.3 defined `OperationsEnvironment` as an injected protocol and no
+concrete implementation was ever built, so the coordinator has no production
+environment to gate.
+
+The deeper cause is not the missing adapter. **There is no strategy authority in
+this repository.** The only place a `StrategyIntent` is constructed in
+production code is `portfolio_risk.run.load_request`, deserialising a JSON file
+an operator writes. Nothing derives an intent from the universe, the scores, the
+signals or the research record. Seven of the eight authorities an operational
+run needs exist and are production-capable; the first link does not, and it
+cannot be invented as integration plumbing.
 
 **P2.1 is complete and frozen** at `p2-execution-realism-complete` (`be0db072`),
 which freezes `EXECUTION_ENGINE_V1_1` and
@@ -214,6 +224,12 @@ frozen at the same commit; P2 branched from it.
 | P2.4 observation overwrite | **REFUSED** — append-only; corrections supersede |
 | P2.4 verdict at arming | **B — SOAK ARMED, PROSPECTIVE OBSERVATIONS PENDING** |
 | P2.4 checkpoint | tag `p2-paper-shadow-soak-armed` |
+| P2.4 first activation | **HALTED_BEFORE_FIRST_OBSERVATION** at 0 of 20, permanently |
+| P2.4 halt reason | `CONCRETE_OPERATIONS_ENVIRONMENT_MISSING` |
+| P2.4 halt classification | `PROGRAM_INTEGRATION_GAP` |
+| P2.4 V1 protocol `4b50f8b4…` | **SUPERSEDED** — never resumable, never reusable |
+| Strategy authority | **DOES NOT EXIST** — intents are an operator-authored input |
+| H2 broker-paper orders | **NOT AUTHORISED** — its own frozen ladder says so |
 | Live trading | **NOT IMPLEMENTED, NOT AUTHORIZED** |
 | Production risk thresholds | **NOT AUTHORIZED** |
 | Production strategy budgets | **NOT AUTHORIZED** |
@@ -3788,6 +3804,29 @@ bug that was fixed.
 establish that a run was permitted, reconciled and recorded. It says nothing
 about whether the orders it permitted were good ones. Gating is not judgement.
 
+**There is no strategy authority (P2.3.1).** The authority chain an
+operational run needs is
+inputs → strategy → portfolio construction → risk → execution plan → broker →
+accounting → reconciliation. Every link from portfolio construction onward
+exists and is production-capable: `portfolio_risk.constructor.construct`,
+`PORTFOLIO_RISK_ENGINE_V1_2`, `execution.planner` under
+`EXECUTION_ENGINE_V1_2`, the certified `AlpacaPaperAdapter`,
+`PORTFOLIO_ACCOUNTING_V2`, and the three-way reconciliation. The first link does
+not exist. `StrategyIntent` is constructed in exactly one production location —
+`portfolio_risk.run.load_request`, reading a JSON request — so the system
+authorises, sizes, routes, fills and books a decision it has no way to *make*.
+That is a deliberate boundary rather than an oversight: the screener ranks
+companies and the research layer explains them, and neither was ever given
+authority to size a position. Closing it is a strategy-definition phase, not
+integration work, and inventing a toy strategy to unblock the soak would make
+the soak evidence about the toy.
+
+**H2 cannot be borrowed as that strategy (P2.3.1).** It is the only frozen
+decision rule in the repository, and its own `PROMOTION_LADDER` records
+`BROKER_PAPER` as `NOT AUTHORISED — requires its own approved phase`, with
+`paper_orders: NOT AUTHORISED` in the protocol beside it. Using it for paper
+operations would contradict the record that makes it evidence.
+
 **The soak is armed and has produced no evidence yet (P2.4).** The protocol is
 frozen and the recorder works, but a preregistration is a promise about how
 future evidence will be judged, not evidence. Everything known about this
@@ -5767,11 +5806,20 @@ been through the full chain to a real paper venue and back.
 **P2.3 is complete** at tag `p2-paper-operations-complete` (`68709d22`). The
 control plane exists and is tested offline.
 
-**P2.4 is armed and waiting.** The protocol is frozen, the six drills are
-performed and recorded, and the recorder is collecting. What remains is not work
-but time: the soak needs 20 eligible sessions from the declared calendar, and
-the first of them had not happened when the protocol was frozen. That ordering
-is the point, not an inconvenience.
+**P2.4's first soak is halted at 0 of 20, permanently.** The protocol froze and
+armed correctly and the drills passed; the first eligible session exposed that
+no concrete `OperationsEnvironment` exists to run it. The V1 protocol
+`4b50f8b4…` is superseded, its evidence preserved unmodified, and it may never
+be resumed or its fingerprint reused.
+
+**The blocking phase is strategy definition, not integration.** A concrete
+operations environment can orchestrate the chain from portfolio construction
+onward, because every one of those authorities exists. It cannot supply the
+first link. Until something in this repository is authorised to turn the
+universe, the scores, the signals or the research record into a `StrategyIntent`
+— with its own point-in-time rules, its own version and its own approval — there
+is nothing for an operational run to gate. That phase must name the strategy,
+not have one appear as a side effect of wiring.
 
 **What finishing P2.4 requires.** Each eligible session produces one observation
 recorded through `SoakStore.record_observation` — run status, orders, fills,
