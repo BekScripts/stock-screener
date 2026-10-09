@@ -36,9 +36,14 @@ appears without the run or the test that produced it.
 
 ## Current phase
 
-**S1.0 — the first AlphaTrader strategy authority** is the current checkpoint,
-on `feat/p2-execution-engine`. `ALPHATRADER_COMPOUNDER_MONTHLY_V1` in
-`src/stock_screener/strategies/` closes the gap P2.3.1 found: the system can now
+**P2.3.1B — wiring the strategy into paper operations — is PARTIAL**, on
+`feat/p2-execution-engine`. The runtime foundations are built and tested; the
+execution submission path, the operational CLI and the real read-only smoke are
+not. P2.4 may not re-arm.
+
+**S1.0 is complete and frozen** at `s1-compounder-strategy-authority-complete`
+(`91f7e06`). `ALPHATRADER_COMPOUNDER_MONTHLY_V1` in
+`src/stock_screener/strategies/` closed the gap P2.3.1 found: the system can now
 *make* a decision, not only authorise, size, route, fill and book one.
 
 **P2.4's first soak remains HALTED at 0 of 20, permanently.** Its protocol
@@ -237,6 +242,15 @@ frozen at the same commit; P2 branched from it.
 | S1.0 AI decision authority | **NONE** |
 | S1.0 environments | **EXTERNAL_PAPER only**; live absent and named forbidden |
 | S1.0 efficacy claim | **NONE** — an authority, not a validated edge |
+| S1.0 checkpoint | tag `s1-compounder-strategy-authority-complete` (`91f7e06`) |
+| P2.3.1B | **INTEGRATION PARTIAL** — foundations built, execution path not |
+| P2.3.1B schedule | **PAPER_OPERATIONS_SCHEDULE_V1_1** — additive; V1 run ids unchanged |
+| P2.3.1B decision slot | month-end session, **16:00 ET close** |
+| P2.3.1B execution slot | next session, **09:35 ET**, never the decision's own session |
+| P2.3.1B runtime binding | `PAPER_OPERATIONS_RUNTIME_BINDING_V1` |
+| P2.3.1B book bootstrap | explicit, operator-confirmed, `cash` field only |
+| P2.3.1B position import | **REFUSED** — `PAPER_BOOK_BOOTSTRAP_POSITION_STATE_NOT_EMPTY` |
+| P2.3.1B score availability | **CONTRACT SATISFIABLE** with a one-session price lag |
 | H2 broker-paper orders | **NOT AUTHORISED** — its own frozen ladder says so |
 | Live trading | **NOT IMPLEMENTED, NOT AUTHORIZED** |
 | Production risk thresholds | **NOT AUTHORIZED** |
@@ -3812,6 +3826,25 @@ bug that was fixed.
 establish that a run was permitted, reconciled and recorded. It says nothing
 about whether the orders it permitted were good ones. Gating is not judgement.
 
+**An operationally admissible score reflects the prior session's close
+(P2.3.1B).** This is forced by two frozen requirements meeting, and it is worth
+stating plainly because it is a real difference from the research convention.
+A decision at the month-end 16:00 ET close may only use evidence admissible by
+that instant, so the score must have been computed before the close — and a
+score computed before the close can only have read the previous session's
+closing prices. Verified against production rows: `score_date=2026-08-26` was
+computed at 07:40 UTC (03:40 ET) and the latest stored price bar was
+2026-08-25.
+
+The frozen research convention describes "signal at the last session's close".
+Operationally that is unreachable without computing the score after the close,
+which would make it inadmissible at the decision instant. So the operational
+strategy decides on the *prior* close and executes at the next session's open.
+That is strictly more conservative — it uses less information than the
+convention assumes, so it cannot leak — but operational results will not be
+identical to the convention's, and the difference is a one-session lag rather
+than a bug.
+
 **The strategy authority exists and makes no efficacy claim (S1.0).**
 `ALPHATRADER_COMPOUNDER_MONTHLY_V1` defines who may decide, not what works. No
 backtest result justified any rule in it and nothing was tuned: the decile size,
@@ -5873,6 +5906,30 @@ armed correctly and the drills passed; the first eligible session exposed that
 no concrete `OperationsEnvironment` exists to run it. The V1 protocol
 `4b50f8b4…` is superseded, its evidence preserved unmodified, and it may never
 be resumed or its fingerprint reused.
+
+**P2.3.1B built the runtime foundations and stopped short of the execution
+path.** Complete and tested: `PAPER_OPERATIONS_SCHEDULE_V1_1` (purpose-tagged
+slots, so a month-end decision at the close and a next-session execution near
+the open are different runs with different ids, while V1 run ids are unchanged
+byte for byte); `PAPER_OPERATIONS_RUNTIME_BINDING_V1` and its store, refusing a
+wrong generation, a wrong strategy fingerprint, a wildcard account or any live
+environment; frozen decision persistence with a seven-state lifecycle, content
+addressing, restart recovery and tamper detection; the one-time operator-
+confirmed paper-book bootstrap, which opens a `PORTFOLIO_ACCOUNTING_V2` book
+from the provider `cash` field with provenance, refuses an account holding
+positions or working orders, records a bootstrap epoch so pre-epoch venue
+activity is never runtime activity, and materialises all three lineages; and
+`AlphaTraderPaperOperationsEnvironment`, which satisfies the frozen
+`OperationsEnvironment` surface from the binding and real stores.
+
+**What remains is well defined.** The submission authority — the callable that
+takes a frozen decision through portfolio construction, the risk engine, the
+execution planner and the certified adapter, then applies the fills to
+accounting — is injected but not implemented. With it: the missed-decision and
+missed-execution outcomes, crash recovery across the decision/execution
+boundary, the three operational CLI commands (`run-due`, `bootstrap-runtime`,
+an extended `status`), and the real read-only observe smoke against the paper
+account.
 
 **S1.0 supplied the missing first link.**
 `ALPHATRADER_COMPOUNDER_MONTHLY_V1` turns the frozen research record into

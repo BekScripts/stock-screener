@@ -274,6 +274,7 @@ def operations_run_id(
     session: str,
     account_binding_fingerprint: str,
     mode: OperationsMode,
+    purpose: str | None = None,
 ) -> str:
     """Derive an operations run id from a slot's semantic inputs.
 
@@ -288,6 +289,18 @@ def operations_run_id(
         mode: Which mode. Part of the identity because an observe-only run and a
             paper-executing run for the same slot are different runs and must
             not recover each other.
+        purpose: What the run is for, when the caller distinguishes purposes.
+            Added for `PAPER_OPERATIONS_SCHEDULE_V1_1`, where one session can
+            legitimately hold more than one operational event — an execution
+            near the open, an observation, a decision at the close — and those
+            must not recover each other.
+
+            `None` reproduces the V1 id exactly, byte for byte: the key is
+            absent from the digested body rather than present and empty, so a
+            V1 caller's run ids do not move because V1.1 exists. That is the
+            whole of the additive guarantee, and
+            `test_a_v1_run_id_is_unchanged_by_the_purpose_parameter` is what
+            keeps it true.
 
     Returns:
         The run id.
@@ -296,16 +309,15 @@ def operations_run_id(
 
     from stock_screener.execution import fingerprint_of
 
-    digest = hashlib.sha256(
-        fingerprint_of(
-            {
-                "derivation": RUN_ID_DERIVATION,
-                "engine": PAPER_OPERATIONS_ENGINE_VERSION,
-                "schedule": schedule_fingerprint,
-                "session": session,
-                "account": account_binding_fingerprint,
-                "mode": str(mode),
-            }
-        ).encode()
-    ).hexdigest()
+    body: dict[str, Any] = {
+        "derivation": RUN_ID_DERIVATION,
+        "engine": PAPER_OPERATIONS_ENGINE_VERSION,
+        "schedule": schedule_fingerprint,
+        "session": session,
+        "account": account_binding_fingerprint,
+        "mode": str(mode),
+    }
+    if purpose is not None:
+        body["purpose"] = str(purpose)
+    digest = hashlib.sha256(fingerprint_of(body).encode()).hexdigest()
     return f"opsrun-{digest[:32]}"

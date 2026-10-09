@@ -260,6 +260,34 @@ class ExecutionStore:
             )
         return stored or requested or DEFAULT_JOURNAL_GENERATION
 
+    def ensure_generation(self) -> Path:
+        """Write this store's lineage marker if it is not already present.
+
+        The marker is normally written alongside the first head anchor, which
+        means a journal that has never recorded an event leaves nothing on disk.
+        That is fine for a one-shot plan and wrong for a deployed runtime: a
+        runtime binds a journal *lineage*, and an operator checking that the
+        lineage exists should not have to execute a trade to find out.
+
+        An empty journal with a declared generation and no journal at all are
+        different states, and only the first is a bound runtime that has not
+        traded yet.
+
+        Returns:
+            Where the marker is.
+        """
+        if not self._generation_path.is_file():
+            _atomic_write(
+                self._generation_path,
+                {
+                    "store_version": STORE_VERSION,
+                    "engine_version": EXECUTION_ENGINE_VERSION,
+                    "generation": self.generation,
+                    "execution_plan_id": self.execution_plan_id,
+                },
+            )
+        return self._generation_path
+
     def record_paths(self) -> tuple[Path, ...]:
         """Every stored journal record, in sequence order."""
         if not self._journal_dir.is_dir():
