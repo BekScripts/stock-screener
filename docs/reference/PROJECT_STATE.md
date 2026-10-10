@@ -36,11 +36,16 @@ appears without the run or the test that produced it.
 
 ## Current phase
 
-**P2.3.1C — the concrete strategy-to-paper-operations pipeline — is COMPLETE**,
-on `feat/p2-execution-engine`. The real paper runtime is bootstrapped against
-the live Alpaca PAPER account, the whole authority chain is wired and tested,
-and a real read-only observe smoke passed with zero mutations. P2.4 has **not**
-been re-armed; that is a separate prospective activation.
+**P2.4 V2 — the session-based paper shadow soak — is ARMED**, on
+`feat/p2-execution-engine`, collecting prospective evidence at 0 of 20. The
+correct verdict immediately after arming is B, not A: the twenty sessions it
+will be scored on had not happened when the protocol was frozen, and that
+ordering is the whole design.
+
+**P2.3.1C is complete and frozen** at `p2-concrete-paper-operations-complete`
+(`042a7b2`). The real paper runtime is bootstrapped against the live Alpaca
+PAPER account, the whole authority chain is wired and tested, and a real
+read-only observe smoke passed with zero mutations.
 
 **S1.0 is complete and frozen** at `s1-compounder-strategy-authority-complete`
 (`91f7e06`). `ALPHATRADER_COMPOUNDER_MONTHLY_V1` in
@@ -264,6 +269,15 @@ frozen at the same commit; P2 branched from it.
 | P2.3.1C missed execution | terminal `EXECUTION_MISSED`, expired actively |
 | P2.3.1C real runtime | bootstrapped 2026-10-10, opening cash from provider `cash` |
 | P2.3.1C real smoke | `RECONCILED`, 0 POST, 0 DELETE |
+| P2.3.1C checkpoint | tag `p2-concrete-paper-operations-complete` (`042a7b2`) |
+| P2.4 V2 | **ARMED** — `PAPER_SHADOW_SOAK_PROTOCOL_V2` |
+| P2.4 V2 counting unit | **ONE ELIGIBLE MARKET SESSION**, never one run |
+| P2.4 V2 session double-count | **ZERO TOLERANCE** — new gate |
+| P2.4 V2 decision-cycle gate | `successful_strategy_decision_cycles >= 1` |
+| P2.4 V2 minimum order count | **NONE** — risk may correctly permit nothing |
+| P2.4 V2 calendar | `US_EQUITY_OPERATIONAL_CALENDAR_2026Q4_2027Q1_V1` |
+| P2.4 V2 early closes | 2026-11-27 and 2026-12-24 at **13:00 ET** |
+| S1.0 16:00 vs session close | **LATENT CONFLICT** — outside the armed window |
 | H2 broker-paper orders | **NOT AUTHORISED** — its own frozen ladder says so |
 | Live trading | **NOT IMPLEMENTED, NOT AUTHORIZED** |
 | Production risk thresholds | **NOT AUTHORIZED** |
@@ -3839,6 +3853,26 @@ bug that was fixed.
 establish that a run was permitted, reconciled and recorded. It says nothing
 about whether the orders it permitted were good ones. Gating is not judgement.
 
+**S1.0 decides literally at 16:00, not at "session close" (P2.4 V2).** The
+strategy's decision instant is `decision_instant(session, DecisionPoint.CLOSE)`
+with `MARKET_CLOSE = time(16, 0)`. A month-end falling on an early close would
+therefore have the strategy deciding at 16:00 against a market that shut at
+13:00. The conflict is latent rather than resolved: the armed V2 window's only
+decision session is 2026-10-30, a normal close, and both early closes in the
+calendar (2026-11-27, 2026-12-24) fall outside the window. `soak arm-v2` refuses
+outright if a window's decision session closes early, so it cannot be armed into
+by accident. Fixing it means teaching S1.0 "session close" instead of 16:00,
+which is a strategy-contract change with its own phase — it was not done here,
+because silently rewriting S1.0 to fit an operational calendar is exactly the
+move these phases exist to prevent.
+
+**The risk policy has no operator-authored store (P2.4 V2).** The policy bound
+into the V2 protocol is declared in `cli._runtime_risk_policy_body` and
+fingerprinted there, which is enough to stop a change taking effect silently
+inside an armed soak. It is not a policy an operator wrote down and approved
+separately, and that gap is recorded rather than hidden behind a default that
+would look authoritative.
+
 **No paper-versus-backtest performance attribution is authorised (P2.3.1C).**
 Two timing differences from the research convention are recorded as
 fingerprinted profiles, and both are conservative — they cost return rather than
@@ -5931,6 +5965,21 @@ armed correctly and the drills passed; the first eligible session exposed that
 no concrete `OperationsEnvironment` exists to run it. The V1 protocol
 `4b50f8b4…` is superseded, its evidence preserved unmodified, and it may never
 be resumed or its fingerprint reused.
+
+**P2.4 V2 is armed and the only remaining work is time.** Twenty eligible
+sessions from 2026-10-12 to 2026-11-06, with the decision cycle at 2026-10-30
+and its execution at 2026-11-02 both inside the window. Each eligible session
+produces exactly one `PaperShadowSessionObservationV2`, however many operational
+runs it holds. Nothing is backfilled and no historical evidence counts — not the
+bootstrap, not the smoke, not one V1 record.
+
+**The qualifying semantics are frozen for the duration.** No change to the
+strategy, risk, execution, accounting, calendar, schedule, broker normalisation,
+reconciliation, operations or soak scoring may land on this branch while the
+soak runs; an observation binds the activation's qualifying commit explicitly,
+so a later HEAD would stop counting rather than quietly continue. A semantic
+defect found during the soak halts V2 and requires a V3 — the count does not
+survive a repair.
 
 **P2.3.1C completed the pipeline.** The submission authority takes a frozen
 decision through portfolio construction, the real risk engine, the execution

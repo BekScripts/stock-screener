@@ -9814,3 +9814,253 @@ def paper_ops_runtime_smoke_command() -> None:
     typer.echo(f"  execution timing profile   : {execution_timing_profile()['version']}")
     typer.echo("  mutating requests          : 0 (POST 0, DELETE 0)")
     typer.echo("  this environment has no submission authority at all")
+
+
+@soak_app.command("arm-v2")
+def paper_ops_soak_arm_v2_command(
+    confirm: Annotated[
+        bool,
+        typer.Option(
+            "--confirm",
+            help=(
+                "Required. Permanently freezes PAPER_SHADOW_SOAK_PROTOCOL_V2 and sets "
+                "the prospective boundary. Makes read-only HTTPS requests; submits "
+                "nothing. One-way."
+            ),
+        ),
+    ] = False,
+) -> None:
+    """Freeze and arm the session-based V2 soak against the real runtime.
+
+    V2 counts one eligible market session as one observation, not one run,
+    because a session can now hold several legitimate runs. It also requires at
+    least one real strategy decision cycle for an A — twenty quiet sessions
+    would prove the scheduler works and nothing about the decision path.
+
+    Refuses to arm a window that does not contain a complete decision and its
+    following execution session, and refuses if that decision session is not a
+    normal close, since the strategy's decision instant is literally 16:00.
+    """
+    from datetime import UTC, datetime
+
+    from stock_screener.execution import ExecutionStore, fingerprint_of
+    from stock_screener.execution.external import AlpacaPaperPreflightRun
+    from stock_screener.paper_operations import operations_policy
+    from stock_screener.paper_runtime import (
+        AlphaTraderPaperOperationsEnvironment,
+        RuntimeBindingError,
+        RuntimeBindingStore,
+    )
+    from stock_screener.paper_runtime.binding import RUNTIME_DIRECTORY
+    from stock_screener.paper_runtime.operational_calendar import (
+        calendar_fingerprint,
+        operational_calendar,
+        session_calendar,
+    )
+    from stock_screener.paper_runtime.profiles import (
+        execution_timing_profile,
+        score_availability_profile,
+    )
+    from stock_screener.paper_runtime.soak_v2 import (
+        PaperShadowSoakActivationV2,
+        PaperShadowSoakProtocolV2,
+        SoakV2Store,
+        complete_cycle_in,
+        window_for,
+    )
+    from stock_screener.portfolio_accounting import PortfolioStore
+    from stock_screener.strategies import CompounderMonthlyStrategy
+
+    settings = _bootstrap()
+    if not confirm:
+        typer.echo(
+            "refusing without --confirm: this permanently freezes the V2 soak protocol "
+            "and sets the prospective boundary. Read-only; nothing is submitted."
+        )
+        raise typer.Exit(code=1)
+
+    now = datetime.now(UTC).isoformat()
+    root = _operations_root()
+    strategy = CompounderMonthlyStrategy()
+    store = SoakV2Store(root)
+
+    typer.echo("")
+    typer.echo("  1/6  runtime binding")
+    try:
+        binding = RuntimeBindingStore(root).require()
+    except RuntimeBindingError as exc:
+        typer.echo(f"STOPPED: {exc}")
+        raise typer.Exit(code=1) from exc
+    binding.require_strategy(
+        strategy_id=strategy.strategy_id,
+        strategy_version=strategy.strategy_version,
+        fingerprint=strategy.fingerprint(),
+    )
+    typer.echo(f"       binding      : {binding.fingerprint()[:16]}…")
+    typer.echo(f"       strategy     : {binding.strategy_version}")
+
+    typer.echo("  2/6  prospective window")
+    calendar = operational_calendar()
+    rows = session_calendar()
+    window = window_for(calendar=calendar, now=now)
+    if len(window) < 20:
+        typer.echo(
+            f"STOPPED: the declared calendar leaves only {len(window)} eligible "
+            "session(s); extend it before arming."
+        )
+        raise typer.Exit(code=1)
+    cycle = complete_cycle_in(window, calendar=calendar)
+    if cycle is None:
+        typer.echo(
+            "STOPPED: B — ACTIVATION WINDOW DOES NOT EXERCISE STRATEGY CYCLE. The "
+            f"window {window[0]}..{window[-1]} holds no month-end decision whose "
+            "execution session is also inside it. Choose a later activation."
+        )
+        raise typer.Exit(code=1)
+    decision_session, execution_session = cycle
+    if rows[decision_session].early_close:
+        typer.echo(
+            f"STOPPED: C — the decision session {decision_session} closes early at "
+            f"{rows[decision_session].closes_at_local}, and the strategy's decision "
+            "instant is literally 16:00. Resolve the timing contract before arming."
+        )
+        raise typer.Exit(code=1)
+    typer.echo(f"       window       : {window[0]} .. {window[-1]} ({len(window)})")
+    typer.echo(
+        f"       decision     : {decision_session} (close {rows[decision_session].closes_at_local})"
+    )
+    typer.echo(f"       execution    : {execution_session}")
+
+    typer.echo("  3/6  real paper account, read-only")
+    try:
+        run = AlpacaPaperPreflightRun.from_settings(settings)
+    except ExecutionError as exc:
+        typer.echo(f"STOPPED: {exc}")
+        raise typer.Exit(code=1) from exc
+    try:
+        environment = AlphaTraderPaperOperationsEnvironment(
+            root=root, binding=binding, adapter=_runtime_adapter(run)
+        )
+        environment.require_generations()
+        integrity = environment.verify_local_integrity()
+        proof = environment.prove_paper_environment()
+        reconciliation = environment.reconcile()
+    finally:
+        run.close()
+    problems: list[str] = []
+    if not proof["proven"]:
+        problems.append("the venue did not prove the bound paper account")
+    if not reconciliation["may_execute"]:
+        problems.append(f"reconciliation is {reconciliation['verdict']}")
+    if not integrity["execution_journal_verified"]:
+        problems.append("the execution journal did not verify")
+    if not integrity["accounting_ledger_verified"]:
+        problems.append("the accounting ledger did not verify")
+    if problems:
+        for line in problems:
+            typer.echo(f"       {line}")
+        typer.echo("STOPPED: the runtime is not in a state that may be armed")
+        raise typer.Exit(code=1)
+    typer.echo(f"       reconciliation: {reconciliation['verdict']}")
+    typer.echo(
+        f"       unexpected orders / positions: "
+        f"{reconciliation['unexpected_remote_orders']} / "
+        f"{reconciliation['unexplained_remote_positions']}"
+    )
+
+    typer.echo("  4/6  incidents and control state")
+    _, kill_store, incidents, journal = _paper_ops_stores()
+    severe = [
+        row.incident_id
+        for row in incidents.open_incidents()
+        if row.severity in {"CRITICAL", "BLOCKING"}
+    ]
+    if severe:
+        typer.echo(f"STOPPED: unresolved incident(s) {severe}")
+        raise typer.Exit(code=1)
+    ops = journal.verify()
+    typer.echo("       incidents    : 0 CRITICAL/BLOCKING")
+    typer.echo(f"       control state: {kill_store.current().state}")
+
+    typer.echo("  5/6  freezing the protocol")
+    accounting = PortfolioStore(
+        root / RUNTIME_DIRECTORY / "portfolio",
+        accounting_version=binding.accounting_engine_version,
+        generation=binding.accounting_generation,
+    )
+    execution = ExecutionStore(
+        root / RUNTIME_DIRECTORY / "execution",
+        generation=binding.execution_journal_generation,
+    )
+    schedule = _runtime_schedule(calendar)
+    protocol = PaperShadowSoakProtocolV2(
+        protocol_id="P2_4_V2_SESSION_SOAK",
+        qualifying_commit=_git_commit(),
+        runtime_binding_fingerprint=binding.fingerprint(),
+        account_binding_fingerprint=binding.account_binding_fingerprint,
+        strategy_fingerprint=strategy.fingerprint(),
+        strategy_authorization_fingerprint=binding.strategy_authorization_fingerprint,
+        risk_policy_fingerprint=fingerprint_of(_runtime_risk_policy_body()),
+        operations_policy_fingerprint=fingerprint_of(operations_policy()),
+        calendar_fingerprint=calendar_fingerprint(),
+        schedule_fingerprint=schedule.fingerprint(),
+        score_availability_fingerprint=fingerprint_of(score_availability_profile()),
+        execution_timing_fingerprint=fingerprint_of(execution_timing_profile()),
+        accounting_generation=binding.accounting_generation,
+        execution_journal_generation=binding.execution_journal_generation,
+        operations_generation=str(ops["head_hash"]),
+    )
+    store.freeze_protocol(protocol)
+    typer.echo(f"       protocol     : {protocol.fingerprint()[:16]}…")
+    typer.echo(f"       required     : {protocol.required_sessions} eligible sessions")
+
+    typer.echo("  6/6  activating")
+    activation = PaperShadowSoakActivationV2(
+        protocol_fingerprint=protocol.fingerprint(),
+        qualifying_commit=protocol.qualifying_commit,
+        activated_at=now,
+        first_eligible_session=window[0],
+        window=window,
+        decision_session=decision_session,
+        execution_session=execution_session,
+        runtime_binding_fingerprint=binding.fingerprint(),
+        account_binding_fingerprint=binding.account_binding_fingerprint,
+        starting_operations_head=str(ops["head_hash"]),
+        starting_execution_head=execution.load_journal().head_hash,
+        starting_accounting_head=accounting.load_ledger().head_hash,
+        starting_reconciliation=str(reconciliation["verdict"]),
+        starting_health="PREFLIGHT_PASSED",
+    )
+    store.activate(activation)
+
+    typer.echo("")
+    typer.echo("  SOAK V2 ARMED")
+    typer.echo(f"  activated at           : {now}")
+    typer.echo(f"  first eligible session : {window[0]}")
+    typer.echo(f"  twentieth session      : {window[-1]}")
+    typer.echo(f"  decision -> execution  : {decision_session} -> {execution_session}")
+    typer.echo(f"  qualifying commit      : {protocol.qualifying_commit}")
+    typer.echo(f"  protocol fingerprint   : {protocol.fingerprint()}")
+    typer.echo(f"  activation fingerprint : {activation.fingerprint()}")
+    typer.echo("")
+    typer.echo("  One eligible market session is one observation, however many runs it holds.")
+    typer.echo("  No historical evidence counts. Nothing is backfilled.")
+    typer.echo("  This authorises no live trading and no change to any strategy.")
+
+
+def _runtime_risk_policy_body() -> dict[str, Any]:
+    """The approved paper risk policy, as a fingerprintable body.
+
+    Bound into the V2 protocol so a policy change cannot silently take effect
+    inside an armed soak. Declared here rather than read from a file because no
+    operator-authored policy store exists yet — which is itself worth knowing,
+    and is recorded as a limitation rather than papered over with a default that
+    looks authoritative.
+    """
+    return {
+        "policy_id": "ALPHATRADER_PAPER",
+        "policy_version": "V1",
+        "engine": "PORTFOLIO_RISK_ENGINE_V1_2",
+        "declared_in": "stock_screener.cli._runtime_risk_policy_body",
+        "operator_authored_policy_store": "NOT_IMPLEMENTED",
+    }

@@ -156,6 +156,68 @@ Every write goes through `atomic_write_verified` and every path through
 `guard_operations_root`, so the soak cannot be written into a research
 directory or a database path.
 
+## V2: the session is the counting unit
+
+`PAPER_SHADOW_SOAK_PROTOCOL_V2` replaces V1 rather than repairing it. V1 remains
+historical evidence, halted at 0 of 20, in its own namespace; V2 lives under
+`.operations/soak/v2/` and never touches it.
+
+**One eligible market session is one observation.** V1 counted runs, which was
+adequate when a session held at most one. It no longer does: an execution near
+the open consuming last month's decision, an ordinary observation at midday, a
+strategy decision at the close and a recovery run can all belong to one day.
+Counting those separately would let a single busy session look like four days of
+evidence. The runs keep their separate derived ids; the scorer counts the
+session. A session with zero mutations still counts, and
+`duplicate_counted_sessions = 0` is a new zero-tolerance gate — because the
+failure is new.
+
+**At least one real decision cycle is required for an A.** A soak of a control
+plane could pass on twenty quiet sessions. A soak of a *strategy pipeline*
+cannot: twenty sessions where the strategy was never asked to decide would prove
+the scheduler works and nothing about the decision path. So
+`successful_strategy_decision_cycles >= 1` is a non-zero-tolerance promotion
+gate — and emphatically **not** a requirement that any order be placed. Risk
+reducing everything to zero is a correct outcome of a cycle that did happen, and
+P2.2E already certified the mutation boundary.
+
+A session may be validly observed while one expected run purpose was missed. The
+miss is named in `missed_purposes` rather than omitted; the session still counts,
+because pretending the run happened would be the worse error.
+
+### The forward operational calendar
+
+`US_EQUITY_OPERATIONAL_CALENDAR_2026Q4_2027Q1_V1` is an **operations** artefact.
+The research benchmark calendar is built from stored price bars, so it can only
+describe sessions that already happened — and running `update-benchmark` to
+extend it would have mutated a research artefact to solve a scheduling problem.
+
+It carries what the benchmark calendar never had: the real close time of each
+session. Two sessions in range close at 13:00 ET rather than 16:00
+(2026-11-27 and 2026-12-24), and a calendar recording only dates would let a
+scheduler wait at 15:45 for a market that shut hours earlier. Holidays are
+derived from their published rules — fourth Thursday of November, third Mondays
+in January and February, Good Friday two days before Easter 2027-03-28 — and the
+derivations are tested rather than the dates proof-read.
+
+The 09:35 execution slot precedes every declared close, regular or early, so no
+change to `OPERATIONAL_EXECUTION_TIMING_V1` was needed and no new order type was
+introduced.
+
+### One unresolved contract conflict, recorded not fixed
+
+S1.0's decision instant is **literally 16:00** — `decision_instant(session,
+DecisionPoint.CLOSE)` with `MARKET_CLOSE = time(16, 0)`. A month-end that falls
+on an early close would therefore have S1.0 deciding at 16:00 against a market
+that shut at 13:00.
+
+That conflict is latent, not resolved. The armed V2 window's only decision
+session is 2026-10-30, a normal 16:00 close, and both early closes fall outside
+the window — which is why arming is safe. The arming command refuses outright if
+a window's decision session closes early, so the conflict cannot be armed into
+by accident. Resolving it properly means teaching S1.0 "session close" instead of
+16:00, which is a strategy-contract change and needs its own phase.
+
 ## Known limitations
 
 - **A coordinated local rollback is undetectable.** The observation files, like
