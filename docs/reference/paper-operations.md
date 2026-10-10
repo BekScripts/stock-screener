@@ -266,6 +266,90 @@ stock-screener paper-ops verify-journal
 `arm` and `kill` both require `--confirm`; there is no default-yes and no live
 mode. `kill` does not need the provider to be reachable.
 
+## The deployed runtime (P2.3.1B/C)
+
+`PAPER_OPERATIONS_RUNTIME_BINDING_V1` in `src/stock_screener/paper_runtime/` is
+one *deployment* of this control plane: which paper account, which approved
+strategy build, which accounting ledger lineage, which execution journal
+lineage, which calendar, which schedule. The control plane is reusable; a
+runtime is not, and a run that opened the wrong book would reconcile valid
+records belonging to something else against the right venue. So the binding is
+explicit and checked, and a mismatch fails closed.
+
+### Decision and execution are different events
+
+`PAPER_OPERATIONS_SCHEDULE_V1_1` adds purpose-tagged slots beside V1 rather than
+reinterpreting it — V1 run ids are unchanged byte for byte, which
+`test_a_v1_run_id_is_unchanged_by_the_purpose_parameter` asserts directly. A
+session can hold an execution near the open and an observation at midday with
+distinct run ids; that is not duplicate scheduling. The schedule refuses to be
+configured with an execution slot later in the day than its decision slot,
+because that would let a month-end decision execute on the data that produced
+it.
+
+| Purpose | When | May mutate |
+| --- | --- | --- |
+| `STRATEGY_DECISION` | month-end session, 16:00 ET | no |
+| `STRATEGY_EXECUTION` | next session, 09:35 ET | yes, under every gate |
+| `SESSION_OBSERVATION` | any other session, 12:00 ET | no |
+
+### Risk reduces; risk never expands
+
+A strategy expresses desired exposure, risk decides permitted exposure, and
+execution acts only on the permitted set. A risk reduction is therefore *not* a
+divergence to block on — blocking would mean the risk engine could only be
+obeyed when it agreed. `RISK_MAY_REDUCE_NEVER_EXPAND_STRATEGY_AUTHORITY_V1` is
+the frozen rule: risk may reduce any requested exposure to zero, and may never
+give this strategy positive exposure to a security it did not request, nor raise
+one above the request. Either of those raises
+`RISK_OUTPUT_EXCEEDS_STRATEGY_AUTHORITY` and execution is refused rather than
+trimmed, because trimming would hide it.
+
+When risk reduces every request to zero the outcome is
+`COMPLETED_NO_ACTION_RISK_CONSTRAINED` — a valid recorded result, not a
+strategy failure. Nothing is forced and no other name is increased.
+
+The desired-to-permitted mapping is written down beside the decision, because
+risk's answer depends on the book and the policy at that instant and is not
+reconstructable from the decision alone. The `StrategyDecision` itself is never
+rewritten: making it look as though risk had selected fewer names would destroy
+the only evidence of what the strategy wanted.
+
+### Two timing differences from the research convention
+
+Both are recorded as fingerprinted profiles rather than left to be discovered,
+and both are conservative — they cost return rather than manufacturing it.
+
+**`OPERATIONAL_COMPOUNDER_SCORE_AVAILABILITY_V1`.** A decision at the month-end
+16:00 ET close may only use evidence admissible at that instant, so the score
+must have been computed before the close — and a score computed before the close
+can only have read the *previous* session's closing prices. Verified against
+production rows: `score_date=2026-08-26` was computed at 07:40 UTC (03:40 ET)
+and the newest stored price bar was 2026-08-25. The research convention says
+"signal at the last session's close", which is unreachable prospectively without
+computing after the cutoff and claiming it as the cutoff's input.
+
+**`OPERATIONAL_EXECUTION_TIMING_V1`.** Execution runs at 09:35 ET, not at the
+opening auction. No market-on-open order, pre-open submission or auction
+semantics were added to imitate an opening print; doing that to chase backtest
+equivalence would be a new execution contract needing its own phase.
+
+**Therefore no direct paper-versus-backtest performance comparison is
+authorised.** The deployment decides on older information and executes later in
+the session than the convention assumes, so a difference in outcome is not
+evidence about the strategy. An apples-to-apples comparison needs a research run
+using operational timing.
+
+### A missed slot is a fact, not a retry
+
+A missed decision is never taken the next morning: that decision would be made
+on information the close did not contain. A missed execution is never filled
+later — and because a decision left in `PENDING_EXECUTION` is one the next
+scheduler tick would submit, `expire_pending_executions` moves it to the
+terminal `EXECUTION_MISSED` *actively*, before any slot is considered. That is
+what makes "never late" a property of the store rather than a hope about
+scheduling.
+
 ## Known limitations
 
 - **Coordinated local rollback is undetectable.** As above, and the same limit

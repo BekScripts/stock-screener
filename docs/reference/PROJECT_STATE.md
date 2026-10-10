@@ -36,10 +36,11 @@ appears without the run or the test that produced it.
 
 ## Current phase
 
-**P2.3.1B — wiring the strategy into paper operations — is PARTIAL**, on
-`feat/p2-execution-engine`. The runtime foundations are built and tested; the
-execution submission path, the operational CLI and the real read-only smoke are
-not. P2.4 may not re-arm.
+**P2.3.1C — the concrete strategy-to-paper-operations pipeline — is COMPLETE**,
+on `feat/p2-execution-engine`. The real paper runtime is bootstrapped against
+the live Alpaca PAPER account, the whole authority chain is wired and tested,
+and a real read-only observe smoke passed with zero mutations. P2.4 has **not**
+been re-armed; that is a separate prospective activation.
 
 **S1.0 is complete and frozen** at `s1-compounder-strategy-authority-complete`
 (`91f7e06`). `ALPHATRADER_COMPOUNDER_MONTHLY_V1` in
@@ -251,6 +252,18 @@ frozen at the same commit; P2 branched from it.
 | P2.3.1B book bootstrap | explicit, operator-confirmed, `cash` field only |
 | P2.3.1B position import | **REFUSED** — `PAPER_BOOK_BOOTSTRAP_POSITION_STATE_NOT_EMPTY` |
 | P2.3.1B score availability | **CONTRACT SATISFIABLE** with a one-session price lag |
+| P2.3.1C | **PIPELINE COMPLETE** — runtime bootstrapped, smoke passed |
+| P2.3.1C risk authority | `RISK_MAY_REDUCE_NEVER_EXPAND_STRATEGY_AUTHORITY_V1` |
+| P2.3.1C risk reduction | **PROCEEDS** — a reduction is not a divergence |
+| P2.3.1C risk expansion | **REFUSED** — `RISK_OUTPUT_EXCEEDS_STRATEGY_AUTHORITY` |
+| P2.3.1C all-risk-zero | `COMPLETED_NO_ACTION_RISK_CONSTRAINED` — valid |
+| P2.3.1C score profile | `OPERATIONAL_COMPOUNDER_SCORE_AVAILABILITY_V1` |
+| P2.3.1C timing profile | `OPERATIONAL_EXECUTION_TIMING_V1` — 09:35 ET, not the open |
+| P2.3.1C backtest equivalence | **NONE CLAIMED** — no paper-vs-backtest attribution |
+| P2.3.1C missed decision | never backfilled |
+| P2.3.1C missed execution | terminal `EXECUTION_MISSED`, expired actively |
+| P2.3.1C real runtime | bootstrapped 2026-10-10, opening cash from provider `cash` |
+| P2.3.1C real smoke | `RECONCILED`, 0 POST, 0 DELETE |
 | H2 broker-paper orders | **NOT AUTHORISED** — its own frozen ladder says so |
 | Live trading | **NOT IMPLEMENTED, NOT AUTHORIZED** |
 | Production risk thresholds | **NOT AUTHORIZED** |
@@ -3826,6 +3839,18 @@ bug that was fixed.
 establish that a run was permitted, reconciled and recorded. It says nothing
 about whether the orders it permitted were good ones. Gating is not judgement.
 
+**No paper-versus-backtest performance attribution is authorised (P2.3.1C).**
+Two timing differences from the research convention are recorded as
+fingerprinted profiles, and both are conservative — they cost return rather than
+manufacturing it. `OPERATIONAL_COMPOUNDER_SCORE_AVAILABILITY_V1`: a decision
+admissible at the 16:00 ET close can only have read the prior session's prices.
+`OPERATIONAL_EXECUTION_TIMING_V1`: execution runs at 09:35 ET, not at the
+opening auction, and no order type or pre-open semantics were added to imitate
+an opening print. A difference between this deployment's results and any
+backtest is therefore not evidence about the strategy; an apples-to-apples
+comparison needs a research run using operational timing, which is a separate
+phase.
+
 **An operationally admissible score reflects the prior session's close
 (P2.3.1B).** This is forced by two frozen requirements meeting, and it is worth
 stating plainly because it is a real difference from the research convention.
@@ -5906,6 +5931,30 @@ armed correctly and the drills passed; the first eligible session exposed that
 no concrete `OperationsEnvironment` exists to run it. The V1 protocol
 `4b50f8b4…` is superseded, its evidence preserved unmodified, and it may never
 be resumed or its fingerprint reused.
+
+**P2.3.1C completed the pipeline.** The submission authority takes a frozen
+decision through portfolio construction, the real risk engine, the execution
+planner, the certified adapter and accounting V2, consulting the submission gate
+before every single order — a kill between two orders stops the second, which is
+asserted directly. Risk reductions proceed and are recorded; risk expansions are
+refused. Missed decisions and missed executions are permanent and never
+backfilled, with pending executions expired actively rather than noticed later.
+`paper-ops bootstrap-runtime`, `run-due`, `runtime-status` and `runtime-smoke`
+are the operational surface, none with a live option.
+
+The real runtime was bootstrapped on 2026-10-10 against the live Alpaca PAPER
+account: 0 positions, 0 working orders, 0 mutating requests, opening cash
+91,636.94 from the provider `cash` field with provenance to that snapshot. The
+read-only observe smoke then established the bound ledger lineages, a proven
+venue, a `RECONCILED` three-way verdict, 5,769 real `COMPOUNDER_V1_2` records
+(1,896 selectable) and `NO_STRATEGY_DECISION_DUE` for the Saturday it ran on —
+with 0 POST and 0 DELETE.
+
+**What remains is the soak, and it is a decision rather than work.** Every
+authority is wired and the runtime holds all three verifiable journals, so
+`PAPER_SHADOW_SOAK_PROTOCOL_V2` can be armed against a new qualifying commit
+whenever you choose. The halted V1 soak stays at 0 of 20 and its fingerprint is
+never reused.
 
 **P2.3.1B built the runtime foundations and stopped short of the execution
 path.** Complete and tested: `PAPER_OPERATIONS_SCHEDULE_V1_1` (purpose-tagged

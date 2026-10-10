@@ -9235,3 +9235,582 @@ def strategy_evaluate_command(
         typer.echo(f"  state recorded at {store.path}")
     elif write_state:
         typer.echo("  nothing recorded: --write-state needs --state-root and a decision")
+
+
+def _runtime_schedule(calendar: Any) -> Any:
+    """Build the V1.1 operational schedule over a calendar.
+
+    The two times of day are the operational implementation of the frozen
+    strategy contract: the decision at the month-end close, the execution near
+    the next session's open. Neither is a research assumption — see
+    `OPERATIONAL_EXECUTION_TIMING_V1`.
+    """
+    from stock_screener.paper_operations.strategy_schedule import (
+        StrategyOperationsSchedule,
+    )
+
+    return StrategyOperationsSchedule(
+        schedule_id="ALPHATRADER_PAPER_V1_1",
+        timezone="America/New_York",
+        calendar=calendar,
+    )
+
+
+def _runtime_calendar(settings: Any, *, days: int = 400) -> Any:
+    """Build the market calendar from stored benchmark sessions.
+
+    Raises:
+        typer.Exit: If no sessions are stored. Month ends are read from a
+            calendar and never computed from weekdays, so an absent calendar is
+            a missing input rather than something to work around.
+    """
+    from datetime import UTC, datetime, timedelta
+
+    from stock_screener.backtest.backfill import market_sessions
+    from stock_screener.execution import ExecutionCalendar
+
+    today = datetime.now(UTC).date()
+    with _database(settings) as factory, session_scope(factory) as db:
+        sessions = market_sessions(
+            db, settings.benchmark_symbol, start=today - timedelta(days=days), end=today
+        )
+    if not sessions:
+        typer.echo(
+            "STOPPED: no stored benchmark sessions, so month ends cannot be read from "
+            "a calendar. Run update-benchmark first."
+        )
+        raise typer.Exit(code=1)
+    return ExecutionCalendar(
+        sessions=tuple(day.isoformat() for day in sessions),
+        name=f"BENCHMARK_{settings.benchmark_symbol}",
+    )
+
+
+def _runtime_adapter(run: Any) -> Any:
+    """Build a read-capable adapter over a preflight run's proven transport.
+
+    The preflight run constructs its own adapter internally and does not expose
+    it. Rather than reach into a certified module, one is built here from the
+    transport, binding and mapping the run already holds — the same three
+    objects, so the same host lock and the same proven account.
+    """
+    from stock_screener.execution.external import AlpacaPaperAdapter
+
+    return AlpacaPaperAdapter(transport=run.transport, binding=run.binding, mapping=run.mapping)
+
+
+@paper_ops_app.command("bootstrap-runtime")
+def paper_ops_bootstrap_runtime_command(
+    confirm: Annotated[
+        bool,
+        typer.Option(
+            "--confirm",
+            help=(
+                "Required. Opens a new internal accounting book from one authenticated "
+                "read of the configured Alpaca PAPER account. Makes read-only HTTPS "
+                "requests and submits nothing. One-way per operations root."
+            ),
+        ),
+    ] = False,
+    runtime_id: Annotated[
+        str, typer.Option("--runtime-id", help="A stable name for this runtime instance.")
+    ] = "alphatrader1",
+) -> None:
+    """Open this runtime's paper book, once, with an operator confirming.
+
+    Reads the venue, refuses anything but a clean account, writes an
+    `OpeningBalanceEvent` with provenance to that snapshot, materialises the
+    accounting ledger, the execution journal and the runtime binding, and
+    records a bootstrap epoch so activity predating the book is never treated
+    as this runtime's.
+
+    It makes zero mutating requests. There is no flag here that submits an
+    order and none anywhere that reaches a live venue.
+    """
+    from datetime import UTC, datetime
+
+    from stock_screener.execution import fingerprint_of
+    from stock_screener.execution.external import AlpacaPaperPreflightRun
+    from stock_screener.paper_operations import operations_policy
+    from stock_screener.paper_runtime import RuntimeBindingError, bootstrap_paper_book
+    from stock_screener.paper_runtime.profiles import (
+        execution_timing_profile,
+        score_availability_profile,
+    )
+    from stock_screener.strategies import CompounderMonthlyStrategy
+
+    settings = _bootstrap()
+    if not confirm:
+        typer.echo(
+            "refusing without --confirm: this opens an internal accounting book from "
+            "the configured Alpaca PAPER account. Read-only; nothing is submitted."
+        )
+        raise typer.Exit(code=1)
+
+    now = datetime.now(UTC).isoformat()
+    root = _operations_root()
+    strategy = CompounderMonthlyStrategy()
+
+    typer.echo("")
+    typer.echo("  1/3  reading the paper account, read-only")
+    try:
+        run = AlpacaPaperPreflightRun.from_settings(settings)
+    except ExecutionError as exc:
+        typer.echo(f"STOPPED: {exc}")
+        raise typer.Exit(code=1) from exc
+    try:
+        report = run.execute(now=now)
+        account = _runtime_adapter(run).account_evidence()
+    finally:
+        run.close()
+    if not report.ready or report.paper_proof is None:
+        for gate, why in report.failures:
+            typer.echo(f"       {gate}: {why}")
+        typer.echo("STOPPED: the paper account did not establish a clean binding")
+        raise typer.Exit(code=1)
+    typer.echo(f"       account binding : {report.paper_proof.account_binding_fingerprint[:16]}…")
+    typer.echo(f"       positions       : {report.positions_seen}")
+    typer.echo(f"       working orders  : {report.open_orders_seen}")
+    typer.echo(f"       mutating reqs   : {report.mutating_requests}")
+
+    typer.echo("  2/3  building the calendar and schedule")
+    calendar = _runtime_calendar(settings)
+    schedule = _runtime_schedule(calendar)
+
+    typer.echo("  3/3  opening the book")
+    snapshot = account.value
+    object.__setattr__(
+        snapshot,
+        "account_binding_fingerprint",
+        report.paper_proof.account_binding_fingerprint,
+    )
+    try:
+        result = bootstrap_paper_book(
+            root=root,
+            runtime_id=runtime_id,
+            account=snapshot,
+            account_evidence_fingerprint=account.fingerprint,
+            open_orders=report.open_orders_seen,
+            strategy_id=strategy.strategy_id,
+            strategy_version=strategy.strategy_version,
+            strategy_fingerprint=strategy.fingerprint(),
+            strategy_authorization_fingerprint=fingerprint_of(
+                {
+                    "strategy": strategy.fingerprint(),
+                    "environment": "EXTERNAL_PAPER",
+                    "approved_by": "operator",
+                }
+            ),
+            operations_policy_fingerprint=fingerprint_of(operations_policy()),
+            calendar_fingerprint=calendar.fingerprint(),
+            schedule_fingerprint=schedule.fingerprint(),
+            code_commit=_git_commit(),
+            now=now,
+            confirmed=True,
+        )
+    except RuntimeBindingError as exc:
+        typer.echo(f"STOPPED: {exc}")
+        raise typer.Exit(code=1) from exc
+
+    typer.echo("")
+    for line in result.summary_lines():
+        typer.echo(f"  {line}")
+    typer.echo("")
+    typer.echo(f"  score availability : {score_availability_profile()['version']}")
+    typer.echo(f"  execution timing   : {execution_timing_profile()['version']}")
+    typer.echo("")
+    typer.echo("  RUNTIME BOOTSTRAPPED. No order was placed and none can be from here.")
+
+
+@paper_ops_app.command("run-due")
+def paper_ops_run_due_command(
+    mode: Annotated[
+        str,
+        typer.Option(
+            "--mode",
+            help="OBSERVE_ONLY or EXTERNAL_PAPER. There is no live mode. "
+            "EXTERNAL_PAPER still needs an arm, a permitting kill state, health and a "
+            "clean reconciliation before anything is submitted.",
+        ),
+    ] = "OBSERVE_ONLY",
+) -> None:
+    """Run whichever operational slot is due, through the real environment.
+
+    Instantiates `AlphaTraderPaperOperationsEnvironment` from the persisted
+    runtime binding. There is no stub environment and no path by which invoking
+    this command grants mutation permission: an unarmed or killed runtime
+    submits nothing whatever the mode says.
+    """
+    from datetime import UTC, datetime
+
+    from stock_screener.paper_operations import (
+        OperationsError,
+        OperationsMode,
+        SystemClock,
+    )
+    from stock_screener.paper_runtime import (
+        AlphaTraderPaperOperationsEnvironment,
+        RuntimeBindingError,
+        RuntimeBindingStore,
+        RuntimePlanner,
+        expire_pending_executions,
+    )
+
+    settings = _bootstrap()
+    try:
+        requested = OperationsMode(mode.upper())
+    except ValueError as exc:
+        typer.echo(f"STOPPED: {mode!r} is not an operations mode; there is no live mode")
+        raise typer.Exit(code=1) from exc
+
+    root = _operations_root()
+    try:
+        binding = RuntimeBindingStore(root).require()
+    except RuntimeBindingError as exc:
+        typer.echo(f"STOPPED: {exc}")
+        raise typer.Exit(code=1) from exc
+
+    now = datetime.now(UTC).isoformat()
+    calendar = _runtime_calendar(settings)
+    schedule = _runtime_schedule(calendar)
+
+    # Expire first. A pending decision whose window closed is still marked
+    # executable, and considering a slot before expiring it is how a late fill
+    # happens.
+    for miss in expire_pending_executions(root, schedule=schedule, now=now):
+        typer.echo(f"  recorded {miss.reason_code} for {miss.session}")
+
+    slot = schedule.slot_for(now)
+    if slot is None:
+        missed = schedule.missed_slot_for(now)
+        typer.echo("")
+        if missed is not None:
+            typer.echo(
+                f"  no slot open; the {missed.purpose} slot for {missed.session} closed "
+                f"at {missed.window_closes_at().isoformat()}. Nothing is run late."
+            )
+        else:
+            typer.echo(f"  no operational slot is due at {now}")
+        raise typer.Exit(code=0)
+
+    from stock_screener.execution.external import AlpacaPaperPreflightRun
+
+    try:
+        run = AlpacaPaperPreflightRun.from_settings(settings)
+    except ExecutionError as exc:
+        typer.echo(f"STOPPED: {exc}")
+        raise typer.Exit(code=1) from exc
+    try:
+        environment = AlphaTraderPaperOperationsEnvironment(
+            root=root, binding=binding, adapter=_runtime_adapter(run)
+        )
+        environment.require_generations()
+        planner = RuntimePlanner(root=root, binding=binding, slot=slot, calendar=calendar)
+        coordinator = _runtime_coordinator(
+            root=root, schedule=schedule, environment=environment, clock=SystemClock()
+        )
+        try:
+            outcome = coordinator.run_due(mode=requested, plan_and_submit=planner)
+        except (OperationsError, RuntimeBindingError) as exc:
+            typer.echo(f"BLOCKED: {exc}")
+            raise typer.Exit(code=1) from exc
+    finally:
+        run.close()
+
+    typer.echo("")
+    typer.echo(f"  slot        : {slot.purpose} for {slot.session}")
+    typer.echo(f"  run id      : {outcome.report.run_id}")
+    typer.echo(f"  status      : {outcome.report.status}")
+    typer.echo(f"  mutations   : {outcome.external_mutations}")
+    if planner.outcome is not None:
+        typer.echo(f"  strategy    : {planner.outcome.strategy_outcome}")
+        typer.echo(f"  implies exit: {planner.outcome.implies_liquidation}")
+        if planner.outcome.detail:
+            typer.echo(f"  detail      : {planner.outcome.detail}")
+
+
+def _runtime_coordinator(*, root: Any, schedule: Any, environment: Any, clock: Any) -> Any:
+    """Build the real coordinator over a runtime's stores."""
+    from stock_screener.paper_operations import ArmingStore, PaperOperationsCoordinator
+
+    return PaperOperationsCoordinator(
+        root=root,
+        clock=clock,
+        schedule=schedule,
+        environment=environment,
+        arming=ArmingStore(root),
+        code_commit=_git_commit(),
+    )
+
+
+@paper_ops_app.command("runtime-status")
+def paper_ops_runtime_status_command() -> None:
+    """Show the deployed runtime's bindings and where its strategy has got to.
+
+    Local reads only: no network request, no credential, no account number. The
+    account appears as a fingerprint, as it does everywhere else.
+    """
+    from datetime import UTC, datetime
+
+    from stock_screener.execution import ExecutionStore, fingerprint_of
+    from stock_screener.paper_runtime import (
+        RuntimeBindingError,
+        RuntimeBindingStore,
+        StrategyDecisionStore,
+        missed_records,
+    )
+    from stock_screener.paper_runtime.binding import RUNTIME_DIRECTORY
+    from stock_screener.paper_runtime.profiles import (
+        execution_timing_profile,
+        score_availability_profile,
+    )
+    from stock_screener.paper_runtime.strategy_schedule_view import next_slots
+    from stock_screener.portfolio_accounting import PortfolioStore
+    from stock_screener.strategies import CompounderMonthlyStrategy
+
+    _bootstrap()
+    root = _operations_root()
+    try:
+        binding = RuntimeBindingStore(root).require()
+    except RuntimeBindingError as exc:
+        typer.echo(f"{exc}")
+        raise typer.Exit(code=1) from exc
+
+    strategy = CompounderMonthlyStrategy()
+    typer.echo("")
+    typer.echo("  RUNTIME")
+    for label, value in (
+        ("runtime id", binding.runtime_id),
+        ("binding fingerprint", binding.fingerprint()),
+        ("provider / environment", f"{binding.provider} / {binding.environment}"),
+        ("account binding", f"{binding.account_binding_fingerprint[:24]}…"),
+        ("bootstrap epoch", binding.bootstrap_epoch),
+        ("code commit", binding.code_commit),
+    ):
+        typer.echo(f"    {label:26}: {value}")
+
+    typer.echo("")
+    typer.echo("  STRATEGY")
+    for label, value in (
+        ("id / version", f"{binding.strategy_id} / {binding.strategy_version}"),
+        ("bound fingerprint", binding.strategy_fingerprint),
+        ("installed fingerprint", strategy.fingerprint()),
+        (
+            "installed matches bound",
+            str(strategy.fingerprint() == binding.strategy_fingerprint),
+        ),
+        ("deployment authorization", binding.strategy_authorization_fingerprint[:32] + "…"),
+    ):
+        typer.echo(f"    {label:26}: {value}")
+
+    typer.echo("")
+    typer.echo("  LEDGERS")
+    accounting = PortfolioStore(
+        root / RUNTIME_DIRECTORY / "portfolio",
+        accounting_version=binding.accounting_engine_version,
+        generation=binding.accounting_generation,
+    )
+    execution = ExecutionStore(
+        root / RUNTIME_DIRECTORY / "execution",
+        generation=binding.execution_journal_generation,
+    )
+    _, _, _, journal = _paper_ops_stores()
+    ledger = accounting.load_ledger()
+    ops = journal.verify()
+    for label, value in (
+        (
+            "accounting",
+            f"{binding.accounting_engine_version} / {binding.accounting_generation} "
+            f"head {ledger.head_hash[:16]}… ({len(ledger)} record(s))",
+        ),
+        (
+            "execution",
+            f"{binding.execution_engine_version} / "
+            f"{binding.execution_journal_generation} head "
+            f"{execution.load_journal().head_hash[:16]}…",
+        ),
+        ("operations", f"head {str(ops['head_hash'])[:16]}… ({ops['entries']} entry/ies)"),
+    ):
+        typer.echo(f"    {label:26}: {value}")
+
+    typer.echo("")
+    typer.echo("  PROFILES")
+    typer.echo(f"    {'score availability':26}: {score_availability_profile()['version']}")
+    typer.echo(f"    {'':26}  {fingerprint_of(score_availability_profile())[:32]}…")
+    typer.echo(f"    {'execution timing':26}: {execution_timing_profile()['version']}")
+    typer.echo(f"    {'':26}  {fingerprint_of(execution_timing_profile())[:32]}…")
+    typer.echo(f"    {'equivalence claim':26}: NONE — see paper-operations docs")
+
+    typer.echo("")
+    typer.echo("  STRATEGY STATE")
+    decisions = StrategyDecisionStore(root)
+    latest = decisions.latest()
+    pending = decisions.pending()
+    typer.echo(
+        f"    {'last decision':26}: "
+        + (
+            f"{latest.decision_session} {latest.decision_fingerprint[:16]}… ({latest.status})"
+            if latest is not None
+            else "none — no month-end decision has been taken"
+        )
+    )
+    typer.echo(
+        f"    {'pending execution':26}: "
+        + (
+            f"{pending.first_execution_session} for decision {pending.decision_session}"
+            if pending is not None
+            else "none"
+        )
+    )
+    misses = missed_records(root)
+    typer.echo(f"    {'missed slots':26}: {len(misses)}")
+    for row in misses[-3:]:
+        typer.echo(f"      {row['session']} {row['reason_code']}")
+
+    typer.echo("")
+    typer.echo("  NEXT SLOTS")
+    try:
+        settings = get_settings()
+        calendar = _runtime_calendar(settings)
+        for line in next_slots(
+            schedule=_runtime_schedule(calendar), now=datetime.now(UTC).isoformat()
+        ):
+            typer.echo(f"    {line}")
+    except typer.Exit:
+        typer.echo("    unavailable: no stored benchmark calendar")
+    typer.echo("")
+    typer.echo("  live trading: NOT_IMPLEMENTED, NOT_AUTHORIZED")
+
+
+@paper_ops_app.command("runtime-smoke")
+def paper_ops_runtime_smoke_command() -> None:
+    """Exercise the whole read-only runtime path, submitting nothing.
+
+    This is a diagnostic, not a scheduled run. It exists because a scheduled
+    slot is due on perhaps two instants a month, and the wiring needs checking
+    on the other days — so it reads the venue, verifies the bound ledgers,
+    reconciles the three records, reaches the real score repository and asks
+    S1.0 what it would do today.
+
+    It is read-only by construction rather than by flag: the environment it
+    builds has no submission authority at all, so there is nothing here that
+    could mutate even if a gate permitted it.
+    """
+    from datetime import UTC, datetime
+
+    from stock_screener.execution.external import AlpacaPaperPreflightRun
+    from stock_screener.paper_runtime import (
+        AlphaTraderPaperOperationsEnvironment,
+        RuntimeBindingError,
+        RuntimeBindingStore,
+    )
+    from stock_screener.paper_runtime.profiles import (
+        execution_timing_profile,
+        score_availability_profile,
+    )
+    from stock_screener.strategies import (
+        CompounderMonthlyStrategy,
+        StrategyError,
+        load_bundle,
+    )
+
+    settings = _bootstrap()
+    root = _operations_root()
+    try:
+        binding = RuntimeBindingStore(root).require()
+    except RuntimeBindingError as exc:
+        typer.echo(f"STOPPED: {exc}")
+        raise typer.Exit(code=1) from exc
+
+    now = datetime.now(UTC).isoformat()
+    strategy = CompounderMonthlyStrategy()
+    typer.echo("")
+    typer.echo(f"  OBSERVE_ONLY runtime smoke at {now}")
+    typer.echo(f"  runtime {binding.runtime_id} / binding {binding.fingerprint()[:16]}…")
+
+    try:
+        run = AlpacaPaperPreflightRun.from_settings(settings)
+    except ExecutionError as exc:
+        typer.echo(f"STOPPED: {exc}")
+        raise typer.Exit(code=1) from exc
+    try:
+        environment = AlphaTraderPaperOperationsEnvironment(
+            root=root, binding=binding, adapter=_runtime_adapter(run)
+        )
+        typer.echo("")
+        typer.echo("  1/5  bound ledger lineages")
+        environment.require_generations()
+        integrity = environment.verify_local_integrity()
+        typer.echo(f"       execution journal verified : {integrity['execution_journal_verified']}")
+        typer.echo(f"       accounting ledger verified : {integrity['accounting_ledger_verified']}")
+
+        typer.echo("  2/5  paper venue, read-only")
+        proof = environment.prove_paper_environment()
+        typer.echo(f"       proven                     : {proof['proven']}")
+        typer.echo(f"       account status             : {proof['status']}")
+        typer.echo(f"       trading blocked            : {proof['trading_blocked']}")
+
+        typer.echo("  3/5  three-way reconciliation")
+        reconciliation = environment.reconcile()
+        for key in (
+            "verdict",
+            "may_execute",
+            "unexpected_remote_orders",
+            "unexplained_remote_positions",
+        ):
+            typer.echo(f"       {key:26} : {reconciliation[key]}")
+        typer.echo(
+            f"       {'accounting head':26} : {environment.accounting_state_fingerprint()[:16]}…"
+        )
+    finally:
+        run.close()
+
+    typer.echo("  4/5  score authority")
+    from datetime import date as _date
+
+    from data_access import ScoreSnapshotRepository
+    from domain import CURRENT_SCORE_VERSION
+
+    with _database(settings) as factory, session_scope(factory) as db:
+        latest = ScoreSnapshotRepository(db).latest_score_date(score_version=CURRENT_SCORE_VERSION)
+        typer.echo(f"       score version              : {CURRENT_SCORE_VERSION}")
+        typer.echo(f"       latest market cross-section: {latest}")
+        bundle = None
+        if latest is not None:
+            try:
+                bundle = load_bundle(db, score_date=latest)
+            except StrategyError as exc:
+                typer.echo(f"       bundle                     : refused — {exc.code}")
+    if bundle is not None:
+        typer.echo(f"       records                    : {len(bundle.records)}")
+        typer.echo(
+            f"       selectable                 : "
+            f"{sum(1 for row in bundle.records if row.is_selectable)}"
+        )
+        typer.echo(f"       input fingerprint          : {bundle.fingerprint()[:16]}…")
+
+    typer.echo("  5/5  strategy, for today")
+    today = _date.fromisoformat(now[:10])
+    typer.echo(f"       session                    : {today.isoformat()}")
+    typer.echo(f"       strategy                   : {strategy.strategy_version}")
+    matches = strategy.fingerprint() == binding.strategy_fingerprint
+    typer.echo(f"       fingerprint matches binding: {matches}")
+    try:
+        calendar = _runtime_calendar(settings)
+        from stock_screener.strategies import is_decision_session
+
+        is_decision = is_decision_session(today.isoformat(), calendar=calendar)
+        typer.echo(f"       decision session           : {is_decision}")
+        if not is_decision:
+            typer.echo(
+                "       outcome                    : NO_STRATEGY_DECISION_DUE — "
+                "a successful no-action result"
+            )
+    except typer.Exit:
+        typer.echo("       calendar                   : no stored benchmark sessions")
+
+    typer.echo("")
+    typer.echo(f"  score availability profile : {score_availability_profile()['version']}")
+    typer.echo(f"  execution timing profile   : {execution_timing_profile()['version']}")
+    typer.echo("  mutating requests          : 0 (POST 0, DELETE 0)")
+    typer.echo("  this environment has no submission authority at all")

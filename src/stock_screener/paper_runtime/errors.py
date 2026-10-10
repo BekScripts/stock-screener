@@ -41,6 +41,10 @@ class Code:
         SCORE_SOURCE_NOT_AUTHORITATIVE: The input did not come from the frozen
             score authority.
         SCORE_SNAPSHOT_UNAVAILABLE: No admissible cross-section exists.
+        RISK_OUTPUT_EXCEEDS_STRATEGY_AUTHORITY: Risk granted exposure the
+            strategy never requested, or raised one above the request.
+        STATE_DRIFT_SINCE_APPROVAL: Authoritative state moved after approval.
+        RISK_POLICY_NOT_BOUND: The runtime names no approved risk policy.
     """
 
     RUNTIME_NOT_BOUND = "RUNTIME_NOT_BOUND"
@@ -66,6 +70,9 @@ class Code:
     MISSED_STRATEGY_EXECUTION = "MISSED_STRATEGY_EXECUTION"
     SCORE_SOURCE_NOT_AUTHORITATIVE = "SCORE_SOURCE_NOT_AUTHORITATIVE"
     SCORE_SNAPSHOT_UNAVAILABLE = "SCORE_SNAPSHOT_UNAVAILABLE"
+    RISK_OUTPUT_EXCEEDS_STRATEGY_AUTHORITY = "RISK_OUTPUT_EXCEEDS_STRATEGY_AUTHORITY"
+    STATE_DRIFT_SINCE_APPROVAL = "STATE_DRIFT_SINCE_APPROVAL"
+    RISK_POLICY_NOT_BOUND = "RISK_POLICY_NOT_BOUND"
 
 
 class RuntimeBindingError(RuntimeError):
