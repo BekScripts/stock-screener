@@ -54,6 +54,14 @@ from .missed import (
     missed_records,
     record_missed_slot,
 )
+from .observability import (
+    OBSERVABILITY_VERSION,
+    EventStatus,
+    OperationalEventSpec,
+    event_vocabulary,
+    observability_contract,
+    observability_fingerprint,
+)
 from .orchestration import RuntimeOrchestrationOutcome, RuntimePlanner
 from .profiles import (
     OPERATIONAL_EXECUTION_TIMING_VERSION,
@@ -77,6 +85,7 @@ __all__ = [
     "DECISIONS_DIRECTORY",
     "DECISION_TRANSITIONS",
     "MISSED_SLOT_VERSION",
+    "OBSERVABILITY_VERSION",
     "OPERATIONAL_EXECUTION_TIMING_VERSION",
     "OPERATIONAL_SCORE_AVAILABILITY_VERSION",
     "PAPER_OPERATIONS_RUNTIME_BINDING_VERSION",
@@ -90,7 +99,9 @@ __all__ = [
     "AlphaTraderPaperOperationsEnvironment",
     "Code",
     "DecisionStatus",
+    "EventStatus",
     "MissedSlotRecord",
+    "OperationalEventSpec",
     "PaperBookBootstrapReport",
     "PaperOperationsRuntimeBinding",
     "PersistedStrategyDecision",
@@ -103,9 +114,12 @@ __all__ = [
     "RuntimeSubmissionAuthority",
     "StrategyDecisionStore",
     "bootstrap_paper_book",
+    "event_vocabulary",
     "execution_timing_profile",
     "expire_pending_executions",
     "missed_records",
+    "observability_contract",
+    "observability_fingerprint",
     "read_bootstrap",
     "record_missed_slot",
     "score_availability_profile",

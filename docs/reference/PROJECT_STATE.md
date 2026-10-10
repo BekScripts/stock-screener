@@ -36,9 +36,35 @@ appears without the run or the test that produced it.
 
 ## Current phase
 
-**P2.4R2 — generic soak protocol contracts — is the current checkpoint**, on
+**P2.4I — durable operational safety sensors — is the current checkpoint**, on
 `feat/p2-execution-engine`. No soak is armed, and V3 **cannot yet be armed**:
-the preflight now refuses it, correctly, for a reason found during this phase.
+the preflight refuses it, correctly, until the observation schema carries the
+counters the safety gates read.
+
+Operational runs now leave durable evidence. Eleven of the twelve declared
+journal event types are emitted by named production code, and every one of them
+is proven by a test that drives the real coordinator and the real submission
+authority rather than appending the event itself — the guard that four earlier
+phases lacked. `AlphaTraderPaperOperationsEnvironment` persists each
+reconciliation report, operational execution appends to the execution journal of
+record, and every external mutation is audited before it is sent.
+
+**P2.4I found five pre-existing defects, four of them fixed here.** All five
+share one shape: two components declared to fit together, with nothing
+exercising the join.
+
+| Defect | Effect | Status |
+| --- | --- | --- |
+| `coordinator._finish` called `slot.schedule.due_at(slot.session)` | every production run raised `TypeError`; **no operational run had ever completed** | fixed — three call sites now use `slot.due_at()` |
+| the coordinator was typed for `PaperOperationsSchedule`, the CLI passes `StrategyOperationsSchedule` | the above was invisible to mypy, because `_runtime_schedule` returns `Any` | fixed — `OperationalSchedule`/`OperationalSlot` protocols, both types checked |
+| `_ingest` passed an `ExternalExecutionFill` to `admit_fill`, which needs an `ExecutionFill` | `AttributeError` on every fill; **no fill had ever been booked** | fixed — `execution_fill_from`, extracted from the certified canary so there is one translation |
+| the runtime execution journal was created and verified but never appended to | the record of record for execution stayed permanently empty | fixed — §14, the authority appends the full lifecycle |
+| `RuntimeSubmissionAuthority` is constructed nowhere in production | `paper-ops run-due` cannot execute a decision; it reports `EXECUTION_BLOCKED` | **not fixed — see Known limitations** |
+
+The fifth is deliberately left alone: wiring submission into the CLI would turn
+an inert command into one that can place paper orders, which is a change in
+operational capability rather than an observability fix, and needs explicit
+operator authorisation.
 
 Gates are now protocol *data*. `PaperShadowSoakProtocol` holds
 `declared_gate_ids` and `gate_thresholds` as fields validated against the
@@ -310,6 +336,13 @@ frozen at the same commit; P2 branched from it.
 | P2.4R2 activation | `PaperShadowSoakActivation` — version as data |
 | P2.4R2 observation schema | **INSUFFICIENT** — 14 safety gates unreadable |
 | P2.4R2 V3 armable | **NO** — the preflight refuses until the schema carries the counters |
+| P2.4I observability | `PAPER_OPERATIONS_OBSERVABILITY_V1`, fingerprint `0fa85983277222e8…` |
+| P2.4I event vocabulary | 12 declared: 11 EMITTED with named production emitters, 1 RESERVED |
+| P2.4I request audit | `EXTERNAL_REQUEST_AUDIT_V1` — every mutation audited *before* dispatch |
+| P2.4I fill translation | `EXTERNAL_FILL_TRANSLATION_V1` — one definition, shared with the canary |
+| P2.4I accounting link | provider execution id → `EXT:<id>` → `EXEC_FILL:EXT:<id>` |
+| P2.4I execution journal | operational execution appends `ORDER_CREATED`/`SUBMITTED`/`ACKNOWLEDGED`/`FILLED`/`FILL_APPLIED` |
+| P2.4I schedule join | `OperationalSchedule`/`OperationalSlot` protocols — both schedule types checked |
 | H2 broker-paper orders | **NOT AUTHORISED** — its own frozen ladder says so |
 | Live trading | **NOT IMPLEMENTED, NOT AUTHORIZED** |
 | Production risk thresholds | **NOT AUTHORIZED** |
@@ -317,6 +350,20 @@ frozen at the same commit; P2 branched from it.
 | Production correlation thresholds | **NOT AUTHORIZED** |
 | Broker authority | **PAPER READ/SUBMIT, CERTIFIED — NO LIVE AUTHORITY** |
 | Live trading | **NOT AUTHORIZED** |
+
+**Observability is not authority (P2.4I).** A sensor records what an authority
+decided. It may not select a security, change a weight, change a risk decision,
+change a quantity, create an order, repair accounting, retry a broker mutation,
+cancel an unknown order, or authorise live trading.
+`test_no_sensor_module_can_reach_a_venue` asserts the observability module
+contains none of the forms that could.
+
+There is exactly one place where recording changes behaviour, and it is
+deliberate: **a mutation that cannot be audited is not sent.** The request audit
+writes its attempt record before dispatch, and a failure to write raises
+`EXTERNAL_REQUEST_AUDIT_FAILED` with zero network calls made. Reads are
+asymmetric and proceed — a read changes nothing, and failing reconciliation
+closed over a disk error would block operations for no safety gain.
 
 **The H2 branch is semantically frozen.** Its arm binds `code_commit` to
 `703cf847e550c21bf133d307281183ba3c9d8f24`, so a further commit on that branch
@@ -3867,6 +3914,44 @@ care — nothing has a foreign key *to* it, so dropping it cascades to nothing.
 
 ## Known limitations
 
+**`paper-ops run-due` cannot execute a decision (P2.4I).** `RuntimePlanner` is
+built with no `submit` authority — `cli.py` constructs it as
+`RuntimePlanner(root=…, binding=…, slot=…, calendar=…)` and
+`RuntimeSubmissionAuthority` is constructed **nowhere** in `src/`. An execution
+slot therefore advances the decision to `EXECUTION_BLOCKED` and raises
+`RUNTIME_BINDING_INVALID`. Observation and decision slots work; execution does
+not.
+
+This is not fixed here on purpose. Wiring the submission authority into the CLI
+would turn a command that currently cannot trade into one that can place paper
+orders — a change in what the operational control surface *does*, not an
+observability change, and the same class of action as re-arming. It needs
+explicit operator authorisation and its own phase.
+
+The authority itself is complete and exercised: every submission test in
+`tests/integration/test_p2_4i_safety_sensors.py` drives the real
+`RuntimeSubmissionAuthority` over the real adapter, and
+`test_operational_execution_appends_to_the_execution_journal` takes three orders
+and three fills through the full chain into the accounting book.
+
+**`DUPLICATE_IGNORED` is defensive, not exercised (P2.4I).** `_ingest` records
+whichever answer accounting gave, and accounting can only answer "already
+present" on a re-presentation. No production path produces one: the adapter
+collapses duplicate executions *within* a read, and after a successful ingest
+the book has moved, so a resumed run re-plans different quantities and the
+execution journal refuses the contradiction before any mutation. The branch
+stays because a sensor that silently drops an unexpected answer is worse than
+one that records it, but it is not claimed as evidence. The exactly-once
+property is tested where it is implemented, in
+`test_the_same_execution_admitted_twice_moves_the_book_once`.
+
+**A declared fee schedule is required to book a fill (P2.4I).**
+`RuntimeSubmissionAuthority.fee_schedule` defaults to `None`, and a venue
+execution that states no fee is then refused with `BROKER_FILL_FEE_UNKNOWN`
+rather than admitted at zero. A commission-free venue must be declared as an
+explicit `Decimal(0)`. "The venue charges nothing" and "nobody checked" must not
+look the same in the book.
+
 **The external paper endpoint is implemented but not certified (P2.2C).** The
 concrete HTTPS transport exists and is verified offline against
 `httpx.MockTransport`, but nothing in this repository has spoken to a real
@@ -5699,6 +5784,43 @@ requests for the 762-company cohort from **762 to 353**.
 ---
 
 ## Regression requirements
+
+**P2.4I adds `tests/integration/test_p2_4i_safety_sensors.py`** — 47 test
+functions, 57 cases with parametrisation. Its
+load-bearing test is
+`test_every_emitted_event_has_a_real_production_emitter`: it drives the real
+coordinator, environment, strategy, risk engine, planner, certified adapter and
+accounting book over a fake transport, and asserts that every event the
+observability contract classifies `EMITTED` appears in the journal. It appends
+no event itself and matches no strings. **This is the guard four earlier phases
+lacked** — V2 declared 22 gates with no evaluators, P2.4R2 found evaluators
+reading fields no record carried, P2.4R3 found six event types with no emitters,
+and each was discovered only when something downstream tried to use it.
+
+The same file also pins: the order-submission chain and its provider identity;
+the plan's binding to the frozen decision it executed; one gate consultation
+recorded per order; a kill before the first order submitting nothing; a kill
+between two orders stopping at exactly one POST with two recorded gate checks,
+one permitting and one refusing; the three-link accounting chain of custody with
+the ledger event asserted to exist; a resumed run refusing before any mutation;
+reconciliation recorded clean, recorded broken, and persisted; an unexplained
+remote position blocking without repair; the input freeze recording stale as
+stale and unreadable as unreadable; the execution journal holding the full
+lifecycle, verifying, anchored, written before the order is sent, and carrying
+no quantity of its own; the request audit's exact host classification,
+identifier-free route classes, pre-dispatch attempt records, and a failed audit
+blocking a mutation with zero network calls; and a credential scan over every
+durable artefact a run produces.
+
+**Both schedule types must satisfy the coordinator's contract.**
+`test_both_schedule_types_satisfy_the_coordinator_contract` asserts
+`PaperOperationsSchedule` and `StrategyOperationsSchedule` both conform to
+`OperationalSchedule`, and that their slots conform to `OperationalSlot`
+including the zero-argument `due_at()`. This exists because the coordinator was
+annotated for the first while production passed the second, `_runtime_schedule`
+returned `Any` so mypy never saw it, and three call sites reached a slot's due
+time through a signature only one of them had — raising `TypeError` on every
+production run.
 
 The B2 checkpoint adds `test_storage_contract.py`, `test_storage_local.py`,
 `test_storage_equivalence.py` and `test_storage_neutral.py`: local/memory backend

@@ -41,6 +41,7 @@ header.
 
 from __future__ import annotations
 
+import contextlib
 import json
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Final
@@ -222,6 +223,15 @@ class AlpacaPaperHttpTransport:
 
     Attributes:
         origin: The approved paper origin. Validated, and the only host reached.
+        audit: A `RequestAuditStore`, or `None`. When present, every mutation is
+            recorded *before* dispatch and the request is not sent if that
+            record cannot be persisted — an unaudited mutation is worse than a
+            missed one, because a missed mutation is visible and an unaudited
+            one is not. `None` leaves the transport unaudited, which is correct
+            for a one-shot preflight read and not for an operational run.
+        operations_run_id: Which operational run owns these requests, for the
+            audit's causal linkage.
+        account_binding_fingerprint: Which paper account, digested.
         key_id: The paper key id, held as a secret.
         secret_key: The paper secret, held as a secret.
         connect_timeout: Seconds to establish a connection.
@@ -235,6 +245,9 @@ class AlpacaPaperHttpTransport:
     origin: str
     key_id: SecretStr
     secret_key: SecretStr
+    audit: Any = None
+    operations_run_id: str = ""
+    account_binding_fingerprint: str = ""
     connect_timeout: float = CONNECT_TIMEOUT_SECONDS
     read_timeout: float = READ_TIMEOUT_SECONDS
     client: httpx.Client | None = None
@@ -350,6 +363,7 @@ class AlpacaPaperHttpTransport:
         assert self.client is not None  # noqa: S101 - built in __post_init__
         target = self._resolve(path)
         content = self._encode(json_body)
+        attempt = self._open_audit(method=method, path=path, json_body=json_body)
         # Only the network call is inside the try. Encoding happens above it on
         # purpose: a payload that cannot be serialised fails before any I/O, so
         # the request provably did not arrive. Classifying that as a transport
@@ -366,8 +380,103 @@ class AlpacaPaperHttpTransport:
             )
         except Exception as error:
             failure = _classify(error)
+            self._close_audit(attempt, result=str(failure.outcome), status=None)
             return BrokerResponse(outcome=failure.outcome, detail=failure.detail)
-        return self._read(response, method)
+        reply = self._read(response, method)
+        self._close_audit(attempt, result=str(reply.outcome), status=reply.status_code)
+        return reply
+
+    def _open_audit(
+        self,
+        *,
+        method: RequestMethod,
+        path: str,
+        json_body: dict[str, Any] | None,
+    ) -> Any:
+        """Record the attempt before anything is dispatched.
+
+        Args:
+            method: The verb.
+            path: The provider path.
+            json_body: The payload, read only for its client order id.
+
+        Returns:
+            The pre-dispatch record, or `None` when no audit store is bound.
+
+        Raises:
+            ExecutionError: `EXTERNAL_REQUEST_AUDIT_FAILED` when a **mutation**
+                cannot be audited. A read whose audit fails is allowed to
+                proceed: a read changes nothing, and failing a reconciliation
+                read closed would block operations over a disk problem. A
+                mutation is the opposite — it is the thing that must never
+                happen unobserved.
+        """
+        if self.audit is None:
+            return None
+        from datetime import UTC, datetime
+
+        from .request_audit import (
+            MUTATING_METHODS,
+            OperationClass,
+            RequestAuditRecord,
+            classify_destination,
+            route_class_for,
+        )
+
+        mutating = str(method) in MUTATING_METHODS
+        route = route_class_for(path)
+        now = datetime.now(UTC).isoformat()
+        client_order_id = str((json_body or {}).get("client_order_id", "") or "")
+        record = RequestAuditRecord(
+            attempt_id=_attempt_id(
+                origin=self.origin,
+                method=str(method),
+                route=route,
+                client_order_id=client_order_id,
+                attempted_at=now,
+            ),
+            destination=classify_destination(self.origin),
+            operation=OperationClass.MUTATION if mutating else OperationClass.READ,
+            method=str(method),
+            route_class=route,
+            attempted_at=now,
+            client_order_id=client_order_id,
+            account_binding_fingerprint=self.account_binding_fingerprint,
+            operations_run_id=self.operations_run_id,
+        )
+        try:
+            self.audit.record_attempt(record)
+        except Exception:
+            if mutating:
+                raise
+            return None
+        return record
+
+    def _close_audit(self, attempt: Any, *, result: str, status: int | None) -> None:
+        """Append the outcome beside its attempt, never overwriting it.
+
+        A failure to write the *result* is deliberately swallowed: the mutation
+        has already happened, and raising here would turn a successful trade
+        into an exception the caller would have to interpret. The attempt record
+        remains, which is what makes the request discoverable as unresolved.
+        """
+        if attempt is None or self.audit is None:
+            return
+        import dataclasses
+        from datetime import UTC, datetime
+
+        completed = dataclasses.replace(
+            attempt,
+            sent=True,
+            result=result,
+            status_code=status,
+            completed_at=datetime.now(UTC).isoformat(),
+        )
+        with contextlib.suppress(Exception):
+            # The request already happened; raising here would turn a completed
+            # mutation into an exception the caller must interpret. The attempt
+            # record remains, which is what makes it discoverable as unresolved.
+            self.audit.record_result(completed)
 
     @staticmethod
     def _encode(json_body: dict[str, Any] | None) -> bytes | None:
@@ -508,3 +617,30 @@ class AlpacaPaperHttpTransport:
     def __exit__(self, *_: object) -> None:
         """Close the pool."""
         self.close()
+
+
+def _attempt_id(
+    *, origin: str, method: str, route: str, client_order_id: str, attempted_at: str
+) -> str:
+    """Derive an identity for one request attempt.
+
+    Derived from the attempt's own inputs rather than generated, so a retry of
+    the same semantic request is recognisable — and the instant is included
+    because two legitimate reads of one route are different attempts.
+
+    Args:
+        origin: The destination origin.
+        method: The verb.
+        route: The route class.
+        client_order_id: The derived client order id, where there is one.
+        attempted_at: When.
+
+    Returns:
+        The id.
+    """
+    import hashlib
+
+    digest = hashlib.sha256(
+        f"{origin}|{method}|{route}|{client_order_id}|{attempted_at}".encode()
+    ).hexdigest()
+    return f"req-{digest[:24]}"

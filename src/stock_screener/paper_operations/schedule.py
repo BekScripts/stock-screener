@@ -239,6 +239,18 @@ class ScheduledSlot:
     schedule: PaperOperationsSchedule
     session: str
 
+    def due_at(self) -> datetime:
+        """The instant this slot becomes due.
+
+        A zero-argument accessor on the slot, matching `StrategySlot.due_at`.
+        The coordinator reaches a slot's due time through this rather than
+        through `slot.schedule.due_at(slot.session)`, because the two schedule
+        types do not share that signature: the V1.1 strategy schedule needs a
+        purpose as well as a session, so the longer form type-errors on every
+        run the production CLI makes.
+        """
+        return self.schedule.due_at(self.session)
+
     def run_id(self, *, account_binding_fingerprint: str, mode: OperationsMode) -> str:
         """Derive this slot's run id.
 

@@ -85,6 +85,7 @@ from .environment import (
     prove_paper_environment,
     refuse_live,
 )
+from .fills import FILL_TRANSLATION_VERSION, execution_fill_from
 from .http_transport import (
     CONNECT_TIMEOUT_SECONDS,
     KEY_ID_HEADER,
@@ -126,6 +127,16 @@ from .report import (
     CREDENTIAL_PATTERNS,
     ExternalPaperExecutionReport,
     check_no_credentials,
+)
+from .request_audit import (
+    EXTERNAL_REQUEST_AUDIT_VERSION,
+    MUTATING_METHODS,
+    Destination,
+    OperationClass,
+    RequestAuditRecord,
+    RequestAuditStore,
+    classify_destination,
+    route_class_for,
 )
 from .session import VENUE_BINDING_POLICY, ExecutionVenue, VenueBinding
 from .status import (
@@ -176,8 +187,11 @@ __all__ = [
     "CREDENTIAL_PATTERNS",
     "EXECUTION_MANIFEST_VERSION_V1_2",
     "EXTERNAL_RECONCILIATION_POLICY",
+    "EXTERNAL_REQUEST_AUDIT_VERSION",
+    "FILL_TRANSLATION_VERSION",
     "KEY_ID_HEADER",
     "LIVE_HOSTS",
+    "MUTATING_METHODS",
     "OPEN_ORDER_QUERY",
     "ORDERS_PATH",
     "ORDER_HISTORY_QUERY",
@@ -209,6 +223,7 @@ __all__ = [
     "CanaryLeg",
     "CancellationOutcome",
     "CancellationResult",
+    "Destination",
     "EnvironmentProof",
     "ExecutionVenue",
     "ExternalAsset",
@@ -225,10 +240,13 @@ __all__ = [
     "ExternalReadEvidence",
     "ExternalReconciliationResult",
     "FakeTransport",
+    "OperationClass",
     "PaperBrokerReadiness",
     "PaperPreflightReport",
     "ProviderPaperEnvironmentProof",
     "ReconciliationVerdict",
+    "RequestAuditRecord",
+    "RequestAuditStore",
     "RequestMethod",
     "StatusReading",
     "SubmissionIntent",
@@ -243,7 +261,9 @@ __all__ = [
     "approved_paper_origin",
     "canonical_evidence",
     "check_no_credentials",
+    "classify_destination",
     "client_order_id_for",
+    "execution_fill_from",
     "external_manifest",
     "is_our_client_order_id",
     "origin_fingerprint",
@@ -254,6 +274,7 @@ __all__ = [
     "reconcile_external",
     "refuse_live",
     "resolve_submission",
+    "route_class_for",
     "status_map_policy",
     "submit_order",
 ]

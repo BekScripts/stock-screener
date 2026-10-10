@@ -110,6 +110,8 @@ class Code:
     """An execution the venue returned does not belong to the order it was
     requested for. Refused rather than ingested — attributing one order's fill
     to another puts quantity in the book that nothing authorised."""
+    # observability: a mutation that cannot be recorded is not sent
+    EXTERNAL_REQUEST_AUDIT_FAILED = "EXTERNAL_REQUEST_AUDIT_FAILED"
     EXTERNAL_SUBMISSION_BLOCKED = "EXTERNAL_SUBMISSION_BLOCKED"
     EXTERNAL_VENUE_MISMATCH = "EXTERNAL_VENUE_MISMATCH"
     UNEXPECTED_REMOTE_ORDER = "UNEXPECTED_REMOTE_ORDER"
@@ -143,6 +145,7 @@ V1_2_ADDED_ERROR_CODES: frozenset[str] = frozenset(
         "BROKER_STATUS_UNMAPPED",
         "BROKER_SYMBOL_MAPPING_UNRESOLVED",
         "BROKER_UNREACHABLE",
+        "EXTERNAL_REQUEST_AUDIT_FAILED",
         "EXTERNAL_SUBMISSION_BLOCKED",
         "EXTERNAL_VENUE_MISMATCH",
         "LIVE_TRADING_NOT_AUTHORIZED",

@@ -28,8 +28,9 @@ submission are supplied by the caller, so this module cannot invent either.
 
 from __future__ import annotations
 
+import contextlib
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from .errors import Code, OperationsError
 from .health import HealthCheck, HealthState, PaperOperationsHealthReport
@@ -41,10 +42,11 @@ from .reports import PaperOperationsRunReport, paper_operations_manifest
 from .run_journal import OperationsRunJournal, RunEventType
 
 if TYPE_CHECKING:
+    from datetime import datetime
+
     from .arming import ArmingStore
     from .clock import Clock
     from .models import OperationalInput
-    from .schedule import PaperOperationsSchedule, ScheduledSlot
 
 __all__ = [
     "OperationsEnvironment",
@@ -106,6 +108,65 @@ class OperationsEnvironment(Protocol):
         Returns:
             The fingerprint.
         """
+        ...
+
+
+@runtime_checkable
+class OperationalSlot(Protocol):
+    """What the coordinator needs from a scheduled slot.
+
+    Structural rather than nominal, because two schedule types legitimately
+    produce slots: the P2.3 `ScheduledSlot` (one run per session) and the V1.1
+    `StrategySlot` (a decision and an execution in one session). The coordinator
+    gates runs and does not care which, but it does care that both answer the
+    same questions — and that is the part that was never checked.
+
+    `due_at` takes no argument here on purpose. The two schedules' own `due_at`
+    methods have different signatures — the strategy schedule needs a purpose as
+    well as a session — so reaching a slot's due time through
+    `slot.schedule.due_at(slot.session)` type-errored on every run the
+    production CLI made. The fix was to ask the slot, which knows its own
+    purpose, and this protocol is what keeps it fixed.
+    """
+
+    @property
+    def session(self) -> str:
+        """The market session this slot belongs to."""
+        ...
+
+    def due_at(self) -> datetime:
+        """When this slot becomes due."""
+        ...
+
+    def run_id(self, *, account_binding_fingerprint: str, mode: OperationsMode) -> str:
+        """This slot's derived run id."""
+        ...
+
+
+@runtime_checkable
+class OperationalSchedule(Protocol):
+    """What the coordinator needs from a schedule.
+
+    Deliberately narrow: four members, no `due_at`. A schedule that cannot
+    answer these cannot drive a coordinated run, and one that answers more is
+    free to.
+    """
+
+    @property
+    def schedule_id(self) -> str:
+        """Which schedule."""
+        ...
+
+    def fingerprint(self) -> str:
+        """Its digest."""
+        ...
+
+    def slot_for(self, now: str) -> Any:
+        """The slot open at an instant, or None."""
+        ...
+
+    def missed_slot_for(self, now: str) -> Any:
+        """The most recent slot whose window closed unused, or None."""
         ...
 
 
@@ -211,7 +272,7 @@ class PaperOperationsCoordinator:
 
     root: Any
     clock: Clock
-    schedule: PaperOperationsSchedule
+    schedule: OperationalSchedule
     environment: OperationsEnvironment
     arming: ArmingStore
     code_commit: str = ""
@@ -337,7 +398,7 @@ class PaperOperationsCoordinator:
                 clock=self.clock,
                 event_type=RunEventType.RUN_SCHEDULED,
                 run_id=run_id,
-                detail=f"slot {missed.session} was due at {missed.schedule.due_at(missed.session)}",
+                detail=f"slot {missed.session} was due at {missed.due_at()}",
             )
             self._journal.append(
                 clock=self.clock,
@@ -356,6 +417,7 @@ class PaperOperationsCoordinator:
             session=missed.session,
             mode=mode,
             status=RunStatus.MISSED,
+            scheduled_for=missed.due_at().isoformat(),
             blockers=(
                 f"{Code.MISSED_OPERATIONAL_RUN}: the window for {missed.session} closed "
                 "before this process looked; nothing is backfilled",
@@ -363,7 +425,7 @@ class PaperOperationsCoordinator:
         )
 
     def _already_finished(
-        self, *, run_id: str, slot: ScheduledSlot, mode: OperationsMode, state: RunState
+        self, *, run_id: str, slot: OperationalSlot, mode: OperationsMode, state: RunState
     ) -> RunOutcome:
         """Report an existing finished run rather than starting another.
 
@@ -387,6 +449,7 @@ class PaperOperationsCoordinator:
             session=slot.session,
             mode=mode,
             status=status,
+            scheduled_for=slot.due_at().isoformat(),
             blockers=(
                 f"{Code.RUN_ALREADY_COMPLETED}: run {run_id} already finished as "
                 f"{state}; this invocation is a no-op rather than a second run",
@@ -404,6 +467,7 @@ class PaperOperationsCoordinator:
         status: RunStatus,
         blockers: tuple[str, ...] = (),
         health: PaperOperationsHealthReport | None = None,
+        scheduled_for: str = "",
     ) -> RunOutcome:
         """Build an outcome for a run that did not act.
 
@@ -414,6 +478,10 @@ class PaperOperationsCoordinator:
             status: How it ended.
             blockers: Why.
             health: The gate's verdict, when one was taken.
+            scheduled_for: When the slot was due, ISO-8601. Passed in by the
+                caller that holds the slot rather than re-derived here: this
+                method is also reached when nothing is due, and there is then
+                no slot whose due time could be asked for.
 
         Returns:
             The outcome.
@@ -425,7 +493,7 @@ class PaperOperationsCoordinator:
             session=session,
             mode=mode,
             status=status,
-            scheduled_for=(self.schedule.due_at(session).isoformat() if session else ""),
+            scheduled_for=scheduled_for,
             started_at=self.clock.iso(),
             ended_at=self.clock.iso(),
             health_before=str(health.state) if health else "",
@@ -742,6 +810,124 @@ class PaperOperationsCoordinator:
             account_binding_fingerprint=account,
         )
 
+    def _record_inputs_frozen(self, *, run_id: str, now: str) -> None:
+        """Record the operational inputs this run depends on, as they were.
+
+        Each source's `as_of`, its digest and its freshness verdict. A stale
+        source is recorded as stale rather than omitted: the gate that asks
+        "did an execution happen on stale data" needs both halves, and absence
+        of an input record cannot distinguish "fresh" from "never checked".
+
+        Args:
+            run_id: The run.
+            now: The operational instant.
+        """
+        from stock_screener.execution import fingerprint_of
+
+        try:
+            inputs = self.environment.required_inputs()
+        except Exception as exc:
+            self._journal.append(
+                clock=self.clock,
+                event_type=RunEventType.INPUTS_FROZEN,
+                run_id=run_id,
+                detail=f"{type(exc).__name__}: the required inputs could not be read",
+                evidence=(("inputs", "UNREADABLE"),),
+            )
+            return
+        sources: list[dict[str, Any]] = [
+            {
+                "name": row.name,
+                "as_of": row.as_of,
+                "source_fingerprint": row.source_fingerprint,
+                "max_age_seconds": row.policy.max_age_seconds,
+                "fresh": bool(row.is_fresh(now)),
+                "present": bool(row.source_fingerprint),
+            }
+            for row in inputs
+        ]
+        body: dict[str, Any] = {"evaluated_at": now, "sources": sources}
+        stale = [str(row["name"]) for row in sources if not row["fresh"]]
+        missing = [str(row["name"]) for row in sources if not row["present"]]
+        self._journal.append(
+            clock=self.clock,
+            event_type=RunEventType.INPUTS_FROZEN,
+            run_id=run_id,
+            detail=(
+                f"{len(inputs)} source(s); stale {stale}; missing {missing}"
+                if (stale or missing)
+                else f"{len(inputs)} source(s), all fresh and present"
+            ),
+            evidence=(
+                ("inputs", fingerprint_of(body)),
+                ("stale_count", str(len(stale))),
+                ("missing_count", str(len(missing))),
+            ),
+        )
+
+    def _record_reconciled(self, *, run_id: str, now: str) -> None:
+        """Record the three-way reconciliation verdict and persist its report.
+
+        Both are done: the journal entry links the verdict to this run, and
+        `write_reconciliation` keeps the report itself. That method existed
+        with no caller, which is why no soak gate could read a reconciliation
+        result.
+
+        Args:
+            run_id: The run.
+            now: The operational instant.
+        """
+        from stock_screener.execution import fingerprint_of
+
+        try:
+            result = self.environment.reconcile()
+        except Exception as exc:
+            self._journal.append(
+                clock=self.clock,
+                event_type=RunEventType.RECONCILED,
+                run_id=run_id,
+                detail=f"{type(exc).__name__}: reconciliation did not complete",
+                evidence=(("reconciliation", "UNREACHABLE"),),
+            )
+            return
+        body = {
+            "evaluated_at": now,
+            "verdict": str(result.get("verdict", "")),
+            "may_execute": bool(result.get("may_execute", False)),
+            "remote_state_unknown": bool(result.get("remote_state_unknown", False)),
+            "unexpected_remote_orders": int(result.get("unexpected_remote_orders", 0)),
+            "unexplained_remote_positions": int(result.get("unexplained_remote_positions", 0)),
+        }
+        self._journal.append(
+            clock=self.clock,
+            event_type=RunEventType.RECONCILED,
+            run_id=run_id,
+            detail=(
+                f"{body['verdict']}; may_execute={body['may_execute']}; "
+                f"unexpected orders {body['unexpected_remote_orders']}; "
+                f"unexplained positions {body['unexplained_remote_positions']}; "
+                f"remote_state_unknown={body['remote_state_unknown']}"
+            ),
+            evidence=(
+                ("reconciliation", fingerprint_of(body)),
+                # The verdict and the counts go in the evidence, not only into
+                # the prose detail. A gate that has to parse a sentence to find
+                # out whether reconciliation passed is a gate that will one day
+                # read the wrong sentence.
+                ("verdict", str(body["verdict"])),
+                ("may_execute", str(body["may_execute"])),
+                ("remote_state_unknown", str(body["remote_state_unknown"])),
+                ("unexpected_remote_orders", str(body["unexpected_remote_orders"])),
+                ("unexplained_remote_positions", str(body["unexplained_remote_positions"])),
+            ),
+        )
+        persist = getattr(self.environment, "persist_reconciliation", None)
+        if persist is not None:
+            with contextlib.suppress(Exception):
+                # The verdict is already journaled above, so failing to keep
+                # the fuller report costs detail rather than the safety fact.
+                persist(result=result, run_id=run_id, now=now)
+
     def _escalate(self, *, health: PaperOperationsHealthReport, run_id: str, account: str) -> None:
         """Open incidents for what health found, killing on critical conditions.
 
@@ -791,7 +977,7 @@ class PaperOperationsCoordinator:
         self,
         *,
         run_id: str,
-        slot: ScheduledSlot,
+        slot: OperationalSlot,
         mode: OperationsMode,
         account: str,
         now: str,
@@ -838,6 +1024,15 @@ class PaperOperationsCoordinator:
             detail=f"health is {health.state}",
             evidence=(("health", health.fingerprint()),),
         )
+        # Record the two safety facts the soak gates need and nothing else
+        # durably held: what the inputs actually were, and what reconciliation
+        # actually said. Both are written whether they passed or failed —
+        # evidence that a stale input blocked a run is as important as evidence
+        # that a fresh one permitted it, and a store that only kept the clean
+        # cases would show an unblemished record of exactly what it failed to
+        # record.
+        self._record_inputs_frozen(run_id=run_id, now=now)
+        self._record_reconciled(run_id=run_id, now=now)
         self._escalate(health=health, run_id=run_id, account=account)
 
         switch = self._kill.current()
@@ -974,7 +1169,7 @@ class PaperOperationsCoordinator:
         self,
         *,
         run_id: str,
-        slot: ScheduledSlot,
+        slot: OperationalSlot,
         mode: OperationsMode,
         status: RunStatus,
         health: PaperOperationsHealthReport,
@@ -1014,7 +1209,7 @@ class PaperOperationsCoordinator:
             session=slot.session,
             mode=mode,
             status=status,
-            scheduled_for=slot.schedule.due_at(slot.session).isoformat(),
+            scheduled_for=slot.due_at().isoformat(),
             started_at=health.evaluated_at,
             ended_at=self.clock.iso(),
             health_before=str(health.state),

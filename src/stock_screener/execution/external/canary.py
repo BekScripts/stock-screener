@@ -48,13 +48,13 @@ from stock_screener.portfolio_risk import Action, ExecutionIntent
 from ..accounting_adapter import admit_fill
 from ..authorization import BookBinding
 from ..errors import Code, ExecutionError
-from ..events import ExecutionFill
 from ..fingerprint import fingerprint_of
-from ..models import AttributionShare, OrderSide
+from ..models import OrderSide
 from ..planner import ExecutionSizingSnapshot, SizingPrice, plan_execution
 from ..versions import REQUIRED_ACCOUNTING_VERSION
 from .alpaca import PROVIDER, AlpacaPaperAdapter
 from .client_ids import client_order_id_for
+from .fills import execution_fill_from
 from .http_transport import TRANSPORT_VERSION
 from .reconciliation import reconcile_external
 from .session import ExecutionVenue, VenueBinding
@@ -553,22 +553,19 @@ class ExternalPaperCanary:
         admitted = Decimal(0)
         events: list[str] = []
         for remote in fills:
-            priced = remote if remote.fee_is_known else remote.with_fee(fee_schedule)
-            fill = ExecutionFill(
-                fill_id=f"EXT:{remote.remote_fill_id}",
+            # One translation, shared with the operational submission authority
+            # rather than duplicated there: the derived fill id is what makes
+            # the handoff exactly-once, and two copies of that rule would be
+            # two chances to diverge on it.
+            fill = execution_fill_from(
+                remote,
                 order_id=leg.order_id,
                 identity=self.identity,
                 side=leg.side,
-                quantity=priced.quantity,
-                price=priced.price,
-                fee=priced.require_fee(),
-                effective_at=priced.reported_at,
-                attribution=(
-                    AttributionShare(strategy_id=CANARY_STRATEGY, quantity=priced.quantity),
-                ),
-                source_fingerprint=fingerprint_of(priced.body()),
-                venue=str(ExecutionVenue.EXTERNAL_PAPER),
+                strategy_id=CANARY_STRATEGY,
+                fee_schedule=fee_schedule,
             )
+            priced = remote if remote.fee_is_known else remote.with_fee(fee_schedule)
             result = admit_fill(fill, ledger=ledger, store=store)
             events.append(str(result["accounting_event_id"]))
             if result["written"]:

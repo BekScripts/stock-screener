@@ -24,6 +24,7 @@ submission gate is consulted before every single mutation.
 
 from __future__ import annotations
 
+import contextlib
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -353,6 +354,18 @@ class RuntimePlanner:
 
         # The authority chain. Every order comes from here and the gate is
         # consulted before each one.
+        # The coordinator supplies the journal and clock; handing them to the
+        # submission authority is what makes the plan, the per-mutation gate
+        # value, the orders and the fills durable. Without them the authority
+        # still works and records nothing, which was the state P2.4R3 refused
+        # to score.
+        for attribute, value in (
+            ("journal", kwargs.get("journal")),
+            ("clock", clock),
+        ):
+            if getattr(self.submit, attribute, None) is None and value is not None:
+                with contextlib.suppress(AttributeError):
+                    setattr(self.submit, attribute, value)
         result = self.submit(
             decision=record.decision,
             gate=gate,

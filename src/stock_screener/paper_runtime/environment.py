@@ -194,6 +194,46 @@ class AlphaTraderPaperOperationsEnvironment:
             ),
         }
 
+    def persist_reconciliation(self, *, result: dict[str, Any], run_id: str, now: str) -> None:
+        """Keep the reconciliation report itself, beside the journal entry.
+
+        `PortfolioStore.write_reconciliation` has existed since P1 with no
+        caller, which is why no soak gate could read a reconciliation result.
+        The journal entry records the verdict and links it to the run; this
+        keeps the report, including the breaks — a store that only kept clean
+        reconciliations would show an unblemished record of exactly what it
+        failed to record.
+
+        Args:
+            result: What `reconcile` returned.
+            run_id: The run it belongs to.
+            now: The operational instant.
+        """
+        from stock_screener.paper_operations import atomic_write_verified
+
+        from .binding import RUNTIME_DIRECTORY
+
+        atomic_write_verified(
+            self.root / RUNTIME_DIRECTORY / "reconciliations" / f"{run_id}.json",
+            {
+                "version": "OPERATIONAL_RECONCILIATION_RECORD_V1",
+                "run_id": run_id,
+                "evaluated_at": now,
+                "runtime_binding_fingerprint": self.binding.fingerprint(),
+                "account_binding_fingerprint": self.binding.account_binding_fingerprint,
+                "accounting_generation": self.binding.accounting_generation,
+                "execution_journal_generation": self.binding.execution_journal_generation,
+                "accounting_head": self.accounting_state_fingerprint(),
+                "bootstrap_epoch": self.binding.bootstrap_epoch,
+                # Nested, not splatted. Flattening the provider-derived result
+                # into this record would let a future reconcile key — `run_id`,
+                # `version` — silently overwrite the record's own provenance,
+                # and the overwritten field is exactly the one a reader would
+                # trust to say which run this belonged to.
+                "result": {str(key): value for key, value in result.items()},
+            },
+        )
+
     def required_inputs(self) -> tuple[OperationalInput, ...]:
         """The inputs this run depends on, with their real freshness state.
 
