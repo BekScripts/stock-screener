@@ -36,11 +36,20 @@ appears without the run or the test that produced it.
 
 ## Current phase
 
-**P2.4 V2 — the session-based paper shadow soak — is ARMED**, on
-`feat/p2-execution-engine`, collecting prospective evidence at 0 of 20. The
-correct verdict immediately after arming is B, not A: the twenty sessions it
-will be scored on had not happened when the protocol was frozen, and that
-ordering is the whole design.
+**P2.4R — soak verification infrastructure — is the current checkpoint**, on
+`feat/p2-execution-engine`. No soak is armed.
+
+**P2.4 V2 is HALTED at 0 of 20**, reason
+`SOAK_V2_SCORER_AND_DRILL_CONTRACT_INCOMPLETE`, classification
+`PROGRAM_INTEGRATION_GAP`. It declared 22 promotion and safety gates, was
+frozen, tagged and armed against the real paper account — and the qualifying
+commit contained no code able to evaluate one of them. The protocol was
+unscoreable from the moment it was sealed, and nothing objected, because a gate
+declared as a string in JSON looks exactly like a gate that works. Its evidence
+is preserved byte-identical and its fingerprint is retired.
+
+**P2.4 V1 remains HALTED at 0 of 20**, reason
+`CONCRETE_OPERATIONS_ENVIRONMENT_MISSING`.
 
 **P2.3.1C is complete and frozen** at `p2-concrete-paper-operations-complete`
 (`042a7b2`). The real paper runtime is bootstrapped against the live Alpaca
@@ -278,6 +287,15 @@ frozen at the same commit; P2 branched from it.
 | P2.4 V2 calendar | `US_EQUITY_OPERATIONAL_CALENDAR_2026Q4_2027Q1_V1` |
 | P2.4 V2 early closes | 2026-11-27 and 2026-12-24 at **13:00 ET** |
 | S1.0 16:00 vs session close | **LATENT CONFLICT** — outside the armed window |
+| P2.4 V2 | **HALTED 0/20** — `SOAK_V2_SCORER_AND_DRILL_CONTRACT_INCOMPLETE` |
+| P2.4R | **SOAK VERIFICATION INFRASTRUCTURE** |
+| P2.4R scorer | `PAPER_SHADOW_SOAK_SCORER_V1` — session based, 4 verdicts |
+| P2.4R gate registry | `PAPER_SHADOW_SOAK_GATE_REGISTRY_V1` — 24 gates, all executable |
+| P2.4R gate bijection | **BOTH DIRECTIONS** — undeclared known check also refused |
+| P2.4R drill evidence | `PAPER_OPERATIONS_DRILL_EVIDENCE_V2` — binds protocol, commit, engine, policy |
+| P2.4R V1 drills admissible for a new protocol | **NO** — they bind nothing |
+| P2.4R pre-arm self-check | `PAPER_SHADOW_SOAK_PREFLIGHT_V1`, no escape hatch |
+| P2.4R A/B/C/FAIL reachability | **PROVEN** before arming is permitted |
 | H2 broker-paper orders | **NOT AUTHORISED** — its own frozen ladder says so |
 | Live trading | **NOT IMPLEMENTED, NOT AUTHORIZED** |
 | Production risk thresholds | **NOT AUTHORIZED** |
@@ -3853,6 +3871,30 @@ bug that was fixed.
 establish that a run was permitted, reconciled and recorded. It says nothing
 about whether the orders it permitted were good ones. Gating is not judgement.
 
+**A declared gate is not a working gate (P2.4R).** V2's failure was not a
+wrong threshold or a missed edge case; it was 22 gates that existed only as
+strings. The repair is structural rather than careful: `require_bijection`
+refuses a protocol whose declared gates and available evaluators do not
+correspond exactly **in both directions** — an undeclared known check is also
+refused, because a check the scorer can perform but the protocol never mentions
+is a safety check silently switched off. And the pre-arming self-check proves
+all four verdicts are mechanically reachable, including `A`, because a protocol
+whose success state is impossible collects evidence toward a conclusion nothing
+can draw. Running that self-check against V2's own declared gates refuses it,
+naming the four gates with no evaluator — which is the check whose absence
+caused this.
+
+**The six V1 drill artefacts cannot certify any future protocol (P2.4R).**
+Their complete field set is `action, detail, drill_fingerprint, drill_type,
+expected, external_mutations, injected_fault, observed, passed, performed_at,
+post_state, pre_state, reconciliation, run_id`. Not one of those says which
+control plane was exercised — no protocol fingerprint, no commit, no engine
+version, no policy digest. They attest that something refused correctly
+somewhere under some build, which can certify anything and therefore certifies
+nothing. They are kept as historical diagnostics and deliberately **not**
+retrofitted: adding fields to them would be inventing evidence about runs
+nobody made.
+
 **S1.0 decides literally at 16:00, not at "session close" (P2.4 V2).** The
 strategy's decision instant is `decision_instant(session, DecisionPoint.CLOSE)`
 with `MARKET_CLOSE = time(16, 0)`. A month-end falling on an early close would
@@ -5966,7 +6008,22 @@ no concrete `OperationsEnvironment` exists to run it. The V1 protocol
 `4b50f8b4…` is superseded, its evidence preserved unmodified, and it may never
 be resumed or its fingerprint reused.
 
-**P2.4 V2 is armed and the only remaining work is time.** Twenty eligible
+**P2.4R built the machinery a soak needs before it can be armed**, and nothing
+is armed. `PAPER_SHADOW_SOAK_SCORER_V1` evaluates a session-based soak into
+`A`/`B`/`C`/`FAIL` from immutable evidence and frozen gates, with no threshold
+argument and no pass-rate field anywhere. One zero-tolerance breach is `FAIL`,
+never a percentage. A halted soak is `C` however clean the evidence collected
+before the halt — and a breach outranks a halt, because the halt is procedural
+and the breach is what somebody must look at.
+
+**What remains is to define and arm V3**, which is a review decision rather than
+work. It should bind the gate registry fingerprint, require the six V2-bound
+drill types, and run the pre-arming self-check — which is now mandatory and has
+no force, skip or ignore option. Drill evidence is collected *after* activation
+and binds the protocol and commit, so there is no circular dependency between a
+protocol fingerprint and drill records that do not exist yet.
+
+**P2.4 V2 was armed and is now halted.** Twenty eligible
 sessions from 2026-10-12 to 2026-11-06, with the decision cycle at 2026-10-30
 and its execution at 2026-11-02 both inside the window. Each eligible session
 produces exactly one `PaperShadowSessionObservationV2`, however many operational
