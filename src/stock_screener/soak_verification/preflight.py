@@ -403,3 +403,171 @@ def _halted_fixture(**kwargs: Any) -> _SyntheticEvidence:
     evidence = _passing_fixture(**kwargs)
     evidence.state = "HALTED"
     return evidence
+
+
+def preflight_protocol(
+    protocol: Any,
+    *,
+    activation: Any = None,
+    store: Any = None,
+) -> SoakPreflightReport:
+    """Run the self-check against the exact protocol that will be frozen.
+
+    The protocol itself is evaluated, not a reduced descriptor of it. A
+    descriptor would omit some field, and the omitted field is the one that
+    turns out to matter — V2's whole defect was a gate set that looked fine
+    summarised and could not be scored in full.
+
+    Args:
+        protocol: The generic `PaperShadowSoakProtocol` to be frozen.
+        activation: The activation to be written, when one is ready. Checked
+            against the protocol so a version mismatch is caught before
+            anything is written rather than after.
+        store: The exact store, with its real namespace, to prove an empty one
+            is scoreable through the interface the scorer will actually use.
+
+    Returns:
+        The report.
+    """
+    from .contracts import canonical_gate_ids
+    from .gates import registry_fingerprint as _registry
+
+    report = run_soak_preflight(
+        protocol_fingerprint=protocol.fingerprint(),
+        qualifying_commit=protocol.qualifying_commit,
+        declared_gates=dict(protocol.gate_thresholds),
+        required_sessions=protocol.required_sessions,
+        required_drill_types=list(protocol.required_drill_types),
+        operations_engine_version=_operations_engine_version(),
+        operations_policy_fingerprint=protocol.operations_policy_fingerprint,
+    )
+    checks = list(report.checks)
+    failures = list(report.failures)
+
+    # The protocol's own registry binding must be the registry in force. A
+    # protocol frozen against an older registry would be scored by evaluators
+    # it never declared.
+    if protocol.gate_registry_fingerprint != _registry():
+        detail = (
+            f"the protocol binds registry {protocol.gate_registry_fingerprint[:16]}… "
+            f"and the registry in force is {_registry()[:16]}…"
+        )
+        checks.append(("gate_registry_fingerprint_matches", False, detail))
+        failures.append(detail)
+    else:
+        checks.append(("gate_registry_fingerprint_matches", True, ""))
+
+    # The observation schema must be able to carry what every gate reads. This
+    # is the check whose absence let fourteen zero-tolerance gates read fields
+    # the real record did not have: each returned the attribute default, zero,
+    # and reported itself clean forever. The synthetic reachability fixtures
+    # passed because they *did* have the fields — a fixture that can express
+    # what the real schema cannot proves nothing about the real schema.
+    from .gates import EvidenceKind
+    from .gates import gate_registry as _registry_gates
+
+    schema_fields = _observation_schema_fields(protocol.observation_schema_version)
+    if schema_fields is None:
+        detail = (
+            f"observation schema {protocol.observation_schema_version!r} is unknown, so "
+            "it cannot be checked against the gates"
+        )
+        checks.append(("observation_schema_carries_gate_evidence", False, detail))
+        failures.append(detail)
+    else:
+        unreadable: list[str] = []
+        for gate_id, definition in _registry_gates().items():
+            if definition.evidence is not EvidenceKind.SESSION_OBSERVATIONS:
+                continue
+            absent = [row for row in definition.evidence_fields if row not in schema_fields]
+            if absent:
+                unreadable.append(f"{gate_id} reads {absent}")
+        if unreadable:
+            detail = (
+                f"{len(unreadable)} gate(s) read fields the observation schema does not "
+                f"carry, so they would report clean forever: {unreadable[:4]}"
+            )
+            checks.append(("observation_schema_carries_gate_evidence", False, detail))
+            failures.append(detail)
+        else:
+            checks.append(
+                (
+                    "observation_schema_carries_gate_evidence",
+                    True,
+                    f"{len(schema_fields)} fields",
+                )
+            )
+
+    if set(protocol.declared_gate_ids) == set(canonical_gate_ids()):
+        checks.append(
+            ("declared_gates_equal_registry", True, f"{len(protocol.declared_gate_ids)} gates")
+        )
+    else:
+        detail = "the declared gate set is not the canonical registry set"
+        checks.append(("declared_gates_equal_registry", False, detail))
+        failures.append(detail)
+
+    # The activation schema must be able to carry what this protocol needs,
+    # and must agree with it about which protocol it activates.
+    if activation is not None:
+        try:
+            activation.require_matches(protocol)
+            checks.append(("activation_contract_matches", True, activation.activation_version))
+        except SoakContractError as exc:
+            checks.append(("activation_contract_matches", False, str(exc)))
+            failures.append(str(exc))
+
+    # The real store, with its real namespace, must be scoreable while empty.
+    if store is not None:
+        try:
+            empty = score_soak(
+                store,
+                declared_gates=dict(protocol.gate_thresholds),
+                required_sessions=protocol.required_sessions,
+            )
+            ok = empty.verdict == SoakVerdictV2.IN_PROGRESS
+            checks.append(("real_store_scores_in_progress", ok, f"verdict {empty.verdict}"))
+            if not ok:
+                failures.append(
+                    f"the real store scored {empty.verdict} while empty, expected in-progress"
+                )
+        except Exception as exc:
+            detail = f"{type(exc).__name__}: {exc}"
+            checks.append(("real_store_scores_in_progress", False, detail))
+            failures.append(f"the real store is not scoreable — {detail}")
+
+    return SoakPreflightReport(
+        protocol_fingerprint=protocol.fingerprint(),
+        qualifying_commit=protocol.qualifying_commit,
+        passed=not failures,
+        checks=tuple(checks),
+        failures=tuple(failures),
+        declared_gates=tuple(sorted(protocol.declared_gate_ids)),
+        supported_drill_types=report.supported_drill_types,
+        reachable_verdicts=report.reachable_verdicts,
+    )
+
+
+def _operations_engine_version() -> str:
+    """The control plane version in force."""
+    from stock_screener.paper_operations import PAPER_OPERATIONS_ENGINE_VERSION
+
+    return PAPER_OPERATIONS_ENGINE_VERSION
+
+
+def _observation_schema_fields(schema_version: str) -> frozenset[str] | None:
+    """The fields a declared observation schema provides.
+
+    Args:
+        schema_version: The schema the protocol binds.
+
+    Returns:
+        Its field names, or `None` when the schema is unknown — which is itself
+        a refusal, because a schema nothing can inspect cannot be checked
+        against the gates.
+    """
+    if schema_version == "PAPER_SHADOW_SESSION_OBSERVATION_V2":
+        from stock_screener.paper_runtime.soak_v2 import PaperShadowSessionObservationV2
+
+        return frozenset(PaperShadowSessionObservationV2.__dataclass_fields__)
+    return None

@@ -36,8 +36,16 @@ appears without the run or the test that produced it.
 
 ## Current phase
 
-**P2.4R — soak verification infrastructure — is the current checkpoint**, on
-`feat/p2-execution-engine`. No soak is armed.
+**P2.4R2 — generic soak protocol contracts — is the current checkpoint**, on
+`feat/p2-execution-engine`. No soak is armed, and V3 **cannot yet be armed**:
+the preflight now refuses it, correctly, for a reason found during this phase.
+
+Gates are now protocol *data*. `PaperShadowSoakProtocol` holds
+`declared_gate_ids` and `gate_thresholds` as fields validated against the
+canonical registry at construction, so a protocol that cannot be scored no
+longer exists rather than merely failing to be scoreable. `VersionedSoakStore`
+takes its namespace as data and `PaperShadowSoakActivation` its version, so a
+new soak is a new namespace and a new instance instead of three new classes.
 
 **P2.4 V2 is HALTED at 0 of 20**, reason
 `SOAK_V2_SCORER_AND_DRILL_CONTRACT_INCOMPLETE`, classification
@@ -296,6 +304,12 @@ frozen at the same commit; P2 branched from it.
 | P2.4R V1 drills admissible for a new protocol | **NO** — they bind nothing |
 | P2.4R pre-arm self-check | `PAPER_SHADOW_SOAK_PREFLIGHT_V1`, no escape hatch |
 | P2.4R A/B/C/FAIL reachability | **PROVEN** before arming is permitted |
+| P2.4R2 | **GENERIC SOAK CONTRACTS** — gates are data |
+| P2.4R2 gate set | validated against the registry at construction, both directions |
+| P2.4R2 store | `VersionedSoakStore` — namespace as data, path-validated |
+| P2.4R2 activation | `PaperShadowSoakActivation` — version as data |
+| P2.4R2 observation schema | **INSUFFICIENT** — 14 safety gates unreadable |
+| P2.4R2 V3 armable | **NO** — the preflight refuses until the schema carries the counters |
 | H2 broker-paper orders | **NOT AUTHORISED** — its own frozen ladder says so |
 | Live trading | **NOT IMPLEMENTED, NOT AUTHORIZED** |
 | Production risk thresholds | **NOT AUTHORIZED** |
@@ -3871,6 +3885,23 @@ bug that was fixed.
 establish that a run was permitted, reconciled and recorded. It says nothing
 about whether the orders it permitted were good ones. Gating is not judgement.
 
+**An evaluator with no evidence field is worse than no evaluator (P2.4R2).**
+Fourteen of the seventeen zero-tolerance gates read attributes
+`PaperShadowSessionObservationV2` does not have — `duplicate_remote_orders`,
+`kill_bypasses`, `stale_data_executions` and eleven more. Each read returned the
+attribute default, zero, so every one of them would have reported itself clean
+for the entire soak no matter what happened at the venue. The preflight passed
+it because the synthetic reachability fixtures *do* carry those fields, and a
+fixture that can express what the real schema cannot proves nothing about the
+real schema.
+
+Gates now declare `evidence_fields`, and the preflight checks the declared
+observation schema against them. It therefore refuses to arm today, which is the
+correct state: the contracts are sound and the record cannot yet express a
+breach. This is the same defect family as V2's — a declaration with nothing
+behind it — one level further down, and it was found only by writing a test that
+tried to record a breach through the real schema rather than a stub.
+
 **A declared gate is not a working gate (P2.4R).** V2's failure was not a
 wrong threshold or a missed edge case; it was 22 gates that existed only as
 strings. The repair is structural rather than careful: `require_bijection`
@@ -6007,6 +6038,21 @@ armed correctly and the drills passed; the first eligible session exposed that
 no concrete `OperationsEnvironment` exists to run it. The V1 protocol
 `4b50f8b4…` is superseded, its evidence preserved unmodified, and it may never
 be resumed or its fingerprint reused.
+
+**P2.4R2 made the artefact model generic, and found why V3 still cannot arm.**
+The three contract responsibilities are complete and tested: gates as data with
+construction-time registry validation in both directions, a namespaced store
+with path validation that refuses the reserved historical namespaces, and a
+versioned activation that cannot activate a protocol it disagrees with. A
+V3-shaped protocol constructs, freezes, reads back, activates and scores an
+empty store as `B`.
+
+**What remains is one schema repair.** The observation record needs a counter
+field for each of the fourteen safety gates that currently read nothing. The
+schema version is independent of the protocol version, so this is a new
+observation schema rather than a new protocol — and the preflight check added
+here will confirm it rather than take it on trust. After that V3 arms through
+the existing path, with the operator authorization the re-arm requires.
 
 **P2.4R built the machinery a soak needs before it can be armed**, and nothing
 is armed. `PAPER_SHADOW_SOAK_SCORER_V1` evaluates a session-based soak into

@@ -28,6 +28,14 @@ absence.
 
 from __future__ import annotations
 
+from .contracts import (
+    ACTIVATION_FAMILY,
+    PROTOCOL_FAMILY,
+    PaperShadowSoakActivation,
+    PaperShadowSoakProtocol,
+    canonical_gate_ids,
+    canonical_thresholds,
+)
 from .drills_v2 import (
     DRILL_EVIDENCE_V2_VERSION,
     REQUIRED_DRILL_TYPES,
@@ -49,15 +57,30 @@ from .gates import (
     registry_fingerprint,
     require_bijection,
 )
-from .preflight import PREFLIGHT_VERSION, SoakPreflightReport, run_soak_preflight
+from .preflight import (
+    PREFLIGHT_VERSION,
+    SoakPreflightReport,
+    preflight_protocol,
+    run_soak_preflight,
+)
 from .scorer import SCORER_VERSION, SoakScore, SoakVerdictV2, score_soak
+from .store import (
+    RESERVED_NAMESPACES,
+    SOAK_ROOT_DIRECTORY,
+    VersionedSoakStore,
+    validate_namespace,
+)
 
 __all__ = [
+    "ACTIVATION_FAMILY",
     "DRILL_EVIDENCE_V2_VERSION",
     "GATE_REGISTRY_VERSION",
     "PREFLIGHT_VERSION",
+    "PROTOCOL_FAMILY",
     "REQUIRED_DRILL_TYPES",
+    "RESERVED_NAMESPACES",
     "SCORER_VERSION",
+    "SOAK_ROOT_DIRECTORY",
     "Code",
     "DrillRecordV2",
     "DrillStoreV2",
@@ -67,15 +90,22 @@ __all__ = [
     "GateClass",
     "GateDefinition",
     "GateOutcome",
+    "PaperShadowSoakActivation",
+    "PaperShadowSoakProtocol",
     "SoakContractError",
     "SoakEvidence",
     "SoakPreflightReport",
     "SoakScore",
     "SoakVerdictV2",
+    "VersionedSoakStore",
     "admissible_drills",
+    "canonical_gate_ids",
+    "canonical_thresholds",
     "gate_registry",
+    "preflight_protocol",
     "registry_fingerprint",
     "require_bijection",
     "run_soak_preflight",
     "score_soak",
+    "validate_namespace",
 ]

@@ -175,6 +175,11 @@ class GateDefinition:
         rule: Human-readable statement of what it checks.
         evaluate: The evaluator. Takes the evidence and the limit, returns the
             observed count.
+        evidence_fields: The record attributes the evaluator reads. Declared
+            rather than inferred, because an evaluator that reads a field the
+            record does not have returns the attribute default — zero — and
+            reports the gate clean forever. Fourteen zero-tolerance gates did
+            exactly that until the preflight started checking this.
     """
 
     gate_id: str
@@ -184,6 +189,7 @@ class GateDefinition:
     evaluator_id: str
     rule: str
     evaluate: Callable[[SoakEvidence], int]
+    evidence_fields: tuple[str, ...] = ()
 
     def run(self, evidence: SoakEvidence, *, limit: int) -> GateOutcome:
         """Evaluate this gate against the evidence.
@@ -217,6 +223,7 @@ class GateDefinition:
             "evidence": str(self.evidence),
             "evaluator_id": self.evaluator_id,
             "rule": self.rule,
+            "evidence_fields": list(self.evidence_fields),
         }
 
 
@@ -242,6 +249,7 @@ def gate_registry() -> dict[str, GateDefinition]:
         # -- zero tolerance: things that must never happen -----------------
         GateDefinition(
             gate_id="live_mutations",
+            evidence_fields=("live_requests",),
             gate_class=GateClass.ZERO_TOLERANCE,
             bound=GateBound.AT_MOST,
             evidence=EvidenceKind.SESSION_OBSERVATIONS,
@@ -251,6 +259,7 @@ def gate_registry() -> dict[str, GateDefinition]:
         ),
         GateDefinition(
             gate_id="duplicate_remote_orders",
+            evidence_fields=("duplicate_remote_orders",),
             gate_class=GateClass.ZERO_TOLERANCE,
             bound=GateBound.AT_MOST,
             evidence=EvidenceKind.SESSION_OBSERVATIONS,
@@ -260,6 +269,7 @@ def gate_registry() -> dict[str, GateDefinition]:
         ),
         GateDefinition(
             gate_id="duplicate_admitted_fills",
+            evidence_fields=("duplicate_admitted_fills",),
             gate_class=GateClass.ZERO_TOLERANCE,
             bound=GateBound.AT_MOST,
             evidence=EvidenceKind.SESSION_OBSERVATIONS,
@@ -269,6 +279,7 @@ def gate_registry() -> dict[str, GateDefinition]:
         ),
         GateDefinition(
             gate_id="duplicate_accounting_events",
+            evidence_fields=("duplicate_accounting_events",),
             gate_class=GateClass.ZERO_TOLERANCE,
             bound=GateBound.AT_MOST,
             evidence=EvidenceKind.SESSION_OBSERVATIONS,
@@ -278,6 +289,7 @@ def gate_registry() -> dict[str, GateDefinition]:
         ),
         GateDefinition(
             gate_id="duplicate_scheduled_runs_causing_execution",
+            evidence_fields=("duplicate_scheduled_runs_causing_execution",),
             gate_class=GateClass.ZERO_TOLERANCE,
             bound=GateBound.AT_MOST,
             evidence=EvidenceKind.SESSION_OBSERVATIONS,
@@ -289,6 +301,7 @@ def gate_registry() -> dict[str, GateDefinition]:
         ),
         GateDefinition(
             gate_id="duplicate_counted_sessions",
+            evidence_fields=("session",),
             gate_class=GateClass.ZERO_TOLERANCE,
             bound=GateBound.AT_MOST,
             evidence=EvidenceKind.SESSION_OBSERVATIONS,
@@ -305,6 +318,7 @@ def gate_registry() -> dict[str, GateDefinition]:
         ),
         GateDefinition(
             gate_id="stale_data_executions",
+            evidence_fields=("stale_data_executions",),
             gate_class=GateClass.ZERO_TOLERANCE,
             bound=GateBound.AT_MOST,
             evidence=EvidenceKind.SESSION_OBSERVATIONS,
@@ -314,6 +328,7 @@ def gate_registry() -> dict[str, GateDefinition]:
         ),
         GateDefinition(
             gate_id="missing_data_executions",
+            evidence_fields=("missing_data_executions",),
             gate_class=GateClass.ZERO_TOLERANCE,
             bound=GateBound.AT_MOST,
             evidence=EvidenceKind.SESSION_OBSERVATIONS,
@@ -323,6 +338,7 @@ def gate_registry() -> dict[str, GateDefinition]:
         ),
         GateDefinition(
             gate_id="missed_run_backfills",
+            evidence_fields=("missed_run_backfills",),
             gate_class=GateClass.ZERO_TOLERANCE,
             bound=GateBound.AT_MOST,
             evidence=EvidenceKind.SESSION_OBSERVATIONS,
@@ -332,6 +348,7 @@ def gate_registry() -> dict[str, GateDefinition]:
         ),
         GateDefinition(
             gate_id="ignored_reconciliation_breaks",
+            evidence_fields=("ignored_reconciliation_breaks",),
             gate_class=GateClass.ZERO_TOLERANCE,
             bound=GateBound.AT_MOST,
             evidence=EvidenceKind.SESSION_OBSERVATIONS,
@@ -341,6 +358,10 @@ def gate_registry() -> dict[str, GateDefinition]:
         ),
         GateDefinition(
             gate_id="completed_sessions_reconcile",
+            evidence_fields=(
+                "orders_submitted",
+                "reconciliation_after",
+            ),
             gate_class=GateClass.ZERO_TOLERANCE,
             bound=GateBound.AT_MOST,
             evidence=EvidenceKind.SESSION_OBSERVATIONS,
@@ -355,6 +376,7 @@ def gate_registry() -> dict[str, GateDefinition]:
         ),
         GateDefinition(
             gate_id="ignored_remote_state_unknown",
+            evidence_fields=("ignored_remote_state_unknown",),
             gate_class=GateClass.ZERO_TOLERANCE,
             bound=GateBound.AT_MOST,
             evidence=EvidenceKind.SESSION_OBSERVATIONS,
@@ -364,6 +386,7 @@ def gate_registry() -> dict[str, GateDefinition]:
         ),
         GateDefinition(
             gate_id="kill_bypasses",
+            evidence_fields=("kill_bypasses",),
             gate_class=GateClass.ZERO_TOLERANCE,
             bound=GateBound.AT_MOST,
             evidence=EvidenceKind.SESSION_OBSERVATIONS,
@@ -373,6 +396,7 @@ def gate_registry() -> dict[str, GateDefinition]:
         ),
         GateDefinition(
             gate_id="unknown_remote_order_auto_cancels",
+            evidence_fields=("unknown_remote_order_auto_cancels",),
             gate_class=GateClass.ZERO_TOLERANCE,
             bound=GateBound.AT_MOST,
             evidence=EvidenceKind.SESSION_OBSERVATIONS,
@@ -382,6 +406,7 @@ def gate_registry() -> dict[str, GateDefinition]:
         ),
         GateDefinition(
             gate_id="automatic_accounting_repairs",
+            evidence_fields=("automatic_accounting_repairs",),
             gate_class=GateClass.ZERO_TOLERANCE,
             bound=GateBound.AT_MOST,
             evidence=EvidenceKind.SESSION_OBSERVATIONS,
@@ -391,6 +416,7 @@ def gate_registry() -> dict[str, GateDefinition]:
         ),
         GateDefinition(
             gate_id="reranked_executions",
+            evidence_fields=("reranked_executions",),
             gate_class=GateClass.ZERO_TOLERANCE,
             bound=GateBound.AT_MOST,
             evidence=EvidenceKind.SESSION_OBSERVATIONS,
@@ -400,6 +426,7 @@ def gate_registry() -> dict[str, GateDefinition]:
         ),
         GateDefinition(
             gate_id="risk_authority_expansions",
+            evidence_fields=("risk_authority_expansions",),
             gate_class=GateClass.ZERO_TOLERANCE,
             bound=GateBound.AT_MOST,
             evidence=EvidenceKind.SESSION_OBSERVATIONS,
@@ -415,6 +442,7 @@ def gate_registry() -> dict[str, GateDefinition]:
         # bound is a separate dimension from the class.
         GateDefinition(
             gate_id="qualifying_sessions_observed",
+            evidence_fields=("session",),
             gate_class=GateClass.PROMOTION_REQUIRED,
             bound=GateBound.AT_LEAST,
             evidence=EvidenceKind.SESSION_OBSERVATIONS,
@@ -477,6 +505,11 @@ def gate_registry() -> dict[str, GateDefinition]:
         ),
         GateDefinition(
             gate_id="successful_strategy_decision_cycles",
+            evidence_fields=(
+                "decision_created",
+                "decision_fingerprint",
+                "executed_decision_fingerprint",
+            ),
             gate_class=GateClass.PROMOTION_REQUIRED,
             bound=GateBound.AT_LEAST,
             evidence=EvidenceKind.SESSION_OBSERVATIONS,
@@ -490,6 +523,12 @@ def gate_registry() -> dict[str, GateDefinition]:
         ),
         GateDefinition(
             gate_id="eligible_decision_executions_accounted_for",
+            evidence_fields=(
+                "decision_created",
+                "decision_fingerprint",
+                "executed_decision_fingerprint",
+                "missed_purposes",
+            ),
             gate_class=GateClass.PROMOTION_REQUIRED,
             bound=GateBound.AT_MOST,
             evidence=EvidenceKind.SESSION_OBSERVATIONS,
