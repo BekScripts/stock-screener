@@ -29,7 +29,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
-from .drills_v2 import DRILL_EVIDENCE_V2_VERSION, DrillRecordV2, DrillTypeV2
+from .drills_v2 import DRILL_EVIDENCE_V2_VERSION, DrillTypeV2
 from .errors import Code, SoakContractError
 from .gates import GATE_REGISTRY_VERSION, registry_fingerprint
 from .scorer import SCORER_VERSION, SoakVerdictV2, score_soak
@@ -45,78 +45,6 @@ __all__ = [
 
 #: The preflight artefact contract.
 PREFLIGHT_VERSION = "PAPER_SHADOW_SOAK_PREFLIGHT_V1"
-
-
-@dataclass
-class _SyntheticObservation:
-    """One synthetic session, for proving a verdict is reachable.
-
-    Every counter a gate reads defaults to zero, so a fixture states only what
-    it is exercising. That matters: a fixture that had to set twenty fields to
-    prove `A` is reachable would mostly be testing the fixture.
-    """
-
-    session: str
-    decision_created: bool = False
-    decision_fingerprint: str = ""
-    executed_decision_fingerprint: str = ""
-    missed_purposes: tuple[str, ...] = ()
-    orders_submitted: int = 0
-    reconciliation_after: str = "RECONCILED"
-    live_requests: int = 0
-    duplicate_remote_orders: int = 0
-    duplicate_admitted_fills: int = 0
-    duplicate_accounting_events: int = 0
-    duplicate_scheduled_runs_causing_execution: int = 0
-    stale_data_executions: int = 0
-    missing_data_executions: int = 0
-    missed_run_backfills: int = 0
-    ignored_reconciliation_breaks: int = 0
-    ignored_remote_state_unknown: int = 0
-    kill_bypasses: int = 0
-    unknown_remote_order_auto_cancels: int = 0
-    automatic_accounting_repairs: int = 0
-    reranked_executions: int = 0
-    risk_authority_expansions: int = 0
-
-
-@dataclass
-class _SyntheticEvidence:
-    """An immutable evidence set assembled for one reachability proof."""
-
-    observations: tuple[_SyntheticObservation, ...] = ()
-    drills: tuple[DrillRecordV2, ...] = ()
-    incidents: tuple[Any, ...] = ()
-    elapsed: tuple[str, ...] = ()
-    state: str = "RUNNING"
-
-    def live_observations(self) -> tuple[Any, ...]:
-        """Session observations that are not superseded."""
-        return self.observations
-
-    def counted_sessions(self) -> tuple[str, ...]:
-        """Each session counted at most once."""
-        return tuple(sorted({row.session for row in self.observations}))
-
-    def drill_records(self) -> tuple[Any, ...]:
-        """Drill evidence."""
-        return self.drills
-
-    def open_incidents(self) -> tuple[Any, ...]:
-        """Incidents still open."""
-        return self.incidents
-
-    def eligible_elapsed_sessions(self) -> tuple[str, ...]:
-        """Eligible sessions whose close has passed."""
-        return self.elapsed
-
-    def soak_state(self) -> str:
-        """The recorded state."""
-        return self.state
-
-    def drill_rejections(self) -> tuple[str, ...]:
-        """Why any drill was inadmissible."""
-        return ()
 
 
 @dataclass(frozen=True)
@@ -222,6 +150,8 @@ def run_soak_preflight(
     required_drill_types: Sequence[str],
     operations_engine_version: str,
     operations_policy_fingerprint: str,
+    protocol: Any = None,
+    activation: Any = None,
 ) -> SoakPreflightReport:
     """Prove a protocol can be scored, before it is frozen and armed.
 
@@ -233,6 +163,13 @@ def run_soak_preflight(
         required_drill_types: Which drills it requires.
         operations_engine_version: The control plane it binds.
         operations_policy_fingerprint: The operational rules it binds.
+        protocol: The protocol object, needed to prove a verdict reachable.
+            Reachability is established by writing the operational records a
+            soak would leave behind and running the real derivations over them,
+            which needs the protocol a session would be bound to. Without it
+            reachability cannot be established and is reported as such rather
+            than asserted from injected metrics.
+        activation: Its activation, where one exists.
 
     Returns:
         The report. `require()` turns a refusal into an exception; the report
@@ -262,64 +199,55 @@ def run_soak_preflight(
     else:
         checks.append(("drill_types_supported", True, f"{len(required_drill_types)} types"))
 
-    # 3. Scorer/store compatibility: an empty store must score, not raise.
+    # 3 and 4. Scoreability and verdict reachability, through the real
+    # derivation path. The fixtures write the operational records a soak would
+    # leave behind — journal entries, request audit, reconciliation, decision
+    # and execution-journal records — and the real derivations read them.
+    #
+    # This replaces fixtures that set `live_requests=1` on a synthetic
+    # observation and watched the scorer say FAIL. That proved the comparison
+    # operator worked. It proved nothing about whether anything could ever
+    # *observe* a live request, which is the actual question, and fourteen
+    # gates were unobservable while those fixtures passed.
     if not failures:
-        try:
-            empty = score_soak(
-                _SyntheticEvidence(state="ARMED"),
-                declared_gates=declared_gates,
-                required_sessions=required_sessions,
+        if protocol is None:
+            detail = (
+                "verdict reachability needs the protocol object: it is established by "
+                "writing real operational records and deriving from them, and there is "
+                "no longer a path that asserts a verdict from injected metrics"
             )
-            ok = empty.verdict == SoakVerdictV2.IN_PROGRESS
-            checks.append(
-                (
-                    "empty_store_scores_in_progress",
-                    ok,
-                    f"verdict {empty.verdict}, 0 of {required_sessions}",
-                )
-            )
-            if ok:
-                reachable.append(SoakVerdictV2.IN_PROGRESS)
-            else:
-                failures.append(f"an empty soak scored {empty.verdict}, expected in-progress")
-        except Exception as exc:
-            detail = f"{type(exc).__name__}: {exc}"
-            checks.append(("empty_store_scores_in_progress", False, detail))
-            failures.append(f"the scorer cannot evaluate an empty store — {detail}")
-
-    # 4. Verdict reachability, including A.
-    if not failures:
-        for name, builder in (
-            (SoakVerdictV2.PASSED, _passing_fixture),
-            (SoakVerdictV2.FAILED, _breaching_fixture),
-            (SoakVerdictV2.HALTED, _halted_fixture),
-        ):
-            try:
-                score = score_soak(
-                    builder(
+            checks.append(("verdict_reachability_uses_real_derivation", False, detail))
+            failures.append(detail)
+        else:
+            for name, builder_kwargs in (
+                (SoakVerdictV2.IN_PROGRESS, {"sessions": 0}),
+                (SoakVerdictV2.PASSED, {}),
+                (SoakVerdictV2.FAILED, {"breach": "TWO_REMOTE_ORDERS"}),
+                (SoakVerdictV2.HALTED, {"halt": True}),
+                (SoakVerdictV2.EVIDENCE_INCOMPLETE, {"remove_source": "RECONCILIATION_RECORDS"}),
+            ):
+                try:
+                    score = _reachability_score(
+                        protocol=protocol,
+                        activation=activation,
+                        declared_gates=declared_gates,
                         required_sessions=required_sessions,
-                        protocol_fingerprint=protocol_fingerprint,
-                        qualifying_commit=qualifying_commit,
-                        operations_engine_version=operations_engine_version,
-                        operations_policy_fingerprint=operations_policy_fingerprint,
-                        required_drill_types=required_drill_types,
-                    ),
-                    declared_gates=declared_gates,
-                    required_sessions=required_sessions,
-                )
+                        **builder_kwargs,
+                    )
+                except Exception as exc:
+                    detail = f"{type(exc).__name__}: {exc}"
+                    checks.append((f"verdict_reachable_{name}", False, detail))
+                    failures.append(detail)
+                    continue
                 ok = score.verdict == name
                 checks.append((f"verdict_reachable_{name}", ok, f"got {score.verdict}"))
                 if ok:
                     reachable.append(name)
                 else:
                     failures.append(
-                        f"{name} is not mechanically reachable under this protocol; a "
-                        f"synthetic fixture built to produce it scored {score.verdict}"
+                        f"{name} is not mechanically reachable under this protocol; "
+                        f"records built to produce it scored {score.verdict}"
                     )
-            except Exception as exc:
-                detail = f"{type(exc).__name__}: {exc}"
-                checks.append((f"verdict_reachable_{name}", False, detail))
-                failures.append(detail)
 
     return SoakPreflightReport(
         protocol_fingerprint=protocol_fingerprint,
@@ -333,76 +261,73 @@ def run_soak_preflight(
     )
 
 
-def _drill_set(
+def _reachability_score(
     *,
-    protocol_fingerprint: str,
-    qualifying_commit: str,
-    operations_engine_version: str,
-    operations_policy_fingerprint: str,
-    required_drill_types: Sequence[str],
-) -> tuple[DrillRecordV2, ...]:
-    """Build a passing, fully bound drill record for each required type."""
-    return tuple(
-        DrillRecordV2(
-            drill_type=DrillTypeV2(str(row)),
-            protocol_fingerprint=protocol_fingerprint,
-            qualifying_commit=qualifying_commit,
-            operations_engine_version=operations_engine_version,
-            operations_policy_fingerprint=operations_policy_fingerprint,
-            performed_at="2026-01-01T00:00:00+00:00",
-            pre_state_fingerprint="synthetic",
-            action="synthetic reachability fixture",
-            expected="synthetic",
-            observed="synthetic",
-            post_state_fingerprint="synthetic",
-            passed=True,
+    protocol: Any,
+    activation: Any,
+    declared_gates: dict[str, int],
+    required_sessions: int,
+    sessions: int | None = None,
+    breach: str | None = None,
+    omit_drills: bool = False,
+    halt: bool = False,
+    remove_source: str | None = None,
+) -> Any:
+    """Score a soak built from real records, in a scratch root.
+
+    The root is temporary and discarded: a reachability proof must not leave
+    anything behind that a real soak could later read as evidence.
+    """
+    import tempfile
+    from pathlib import Path as _Path
+
+    from .synthetic import build_soak_fixture
+
+    count = required_sessions if sessions is None else sessions
+    with tempfile.TemporaryDirectory(prefix="soak-preflight-") as scratch:
+        fixture = build_soak_fixture(
+            _Path(scratch) / ".operations",
+            protocol=protocol,
+            activation=activation if activation is not None else _activation_for(protocol),
+            sessions=count,
+            breach=breach,
+            omit_drills=omit_drills,
+            remove_source=remove_source,
         )
-        for row in required_drill_types
+        if halt:
+            fixture.store.halt(
+                reason="reachability proof",
+                classification="PREFLIGHT_REACHABILITY",
+                at="1970-01-01T00:00:00+00:00",
+            )
+        return score_soak(
+            fixture.evidence,
+            declared_gates=declared_gates,
+            required_sessions=required_sessions,
+        )
+
+
+def _activation_for(protocol: Any) -> Any:
+    """A matching activation, for a protocol being checked before activation."""
+    from .contracts import PaperShadowSoakActivation
+
+    return PaperShadowSoakActivation(
+        activation_version=protocol.protocol_version,
+        protocol_version=protocol.protocol_version,
+        protocol_fingerprint=protocol.fingerprint(),
+        qualifying_commit=protocol.qualifying_commit,
+        activated_at="1970-01-01T00:00:00+00:00",
+        required_sessions=protocol.required_sessions,
+        runtime_binding_fingerprint=protocol.runtime_binding_fingerprint,
+        paper_account_fingerprint=protocol.paper_account_fingerprint,
+        calendar_fingerprint=protocol.calendar_fingerprint,
+        schedule_fingerprint=protocol.schedule_fingerprint,
+        strategy_fingerprint=protocol.strategy_fingerprint,
+        risk_policy_fingerprint=protocol.risk_policy_fingerprint,
+        operations_policy_fingerprint=protocol.operations_policy_fingerprint,
+        score_availability_profile_fingerprint=(protocol.score_availability_profile_fingerprint),
+        execution_timing_profile_fingerprint=protocol.execution_timing_profile_fingerprint,
     )
-
-
-def _passing_fixture(**kwargs: Any) -> _SyntheticEvidence:
-    """Evidence that should score `A`: full sessions, a real cycle, all drills.
-
-    The decision cycle is built as one fingerprint created in one session and
-    consumed in another, which is what the cycle evaluator actually requires —
-    not two independent flags that could both be set without a cycle existing.
-    """
-    required = int(kwargs["required_sessions"])
-    digest = "decision-" + "f" * 56
-    sessions = [_SyntheticObservation(session=f"S{index:03d}") for index in range(required)]
-    sessions[0] = _SyntheticObservation(
-        session="S000", decision_created=True, decision_fingerprint=digest
-    )
-    sessions[1] = _SyntheticObservation(session="S001", executed_decision_fingerprint=digest)
-    return _SyntheticEvidence(
-        observations=tuple(sessions),
-        drills=_drill_set(**{k: v for k, v in kwargs.items() if k != "required_sessions"}),
-        elapsed=tuple(row.session for row in sessions),
-        state="RUNNING",
-    )
-
-
-def _breaching_fixture(**kwargs: Any) -> _SyntheticEvidence:
-    """Evidence with one duplicate remote order, which must score `FAIL`.
-
-    Otherwise identical to the passing fixture: nineteen clean sessions and one
-    breach must not average out to a pass.
-    """
-    evidence = _passing_fixture(**kwargs)
-    observations = list(evidence.observations)
-    observations[-1] = _SyntheticObservation(
-        session=observations[-1].session, duplicate_remote_orders=1
-    )
-    evidence.observations = tuple(observations)
-    return evidence
-
-
-def _halted_fixture(**kwargs: Any) -> _SyntheticEvidence:
-    """Clean evidence under a halted state, which must score `C`, never `A`."""
-    evidence = _passing_fixture(**kwargs)
-    evidence.state = "HALTED"
-    return evidence
 
 
 def preflight_protocol(
@@ -433,6 +358,8 @@ def preflight_protocol(
     from .gates import registry_fingerprint as _registry
 
     report = run_soak_preflight(
+        protocol=protocol,
+        activation=activation,
         protocol_fingerprint=protocol.fingerprint(),
         qualifying_commit=protocol.qualifying_commit,
         declared_gates=dict(protocol.gate_thresholds),
@@ -457,44 +384,74 @@ def preflight_protocol(
     else:
         checks.append(("gate_registry_fingerprint_matches", True, ""))
 
-    # The observation schema must be able to carry what every gate reads. This
-    # is the check whose absence let fourteen zero-tolerance gates read fields
-    # the real record did not have: each returned the attribute default, zero,
-    # and reported itself clean forever. The synthetic reachability fixtures
-    # passed because they *did* have the fields — a fixture that can express
-    # what the real schema cannot proves nothing about the real schema.
-    from .gates import EvidenceKind
-    from .gates import gate_registry as _registry_gates
+    # Every gate must have a derivation, every derivation a known source, and
+    # every scope must be one the model measures. This replaces the old check
+    # that the observation schema carried each gate's named fields: gates no
+    # longer read fields off observations, they read derived metrics, and the
+    # thing that can now be silently absent is the derivation rather than the
+    # field. Same defect, one layer up, so the same check moves with it.
+    from .derivations import GateScope, derivation_registry
+    from .errors import SoakContractError as _ContractError
+    from .evidence_contract import evidence_contract as _contract
+    from .sources import SOURCE_SCHEMAS, known_source_schema
 
-    schema_fields = _observation_schema_fields(protocol.observation_schema_version)
-    if schema_fields is None:
-        detail = (
-            f"observation schema {protocol.observation_schema_version!r} is unknown, so "
-            "it cannot be checked against the gates"
-        )
-        checks.append(("observation_schema_carries_gate_evidence", False, detail))
+    try:
+        contract = _contract()
+    except _ContractError as exc:
+        detail = str(exc)
+        checks.append(("every_gate_has_a_derivation", False, detail))
         failures.append(detail)
     else:
-        unreadable: list[str] = []
-        for gate_id, definition in _registry_gates().items():
-            if definition.evidence is not EvidenceKind.SESSION_OBSERVATIONS:
-                continue
-            absent = [row for row in definition.evidence_fields if row not in schema_fields]
-            if absent:
-                unreadable.append(f"{gate_id} reads {absent}")
-        if unreadable:
-            detail = (
-                f"{len(unreadable)} gate(s) read fields the observation schema does not "
-                f"carry, so they would report clean forever: {unreadable[:4]}"
+        checks.append(
+            (
+                "every_gate_has_a_derivation",
+                True,
+                f"{len(contract.bindings)} gate(s) bound to "
+                f"{len({row.derivation_id for row in contract.bindings.values()})} derivation(s)",
             )
-            checks.append(("observation_schema_carries_gate_evidence", False, detail))
+        )
+        checks.append(
+            (
+                "evidence_contract_fingerprint",
+                True,
+                contract.fingerprint()[:16] + "…",
+            )
+        )
+        checks.append(
+            (
+                "observability_contract_bound",
+                bool(contract.observability_fingerprint),
+                contract.observability_fingerprint[:16] + "…",
+            )
+        )
+
+        unknown = sorted(
+            {
+                schema_id
+                for row in derivation_registry().values()
+                for schema_id in row.required_schemas
+                if not known_source_schema(schema_id)
+            }
+        )
+        if unknown:
+            detail = f"derivations read undescribed sources: {unknown}"
+            checks.append(("all_source_schemas_known", False, detail))
+            failures.append(detail)
+        else:
+            checks.append(("all_source_schemas_known", True, f"{len(SOURCE_SCHEMAS)} schema(s)"))
+
+        scopes = {row.scope for row in contract.bindings.values()}
+        stray = sorted(str(row) for row in scopes - set(GateScope))
+        if stray:
+            detail = f"gates bound to scopes the model does not measure: {stray}"
+            checks.append(("all_gate_scopes_valid", False, detail))
             failures.append(detail)
         else:
             checks.append(
                 (
-                    "observation_schema_carries_gate_evidence",
+                    "all_gate_scopes_valid",
                     True,
-                    f"{len(schema_fields)} fields",
+                    ", ".join(f"{scope!s}={len(contract.gates_in(scope))}" for scope in GateScope),
                 )
             )
 
@@ -520,8 +477,10 @@ def preflight_protocol(
     # The real store, with its real namespace, must be scoreable while empty.
     if store is not None:
         try:
+            from .aggregate import evidence_for_store
+
             empty = score_soak(
-                store,
+                evidence_for_store(store),
                 declared_gates=dict(protocol.gate_thresholds),
                 required_sessions=protocol.required_sessions,
             )

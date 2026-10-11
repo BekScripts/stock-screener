@@ -46,6 +46,19 @@ __all__ = [
 #: instance; the family says which contract shape it is.
 PROTOCOL_FAMILY = "PAPER_SHADOW_SOAK_PROTOCOL"
 
+
+def _evidence_contract_fingerprint() -> str:
+    """This build's gate-measurement fingerprint.
+
+    A function rather than a module constant so importing this module does not
+    force the whole derivation registry to be built, and so a protocol frozen
+    in one process cannot capture another's.
+    """
+    from .evidence_contract import evidence_contract_fingerprint
+
+    return evidence_contract_fingerprint()
+
+
 #: The activation family.
 ACTIVATION_FAMILY = "PAPER_SHADOW_SOAK_ACTIVATION"
 
@@ -112,6 +125,14 @@ class PaperShadowSoakProtocol:
         gate_thresholds: Each gate's limit, as data.
         gate_registry_fingerprint: Which registry those ids came from, so a
             changed evaluator is visible in the protocol's own digest.
+        evidence_contract_fingerprint: How each of those gates is *measured* —
+            `SOAK_GATE_EVIDENCE_CONTRACT_V1`, which binds every gate to a
+            versioned derivation over authoritative records and transitively
+            binds the operational observability contract. Bound separately from
+            the registry because the two drift independently: a gate can keep
+            its name and threshold while the way it is measured changes, and
+            that change must restart the soak rather than quietly redefine a
+            safety invariant mid-flight.
         scorer_version: Which evaluator may score it.
         required_sessions: How many eligible sessions are needed.
         required_drill_types: Which drills must pass. Types only — a future
@@ -162,6 +183,7 @@ class PaperShadowSoakProtocol:
     drill_schema_version: str = "PAPER_OPERATIONS_DRILL_EVIDENCE_V2"
     scorer_version: str = SCORER_VERSION
     gate_registry_fingerprint: str = field(default_factory=registry_fingerprint)
+    evidence_contract_fingerprint: str = field(default_factory=_evidence_contract_fingerprint)
     protocol_family: str = PROTOCOL_FAMILY
 
     def __post_init__(self) -> None:
@@ -281,6 +303,7 @@ class PaperShadowSoakProtocol:
             "qualifying_commit": self.qualifying_commit,
             "scorer_version": self.scorer_version,
             "gate_registry_fingerprint": self.gate_registry_fingerprint,
+            "evidence_contract_fingerprint": self.evidence_contract_fingerprint,
             "declared_gate_ids": list(self.declared_gate_ids),
             "gate_thresholds": dict(self.gate_thresholds),
             "required_sessions": self.required_sessions,
@@ -374,6 +397,7 @@ class PaperShadowSoakProtocol:
             ),
             scorer_version=str(body.get("scorer_version", SCORER_VERSION)),
             gate_registry_fingerprint=str(body.get("gate_registry_fingerprint", "")),
+            evidence_contract_fingerprint=str(body.get("evidence_contract_fingerprint", "")),
         )
 
 

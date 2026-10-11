@@ -24,7 +24,7 @@ from typing import TYPE_CHECKING, Any
 from .gates import GateClass, gate_registry, registry_fingerprint
 
 if TYPE_CHECKING:
-    from .gates import GateOutcome, SoakEvidence
+    from .gates import GateOutcome
 
 __all__ = ["SCORER_VERSION", "SoakScore", "SoakVerdictV2", "score_soak"]
 
@@ -38,6 +38,9 @@ class SoakVerdictV2:
     PASSED = "A_SOAK_PASSED"
     IN_PROGRESS = "B_SOAK_IN_PROGRESS"
     HALTED = "C_SOAK_HALTED_SEMANTIC_DEFECT_REQUIRES_RESTART"
+    EVIDENCE_INCOMPLETE = "C_SOAK_GATE_EVIDENCE_INCOMPLETE"
+    """A gate's authoritative source could not answer. C-class, never A and
+    never a clean zero: a soak is not promoted on the absence of a record."""
     FAILED = "FAIL_SAFETY_VIOLATION"
 
 
@@ -53,6 +56,9 @@ class SoakScore:
         completed_cycles: Successful strategy decision cycles.
         state: The soak's recorded state.
         drill_rejections: Why any drill evidence was inadmissible.
+        unmeasured: Gates whose evidence could not be derived, with why. Any
+            one of these forces a C-class verdict.
+        evidence_contract_digest: How these gates were measured.
         scorer_version: Which evaluator produced this.
         registry_fingerprint: Which gate registry it used.
     """
@@ -64,6 +70,8 @@ class SoakScore:
     completed_cycles: int
     state: str
     drill_rejections: tuple[str, ...] = ()
+    unmeasured: tuple[str, ...] = ()
+    evidence_contract_digest: str = ""
     scorer_version: str = SCORER_VERSION
     registry_digest: str = field(default_factory=registry_fingerprint)
 
@@ -101,6 +109,8 @@ class SoakScore:
             "breaches": [row.gate_id for row in self.breaches],
             "outstanding": [row.gate_id for row in self.outstanding],
             "drill_rejections": list(self.drill_rejections),
+            "unmeasured_gates": list(self.unmeasured),
+            "evidence_contract_fingerprint": self.evidence_contract_digest,
             # Named rather than merely absent: a soak scored as a percentage is
             # the specific failure these gates exist to prevent.
             "pass_rate": None,
@@ -134,6 +144,9 @@ class SoakScore:
                 f"{'at most' if row.bound.value == 'AT_MOST' else 'at least'} {row.limit}"
                 for row in self.outstanding
             ]
+        if self.unmeasured:
+            lines.append("UNMEASURED GATES   :")
+            lines += [f"    {row}" for row in self.unmeasured]
         if self.drill_rejections:
             lines.append("inadmissible drills:")
             lines += [f"    {row}" for row in self.drill_rejections]
@@ -141,19 +154,27 @@ class SoakScore:
 
 
 def score_soak(
-    evidence: SoakEvidence,
+    evidence: Any,
     *,
     declared_gates: dict[str, int],
     required_sessions: int,
 ) -> SoakScore:
     """Score a soak mechanically against its frozen gates.
 
-    Takes the declared gates as data and the evidence as immutable records.
-    There is no threshold argument and no way to pass a kinder limit: every
-    bound comes from the protocol that was frozen.
+    Takes the declared gates as data and the evidence as a resolver that
+    derives each gate's metric from authoritative records. There is no
+    threshold argument and no way to pass a kinder limit: every bound comes
+    from the protocol that was frozen.
+
+    No gate value is read off an observation attribute. Each one is obtained
+    through `metric_for`, which the evidence contract maps to a versioned
+    derivation, and a gate whose sources cannot answer makes the verdict
+    C-class rather than contributing a zero. That is the whole difference
+    between this scorer and the one P2.4R3 halted on.
 
     Args:
-        evidence: The immutable records.
+        evidence: A `DerivedSoakEvidence`, or anything exposing `metric_for`,
+            `counted_sessions` and `soak_state`.
         declared_gates: The protocol's gates, id to threshold.
         required_sessions: How many eligible sessions are needed.
 
@@ -166,14 +187,31 @@ def score_soak(
             as at arming, because a protocol frozen by an older build could
             otherwise be scored against a registry that has since drifted.
     """
+    from .errors import Code, SoakContractError
     from .gates import require_bijection
 
     require_bijection(declared_gates)
     registry = gate_registry()
-    outcomes = tuple(
-        registry[gate_id].run(evidence, limit=limit)
-        for gate_id, limit in sorted(declared_gates.items())
-    )
+    resolver = getattr(evidence, "metric_for", None)
+    if resolver is None:
+        raise SoakContractError(
+            Code.SOAK_STORE_INCOMPATIBLE,
+            "this evidence cannot derive gate metrics. A soak is scored from "
+            "authoritative records through the evidence contract, never from values "
+            "a caller supplied",
+        )
+
+    outcomes: list[GateOutcome] = []
+    unmeasured: list[str] = []
+    for gate_id, limit in sorted(declared_gates.items()):
+        metric = resolver(gate_id)
+        try:
+            outcomes.append(registry[gate_id].run(metric, limit=limit))
+        except SoakContractError as exc:
+            # Recorded, not swallowed: the gate contributes no number and the
+            # verdict below cannot be A.
+            unmeasured.append(f"{gate_id}: {exc}")
+
     counted = len(evidence.counted_sessions())
     cycles = next(
         (row.observed for row in outcomes if row.gate_id == "successful_strategy_decision_cycles"),
@@ -181,10 +219,19 @@ def score_soak(
     )
     state = str(evidence.soak_state())
     rejections = tuple(getattr(evidence, "drill_rejections", lambda: ())())
+    contract_digest = ""
+    bound = getattr(evidence, "bound_contract", None)
+    if bound is not None:
+        contract_digest = bound.fingerprint()
 
     breached = [row for row in outcomes if row.is_breach]
     if breached:
+        # A breach outranks everything, including missing evidence elsewhere: a
+        # thing that demonstrably happened is not made less true by a gate
+        # nobody could measure.
         verdict = SoakVerdictV2.FAILED
+    elif unmeasured:
+        verdict = SoakVerdictV2.EVIDENCE_INCOMPLETE
     elif state in {"HALTED", "FAILED"}:
         # Checked after breaches and before success: a halted soak can never
         # become A however clean the evidence collected before the halt was,
@@ -198,10 +245,12 @@ def score_soak(
 
     return SoakScore(
         verdict=verdict,
-        gates=outcomes,
+        gates=tuple(outcomes),
         counted_sessions=counted,
         required_sessions=required_sessions,
         completed_cycles=cycles,
         state=state,
         drill_rejections=rejections,
+        unmeasured=tuple(unmeasured),
+        evidence_contract_digest=contract_digest,
     )

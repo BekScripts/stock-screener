@@ -33,6 +33,7 @@ from stock_screener.soak_verification import (
     VersionedSoakStore,
     canonical_gate_ids,
     canonical_thresholds,
+    evidence_for_store,
     gate_registry,
     preflight_protocol,
     registry_fingerprint,
@@ -488,7 +489,11 @@ def test_an_empty_generic_store_scores_in_progress(tmp_path: Path) -> None:
     # §18, §50. The exact failure V3 hit: AttributeError instead of a verdict.
     store, frozen = armed(tmp_path)
 
-    result = score_soak(store, declared_gates=dict(frozen.gate_thresholds), required_sessions=20)
+    result = score_soak(
+        evidence_for_store(store),
+        declared_gates=dict(frozen.gate_thresholds),
+        required_sessions=20,
+    )
 
     assert result.verdict == SoakVerdictV2.IN_PROGRESS
     assert result.counted_sessions == 0
@@ -505,29 +510,31 @@ def test_the_preflight_consumes_the_exact_protocol_and_store(tmp_path: Path) -> 
     assert "gate_registry_fingerprint_matches" in names
     assert "activation_contract_matches" in names
     assert "real_store_scores_in_progress" in names
-    assert "observation_schema_carries_gate_evidence" in names
-    # Every contract check passes; the one that does not is the observation
-    # schema, which is a real outstanding gap and not a contract defect.
+    assert "every_gate_has_a_derivation" in names
+    # Every check passes now. The observation-schema gap P2.4R2 recorded here
+    # was the last outstanding one, and deriving the gates closed it.
     for name, ok, detail in report.checks:
-        if name != "observation_schema_carries_gate_evidence":
-            assert ok, f"{name}: {detail}"
+        assert ok, f"{name}: {detail}"
 
 
-def test_the_preflight_refuses_because_the_observation_schema_is_insufficient(
+def test_the_preflight_now_passes_because_every_gate_is_derivable(
     tmp_path: Path,
 ) -> None:
-    # The finding this phase uncovered. Fourteen zero-tolerance gates read
-    # fields PaperShadowSessionObservationV2 does not carry, so each would
-    # return the attribute default — zero — and report itself clean forever.
-    # Arming is blocked until the schema can express a breach.
+    # P2.4R2 left this refusing: fourteen zero-tolerance gates read fields the
+    # observation did not carry. With every gate bound to a derivation over
+    # authoritative records, the self-check passes — and it passes by proving
+    # each verdict reachable from real records, not by relaxing anything.
     store, frozen = armed(tmp_path)
 
     report = preflight_protocol(frozen, activation=activation(frozen), store=store)
 
-    assert report.passed is False
-    assert any("report clean forever" in row for row in report.failures)
-    with pytest.raises(SoakContractError, match=Code.SOAK_PREFLIGHT_FAILED):
-        report.require()
+    assert report.passed is True, report.failures
+    assert report.failures == ()
+    names = {name for name, _, _ in report.checks}
+    assert "every_gate_has_a_derivation" in names
+    assert "all_source_schemas_known" in names
+    assert "all_gate_scopes_valid" in names
+    report.require()
 
 
 def test_every_session_gate_declares_the_fields_it_reads() -> None:
@@ -543,60 +550,76 @@ def test_every_session_gate_declares_the_fields_it_reads() -> None:
     ]
 
     assert session_gates
-    for gate_id, definition in session_gates:
-        assert definition.evidence_fields, gate_id
+    # A gate used to declare the observation fields it read. It now declares
+    # nothing of the sort: the evidence contract names the derivation, and the
+    # derivation names the authoritative sources. The check moves with it.
+    from stock_screener.soak_verification import evidence_contract, known_source_schema
+
+    contract = evidence_contract()
+    for gate_id, _definition in session_gates:
+        binding = contract.bindings[gate_id]
+        assert binding.derivation_id, gate_id
+        assert all(known_source_schema(row) for row in binding.required_schemas), gate_id
 
 
-def test_the_observation_schema_cannot_currently_express_a_breach() -> None:
-    # Stated as a test so the gap is a recorded fact rather than a note.
-    from stock_screener.paper_runtime.soak_v2 import PaperShadowSessionObservationV2
-    from stock_screener.soak_verification.gates import EvidenceKind
+def test_the_observation_schema_can_now_express_every_session_breach(
+    soak: Any,
+) -> None:
+    # P2.4R2 recorded the gap as a test: fourteen zero-tolerance gates read
+    # fields `PaperShadowSessionObservationV2` did not carry, so each returned
+    # the attribute default — zero — and reported itself clean forever. That
+    # gap is closed here, and this test now asserts the opposite.
+    #
+    # A V3 observation carries no safety integers at all. It carries one
+    # derived evidence object with a status per metric, so a gate can report a
+    # breach, a clean zero, or that its sources could not answer.
+    from stock_screener.soak_verification import GateScope, evidence_contract
 
-    fields = set(PaperShadowSessionObservationV2.__dataclass_fields__)
-    unreadable = [
-        gate_id
-        for gate_id, definition in gate_registry().items()
-        if definition.evidence is EvidenceKind.SESSION_OBSERVATIONS
-        and any(row not in fields for row in definition.evidence_fields)
-    ]
+    fixture = soak.build(sessions=1)
+    observation = fixture.store.live_observations()[0]
+    session_gates = evidence_contract().gates_in(GateScope.SESSION)
 
-    assert len(unreadable) == 14
+    assert len(session_gates) == 16
+    for gate_id in session_gates:
+        metric = observation.gate_evidence.metrics[gate_id]
+        assert metric.status.scoreable, gate_id
+        assert metric.value is not None, gate_id
+    # And no safety integer is a field of the record itself.
+    fields = set(type(observation).__dataclass_fields__)
+    assert "live_requests" not in fields
+    assert "duplicate_remote_orders" not in fields
+    assert "kill_bypasses" not in fields
 
 
-def test_all_four_verdicts_remain_reachable_with_the_generic_types(
+def test_all_verdicts_remain_reachable_with_the_generic_types(
     tmp_path: Path,
 ) -> None:
     store, frozen = armed(tmp_path)
 
-    report = preflight_protocol(frozen, store=store)
+    report = preflight_protocol(frozen, activation=activation(frozen), store=store)
 
-    # Reachability itself is proven; the schema check is what blocks arming.
+    # Five, including the evidence-incomplete verdict: a protocol must be able
+    # to report that a gate's sources went missing, or missing evidence would
+    # have nowhere to go but a zero.
     assert set(report.reachable_verdicts) == {
         SoakVerdictV2.IN_PROGRESS,
         SoakVerdictV2.PASSED,
         SoakVerdictV2.FAILED,
         SoakVerdictV2.HALTED,
+        SoakVerdictV2.EVIDENCE_INCOMPLETE,
     }
+    assert report.passed is True, report.failures
 
 
-def test_a_clean_generic_soak_scores_a_pass(tmp_path: Path) -> None:
-    # §51. Twenty sessions, a real decision cycle, six bound drills.
-    store, frozen = armed(tmp_path)
-    digest = "decision-" + "f" * 56
-    store.record_observation(
-        observation(frozen, "S000", decision_created=True, decision_fingerprint=digest)
-    )
-    store.record_observation(observation(frozen, "S001", executed_decision_fingerprint=digest))
-    for index in range(2, 20):
-        store.record_observation(observation(frozen, f"S{index:03d}"))
-    for kind in REQUIRED_DRILL_TYPES:
-        store.record_drill(bound_drill(frozen, DrillTypeV2(str(kind))))
+def test_a_clean_generic_soak_scores_a_pass(soak: Any) -> None:
+    # §51. Twenty sessions of real operational records, a real decision cycle,
+    # six bound drills — scored through the derivation layer.
+    result = soak.build_and_score(sessions=20)
 
-    result = score_soak(store, declared_gates=dict(frozen.gate_thresholds), required_sessions=20)
-
-    assert result.counted_sessions == 20
-    assert result.completed_cycles == 1
     assert result.verdict == SoakVerdictV2.PASSED
+    assert result.breaches == ()
+    assert result.outstanding == ()
+    assert result.unmeasured == ()
 
 
 def test_a_breach_cannot_yet_be_recorded_through_the_generic_store(
@@ -626,20 +649,34 @@ def test_fail_remains_reachable_for_an_evidence_shape_that_carries_counters(
     assert SoakVerdictV2.FAILED in report.reachable_verdicts
 
 
-def test_a_halted_generic_soak_scores_c(tmp_path: Path) -> None:
+def test_a_halted_generic_soak_scores_c(soak: Any) -> None:
     # §35, §53. Terminal: it can never become A.
+    fixture = soak.build(sessions=20, state="HALTED")
+
+    assert fixture.store.state() == "HALTED"
+    result = soak.score(fixture)
+
+    assert result.verdict == SoakVerdictV2.HALTED
+
+
+def test_a_v2_observation_cannot_supply_derived_evidence(tmp_path: Path) -> None:
+    # A store holding the older observation shape is not scored as clean. The
+    # V2 record carries safety integers and no derived evidence, so every
+    # session-scoped gate reports that its sources could not answer — which is
+    # C-class, not a pass. This is the fail-closed direction: an old record
+    # cannot certify a system measured a new way.
     store, frozen = armed(tmp_path)
     store.record_observation(observation(frozen, "S000"))
 
-    store.halt(
-        reason="SYNTHETIC_DEFECT",
-        classification="PROGRAM_INTEGRATION_GAP",
-        at="2026-10-10T07:00:00+00:00",
+    result = score_soak(
+        evidence_for_store(store),
+        declared_gates=dict(frozen.gate_thresholds),
+        required_sessions=20,
     )
 
-    assert store.state() == "HALTED"
-    result = score_soak(store, declared_gates=dict(frozen.gate_thresholds), required_sessions=20)
-    assert result.verdict == SoakVerdictV2.HALTED
+    assert result.verdict == SoakVerdictV2.EVIDENCE_INCOMPLETE
+    assert result.unmeasured
+    assert any("does not bind derived gate evidence" in row for row in result.unmeasured)
 
 
 def test_an_observation_from_another_build_is_refused(tmp_path: Path) -> None:

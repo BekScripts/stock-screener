@@ -36,20 +36,48 @@ appears without the run or the test that produced it.
 
 ## Current phase
 
-**P2.4I — durable operational safety sensors — is the current checkpoint**, on
-`feat/p2-execution-engine`. No soak is armed, and V3 **cannot yet be armed**:
-the preflight refuses it, correctly, until the observation schema carries the
-counters the safety gates read.
+**P2.4R3B — soak gate evidence derivation — is the current checkpoint**, on
+`feat/p2-execution-engine`. No soak is armed and no V3 exists. The preflight now
+**passes**: every one of the 24 canonical gates is measurable.
 
-Operational runs now leave durable evidence. Eleven of the twelve declared
-journal event types are emitted by named production code, and every one of them
-is proven by a test that drives the real coordinator and the real submission
-authority rather than appending the event itself — the guard that four earlier
-phases lacked. `AlphaTraderPaperOperationsEnvironment` persists each
+**Every safety number is now derived from records something wrote while
+operating.** `SOAK_GATE_EVIDENCE_CONTRACT_V1` (`eb612d02dd3896f8…`) binds each
+gate to a scope, a versioned derivation and the source schemas that derivation
+reads, and transitively binds `PAPER_OPERATIONS_OBSERVABILITY_V1`
+(`0fa85983277222e8…`) — because a derivation reading `ORDER_SUBMITTED` is only
+valid while something emits it. A protocol binds the contract fingerprint, so
+changing how an invariant is measured restarts the soak instead of quietly
+redefining the word mid-flight.
+
+**A metric has three states, not two.** `OBSERVED_ZERO`, `OBSERVED_VALUE` and
+`EVIDENCE_MISSING`. The third is new and is the whole point: P2.4R3 halted
+because fourteen zero-tolerance gates read fields a record never carried,
+`getattr(row, field, 0)` returned zero, and zero satisfied an at-most-zero
+threshold. Missing evidence now yields `C_SOAK_GATE_EVIDENCE_INCOMPLETE` and a
+`DerivedMetric.value` of `None` — so a caller that ignores the status gets a
+type error rather than a clean soak.
+
+The direction of a gate decides what absence means, and only that:
+
+| Gate direction | Absent evidence means | Why |
+| --- | --- | --- |
+| `AT_MOST` (safety) | **never** a clean zero | "no record of a kill bypass" is not "no kill bypass" |
+| `AT_LEAST` (promotion) | zero, which blocks promotion | "no drill recorded yet" *is* the observation, and is what B means |
+
+`PAPER_SHADOW_SESSION_OBSERVATION_V3` carries no safety integers at all — one
+fingerprinted `SESSION_GATE_EVIDENCE_V1` object, derived at finalization from
+that session's own immutable records. A V2 observation in a store is scored
+`EVIDENCE_INCOMPLETE`, not clean: an old record cannot certify a system measured
+a new way.
+
+**P2.4I supplied the evidence this derives from.** Eleven of the twelve declared
+journal event types are emitted by named production code, each proven by a test
+that drives the real coordinator and submission authority rather than appending
+the event itself. `AlphaTraderPaperOperationsEnvironment` persists each
 reconciliation report, operational execution appends to the execution journal of
 record, and every external mutation is audited before it is sent.
 
-**P2.4I found five pre-existing defects, four of them fixed here.** All five
+**P2.4I found five pre-existing defects, four of them fixed there.** All five
 share one shape: two components declared to fit together, with nothing
 exercising the join.
 
@@ -343,6 +371,15 @@ frozen at the same commit; P2 branched from it.
 | P2.4I accounting link | provider execution id → `EXT:<id>` → `EXEC_FILL:EXT:<id>` |
 | P2.4I execution journal | operational execution appends `ORDER_CREATED`/`SUBMITTED`/`ACKNOWLEDGED`/`FILLED`/`FILL_APPLIED` |
 | P2.4I schedule join | `OperationalSchedule`/`OperationalSlot` protocols — both schedule types checked |
+| P2.4R3B evidence contract | `SOAK_GATE_EVIDENCE_CONTRACT_V1`, fingerprint `eb612d02dd3896f8…` |
+| P2.4R3B gate registry | `142287b5a71451ed…` — gates carry no evaluator and no observation fields |
+| P2.4R3B derivations | `SOAK_GATE_DERIVATION_REGISTRY_V1`, 24 derivations, `02a94e5a2e866aed…` |
+| P2.4R3B source schemas | `SOAK_EVIDENCE_SOURCE_SCHEMAS_V1` — 12 described sources |
+| P2.4R3B gate scopes | SESSION 16, SOAK 6, DRILL 1, COMPLETION 1 |
+| P2.4R3B session evidence | `SESSION_GATE_EVIDENCE_V1` — derived at finalization, no setter API |
+| P2.4R3B observation schema | `PAPER_SHADOW_SESSION_OBSERVATION_V3` — binds evidence, holds no safety integer |
+| P2.4R3B preflight | passes; all five verdicts proven reachable from real records |
+| P2.4R3B V3 soak | **NOT CREATED** — the run-due blocker is independent and unfixed |
 | H2 broker-paper orders | **NOT AUTHORISED** — its own frozen ladder says so |
 | Live trading | **NOT IMPLEMENTED, NOT AUTHORIZED** |
 | Production risk thresholds | **NOT AUTHORIZED** |
@@ -350,6 +387,24 @@ frozen at the same commit; P2 branched from it.
 | Production correlation thresholds | **NOT AUTHORIZED** |
 | Broker authority | **PAPER READ/SUBMIT, CERTIFIED — NO LIVE AUTHORITY** |
 | Live trading | **NOT AUTHORIZED** |
+
+**A safety number is derived, never supplied (P2.4R3B).** There is no API that
+lets a caller set how many times the kill switch was bypassed. `SessionGateEvidence`
+has one constructor path — `derive_session_evidence`, reading that session's own
+immutable records — and the gate registry carries no evaluator for a caller to
+hand a value to.
+
+**Missing evidence is not zero, and the gate's direction is the only thing that
+changes that.** For an `AT_MOST` safety gate, an absent or unverified source
+yields `EVIDENCE_MISSING` and a C-class verdict; `DerivedMetric.value` is `None`
+and `require_value()` raises `SOAK_GATE_EVIDENCE_MISSING`. For an `AT_LEAST`
+promotion gate, absence is the observation that nothing has accumulated yet,
+which is what B means. Collapsing the two in either direction is the P2.4R3 halt.
+
+**A hash-chained source that does not verify yields no records.** The operations
+journal and the execution journal are read through `SourceRead`, which reports
+`verified=False` and an empty record set rather than handing over contents a
+rewritten chain could use to certify itself.
 
 **Observability is not authority (P2.4I).** A sensor records what an authority
 decided. It may not select a security, change a weight, change a risk decision,
@@ -3914,13 +3969,31 @@ care — nothing has a foreign key *to* it, so dropping it cascades to nothing.
 
 ## Known limitations
 
-**`paper-ops run-due` cannot execute a decision (P2.4I).** `RuntimePlanner` is
+**The request audit has no production writer (P2.4R3B).**
+`AlpacaPaperHttpTransport` accepts an audit store and nothing in `src/`
+constructs one, so `request_audit/` is absent after a real run. The derivation
+handles this honestly rather than reading the absence as clean: a session that
+submitted orders with no audit beside them reports `EVIDENCE_MISSING` for
+`live_mutations`, because nothing establishes where those orders went. A session
+that submitted nothing reports a genuine zero, established from the journal.
+
+The practical consequence is a coupling worth stating: **the moment
+`paper-ops run-due` can execute, the audit must be wired too**, or every
+executing session will score `C_SOAK_GATE_EVIDENCE_INCOMPLETE`. Both belong in
+the same reviewed phase as the submission-authority wiring below.
+
+**`paper-ops run-due` cannot execute a decision (P2.4I, confirmed P2.4R3B).** `RuntimePlanner` is
 built with no `submit` authority — `cli.py` constructs it as
 `RuntimePlanner(root=…, binding=…, slot=…, calendar=…)` and
 `RuntimeSubmissionAuthority` is constructed **nowhere** in `src/`. An execution
 slot therefore advances the decision to `EXECUTION_BLOCKED` and raises
 `RUNTIME_BINDING_INVALID`. Observation and decision slots work; execution does
 not.
+
+Recorded as `OPERATIONAL_SUBMISSION_AUTHORITY_NOT_REACHABLE_FROM_RUN_DUE`. It is
+a V3 activation blocker and is independent of gate derivation: every gate is
+derivable, and the thing that cannot yet happen is the execution those gates
+would measure.
 
 This is not fixed here on purpose. Wiring the submission authority into the CLI
 would turn a command that currently cannot trade into one that can place paper
@@ -5784,6 +5857,28 @@ requests for the 762-company cohort from **762 to 353**.
 ---
 
 ## Regression requirements
+
+**P2.4R3B adds `tests/integration/test_p2_4r3b_gate_derivation.py`** — 86 cases.
+Its decisive tests are a pair per zero-tolerance gate: write the records a
+breach leaves behind and prove the derivation finds it, then delete a required
+source and prove the gate reports missing evidence instead of zero. All sixteen
+session-scoped zero-tolerance gates have both, and
+`test_every_zero_tolerance_session_gate_has_a_breach_fixture` fails if a new one
+is added with no way to create its condition.
+
+`test_no_safety_derivation_defaults_a_missing_value_to_zero` walks the package's
+AST — not its text, because these modules *describe* the defect in prose — and
+fails on any `getattr(…, 0)`, `getattr(…, False)` or `.get(…, 0)` in a module
+that evaluates a safety value. It caught two surviving helpers in `gates.py`
+during this phase.
+
+**Every earlier soak test now builds real records.** The `soak` fixture in
+`tests/conftest.py` writes journal entries, a request audit, reconciliation
+reports, decision records and a verified execution journal through the
+production stores, derives the evidence, and records V3 observations. The
+fixtures it replaces held a synthetic observation with eighteen integer fields
+and proved a breach by setting one to 1 — which proved the comparison operator
+worked and nothing about whether a breach could ever be observed.
 
 **P2.4I adds `tests/integration/test_p2_4i_safety_sensors.py`** — 47 test
 functions, 57 cases with parametrisation. Its

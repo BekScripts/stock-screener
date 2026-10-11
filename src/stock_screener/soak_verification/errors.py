@@ -25,6 +25,18 @@ class Code:
         SOAK_ACTIVATION_VERSION_MISMATCH: Activation and protocol disagree.
         SOAK_ACTIVATION_ORPHANED: An activation with no frozen protocol.
         SOAK_ALREADY_ACTIVATED: A second, different activation.
+        SOAK_GATE_EVIDENCE_MISSING: A gate's authoritative source is absent or
+            does not verify. Never scored as zero — this is the refusal whose
+            absence let fourteen zero-tolerance gates report clean forever.
+        SOAK_GATE_DERIVATION_MISSING: A declared gate with no derivation.
+        SOAK_DERIVATION_SCOPE_MISMATCH: A derivation asked for a scope it does
+            not measure.
+        SOAK_SOURCE_SCHEMA_UNKNOWN: A derivation naming a source the registry
+            does not describe.
+        SOAK_SESSION_EVIDENCE_INCOMPLETE: A session whose required sources
+            could not all be read. Never finalised as clean.
+        SOAK_EVIDENCE_CONTRACT_MISMATCH: The bound evidence contract is not the
+            one in this build.
     """
 
     SOAK_GATE_WITHOUT_EVALUATOR = "SOAK_GATE_WITHOUT_EVALUATOR"
@@ -43,6 +55,12 @@ class Code:
     SOAK_ACTIVATION_VERSION_MISMATCH = "SOAK_ACTIVATION_VERSION_MISMATCH"
     SOAK_ACTIVATION_ORPHANED = "SOAK_ACTIVATION_ORPHANED"
     SOAK_ALREADY_ACTIVATED = "SOAK_ALREADY_ACTIVATED"
+    SOAK_GATE_EVIDENCE_MISSING = "SOAK_GATE_EVIDENCE_MISSING"
+    SOAK_GATE_DERIVATION_MISSING = "SOAK_GATE_DERIVATION_MISSING"
+    SOAK_DERIVATION_SCOPE_MISMATCH = "SOAK_DERIVATION_SCOPE_MISMATCH"
+    SOAK_SOURCE_SCHEMA_UNKNOWN = "SOAK_SOURCE_SCHEMA_UNKNOWN"
+    SOAK_SESSION_EVIDENCE_INCOMPLETE = "SOAK_SESSION_EVIDENCE_INCOMPLETE"
+    SOAK_EVIDENCE_CONTRACT_MISMATCH = "SOAK_EVIDENCE_CONTRACT_MISMATCH"
 
 
 class SoakContractError(RuntimeError):

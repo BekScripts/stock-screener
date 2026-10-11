@@ -17,10 +17,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import TYPE_CHECKING, Any, Protocol
-
-if TYPE_CHECKING:
-    from collections.abc import Callable
+from typing import Any, Protocol
 
 __all__ = [
     "GATE_REGISTRY_VERSION",
@@ -163,23 +160,25 @@ class SoakEvidence(Protocol):
 
 @dataclass(frozen=True)
 class GateDefinition:
-    """One gate, and the code that evaluates it.
+    """One gate: what it means, and what kind of failure it is.
+
+    It no longer carries an evaluator. A gate used to hold a lambda that read a
+    named field off a session observation, and `getattr(row, field, 0)` reported
+    fourteen zero-tolerance gates clean against records that never carried the
+    field. How a gate is *measured* now lives in
+    `SOAK_GATE_EVIDENCE_CONTRACT_V1`, which binds each gate to a versioned
+    derivation over authoritative operational records, and `run` is handed the
+    derived metric rather than reaching for it.
 
     Attributes:
         gate_id: A stable id. Never renamed — a renamed gate is a new gate and
             a protocol bound to the old name must stop validating.
         gate_class: Breach or missing evidence.
-        evidence: Which immutable record it reads.
-        evaluator_id: A stable name for the evaluator, recorded in the registry
-            fingerprint so a changed evaluator is visible.
+        bound: Whether the threshold is a ceiling or a floor.
+        evidence: Which immutable record family it concerns.
+        evaluator_id: A stable name for the rule, recorded in the registry
+            fingerprint so a changed rule is visible.
         rule: Human-readable statement of what it checks.
-        evaluate: The evaluator. Takes the evidence and the limit, returns the
-            observed count.
-        evidence_fields: The record attributes the evaluator reads. Declared
-            rather than inferred, because an evaluator that reads a field the
-            record does not have returns the attribute default — zero — and
-            reports the gate clean forever. Fourteen zero-tolerance gates did
-            exactly that until the preflight started checking this.
     """
 
     gate_id: str
@@ -188,21 +187,26 @@ class GateDefinition:
     evidence: EvidenceKind
     evaluator_id: str
     rule: str
-    evaluate: Callable[[SoakEvidence], int]
-    evidence_fields: tuple[str, ...] = ()
 
-    def run(self, evidence: SoakEvidence, *, limit: int) -> GateOutcome:
-        """Evaluate this gate against the evidence.
+    def run(self, metric: Any, *, limit: int) -> GateOutcome:
+        """Evaluate this gate against a derived metric.
 
         Args:
-            evidence: The immutable records.
-            limit: The protocol's threshold — a maximum for a zero-tolerance
-                gate, a minimum for a promotion gate.
+            metric: The `DerivedMetric` the evidence contract's derivation
+                produced for this gate.
+            limit: The protocol's threshold — a maximum for an `AT_MOST` gate,
+                a minimum for an `AT_LEAST` one.
 
         Returns:
             The outcome.
+
+        Raises:
+            SoakContractError: `SOAK_GATE_EVIDENCE_MISSING` when the metric's
+                sources could not answer. Raised rather than defaulted: it is
+                the most important behaviour in this module, and a caller that
+                wants a verdict anyway has to record a halt to get one.
         """
-        observed = int(self.evaluate(evidence))
+        observed = metric.require_value()
         passed = observed <= limit if self.bound is GateBound.AT_MOST else observed >= limit
         return GateOutcome(
             gate_id=self.gate_id,
@@ -211,7 +215,7 @@ class GateDefinition:
             observed=observed,
             limit=limit,
             passed=passed,
-            detail=() if passed else (self.rule,),
+            detail=() if passed else (self.rule, *metric.detail),
         )
 
     def body(self) -> dict[str, Any]:
@@ -223,232 +227,167 @@ class GateDefinition:
             "evidence": str(self.evidence),
             "evaluator_id": self.evaluator_id,
             "rule": self.rule,
-            "evidence_fields": list(self.evidence_fields),
         }
 
 
-def _count(rows: Any, attribute: str) -> int:
-    """Sum an integer attribute across observations."""
-    return sum(int(getattr(row, attribute, 0) or 0) for row in rows)
-
-
-def _any_flag(rows: Any, attribute: str) -> int:
-    """Count observations whose boolean attribute is set."""
-    return sum(1 for row in rows if bool(getattr(row, attribute, False)))
-
-
 def gate_registry() -> dict[str, GateDefinition]:
-    """Every gate this scorer can evaluate, by stable id.
+    """Every gate this scorer knows, by stable id.
 
     Returns:
         The registry. A protocol may declare any subset; it may not declare
         anything absent from here, and `require_bijection` is what enforces
-        that at arming time.
+        that at arming time. How each one is measured is a separate contract —
+        see `evidence_contract` — so that a gate and its measurement can be
+        versioned independently.
     """
     definitions = [
-        # -- zero tolerance: things that must never happen -----------------
         GateDefinition(
             gate_id="live_mutations",
-            evidence_fields=("live_requests",),
             gate_class=GateClass.ZERO_TOLERANCE,
             bound=GateBound.AT_MOST,
             evidence=EvidenceKind.SESSION_OBSERVATIONS,
             evaluator_id="sum_live_requests_v1",
             rule="no request may ever reach a live endpoint",
-            evaluate=lambda e: _count(e.live_observations(), "live_requests"),
         ),
         GateDefinition(
             gate_id="duplicate_remote_orders",
-            evidence_fields=("duplicate_remote_orders",),
             gate_class=GateClass.ZERO_TOLERANCE,
             bound=GateBound.AT_MOST,
             evidence=EvidenceKind.SESSION_OBSERVATIONS,
             evaluator_id="sum_duplicate_remote_orders_v1",
             rule="one authorised order must never reach the venue twice",
-            evaluate=lambda e: _count(e.live_observations(), "duplicate_remote_orders"),
         ),
         GateDefinition(
             gate_id="duplicate_admitted_fills",
-            evidence_fields=("duplicate_admitted_fills",),
             gate_class=GateClass.ZERO_TOLERANCE,
             bound=GateBound.AT_MOST,
             evidence=EvidenceKind.SESSION_OBSERVATIONS,
             evaluator_id="sum_duplicate_admitted_fills_v1",
             rule="one fill must never be admitted to the book twice",
-            evaluate=lambda e: _count(e.live_observations(), "duplicate_admitted_fills"),
         ),
         GateDefinition(
             gate_id="duplicate_accounting_events",
-            evidence_fields=("duplicate_accounting_events",),
             gate_class=GateClass.ZERO_TOLERANCE,
             bound=GateBound.AT_MOST,
             evidence=EvidenceKind.SESSION_OBSERVATIONS,
             evaluator_id="sum_duplicate_accounting_events_v1",
             rule="one execution must never post twice to the ledger",
-            evaluate=lambda e: _count(e.live_observations(), "duplicate_accounting_events"),
         ),
         GateDefinition(
             gate_id="duplicate_scheduled_runs_causing_execution",
-            evidence_fields=("duplicate_scheduled_runs_causing_execution",),
             gate_class=GateClass.ZERO_TOLERANCE,
             bound=GateBound.AT_MOST,
             evidence=EvidenceKind.SESSION_OBSERVATIONS,
             evaluator_id="sum_duplicate_executing_runs_v1",
             rule="two invocations of one slot must never both submit",
-            evaluate=lambda e: _count(
-                e.live_observations(), "duplicate_scheduled_runs_causing_execution"
-            ),
         ),
         GateDefinition(
             gate_id="duplicate_counted_sessions",
-            evidence_fields=("session",),
             gate_class=GateClass.ZERO_TOLERANCE,
             bound=GateBound.AT_MOST,
             evidence=EvidenceKind.SESSION_OBSERVATIONS,
             evaluator_id="counted_session_uniqueness_v1",
             rule=(
-                "one eligible session must count once however many runs it held; "
-                "several runs in a session are not duplicates, two counted "
-                "observations for one session are"
-            ),
-            evaluate=lambda e: (
-                len([row.session for row in e.live_observations()])
-                - len({row.session for row in e.live_observations()})
+                "one eligible session must count once however many runs it held; several "
+                "runs in a session are not duplicates, two counted observations for one "
+                "session are"
             ),
         ),
         GateDefinition(
             gate_id="stale_data_executions",
-            evidence_fields=("stale_data_executions",),
             gate_class=GateClass.ZERO_TOLERANCE,
             bound=GateBound.AT_MOST,
             evidence=EvidenceKind.SESSION_OBSERVATIONS,
             evaluator_id="sum_stale_data_executions_v1",
             rule="no order may be sized against data outside its freshness policy",
-            evaluate=lambda e: _count(e.live_observations(), "stale_data_executions"),
         ),
         GateDefinition(
             gate_id="missing_data_executions",
-            evidence_fields=("missing_data_executions",),
             gate_class=GateClass.ZERO_TOLERANCE,
             bound=GateBound.AT_MOST,
             evidence=EvidenceKind.SESSION_OBSERVATIONS,
             evaluator_id="sum_missing_data_executions_v1",
             rule="no order may be sized against an absent input",
-            evaluate=lambda e: _count(e.live_observations(), "missing_data_executions"),
         ),
         GateDefinition(
             gate_id="missed_run_backfills",
-            evidence_fields=("missed_run_backfills",),
             gate_class=GateClass.ZERO_TOLERANCE,
             bound=GateBound.AT_MOST,
             evidence=EvidenceKind.SESSION_OBSERVATIONS,
             evaluator_id="sum_missed_run_backfills_v1",
             rule="a missed slot is recorded and never run late",
-            evaluate=lambda e: _count(e.live_observations(), "missed_run_backfills"),
         ),
         GateDefinition(
             gate_id="ignored_reconciliation_breaks",
-            evidence_fields=("ignored_reconciliation_breaks",),
             gate_class=GateClass.ZERO_TOLERANCE,
             bound=GateBound.AT_MOST,
             evidence=EvidenceKind.SESSION_OBSERVATIONS,
             evaluator_id="sum_ignored_reconciliation_breaks_v1",
             rule="a three-way break must block, never be traded through",
-            evaluate=lambda e: _count(e.live_observations(), "ignored_reconciliation_breaks"),
         ),
         GateDefinition(
             gate_id="completed_sessions_reconcile",
-            evidence_fields=(
-                "orders_submitted",
-                "reconciliation_after",
-            ),
             gate_class=GateClass.ZERO_TOLERANCE,
             bound=GateBound.AT_MOST,
             evidence=EvidenceKind.SESSION_OBSERVATIONS,
             evaluator_id="unreconciled_executions_v1",
             rule="every session that executed must reconcile afterwards",
-            evaluate=lambda e: sum(
-                1
-                for row in e.live_observations()
-                if int(getattr(row, "orders_submitted", 0) or 0)
-                and str(getattr(row, "reconciliation_after", "")) != "RECONCILED"
-            ),
         ),
         GateDefinition(
             gate_id="ignored_remote_state_unknown",
-            evidence_fields=("ignored_remote_state_unknown",),
             gate_class=GateClass.ZERO_TOLERANCE,
             bound=GateBound.AT_MOST,
             evidence=EvidenceKind.SESSION_OBSERVATIONS,
             evaluator_id="sum_ignored_remote_ambiguity_v1",
             rule="an unresolved submission must block the whole account",
-            evaluate=lambda e: _count(e.live_observations(), "ignored_remote_state_unknown"),
         ),
         GateDefinition(
             gate_id="kill_bypasses",
-            evidence_fields=("kill_bypasses",),
             gate_class=GateClass.ZERO_TOLERANCE,
             bound=GateBound.AT_MOST,
             evidence=EvidenceKind.SESSION_OBSERVATIONS,
             evaluator_id="sum_kill_bypasses_v1",
             rule="nothing may submit while the control state forbids it",
-            evaluate=lambda e: _count(e.live_observations(), "kill_bypasses"),
         ),
         GateDefinition(
             gate_id="unknown_remote_order_auto_cancels",
-            evidence_fields=("unknown_remote_order_auto_cancels",),
             gate_class=GateClass.ZERO_TOLERANCE,
             bound=GateBound.AT_MOST,
             evidence=EvidenceKind.SESSION_OBSERVATIONS,
             evaluator_id="sum_unknown_order_auto_cancels_v1",
             rule="an order this system cannot prove it placed is never cancelled",
-            evaluate=lambda e: _count(e.live_observations(), "unknown_remote_order_auto_cancels"),
         ),
         GateDefinition(
             gate_id="automatic_accounting_repairs",
-            evidence_fields=("automatic_accounting_repairs",),
             gate_class=GateClass.ZERO_TOLERANCE,
             bound=GateBound.AT_MOST,
             evidence=EvidenceKind.SESSION_OBSERVATIONS,
             evaluator_id="sum_automatic_accounting_repairs_v1",
             rule="broker state never writes to the book after bootstrap",
-            evaluate=lambda e: _count(e.live_observations(), "automatic_accounting_repairs"),
         ),
         GateDefinition(
             gate_id="reranked_executions",
-            evidence_fields=("reranked_executions",),
             gate_class=GateClass.ZERO_TOLERANCE,
             bound=GateBound.AT_MOST,
             evidence=EvidenceKind.SESSION_OBSERVATIONS,
             evaluator_id="sum_reranked_executions_v1",
             rule="an execution must use the frozen decision, never a fresh ranking",
-            evaluate=lambda e: _count(e.live_observations(), "reranked_executions"),
         ),
         GateDefinition(
             gate_id="risk_authority_expansions",
-            evidence_fields=("risk_authority_expansions",),
             gate_class=GateClass.ZERO_TOLERANCE,
             bound=GateBound.AT_MOST,
             evidence=EvidenceKind.SESSION_OBSERVATIONS,
             evaluator_id="sum_risk_authority_expansions_v1",
             rule="risk may reduce a strategy request and may never create one",
-            evaluate=lambda e: _count(e.live_observations(), "risk_authority_expansions"),
         ),
-        # -- promotion required: evidence that must accumulate -------------
-        #
-        # These block an `A` without being safety breaches. Note that three of
-        # them are AT_MOST rules — "no unresolved CRITICAL incident" is a
-        # ceiling that is nevertheless not a breach, which is exactly why the
-        # bound is a separate dimension from the class.
         GateDefinition(
             gate_id="qualifying_sessions_observed",
-            evidence_fields=("session",),
             gate_class=GateClass.PROMOTION_REQUIRED,
             bound=GateBound.AT_LEAST,
             evidence=EvidenceKind.SESSION_OBSERVATIONS,
             evaluator_id="counted_sessions_v1",
             rule="the required number of eligible sessions must be observed",
-            evaluate=lambda e: len(e.counted_sessions()),
         ),
         GateDefinition(
             gate_id="eligible_sessions_with_no_record",
@@ -457,11 +396,10 @@ def gate_registry() -> dict[str, GateDefinition]:
             evidence=EvidenceKind.CALENDAR,
             evaluator_id="elapsed_sessions_without_record_v1",
             rule=(
-                "every elapsed eligible session must have a record; a gap blocks "
-                "promotion without being a breach, because missing evidence and a "
-                "safety failure are different facts"
+                "every elapsed eligible session must have a record; a gap blocks promotion "
+                "without being a breach, because missing evidence and a safety failure are "
+                "different facts"
             ),
-            evaluate=lambda e: len(set(e.eligible_elapsed_sessions()) - set(e.counted_sessions())),
         ),
         GateDefinition(
             gate_id="unresolved_critical_incidents",
@@ -470,9 +408,6 @@ def gate_registry() -> dict[str, GateDefinition]:
             evidence=EvidenceKind.INCIDENT_HISTORY,
             evaluator_id="open_critical_incidents_v1",
             rule="no CRITICAL incident may be open at completion",
-            evaluate=lambda e: sum(
-                1 for row in e.open_incidents() if str(getattr(row, "severity", "")) == "CRITICAL"
-            ),
         ),
         GateDefinition(
             gate_id="unresolved_blocking_incidents",
@@ -481,9 +416,6 @@ def gate_registry() -> dict[str, GateDefinition]:
             evidence=EvidenceKind.INCIDENT_HISTORY,
             evaluator_id="open_blocking_incidents_v1",
             rule="no BLOCKING incident may be open at completion",
-            evaluate=lambda e: sum(
-                1 for row in e.open_incidents() if str(getattr(row, "severity", "")) == "BLOCKING"
-            ),
         ),
         GateDefinition(
             gate_id="required_drills_passed",
@@ -492,112 +424,35 @@ def gate_registry() -> dict[str, GateDefinition]:
             evidence=EvidenceKind.DRILL_RECORDS,
             evaluator_id="admissible_passed_drills_v1",
             rule=(
-                "every required drill must have admissible passing evidence bound to "
-                "this protocol, this commit and this operations engine"
-            ),
-            evaluate=lambda e: len(
-                {
-                    str(getattr(row, "drill_type", ""))
-                    for row in e.drill_records()
-                    if bool(getattr(row, "passed", False))
-                }
+                "every required drill must have admissible passing evidence bound to this "
+                "protocol, this commit and this operations engine"
             ),
         ),
         GateDefinition(
             gate_id="successful_strategy_decision_cycles",
-            evidence_fields=(
-                "decision_created",
-                "decision_fingerprint",
-                "executed_decision_fingerprint",
-            ),
             gate_class=GateClass.PROMOTION_REQUIRED,
             bound=GateBound.AT_LEAST,
             evidence=EvidenceKind.SESSION_OBSERVATIONS,
             evaluator_id="completed_decision_cycles_v1",
             rule=(
-                "at least one scheduled decision must have been taken and its "
-                "following execution purpose processed from that frozen decision; a "
-                "broker order is not required"
+                "at least one scheduled decision must have been taken and its following "
+                "execution purpose processed from that frozen decision; a broker order is "
+                "not required"
             ),
-            evaluate=lambda e: _completed_cycles(e.live_observations()),
         ),
         GateDefinition(
             gate_id="eligible_decision_executions_accounted_for",
-            evidence_fields=(
-                "decision_created",
-                "decision_fingerprint",
-                "executed_decision_fingerprint",
-                "missed_purposes",
-            ),
             gate_class=GateClass.PROMOTION_REQUIRED,
             bound=GateBound.AT_MOST,
             evidence=EvidenceKind.SESSION_OBSERVATIONS,
             evaluator_id="decisions_without_execution_account_v1",
             rule=(
-                "every decision that became execution-eligible must have its "
-                "execution purpose accounted for; none may silently disappear"
+                "every decision that became execution-eligible must have its execution "
+                "purpose accounted for; none may silently disappear"
             ),
-            evaluate=lambda e: _unaccounted_decisions(e.live_observations()),
         ),
     ]
     return {row.gate_id: row for row in definitions}
-
-
-def _completed_cycles(observations: Any) -> int:
-    """Count decision cycles whose execution was processed from the frozen decision.
-
-    A cycle is one decision fingerprint that appears both as created and as
-    consumed. Counting the two halves separately would let a decision with no
-    execution, or an execution of some other decision, look like a cycle.
-
-    Args:
-        observations: The live session observations.
-
-    Returns:
-        How many cycles completed.
-    """
-    created = {
-        str(getattr(row, "decision_fingerprint", ""))
-        for row in observations
-        if bool(getattr(row, "decision_created", False))
-        and str(getattr(row, "decision_fingerprint", ""))
-    }
-    consumed = {
-        str(getattr(row, "executed_decision_fingerprint", ""))
-        for row in observations
-        if str(getattr(row, "executed_decision_fingerprint", ""))
-    }
-    return len(created & consumed)
-
-
-def _unaccounted_decisions(observations: Any) -> int:
-    """Count decisions that became execution-eligible with nothing recorded.
-
-    A missed execution *is* accounted for — it is recorded as missed, which is a
-    recorded outcome. What must not happen is a decision whose execution
-    session passed with no observation of it at all.
-
-    Args:
-        observations: The live session observations.
-
-    Returns:
-        How many decisions have no execution account.
-    """
-    created = {
-        str(getattr(row, "decision_fingerprint", ""))
-        for row in observations
-        if bool(getattr(row, "decision_created", False))
-        and str(getattr(row, "decision_fingerprint", ""))
-    }
-    accounted: set[str] = set()
-    for row in observations:
-        digest = str(getattr(row, "executed_decision_fingerprint", ""))
-        if digest:
-            accounted.add(digest)
-        for purpose in getattr(row, "missed_purposes", ()) or ():
-            if "EXECUTION" in str(purpose):
-                accounted |= created
-    return len(created - accounted)
 
 
 def registry_fingerprint() -> str:

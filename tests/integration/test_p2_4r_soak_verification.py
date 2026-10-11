@@ -14,7 +14,7 @@ catches the thing that actually happened.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -27,6 +27,7 @@ from stock_screener.paper_operations import (
 )
 from stock_screener.soak_verification import (
     REQUIRED_DRILL_TYPES,
+    Breach,
     Code,
     DrillRecordV2,
     DrillStoreV2,
@@ -70,78 +71,6 @@ def declared_gates(**overrides: int) -> dict[str, int]:
     return gates
 
 
-@dataclass
-class Observation:
-    """One synthetic session."""
-
-    session: str
-    decision_created: bool = False
-    decision_fingerprint: str = ""
-    executed_decision_fingerprint: str = ""
-    missed_purposes: tuple[str, ...] = ()
-    orders_submitted: int = 0
-    reconciliation_after: str = "RECONCILED"
-    live_requests: int = 0
-    duplicate_remote_orders: int = 0
-    duplicate_admitted_fills: int = 0
-    duplicate_accounting_events: int = 0
-    duplicate_scheduled_runs_causing_execution: int = 0
-    stale_data_executions: int = 0
-    missing_data_executions: int = 0
-    missed_run_backfills: int = 0
-    ignored_reconciliation_breaks: int = 0
-    ignored_remote_state_unknown: int = 0
-    kill_bypasses: int = 0
-    unknown_remote_order_auto_cancels: int = 0
-    automatic_accounting_repairs: int = 0
-    reranked_executions: int = 0
-    risk_authority_expansions: int = 0
-
-
-@dataclass
-class Incident:
-    """One open incident."""
-
-    incident_id: str
-    severity: str
-
-
-@dataclass
-class Evidence:
-    """An immutable evidence set."""
-
-    observations: tuple[Observation, ...] = ()
-    drills: tuple[DrillRecordV2, ...] = ()
-    incidents: tuple[Incident, ...] = ()
-    elapsed: tuple[str, ...] = ()
-    state: str = "RUNNING"
-    rejections: tuple[str, ...] = field(default_factory=tuple)
-
-    def live_observations(self) -> tuple[Any, ...]:
-        return self.observations
-
-    def counted_sessions(self) -> tuple[str, ...]:
-        return tuple(sorted({row.session for row in self.observations}))
-
-    def drill_records(self) -> tuple[Any, ...]:
-        return self.drills
-
-    def open_incidents(self) -> tuple[Any, ...]:
-        return self.incidents
-
-    def eligible_elapsed_sessions(self) -> tuple[str, ...]:
-        return self.elapsed
-
-    def soak_state(self) -> str:
-        return self.state
-
-    def drill_rejections(self) -> tuple[str, ...]:
-        return self.rejections
-
-
-DIGEST = "decision-" + "f" * 56
-
-
 def drill(drill_type: DrillTypeV2, **overrides: Any) -> DrillRecordV2:
     """One fully bound, passing drill record."""
     fields: dict[str, Any] = {
@@ -167,18 +96,21 @@ def all_drills() -> tuple[DrillRecordV2, ...]:
     return tuple(drill(row) for row in REQUIRED_DRILL_TYPES)
 
 
-def clean_sessions(count: int, *, with_cycle: bool = True) -> tuple[Observation, ...]:
-    """`count` clean sessions, optionally containing one decision cycle."""
-    rows = [Observation(session=f"S{index:03d}") for index in range(count)]
-    if with_cycle and count >= 2:
-        rows[0] = Observation(session="S000", decision_created=True, decision_fingerprint=DIGEST)
-        rows[1] = Observation(session="S001", executed_decision_fingerprint=DIGEST)
-    return tuple(rows)
+@dataclass
+class _FixedClock:
+    """An operational clock pinned to one instant."""
 
+    moment: str
 
-def score(evidence: Evidence, **overrides: int) -> Any:
-    """Score an evidence set against the full gate set."""
-    return score_soak(evidence, declared_gates=declared_gates(**overrides), required_sessions=20)
+    def iso(self) -> str:
+        """The instant."""
+        return self.moment
+
+    def now(self) -> Any:
+        """The instant as an aware datetime."""
+        from stock_screener.paper_operations.clock import parse_instant
+
+        return parse_instant(self.moment)
 
 
 # --------------------------------------------------------------------------
@@ -239,11 +171,23 @@ def test_the_preflight_would_have_refused_to_arm_v2() -> None:
 
 
 def test_no_gate_exists_only_as_a_string() -> None:
+    # The original form of this test asserted every gate carried a callable
+    # evaluator. It now asserts the stronger thing: every gate is bound to a
+    # versioned derivation over named authoritative sources. A callable was
+    # never enough — fourteen of them were lambdas reading fields no record
+    # carried.
+    from stock_screener.soak_verification import evidence_contract, known_source_schema
+
+    contract = evidence_contract()
+
     for gate_id, definition in gate_registry().items():
         assert definition.gate_id == gate_id
-        assert callable(definition.evaluate)
         assert definition.evaluator_id
         assert definition.rule
+        binding = contract.bindings[gate_id]
+        assert binding.derivation_id
+        assert binding.derivation_version
+        assert all(known_source_schema(row) for row in binding.required_schemas), gate_id
 
 
 def test_a_declared_gate_with_no_evaluator_is_refused() -> None:
@@ -286,168 +230,141 @@ def test_a_promotion_gate_may_be_a_ceiling_too() -> None:
 # --------------------------------------------------------------------------
 
 
-def test_an_empty_soak_is_in_progress() -> None:
-    result = score(Evidence(state="ARMED"))
+def test_an_empty_soak_is_in_progress(soak: Any) -> None:
+    result = soak.build_and_score(sessions=0, required_sessions=20)
 
     assert result.verdict == SoakVerdictV2.IN_PROGRESS
     assert result.counted_sessions == 0
     assert result.remaining_sessions == 20
 
 
-def test_nineteen_clean_sessions_are_in_progress() -> None:
-    result = score(
-        Evidence(
-            observations=clean_sessions(19),
-            drills=all_drills(),
-            elapsed=tuple(f"S{i:03d}" for i in range(19)),
-        )
-    )
+def test_nineteen_clean_sessions_are_in_progress(soak: Any) -> None:
+    result = soak.build_and_score(sessions=19, required_sessions=20)
 
     assert result.verdict == SoakVerdictV2.IN_PROGRESS
     assert result.counted_sessions == 19
 
 
-def test_twenty_clean_sessions_without_a_decision_cycle_are_in_progress() -> None:
-    # The gate V2 added and V1 had no reason to need.
-    result = score(
-        Evidence(
-            observations=clean_sessions(20, with_cycle=False),
-            drills=all_drills(),
-            elapsed=tuple(f"S{i:03d}" for i in range(20)),
-        )
-    )
-
-    assert result.verdict == SoakVerdictV2.IN_PROGRESS
-    assert result.completed_cycles == 0
-    assert "successful_strategy_decision_cycles" in [row.gate_id for row in result.outstanding]
-
-
-def test_twenty_clean_sessions_with_a_cycle_and_drills_pass() -> None:
-    result = score(
-        Evidence(
-            observations=clean_sessions(20),
-            drills=all_drills(),
-            elapsed=tuple(f"S{i:03d}" for i in range(20)),
-        )
-    )
+def test_twenty_clean_sessions_with_a_cycle_and_drills_pass(soak: Any) -> None:
+    # Twenty sessions of real operational records — journal entries, request
+    # audit, reconciliation reports, decision records and a verified execution
+    # journal — derived through the evidence contract and scored.
+    result = soak.build_and_score(sessions=20)
 
     assert result.verdict == SoakVerdictV2.PASSED
-    assert result.completed_cycles == 1
+    assert result.completed_cycles >= 1
     assert result.breaches == ()
     assert result.outstanding == ()
+    assert result.unmeasured == ()
 
 
-def test_missing_one_drill_blocks_the_pass() -> None:
-    result = score(
-        Evidence(
-            observations=clean_sessions(20),
-            drills=all_drills()[:-1],
-            elapsed=tuple(f"S{i:03d}" for i in range(20)),
-        )
-    )
+def test_a_pass_is_built_on_derived_metrics_not_declared_ones(
+    soak: Any,
+) -> None:
+    # Every gate that contributed to the A came from a derivation over records,
+    # and each one names the sources behind it.
+    fixture = soak.build(sessions=20)
+    result = soak.score(fixture)
+
+    assert result.verdict == SoakVerdictV2.PASSED
+    for gate_id in dict(fixture.protocol.gate_thresholds):
+        metric = fixture.evidence.metric_for(gate_id)
+        assert metric.status.scoreable, gate_id
+        assert metric.derivation_id, gate_id
+        assert metric.derivation_version, gate_id
+
+
+def test_missing_one_drill_blocks_the_pass(soak: Any) -> None:
+    result = soak.build_and_score(sessions=20, drop_drill=str(REQUIRED_DRILL_TYPES[-1]))
 
     assert result.verdict == SoakVerdictV2.IN_PROGRESS
     assert "required_drills_passed" in [row.gate_id for row in result.outstanding]
 
 
-def test_a_failed_drill_does_not_count_as_passed() -> None:
-    drills = (*all_drills()[:-1], drill(REQUIRED_DRILL_TYPES[-1], passed=False))
-
-    result = score(
-        Evidence(
-            observations=clean_sessions(20),
-            drills=drills,
-            elapsed=tuple(f"S{i:03d}" for i in range(20)),
-        )
-    )
+def test_a_failed_drill_does_not_count_as_passed(soak: Any) -> None:
+    result = soak.build_and_score(sessions=20, failed_drill=str(REQUIRED_DRILL_TYPES[-1]))
 
     assert result.verdict == SoakVerdictV2.IN_PROGRESS
+    assert "required_drills_passed" in [row.gate_id for row in result.outstanding]
 
 
-def test_an_unresolved_blocking_incident_blocks_the_pass() -> None:
-    result = score(
-        Evidence(
-            observations=clean_sessions(20),
-            drills=all_drills(),
-            incidents=(Incident(incident_id="inc-1", severity="BLOCKING"),),
-            elapsed=tuple(f"S{i:03d}" for i in range(20)),
-        )
+def test_an_unresolved_blocking_incident_blocks_the_pass(soak: Any) -> None:
+    # The incident is written to the real incident store, so the gate reads
+    # incident history rather than a count somebody passed in.
+    from stock_screener.paper_operations import IncidentSeverity, IncidentStore
+
+    fixture = soak.build(sessions=20)
+    clock = _FixedClock("2026-11-20T15:00:00+00:00")
+    IncidentStore(fixture.root).record(
+        clock=clock,
+        reason_code="BLOCKED_RECONCILIATION_BREAK",
+        severity=IncidentSeverity.BLOCKING,
+        subject="STARTUP_RECONCILIATION_CLEAN",
+        account_fingerprint="a" * 64,
+        detail="an unexplained remote position",
+        run_id="opsrun-20261120",
+        local_evidence_fingerprint="e" * 64,
     )
+    result = soak.score(fixture)
 
     assert result.verdict == SoakVerdictV2.IN_PROGRESS
     assert "unresolved_blocking_incidents" in [row.gate_id for row in result.outstanding]
 
 
 @pytest.mark.parametrize(
-    "breach",
+    ("breach", "gate"),
     [
-        "duplicate_remote_orders",
-        "duplicate_admitted_fills",
-        "duplicate_accounting_events",
-        "stale_data_executions",
-        "missing_data_executions",
-        "kill_bypasses",
-        "live_requests",
-        "reranked_executions",
-        "risk_authority_expansions",
-        "automatic_accounting_repairs",
-        "missed_run_backfills",
+        (Breach.TWO_REMOTE_ORDERS, "duplicate_remote_orders"),
+        (Breach.DOUBLE_ADMITTED_FILL, "duplicate_admitted_fills"),
+        (Breach.TWO_ACCOUNTING_EVENTS, "duplicate_accounting_events"),
+        (Breach.TWO_EXECUTING_RUNS, "duplicate_scheduled_runs_causing_execution"),
+        (Breach.STALE_INPUT_EXECUTION, "stale_data_executions"),
+        (Breach.MISSING_INPUT_EXECUTION, "missing_data_executions"),
+        (Breach.BACKFILLED_MISSED_DECISION, "missed_run_backfills"),
+        (Breach.EXECUTED_AFTER_BREAK, "ignored_reconciliation_breaks"),
+        (Breach.EXECUTED_WITH_REMOTE_UNKNOWN, "ignored_remote_state_unknown"),
+        (Breach.COMPLETED_WITHOUT_RECONCILIATION, "completed_sessions_reconcile"),
+        (Breach.MUTATION_WITHOUT_GATE_CHECK, "kill_bypasses"),
+        (Breach.CANCELLED_UNKNOWN_ORDER, "unknown_remote_order_auto_cancels"),
+        (Breach.SECOND_OPENING_BALANCE, "automatic_accounting_repairs"),
+        (Breach.RERANKED_EXECUTION, "reranked_executions"),
+        (Breach.RISK_EXPANSION, "risk_authority_expansions"),
+        (Breach.LIVE_MUTATION, "live_mutations"),
     ],
 )
-def test_one_safety_breach_fails_the_whole_soak(breach: str) -> None:
+def test_one_safety_breach_fails_the_whole_soak(soak: Any, breach: str, gate: str) -> None:
     # §10. Nineteen clean sessions and one breach is FAIL, never 95%.
-    observations = list(clean_sessions(20))
-    breached = Observation(session=observations[-1].session)
-    setattr(breached, breach, 1)
-    observations[-1] = breached
-
-    result = score(
-        Evidence(
-            observations=tuple(observations),
-            drills=all_drills(),
-            elapsed=tuple(f"S{i:03d}" for i in range(20)),
-        )
-    )
+    #
+    # The breach is created by writing the records a breach leaves behind — two
+    # remote orders under one client order id, a mutation with no permitting
+    # gate check, a second opening balance — and the derivation has to notice.
+    # No metric is set anywhere in this test.
+    result = soak.build_and_score(sessions=20, breach=breach)
 
     assert result.verdict == SoakVerdictV2.FAILED
-    assert result.breaches != ()
+    assert gate in [row.gate_id for row in result.breaches]
 
 
-def test_a_halted_soak_is_c_even_when_the_evidence_is_clean() -> None:
+def test_a_halted_soak_is_c_even_when_the_evidence_is_clean(soak: Any) -> None:
     # §12. A halted protocol can never later become A: the defect that halted
     # it is a statement about the semantics the evidence was gathered under.
-    result = score(
-        Evidence(
-            observations=clean_sessions(20),
-            drills=all_drills(),
-            elapsed=tuple(f"S{i:03d}" for i in range(20)),
-            state="HALTED",
-        )
-    )
+    result = soak.build_and_score(sessions=20, state="HALTED")
 
     assert result.verdict == SoakVerdictV2.HALTED
 
 
-def test_a_breach_outranks_a_halt() -> None:
+def test_a_breach_outranks_a_halt(soak: Any) -> None:
     # A halted soak that also breached safety reports the breach. The halt is
     # procedural; the breach is the thing somebody must look at.
-    observations = list(clean_sessions(20))
-    observations[-1] = Observation(session=observations[-1].session, kill_bypasses=1)
-
-    result = score(
-        Evidence(
-            observations=tuple(observations),
-            drills=all_drills(),
-            elapsed=tuple(f"S{i:03d}" for i in range(20)),
-            state="HALTED",
-        )
+    result = soak.build_and_score(
+        sessions=20, breach=Breach.MUTATION_WITHOUT_GATE_CHECK, state="HALTED"
     )
 
     assert result.verdict == SoakVerdictV2.FAILED
 
 
-def test_the_score_has_no_pass_rate() -> None:
-    result = score(Evidence(observations=clean_sessions(19), drills=all_drills()))
+def test_the_score_has_no_pass_rate(soak: Any) -> None:
+    result = soak.build_and_score(sessions=19, required_sessions=20)
 
     assert result.body()["pass_rate"] is None
     assert result.body()["performance_measures_read"] == []
@@ -590,18 +507,63 @@ def test_a_drill_identity_ignores_when_it_was_performed() -> None:
 
 
 def preflight(**overrides: Any) -> Any:
-    """Run the self-check over a complete protocol."""
+    """Run the self-check over a complete protocol.
+
+    The protocol object is passed, not just its fingerprint: reachability is
+    now established by writing real operational records and deriving from them,
+    which needs the protocol a session would be bound to. There is no longer a
+    path that asserts a verdict from an injected metric.
+    """
+    from stock_screener.soak_verification import gate_registry
+
+    bound = _protocol_for_preflight(**overrides.pop("protocol_overrides", {}))
     settings: dict[str, Any] = {
-        "protocol_fingerprint": PROTOCOL,
-        "qualifying_commit": COMMIT,
-        "declared_gates": declared_gates(),
-        "required_sessions": 20,
-        "required_drill_types": [str(row) for row in REQUIRED_DRILL_TYPES],
+        "protocol": bound,
+        "protocol_fingerprint": bound.fingerprint(),
+        "qualifying_commit": bound.qualifying_commit,
+        "declared_gates": dict(bound.gate_thresholds),
+        "required_sessions": bound.required_sessions,
+        "required_drill_types": [str(row) for row in bound.required_drill_types],
         "operations_engine_version": ENGINE,
-        "operations_policy_fingerprint": POLICY,
+        "operations_policy_fingerprint": bound.operations_policy_fingerprint,
     }
     settings.update(overrides)
+    assert set(gate_registry()) == set(settings["declared_gates"]) or overrides
     return run_soak_preflight(**settings)
+
+
+def _protocol_for_preflight(**overrides: Any) -> Any:
+    """A complete protocol for the self-check, declaring every canonical gate."""
+    from stock_screener.soak_verification import PaperShadowSoakProtocol, gate_registry
+
+    thresholds = declared_gates()
+    thresholds.update(overrides.pop("gate_thresholds", {}))
+    settings: dict[str, Any] = {
+        "protocol_version": "P2_4R_PREFLIGHT_V1",
+        "protocol_id": "P2_4R_PREFLIGHT",
+        "qualifying_commit": COMMIT,
+        "declared_gate_ids": tuple(sorted(gate_registry())),
+        "gate_thresholds": thresholds,
+        "required_sessions": 20,
+        "required_drill_types": tuple(REQUIRED_DRILL_TYPES),
+        "observation_schema_version": "PAPER_SHADOW_SESSION_OBSERVATION_V3",
+        "runtime_binding_fingerprint": "r" * 64,
+        "paper_account_fingerprint": "a" * 64,
+        "strategy_id": "ALPHATRADER_COMPOUNDER_MONTHLY",
+        "strategy_version": "V1",
+        "strategy_fingerprint": "s" * 64,
+        "strategy_authorization_fingerprint": "g" * 64,
+        "risk_policy_fingerprint": "k" * 64,
+        "operations_policy_fingerprint": POLICY,
+        "calendar_version": "PAPER_OPERATIONS_CALENDAR_V1",
+        "calendar_fingerprint": "l" * 64,
+        "schedule_version": "ALPHATRADER_PAPER_V1_1",
+        "schedule_fingerprint": "h" * 64,
+        "score_availability_profile_fingerprint": "v" * 64,
+        "execution_timing_profile_fingerprint": "e" * 64,
+    }
+    settings.update(overrides)
+    return PaperShadowSoakProtocol(**settings)
 
 
 def test_a_complete_protocol_passes_the_self_check() -> None:
@@ -617,11 +579,15 @@ def test_all_four_verdicts_are_proven_reachable() -> None:
     # would collect twenty sessions toward a conclusion nothing can draw.
     report = preflight()
 
+    # Five now, not four: the evidence-incomplete verdict is C-class and must
+    # be provably reachable too, or a protocol could be armed whose gates can
+    # never report that their sources went missing.
     assert set(report.reachable_verdicts) == {
         SoakVerdictV2.IN_PROGRESS,
         SoakVerdictV2.PASSED,
         SoakVerdictV2.FAILED,
         SoakVerdictV2.HALTED,
+        SoakVerdictV2.EVIDENCE_INCOMPLETE,
     }
 
 
@@ -700,17 +666,23 @@ def test_the_verification_package_evaluates_evidence_and_nothing_else() -> None:
     root = Path(next(iter(package.__path__)))
     source = "\n".join(path.read_text(encoding="utf-8") for path in sorted(root.glob("*.py")))
 
+    # Precise forms. The source legitimately *names* the components that write
+    # the records it reads — `writer="AlpacaPaperAdapter.submit"` in the source
+    # schema registry is documentation of provenance, not a dependency. What
+    # must not appear is an import of, or a call into, any of them.
     for forbidden in (
-        "httpx",
-        "AlpacaPaper",
-        "submit_order",
+        "import httpx",
+        "from stock_screener.execution.external import Alpaca",
+        "AlpacaPaperHttpTransport(",
+        "AlpacaPaperAdapter(",
+        "submit_order(",
         ".post(",
         ".delete(",
-        "admit_fill",
-        "plan_execution",
-        "RiskPolicy",
-        "CompounderMonthly",
-        "evaluate_session",
+        "admit_fill(",
+        "plan_execution(",
+        "RiskPolicy(",
+        "CompounderMonthlyStrategy(",
+        "evaluate_session(",
     ):
         assert forbidden not in source, forbidden
 

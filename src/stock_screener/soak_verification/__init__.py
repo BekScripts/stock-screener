@@ -28,6 +28,7 @@ absence.
 
 from __future__ import annotations
 
+from .aggregate import DerivedSoakEvidence, evidence_for_store
 from .contracts import (
     ACTIVATION_FAMILY,
     PROTOCOL_FAMILY,
@@ -35,6 +36,16 @@ from .contracts import (
     PaperShadowSoakProtocol,
     canonical_gate_ids,
     canonical_thresholds,
+)
+from .derivations import (
+    DERIVATION_REGISTRY_VERSION,
+    Derivation,
+    DerivationContext,
+    DerivedMetric,
+    GateScope,
+    MetricStatus,
+    derivation_registry,
+    derivation_registry_fingerprint,
 )
 from .drills_v2 import (
     DRILL_EVIDENCE_V2_VERSION,
@@ -45,6 +56,14 @@ from .drills_v2 import (
     admissible_drills,
 )
 from .errors import Code, SoakContractError
+from .evidence_contract import (
+    EVIDENCE_CONTRACT_VERSION,
+    GateEvidenceBinding,
+    SoakGateEvidenceContract,
+    evidence_contract,
+    evidence_contract_fingerprint,
+    require_evidence_contract,
+)
 from .gates import (
     GATE_REGISTRY_VERSION,
     EvidenceKind,
@@ -57,6 +76,11 @@ from .gates import (
     registry_fingerprint,
     require_bijection,
 )
+from .observations import (
+    SESSION_OBSERVATION_V3_VERSION,
+    DerivedSessionObservation,
+    observation_from_body,
+)
 from .preflight import (
     PREFLIGHT_VERSION,
     SoakPreflightReport,
@@ -64,24 +88,58 @@ from .preflight import (
     run_soak_preflight,
 )
 from .scorer import SCORER_VERSION, SoakScore, SoakVerdictV2, score_soak
+from .session_evidence import (
+    SESSION_GATE_EVIDENCE_VERSION,
+    SessionGateEvidence,
+    derive_session_evidence,
+)
+from .sources import (
+    SOURCE_SCHEMA_VERSION,
+    SOURCE_SCHEMAS,
+    OperationalRecords,
+    SourceRead,
+    SourceSchema,
+    known_source_schema,
+)
 from .store import (
     RESERVED_NAMESPACES,
     SOAK_ROOT_DIRECTORY,
     VersionedSoakStore,
     validate_namespace,
 )
+from .synthetic import (
+    SYNTHETIC_RECORD_BUILDER_VERSION,
+    Breach,
+    SoakFixture,
+    SyntheticSession,
+    build_soak_fixture,
+    write_session_records,
+)
 
 __all__ = [
     "ACTIVATION_FAMILY",
+    "DERIVATION_REGISTRY_VERSION",
     "DRILL_EVIDENCE_V2_VERSION",
+    "EVIDENCE_CONTRACT_VERSION",
     "GATE_REGISTRY_VERSION",
     "PREFLIGHT_VERSION",
     "PROTOCOL_FAMILY",
     "REQUIRED_DRILL_TYPES",
     "RESERVED_NAMESPACES",
     "SCORER_VERSION",
+    "SESSION_GATE_EVIDENCE_VERSION",
+    "SESSION_OBSERVATION_V3_VERSION",
     "SOAK_ROOT_DIRECTORY",
+    "SOURCE_SCHEMAS",
+    "SOURCE_SCHEMA_VERSION",
+    "SYNTHETIC_RECORD_BUILDER_VERSION",
+    "Breach",
     "Code",
+    "Derivation",
+    "DerivationContext",
+    "DerivedMetric",
+    "DerivedSessionObservation",
+    "DerivedSoakEvidence",
     "DrillRecordV2",
     "DrillStoreV2",
     "DrillTypeV2",
@@ -89,23 +147,44 @@ __all__ = [
     "GateBound",
     "GateClass",
     "GateDefinition",
+    "GateEvidenceBinding",
     "GateOutcome",
+    "GateScope",
+    "MetricStatus",
+    "OperationalRecords",
     "PaperShadowSoakActivation",
     "PaperShadowSoakProtocol",
+    "SessionGateEvidence",
     "SoakContractError",
     "SoakEvidence",
+    "SoakFixture",
+    "SoakGateEvidenceContract",
     "SoakPreflightReport",
     "SoakScore",
     "SoakVerdictV2",
+    "SourceRead",
+    "SourceSchema",
+    "SyntheticSession",
     "VersionedSoakStore",
     "admissible_drills",
+    "build_soak_fixture",
     "canonical_gate_ids",
     "canonical_thresholds",
+    "derivation_registry",
+    "derivation_registry_fingerprint",
+    "derive_session_evidence",
+    "evidence_contract",
+    "evidence_contract_fingerprint",
+    "evidence_for_store",
     "gate_registry",
+    "known_source_schema",
+    "observation_from_body",
     "preflight_protocol",
     "registry_fingerprint",
     "require_bijection",
+    "require_evidence_contract",
     "run_soak_preflight",
     "score_soak",
     "validate_namespace",
+    "write_session_records",
 ]

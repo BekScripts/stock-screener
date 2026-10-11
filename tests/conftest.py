@@ -821,3 +821,218 @@ def scored_company(session: Session, make: type, seed: type[Seed]) -> str:
     company_id = seed.company(session, make, "XYZ")
     seed.score(session, company_id, "XYZ")
     return "XYZ"
+
+
+# ---------------------------------------------------------------------------
+# Soak verification: evidence built from real operational records
+# ---------------------------------------------------------------------------
+
+
+def _protocol(
+    *,
+    required_sessions: int,
+    protocol_id: str = "P2_4_R3B_FIXTURE",
+    **overrides: Any,
+) -> Any:
+    """A complete protocol declaring the whole canonical gate set."""
+    from stock_screener.execution import fingerprint_of
+    from stock_screener.paper_operations import operations_policy
+    from stock_screener.soak_verification import (
+        REQUIRED_DRILL_TYPES,
+        GateBound,
+        PaperShadowSoakProtocol,
+        gate_registry,
+    )
+
+    thresholds: dict[str, int] = {}
+    for gate_id, definition in gate_registry().items():
+        if definition.bound is GateBound.AT_MOST:
+            thresholds[gate_id] = 0
+        elif gate_id == "qualifying_sessions_observed":
+            thresholds[gate_id] = required_sessions
+        elif gate_id == "required_drills_passed":
+            thresholds[gate_id] = len(REQUIRED_DRILL_TYPES)
+        else:
+            thresholds[gate_id] = 1
+    thresholds.update(overrides.pop("gate_thresholds", {}))
+    settings: dict[str, Any] = {
+        "protocol_version": "P2_4_R3B_FIXTURE_V1",
+        "protocol_id": protocol_id,
+        "qualifying_commit": "c" * 40,
+        "declared_gate_ids": tuple(sorted(gate_registry())),
+        "gate_thresholds": thresholds,
+        "required_sessions": required_sessions,
+        "required_drill_types": tuple(REQUIRED_DRILL_TYPES),
+        "observation_schema_version": "PAPER_SHADOW_SESSION_OBSERVATION_V3",
+        "runtime_binding_fingerprint": "r" * 64,
+        "paper_account_fingerprint": "a" * 64,
+        "strategy_id": "ALPHATRADER_COMPOUNDER_MONTHLY",
+        "strategy_version": "V1",
+        "strategy_fingerprint": "s" * 64,
+        "strategy_authorization_fingerprint": "g" * 64,
+        "risk_policy_fingerprint": "k" * 64,
+        "operations_policy_fingerprint": fingerprint_of(operations_policy()),
+        "calendar_version": "PAPER_OPERATIONS_CALENDAR_V1",
+        "calendar_fingerprint": "l" * 64,
+        "schedule_version": "ALPHATRADER_PAPER_V1_1",
+        "schedule_fingerprint": "h" * 64,
+        "score_availability_profile_fingerprint": "v" * 64,
+        "execution_timing_profile_fingerprint": "e" * 64,
+    }
+    settings.update(overrides)
+    return PaperShadowSoakProtocol(**settings)
+
+
+def _activation(protocol: Any, sessions: tuple[str, ...]) -> Any:
+    """The matching activation for a protocol."""
+    from stock_screener.soak_verification import PaperShadowSoakActivation
+
+    return PaperShadowSoakActivation(
+        activation_version=protocol.protocol_version,
+        protocol_version=protocol.protocol_version,
+        protocol_fingerprint=protocol.fingerprint(),
+        qualifying_commit=protocol.qualifying_commit,
+        activated_at="2026-10-31T12:00:00+00:00",
+        required_sessions=protocol.required_sessions,
+        window=sessions,
+        runtime_binding_fingerprint=protocol.runtime_binding_fingerprint,
+        paper_account_fingerprint=protocol.paper_account_fingerprint,
+        calendar_fingerprint=protocol.calendar_fingerprint,
+        schedule_fingerprint=protocol.schedule_fingerprint,
+        strategy_fingerprint=protocol.strategy_fingerprint,
+        risk_policy_fingerprint=protocol.risk_policy_fingerprint,
+        operations_policy_fingerprint=protocol.operations_policy_fingerprint,
+        score_availability_profile_fingerprint=(protocol.score_availability_profile_fingerprint),
+        execution_timing_profile_fingerprint=protocol.execution_timing_profile_fingerprint,
+    )
+
+
+class SoakBuilder:
+    """Builds a soak from real records and scores it."""
+
+    def __init__(self, root: Path) -> None:
+        self.root = root
+        self.calls = 0
+
+    def protocol(self, *, required_sessions: int = 20, **overrides: Any) -> Any:
+        """A complete protocol."""
+        return _protocol(required_sessions=required_sessions, **overrides)
+
+    def sessions_for(self, count: int) -> tuple[str, ...]:
+        """The session dates a fixture of this size writes."""
+        return tuple(f"2026-11-{index + 1:02d}" for index in range(count))
+
+    def build(
+        self,
+        *,
+        sessions: int = 20,
+        required_sessions: int | None = None,
+        breach: str | None = None,
+        breach_session: int = -1,
+        omit_drills: bool = False,
+        remove_source: str | None = None,
+        drop_drill: str | None = None,
+        failed_drill: str | None = None,
+        state: str | None = None,
+        protocol: Any = None,
+        **overrides: Any,
+    ) -> Any:
+        """Write a soak's records and return its fixture.
+
+        Args:
+            sessions: How many eligible sessions to write.
+            required_sessions: What the protocol demands. Defaults to
+                `sessions`, so a fixture is complete unless a test says
+                otherwise.
+            breach: One underlying condition to create, from `Breach`.
+            breach_session: Which session carries it.
+            omit_drills: Write no drill evidence at all.
+            remove_source: Delete this source's records after writing them.
+            drop_drill: Omit one required drill type.
+            failed_drill: Record one drill type as failed.
+            state: Halt the soak after writing it.
+            protocol: Use this protocol instead of building one.
+            **overrides: Passed to the protocol builder.
+
+        Returns:
+            The `SoakFixture`.
+        """
+        from stock_screener.soak_verification import build_soak_fixture
+
+        self.calls += 1
+        demand = sessions if required_sessions is None else required_sessions
+        bound = protocol or _protocol(required_sessions=demand, **overrides)
+        dates = self.sessions_for(sessions)
+        root = self.root / f"soak{self.calls}" / ".operations"
+        fixture = build_soak_fixture(
+            root,
+            protocol=bound,
+            activation=_activation(bound, dates),
+            sessions=sessions,
+            breach=breach,
+            breach_session=breach_session,
+            omit_drills=omit_drills,
+            remove_source=remove_source,
+        )
+        if drop_drill is not None or failed_drill is not None:
+            _adjust_drills(root, bound, drop=drop_drill, failed=failed_drill)
+        if state is not None:
+            fixture.store.halt(
+                reason=f"fixture halted as {state}",
+                classification="FIXTURE",
+                at="2026-11-30T12:00:00+00:00",
+            )
+        return fixture
+
+    def score(self, fixture: Any, *, protocol: Any = None) -> Any:
+        """Score a fixture against its protocol's frozen gates."""
+        from stock_screener.soak_verification import score_soak
+
+        bound = protocol or fixture.protocol
+        return score_soak(
+            fixture.evidence,
+            declared_gates=dict(bound.gate_thresholds),
+            required_sessions=bound.required_sessions,
+        )
+
+    def build_and_score(self, **kwargs: Any) -> Any:
+        """Build a soak and score it in one step."""
+        return self.score(self.build(**kwargs))
+
+
+def _adjust_drills(root: Path, protocol: Any, *, drop: str | None, failed: str | None) -> None:
+    """Rewrite the drill store to drop or fail one required type."""
+    import dataclasses
+
+    from stock_screener.soak_verification import DrillStoreV2
+    from stock_screener.soak_verification.synthetic import _drill_set
+
+    directory = root / "soak" / "drills"
+    for path in directory.glob("*.json"):
+        path.unlink()
+    store = DrillStoreV2(directory)
+    for record in _drill_set(protocol):
+        if drop is not None and str(record.drill_type) == drop:
+            continue
+        if failed is not None and str(record.drill_type) == failed:
+            record = dataclasses.replace(record, passed=False, observed="did not refuse")
+        store.record(record)
+
+
+@pytest.fixture
+def soak(tmp_path: Path) -> SoakBuilder:
+    """A builder for soaks made of real operational records.
+
+    Every soak test gets its evidence the way a real soak does: real
+    operational records written through the production stores, real derivations
+    over them, real V3 observations in a real store. Nothing sets a gate value.
+
+    That is a deliberate replacement. The earlier fixtures held a synthetic
+    observation with eighteen integer fields — `live_requests`,
+    `duplicate_remote_orders`, `kill_bypasses` — and a test proved a breach by
+    setting one to 1. It proved the comparison operator worked and nothing
+    about whether a breach could ever be *observed*, which was the real
+    question: fourteen of those gates were unmeasurable while every one of
+    those tests passed.
+    """
+    return SoakBuilder(tmp_path)

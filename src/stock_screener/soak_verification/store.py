@@ -377,16 +377,45 @@ class VersionedSoakStore:
         return correction
 
     def observations(self) -> tuple[Any, ...]:
-        """Every observation recorded, by session."""
-        from stock_screener.paper_runtime.soak_v2 import _observation_from_body
+        """Every observation recorded, by session.
 
+        Dispatched on the stored record's own `version`, so one store can hold
+        the V2 shape and the V3 shape that binds derived gate evidence. The
+        alternative — assuming a schema — is how a record written under one
+        contract comes to be read under another.
+
+        Raises:
+            SoakContractError: `SOAK_STORE_INCOMPATIBLE` for a stored
+                observation whose schema this build does not know. Guessing
+                would mean reading safety numbers out of a record whose shape
+                nobody has described.
+        """
         if not self.observations_directory.exists():
             return ()
         rows = [
-            _observation_from_body(json.loads(path.read_text(encoding="utf-8")))
+            self._observation(json.loads(path.read_text(encoding="utf-8")))
             for path in sorted(self.observations_directory.glob("*.json"))
         ]
         return tuple(sorted(rows, key=lambda row: (row.session, row.observation_id)))
+
+    @staticmethod
+    def _observation(body: dict[str, Any]) -> Any:
+        """Rebuild one stored observation under its declared schema."""
+        from .errors import Code, SoakContractError
+        from .observations import SESSION_OBSERVATION_V3_VERSION, observation_from_body
+
+        version = str(body.get("version", ""))
+        if version == SESSION_OBSERVATION_V3_VERSION:
+            return observation_from_body(body)
+        if version == "PAPER_SHADOW_SESSION_OBSERVATION_V2":
+            from stock_screener.paper_runtime.soak_v2 import _observation_from_body
+
+            return _observation_from_body(body)
+        raise SoakContractError(
+            Code.SOAK_STORE_INCOMPATIBLE,
+            f"a stored observation declares schema {version!r}, which this build does "
+            "not know how to read. It is refused rather than guessed at",
+        )
 
     def observations_for(self, session: str) -> tuple[Any, ...]:
         """Every observation for one session, corrections included."""
