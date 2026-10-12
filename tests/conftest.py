@@ -14,6 +14,7 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
@@ -1036,3 +1037,192 @@ def soak(tmp_path: Path) -> SoakBuilder:
     those tests passed.
     """
     return SoakBuilder(tmp_path)
+
+
+# ---------------------------------------------------------------------------
+# Paper operations: a bootstrapped runtime root for composition tests
+# ---------------------------------------------------------------------------
+
+#: The identities a composition test may route to the venue.
+PAPER_SYMBOLS: dict[int, str] = {1: "AAA", 2: "BBB", 3: "CCC"}
+
+
+@dataclass
+class _OpsClock:
+    """An operational clock a test advances explicitly."""
+
+    moment: str
+
+    def iso(self) -> str:
+        """The current instant, ISO-8601."""
+        return self.moment
+
+    def now(self) -> Any:
+        """The current instant, as an aware datetime."""
+        from stock_screener.paper_operations.clock import parse_instant
+
+        return parse_instant(self.moment)
+
+    def set(self, moment: str) -> None:
+        """Move to an instant."""
+        self.moment = moment
+
+
+@dataclass
+class _BootstrapSnapshot:
+    """The venue's view of a clean account at bootstrap."""
+
+    account_binding_fingerprint: str
+    cash: Any = None
+    positions: tuple[Any, ...] = ()
+
+    def __post_init__(self) -> None:
+        """Default the opening cash."""
+        from decimal import Decimal
+
+        if self.cash is None:
+            self.cash = Decimal("100000.00")
+
+
+@dataclass
+class PaperRuntimeRoot:
+    """A bootstrapped, armed operations root with nothing composed over it.
+
+    Deliberately holds no adapter, environment or coordinator: a composition
+    test must get those from the production factory, or it is not testing the
+    production factory.
+    """
+
+    root: Any
+    binding: Any
+    schedule: Any
+    calendar: Any
+    clock: _OpsClock
+    account: str
+
+    def kill(self, reason: str = "OPERATOR_KILL") -> None:
+        """Move the control state to killed."""
+        from stock_screener.paper_operations import KillSwitchStore
+
+        KillSwitchStore(self.root).kill(
+            clock=self.clock,
+            reason_code=reason,
+            account_binding_fingerprint=self.account,
+        )
+
+
+@pytest.fixture
+def paper_runtime(tmp_path: Path) -> PaperRuntimeRoot:
+    """Bootstrap and arm a paper operations root.
+
+    Arming here is a *test* root's own control state, written through the real
+    `ArmingStore`. The repository's real control state is untouched and stays
+    fail closed; nothing in this fixture reaches it.
+    """
+    from stock_screener.execution import ExecutionCalendar
+    from stock_screener.execution.external import (
+        BrokerCapabilities,
+        BrokerEnvironment,
+        ExternalBrokerAccountBinding,
+        prove_paper_environment,
+    )
+    from stock_screener.paper_operations import (
+        ArmingStore,
+        KillSwitchStore,
+        OperationsMode,
+        PaperOperationsAuthorization,
+    )
+    from stock_screener.paper_operations.strategy_schedule import StrategyOperationsSchedule
+    from stock_screener.paper_runtime import RuntimeBindingStore, bootstrap_paper_book
+    from stock_screener.strategies import CompounderMonthlyStrategy
+
+    root = tmp_path / ".operations"
+    calendar = ExecutionCalendar(
+        sessions=("2026-10-28", "2026-10-29", "2026-10-30", "2026-11-02"), name="P2_3_1D"
+    )
+    schedule = StrategyOperationsSchedule(
+        schedule_id="ALPHATRADER_PAPER_V1_1", timezone="America/New_York", calendar=calendar
+    )
+    # Built as the production composition builds it: `from_settings`'s binding,
+    # widened to the capabilities the authored symbol mapping declares. The
+    # bootstrap records this binding's fingerprint and the composition has to
+    # reconstruct the identical one, so a fixture that bootstrapped against a
+    # different capability set would fail the environment proof for a reason no
+    # correctly bootstrapped deployment has.
+    external = ExternalBrokerAccountBinding.paper(
+        provider="ALPACA",
+        account_id="paper-account-1",
+        proof=prove_paper_environment(
+            environment=BrokerEnvironment.PAPER,
+            base_url="https://paper-api.alpaca.markets",
+            key_id="PKTESTKEY01",
+        ),
+        label="configured paper account",
+        capabilities=BrokerCapabilities(fractional_quantities=True),
+    )
+    account = external.binding_fingerprint()
+    strategy = CompounderMonthlyStrategy()
+    bootstrap_paper_book(
+        root=root,
+        runtime_id="alphatrader1",
+        account=_BootstrapSnapshot(account_binding_fingerprint=account),
+        account_evidence_fingerprint="ev-" + "f" * 61,
+        open_orders=0,
+        strategy_id=strategy.strategy_id,
+        strategy_version=strategy.strategy_version,
+        strategy_fingerprint=strategy.fingerprint(),
+        strategy_authorization_fingerprint="b" * 64,
+        operations_policy_fingerprint="pol",
+        calendar_fingerprint=calendar.fingerprint(),
+        schedule_fingerprint=schedule.fingerprint(),
+        code_commit="3e254a2",
+        now="2026-10-28T12:00:00+00:00",
+        confirmed=True,
+    )
+    clock = _OpsClock("2026-10-30T20:00:30+00:00")
+    arming = ArmingStore(root)
+    arming.arm(
+        PaperOperationsAuthorization(
+            authorization_id="grant-1",
+            provider="ALPACA",
+            account_binding_fingerprint=account,
+            operations_policy_fingerprint="pol",
+            code_commit="3e254a2",
+            created_at="2026-10-28T12:00:00+00:00",
+            allowed_mode=OperationsMode.EXTERNAL_PAPER,
+        )
+    )
+    KillSwitchStore(root).activate(clock=clock, account_binding_fingerprint=account)
+    return PaperRuntimeRoot(
+        root=root,
+        binding=RuntimeBindingStore(root).require(),
+        schedule=schedule,
+        calendar=calendar,
+        clock=clock,
+        account=account,
+    )
+
+
+def paper_input_bundle(session: str, count: int = 21) -> Any:
+    """A research cross-section for one decision session."""
+    from stock_screener.portfolio_risk import SecurityIdentity
+    from stock_screener.strategies import StrategyInputBundle, StrategyInputRecord
+
+    return StrategyInputBundle(
+        as_of=session,
+        score_version="COMPOUNDER_V1_2",
+        universe_fingerprint="universe-1",
+        records=tuple(
+            StrategyInputRecord(
+                identity=SecurityIdentity(kind="COMPANY", identity_id=index),
+                final_score=90.0 - index,
+                scoring_status="SCORED",
+                freshness="CURRENT",
+                score_date=session,
+                score_version="COMPOUNDER_V1_2",
+                calculated_at=f"{session}T07:40:00+00:00",
+                source_fingerprint=f"fp-{index}",
+            )
+            for index in range(1, count + 1)
+        ),
+    )

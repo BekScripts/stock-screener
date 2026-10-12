@@ -264,6 +264,10 @@ class AlpacaPaperPreflightRun:
         *,
         store_root: Path | str | None = None,
         mapping: SymbolMapping | None = None,
+        audit: Any = None,
+        operations_run_id: str = "",
+        account_binding_fingerprint: str = "",
+        client: Any = None,
     ) -> AlpacaPaperPreflightRun:
         """Build a run from typed configuration.
 
@@ -273,6 +277,11 @@ class AlpacaPaperPreflightRun:
             store_root: Where the submission intent log lives. Defaults to
                 `.execution/external` beside the working directory.
             mapping: A declared symbol mapping, when a canary asset exists.
+            audit: The durable request audit sink, passed to the transport.
+                Without one the transport refuses to mutate.
+            operations_run_id: The operational run, for audit provenance.
+            account_binding_fingerprint: Which account, as a fingerprint.
+            client: A pre-built HTTP client, the composition root's test seam.
 
         Returns:
             The run.
@@ -286,7 +295,13 @@ class AlpacaPaperPreflightRun:
                 `BROKER_ENVIRONMENT_NOT_PROVEN_PAPER` if the configured origin
                 is not provably the paper origin.
         """
-        transport = AlpacaPaperHttpTransport.from_settings(settings)
+        transport = AlpacaPaperHttpTransport.from_settings(
+            settings,
+            audit=audit,
+            operations_run_id=operations_run_id,
+            account_binding_fingerprint=account_binding_fingerprint,
+            client=client,
+        )
         if not settings.alpaca_paper_account_id:
             raise ExecutionError(
                 Code.BROKER_CREDENTIALS_MISSING,

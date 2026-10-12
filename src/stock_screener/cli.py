@@ -9449,10 +9449,8 @@ def paper_ops_run_due_command(
         SystemClock,
     )
     from stock_screener.paper_runtime import (
-        AlphaTraderPaperOperationsEnvironment,
         RuntimeBindingError,
         RuntimeBindingStore,
-        RuntimePlanner,
         expire_pending_executions,
     )
 
@@ -9493,35 +9491,43 @@ def paper_ops_run_due_command(
             typer.echo(f"  no operational slot is due at {now}")
         raise typer.Exit(code=0)
 
-    from stock_screener.execution.external import AlpacaPaperPreflightRun
+    from stock_screener.paper_runtime.composition import compose_operations
 
+    # One composition root, shared with the tests that prove it. It builds the
+    # audited transport, the certified adapter, the environment, the
+    # coordinator and — the gap this closes — the RuntimeSubmissionAuthority.
     try:
-        run = AlpacaPaperPreflightRun.from_settings(settings)
-    except ExecutionError as exc:
+        composition = compose_operations(
+            settings=settings,
+            root=root,
+            binding=binding,
+            slot=slot,
+            schedule=schedule,
+            calendar=calendar,
+            mode=requested,
+            clock=SystemClock(),
+            code_commit=_git_commit(),
+            bundle_for=_runtime_bundle_reader(settings),
+        )
+    except (ExecutionError, RuntimeBindingError) as exc:
         typer.echo(f"STOPPED: {exc}")
         raise typer.Exit(code=1) from exc
     try:
-        environment = AlphaTraderPaperOperationsEnvironment(
-            root=root, binding=binding, adapter=_runtime_adapter(run)
-        )
-        environment.require_generations()
-        planner = RuntimePlanner(root=root, binding=binding, slot=slot, calendar=calendar)
-        coordinator = _runtime_coordinator(
-            root=root, schedule=schedule, environment=environment, clock=SystemClock()
-        )
+        planner = composition.planner
         try:
-            outcome = coordinator.run_due(mode=requested, plan_and_submit=planner)
+            outcome = composition.coordinator.run_due(mode=requested, plan_and_submit=planner)
         except (OperationsError, RuntimeBindingError) as exc:
             typer.echo(f"BLOCKED: {exc}")
             raise typer.Exit(code=1) from exc
     finally:
-        run.close()
+        composition.close()
 
     typer.echo("")
     typer.echo(f"  slot        : {slot.purpose} for {slot.session}")
     typer.echo(f"  run id      : {outcome.report.run_id}")
     typer.echo(f"  status      : {outcome.report.status}")
     typer.echo(f"  mutations   : {outcome.external_mutations}")
+    typer.echo(f"  audit root  : {composition.audit.root}")
     if planner.outcome is not None:
         typer.echo(f"  strategy    : {planner.outcome.strategy_outcome}")
         typer.echo(f"  implies exit: {planner.outcome.implies_liquidation}")
@@ -9529,18 +9535,22 @@ def paper_ops_run_due_command(
             typer.echo(f"  detail      : {planner.outcome.detail}")
 
 
-def _runtime_coordinator(*, root: Any, schedule: Any, environment: Any, clock: Any) -> Any:
-    """Build the real coordinator over a runtime's stores."""
-    from stock_screener.paper_operations import ArmingStore, PaperOperationsCoordinator
+def _runtime_bundle_reader(settings: Settings) -> Any:
+    """Supply the stored research cross-section for a decision session.
 
-    return PaperOperationsCoordinator(
-        root=root,
-        clock=clock,
-        schedule=schedule,
-        environment=environment,
-        arming=ArmingStore(root),
-        code_commit=_git_commit(),
-    )
+    A callable rather than a value so an observation run never pays for a
+    database read it does not need. Reads the stored record through the
+    existing `load_bundle`; nothing here computes a score.
+    """
+    from datetime import date
+
+    from stock_screener.strategies import load_bundle
+
+    def read(session: str) -> Any:
+        with _database(settings) as factory, session_scope(factory) as db:
+            return load_bundle(db, score_date=date.fromisoformat(session))
+
+    return read
 
 
 @paper_ops_app.command("runtime-status")
@@ -9554,10 +9564,12 @@ def paper_ops_runtime_status_command() -> None:
 
     from stock_screener.execution import ExecutionStore, fingerprint_of
     from stock_screener.paper_runtime import (
+        AUDIT_DIRECTORY,
         RuntimeBindingError,
         RuntimeBindingStore,
         StrategyDecisionStore,
         missed_records,
+        operator_input_status,
     )
     from stock_screener.paper_runtime.binding import RUNTIME_DIRECTORY
     from stock_screener.paper_runtime.profiles import (
@@ -9678,6 +9690,19 @@ def paper_ops_runtime_status_command() -> None:
             typer.echo(f"    {line}")
     except typer.Exit:
         typer.echo("    unavailable: no stored benchmark calendar")
+
+    typer.echo("")
+    typer.echo("  SUBMISSION READINESS")
+    status = operator_input_status(root)
+    for label, value in (
+        ("submission authority", "WIRED (paper-ops run-due composes it)"),
+        ("request audit root", str(root / AUDIT_DIRECTORY)),
+        ("operator inputs", "COMPLETE" if status.complete else f"MISSING {list(status.missing)}"),
+    ):
+        typer.echo(f"    {label:26}: {value}")
+    for line in status.detail:
+        typer.echo(f"      {line}")
+
     typer.echo("")
     typer.echo("  live trading: NOT_IMPLEMENTED, NOT_AUTHORIZED")
 
@@ -9692,9 +9717,11 @@ def paper_ops_runtime_smoke_command() -> None:
     reconciles the three records, reaches the real score repository and asks
     S1.0 what it would do today.
 
-    It is read-only by construction rather than by flag: the environment it
-    builds has no submission authority at all, so there is nothing here that
-    could mutate even if a gate permitted it.
+    It is read-only by construction rather than by flag: *this command* builds
+    an environment with no submission authority, so there is nothing here that
+    could mutate even if a gate permitted it. That is a property of this smoke
+    check and not of operations generally — `run-due` composes a submission
+    authority, and its own gates are what stop it mutating.
     """
     from datetime import UTC, datetime
 
@@ -9813,7 +9840,7 @@ def paper_ops_runtime_smoke_command() -> None:
     typer.echo(f"  score availability profile : {score_availability_profile()['version']}")
     typer.echo(f"  execution timing profile   : {execution_timing_profile()['version']}")
     typer.echo("  mutating requests          : 0 (POST 0, DELETE 0)")
-    typer.echo("  this environment has no submission authority at all")
+    typer.echo("  this smoke check builds no submission authority (run-due composes one)")
 
 
 @soak_app.command("arm-v2")

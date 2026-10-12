@@ -51,6 +51,7 @@ import httpx
 
 from ..errors import Code, ExecutionError
 from .environment import LIVE_HOSTS, PAPER_HOSTS
+from .request_audit import MUTATING_METHODS, route_class_for
 from .transport import BrokerResponse, RequestMethod, TransportOutcome
 
 if TYPE_CHECKING:
@@ -275,12 +276,29 @@ class AlpacaPaperHttpTransport:
             )
 
     @classmethod
-    def from_settings(cls, settings: Settings) -> AlpacaPaperHttpTransport:
+    def from_settings(
+        cls,
+        settings: Settings,
+        *,
+        audit: Any = None,
+        operations_run_id: str = "",
+        account_binding_fingerprint: str = "",
+        client: httpx.Client | None = None,
+    ) -> AlpacaPaperHttpTransport:
         """Build a transport from typed configuration.
 
         Args:
             settings: The application settings. Read through typed fields;
                 nothing here touches the environment directly.
+            audit: The durable request audit sink. Without one this transport
+                refuses to mutate — see `_open_audit`.
+            operations_run_id: The run the requests belong to, for provenance.
+            account_binding_fingerprint: Which account, as a fingerprint. Never
+                the account number.
+            client: A pre-built HTTP client. The one seam the composition root
+                uses to put a scripted network under the real transport, so a
+                test exercises the real host lock, the real headers and the
+                real audit rather than a stand-in for them.
 
         Returns:
             The transport.
@@ -297,11 +315,22 @@ class AlpacaPaperHttpTransport:
                 "to reach the paper venue; neither is read from the environment "
                 "directly and neither is logged",
             )
-        return cls(
+        built = cls(
             origin=settings.alpaca_paper_base_url,
             key_id=settings.alpaca_paper_key_id,
             secret_key=settings.alpaca_paper_secret_key,
+            audit=audit,
+            operations_run_id=operations_run_id,
+            account_binding_fingerprint=account_binding_fingerprint,
         )
+        if client is None:
+            return built
+        # The seam. Swapping the client after construction keeps the origin
+        # validation in `__post_init__` on the real path rather than letting a
+        # supplied client skip it.
+        built.close()
+        object.__setattr__(built, "client", client)
+        return built
 
     def _headers(self) -> dict[str, str]:
         """Build the request headers.
@@ -401,29 +430,41 @@ class AlpacaPaperHttpTransport:
             json_body: The payload, read only for its client order id.
 
         Returns:
-            The pre-dispatch record, or `None` when no audit store is bound.
+            The pre-dispatch record, or `None` for a read with no audit store.
 
         Raises:
             ExecutionError: `EXTERNAL_REQUEST_AUDIT_FAILED` when a **mutation**
-                cannot be audited. A read whose audit fails is allowed to
-                proceed: a read changes nothing, and failing a reconciliation
-                read closed would block operations over a disk problem. A
-                mutation is the opposite — it is the thing that must never
-                happen unobserved.
+                cannot be audited — including when no audit store is bound at
+                all. A read whose audit fails is allowed to proceed: a read
+                changes nothing, and failing a reconciliation read closed would
+                block operations over a disk problem. A mutation is the
+                opposite — it is the thing that must never happen unobserved.
         """
+        mutating_method = str(method) in MUTATING_METHODS
         if self.audit is None:
+            if mutating_method:
+                # An absent audit sink is not a reason to skip auditing; it is a
+                # reason not to mutate. Returning `None` here was a silent
+                # fallback that let a production transport mutate with no
+                # record of where the request went — which is exactly how
+                # `live_mutations` came to be underivable.
+                raise ExecutionError(
+                    Code.EXTERNAL_REQUEST_AUDIT_FAILED,
+                    f"a {method} to {route_class_for(path)} cannot be audited because "
+                    "no request audit store is bound to this transport. An unaudited "
+                    "mutation is worse than a missed one: a missed mutation is visible "
+                    "and an unaudited one is not",
+                )
             return None
         from datetime import UTC, datetime
 
         from .request_audit import (
-            MUTATING_METHODS,
             OperationClass,
             RequestAuditRecord,
             classify_destination,
-            route_class_for,
         )
 
-        mutating = str(method) in MUTATING_METHODS
+        mutating = mutating_method
         route = route_class_for(path)
         now = datetime.now(UTC).isoformat()
         client_order_id = str((json_body or {}).get("client_order_id", "") or "")

@@ -36,9 +36,64 @@ appears without the run or the test that produced it.
 
 ## Current phase
 
-**P2.4R3B — soak gate evidence derivation — is the current checkpoint**, on
-`feat/p2-execution-engine`. No soak is armed and no V3 exists. The preflight now
-**passes**: every one of the 24 canonical gates is measurable.
+**P2.3.1D — audited submission wired into `run-due` — is the current
+checkpoint**, on `feat/p2-execution-engine`. No soak is armed and no V3 exists.
+
+**There is now one production route from a scheduled slot to an audited paper
+order**, and `compose_operations` in `paper_runtime/composition.py` is it. The
+CLI's `paper-ops run-due` calls that factory and builds no planner, adapter or
+coordinator of its own; the tests call the same factory. It wires, in one place:
+the persisted runtime binding → the operations run id derived from the slot →
+the durable request audit rooted at the operations root → the audited,
+host-locked transport → the certified adapter → the environment, coordinator and
+planner → `RuntimeSubmissionAuthority`.
+
+Both P2.4R3B blockers are closed. The authority is constructed; every external
+mutation on that path is audited before dispatch; and a production-written audit
+makes `live_mutations` derive `OBSERVED_ZERO` instead of `EVIDENCE_MISSING`.
+
+**An unaudited mutation is now impossible, not merely unlikely.** A transport
+with no audit sink refuses to mutate — `audit=None` used to return early and let
+the request through unobserved, which is how orders came to be sent with nothing
+recording where they went. Reads are deliberately unaffected: a read changes
+nothing, and failing a reconciliation read closed over a missing sink would cost
+safety rather than buy it.
+
+**Composition is not authorisation, and three independent layers still refuse.**
+Against the real `.operations` root today: the two operator inputs below are
+unauthored, so the composition refuses before any network request; the arming
+store holds no grant; and the control state is `KILLED /
+CONTROL_STATE_UNVERIFIABLE`. None of that was changed by this phase.
+
+**P2.3.1D found what the dead path had hidden.** Wiring `run-due` to the
+authority exposed three inputs that do not exist anywhere and cannot be derived
+from code:
+
+| Input | Status | Why it is not a wiring fix |
+| --- | --- | --- |
+| risk policy limits | **unauthored** | no limits in this repository are authorised; `EXAMPLE_POLICY_V1` is `production_authorized=False` and its own docstring reserves promotion for "a dedicated risk-policy phase with its own evidence" |
+| venue symbol mapping | **unauthored** | nothing declares which securities this runtime may route; the production path built `SymbolMapping.of(())` |
+| sizing marks | derivable | read from stored price history for an execution slot; absent marks already fail closed |
+
+The first two are read from artefacts under the operations root and **refused
+when absent** — `operator_inputs.py` ships no defaults, because a default risk
+limit is an unauthorised limit wearing a plausible number and a default symbol
+mapping decides which securities the system may buy. `paper-ops runtime-status`
+reports which artefact is owed.
+
+**The venue binding pins instrument capability, and that is the remaining
+blocker.** The adapter refuses to reshape a fractional quantity, the execution
+planner deliberately preserves fractional quantities ("flooring a 0.4-share
+delta to zero would silently drop a rebalance"), and the real runtime's recorded
+`account_binding_fingerprint` `a894a8da…` was produced with the conservative
+whole-shares-only default. Fractionability is a property of the instrument, so
+the composition declares it from the authored mapping's own `fractionable`
+flags — the pattern the certified canary established. The real runtime was
+bootstrapped before any mapping existed, so **executing the Compounder
+strategy's weight-based targets against it requires re-bootstrapping the runtime
+binding**: an operator action that opens a new accounting generation and would
+move the fingerprint the frozen V2 protocol binds. That is an authority action,
+not composition, and it is not taken here.
 
 **Every safety number is now derived from records something wrote while
 operating.** `SOAK_GATE_EVIDENCE_CONTRACT_V1` (`eb612d02dd3896f8…`) binds each
@@ -380,6 +435,13 @@ frozen at the same commit; P2 branched from it.
 | P2.4R3B observation schema | `PAPER_SHADOW_SESSION_OBSERVATION_V3` — binds evidence, holds no safety integer |
 | P2.4R3B preflight | passes; all five verdicts proven reachable from real records |
 | P2.4R3B V3 soak | **NOT CREATED** — the run-due blocker is independent and unfixed |
+| P2.3.1D composition | `PAPER_OPERATIONS_PRODUCTION_COMPOSITION_V1` — one route, `compose_operations` |
+| P2.3.1D operator inputs | `OPERATOR_AUTHORED_RUNTIME_INPUTS_V1` — risk policy and symbol mapping, no defaults |
+| P2.3.1D request audit | written by the production path, rooted at `<root>/request_audit/` |
+| P2.3.1D unaudited mutation | **impossible** — a transport with no audit sink refuses to mutate |
+| P2.3.1D declared equity fee | `Decimal(0)`, declared in the composition root, never defaulted |
+| P2.3.1D real control state | unchanged: not armed, `KILLED / CONTROL_STATE_UNVERIFIABLE` |
+| P2.3.1D remaining blocker | the runtime binding pins whole-shares-only; fractional execution needs a re-bootstrap |
 | H2 broker-paper orders | **NOT AUTHORISED** — its own frozen ladder says so |
 | Live trading | **NOT IMPLEMENTED, NOT AUTHORIZED** |
 | Production risk thresholds | **NOT AUTHORIZED** |
@@ -387,6 +449,25 @@ frozen at the same commit; P2 branched from it.
 | Production correlation thresholds | **NOT AUTHORIZED** |
 | Broker authority | **PAPER READ/SUBMIT, CERTIFIED — NO LIVE AUTHORITY** |
 | Live trading | **NOT AUTHORIZED** |
+
+**There is one production route to an external mutation (P2.3.1D).**
+`compose_operations` is the only place that builds a submission authority, and
+the only object it hands a transport to is the certified adapter. The CLI
+constructs no planner, adapter or coordinator for the operational path, and a
+test reads the `run-due` command body to keep it that way. A second route would
+be a second set of gates to forget.
+
+**A mutation that cannot be audited is not sent (P2.3.1D).** The audit record is
+written before dispatch, and a transport with no audit sink refuses to mutate at
+all. There is no `--no-audit`, no `--skip-audit`, and no configuration that
+makes auditing optional; if the sink cannot be opened, mutation capability fails
+closed. Reads proceed, because a read changes nothing.
+
+**A composition root may not author an operator's decisions (P2.3.1D).** Risk
+limits and the tradeable symbol mapping are read from artefacts under the
+operations root and refused when absent. No default is shipped for either: a
+default limit is an unauthorised limit that looks approved, and a default
+mapping decides which securities the system may buy.
 
 **A safety number is derived, never supplied (P2.4R3B).** There is no API that
 lets a caller set how many times the kill switch was bypassed. `SessionGateEvidence`
@@ -3969,7 +4050,38 @@ care — nothing has a foreign key *to* it, so dropping it cascades to nothing.
 
 ## Known limitations
 
-**The request audit has no production writer (P2.4R3B).**
+**Fractional execution needs the runtime binding re-bootstrapped (P2.3.1D).**
+The strategy sizes by weight, so its quantities are fractional; the execution
+planner preserves them deliberately; the adapter refuses to reshape one; and the
+real runtime's recorded `account_binding_fingerprint` `a894a8da…` was produced
+with the conservative whole-shares-only capability default. The composition
+declares fractionability from the authored symbol mapping — the pattern the
+certified canary established, since fractionability belongs to the instrument
+rather than the venue — but the real runtime was bootstrapped before any mapping
+existed.
+
+So a real execution against the current binding would be refused with
+`BROKER_FRACTIONAL_NOT_SUPPORTED`, which is the adapter working. Resolving it
+requires `paper-ops bootstrap-runtime` against a binding whose capabilities match
+the authored mapping. That is a one-way operator action: it opens a new
+accounting generation and moves the fingerprint the frozen V2 soak protocol
+binds. It is not taken here, and it belongs in the same reviewed phase as the
+paper re-arm.
+
+**Two operator inputs are unauthored (P2.3.1D).** `runtime/risk_policy.json` and
+`runtime/symbol_mapping.json` do not exist, and `compose_operations` refuses
+without them rather than supplying defaults. No risk limits in this repository
+are authorised — `EXAMPLE_POLICY_V1` is `production_authorized=False` and
+reserves promotion for a dedicated risk-policy phase with its own evidence — and
+nothing declares which securities this runtime may route.
+`paper-ops runtime-status` names whichever artefact is missing.
+
+**The request audit now has a production writer (P2.4R3B finding, closed in
+P2.3.1D).** It is rooted at `<operations root>/request_audit/` and written
+before every dispatch on the production path. The note below records what the
+gap was.
+
+**The request audit had no production writer (P2.4R3B).**
 `AlpacaPaperHttpTransport` accepts an audit store and nothing in `src/`
 constructs one, so `request_audit/` is absent after a real run. The derivation
 handles this honestly rather than reading the absence as clean: a session that
@@ -3982,7 +4094,10 @@ The practical consequence is a coupling worth stating: **the moment
 executing session will score `C_SOAK_GATE_EVIDENCE_INCOMPLETE`. Both belong in
 the same reviewed phase as the submission-authority wiring below.
 
-**`paper-ops run-due` cannot execute a decision (P2.4I, confirmed P2.4R3B).** `RuntimePlanner` is
+**`paper-ops run-due` could not execute a decision (P2.4I, confirmed P2.4R3B,
+wiring closed in P2.3.1D).** The composition now constructs the authority and
+`run-due` reaches it; what remains is the operator inputs and the binding
+capability above, not the wiring. The note below records what the gap was. `RuntimePlanner` is
 built with no `submit` authority — `cli.py` constructs it as
 `RuntimePlanner(root=…, binding=…, slot=…, calendar=…)` and
 `RuntimeSubmissionAuthority` is constructed **nowhere** in `src/`. An execution
@@ -5857,6 +5972,42 @@ requests for the 762-company cohort from **762 to 353**.
 ---
 
 ## Regression requirements
+
+**P2.3.1D adds `tests/integration/test_p2_3_1d_run_due_submission.py`** — 38
+cases, all driving `compose_operations`, the factory `run-due` calls. The
+scripted network is an `httpx.MockTransport` placed *under* the real transport
+rather than a `FakeTransport` replacing it, because the host lock, the headers
+and the audit are three of the things under test and a stand-in would bypass all
+three.
+
+Its load-bearing tests are
+`test_the_mutation_capable_path_actually_reaches_both_components` — which drives
+a run and counts mutations observed *at* the submission authority and *at* the
+request-audit writer, rather than inferring either from the other — and
+`test_the_production_run_writes_request_audit_records`, the regression that
+closes the R3B finding by loading the durable store after a production run.
+`test_a_production_audited_paper_mutation_derives_a_clean_live_count` feeds that
+store to the R3B derivation and asserts `OBSERVED_ZERO` where the same gate
+previously derived `EVIDENCE_MISSING`.
+
+The file also pins: composition without authorisation (the authority exists and
+a killed runtime still submits nothing); observe-only completing with zero
+mutations; an unarmed runtime refusing before any network request; execution
+consuming the persisted decision with `CompounderMonthlyStrategy.decide` never
+called; risk remaining final over what is sent; risk permitting nothing making
+zero mutation *attempts*; one slot run twice sending one sequence; a kill before
+the first order and between two orders; an audit write failure preventing the
+mutation with nothing recorded as submitted; an ambiguous dispatch resolved by
+asking the venue rather than resending; the audit rooted at the operations root
+and naming the run, the account fingerprint and the client order id; a live
+origin refused at the composition boundary with zero calls; no credential and no
+account number in any audit record; the certified execution journal populated
+and verifying; the reconciliation persisted; and the readiness self-check
+reporting which operator artefact is owed.
+
+`test_the_observability_and_evidence_contracts_are_unchanged` pins both
+fingerprints: this phase made an existing source appear in production and must
+not change how anything is measured.
 
 **P2.4R3B adds `tests/integration/test_p2_4r3b_gate_derivation.py`** — 86 cases.
 Its decisive tests are a pair per zero-tolerance gate: write the records a

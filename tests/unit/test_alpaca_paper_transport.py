@@ -67,7 +67,32 @@ def transport_with(
         key_id=SecretStr(KEY_ID),
         secret_key=SecretStr(SECRET),
         client=client,
+        audit=MemoryAudit(),
     )
+
+
+class MemoryAudit:
+    """An in-memory request-audit sink.
+
+    The transport refuses to mutate without an audit sink bound, so these tests
+    bind one. It is in memory rather than a `RequestAuditStore` because these
+    are unit tests and must not touch the filesystem — and because what the
+    transport requires is a *sink*, not a particular implementation of one.
+    """
+
+    def __init__(self) -> None:
+        self.attempts: list[Any] = []
+        self.results: list[Any] = []
+
+    def record_attempt(self, record: Any) -> Any:
+        """Record the pre-dispatch attempt."""
+        self.attempts.append(record)
+        return record
+
+    def record_result(self, record: Any) -> Any:
+        """Record how the attempt resolved."""
+        self.results.append(record)
+        return record
 
 
 def recorder() -> tuple[list[httpx.Request], Callable[[httpx.Request], httpx.Response]]:
@@ -707,3 +732,60 @@ def test_the_evidence_fingerprint_moves_when_the_reply_moves() -> None:
 
 def test_the_transport_version_is_declared() -> None:
     assert TRANSPORT_VERSION == "ALPACA_PAPER_HTTPS_TRANSPORT_V1"
+
+
+@pytest.mark.unit
+def test_a_mutation_without_an_audit_sink_is_refused() -> None:
+    """An absent sink is a reason not to mutate, not a reason to skip auditing.
+
+    `audit=None` used to return early and let the mutation through unobserved,
+    which is how a production transport came to send orders with nothing
+    recording where they went.
+    """
+    reached: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        reached.append(request.method)
+        return httpx.Response(200, json={})
+
+    transport = AlpacaPaperHttpTransport(
+        origin=PAPER_ORIGIN,
+        key_id=SecretStr(KEY_ID),
+        secret_key=SecretStr(SECRET),
+        client=httpx.Client(
+            base_url=PAPER_ORIGIN, transport=httpx.MockTransport(handler), timeout=1.0
+        ),
+    )
+
+    with pytest.raises(ExecutionError, match="EXTERNAL_REQUEST_AUDIT_FAILED"):
+        transport.request(RequestMethod.POST, "/v2/orders", json_body={"client_order_id": "X"})
+
+    assert reached == []
+
+
+@pytest.mark.unit
+def test_a_read_without_an_audit_sink_still_proceeds() -> None:
+    """The asymmetry is deliberate: a read changes nothing.
+
+    Failing a reconciliation read closed over a missing audit sink would block
+    operations without buying any safety.
+    """
+    reached: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        reached.append(request.method)
+        return httpx.Response(200, json={})
+
+    transport = AlpacaPaperHttpTransport(
+        origin=PAPER_ORIGIN,
+        key_id=SecretStr(KEY_ID),
+        secret_key=SecretStr(SECRET),
+        client=httpx.Client(
+            base_url=PAPER_ORIGIN, transport=httpx.MockTransport(handler), timeout=1.0
+        ),
+    )
+
+    reply = transport.request(RequestMethod.GET, "/v2/account")
+
+    assert reached == ["GET"]
+    assert reply.status_code == 200

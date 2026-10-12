@@ -34,6 +34,13 @@ from .bootstrap import (
     bootstrap_paper_book,
     read_bootstrap,
 )
+from .composition import (
+    AUDIT_DIRECTORY,
+    PRODUCTION_COMPOSITION_VERSION,
+    OperationsComposition,
+    compose_operations,
+    composition_readiness,
+)
 from .decisions import (
     DECISION_TRANSITIONS,
     DECISIONS_DIRECTORY,
@@ -62,6 +69,18 @@ from .observability import (
     observability_contract,
     observability_fingerprint,
 )
+from .operator_inputs import (
+    OPERATOR_INPUTS_VERSION,
+    RISK_POLICY_FILENAME,
+    SYMBOL_MAPPING_FILENAME,
+    OperatorInputStatus,
+    operator_input_status,
+    read_risk_policy,
+    read_symbol_mapping,
+    stored_marks,
+    write_risk_policy,
+    write_symbol_mapping,
+)
 from .orchestration import RuntimeOrchestrationOutcome, RuntimePlanner
 from .profiles import (
     OPERATIONAL_EXECUTION_TIMING_VERSION,
@@ -80,6 +99,7 @@ from .risk_transformation import (
 from .submission import SUBMISSION_AUTHORITY_VERSION, RuntimeSubmissionAuthority
 
 __all__ = [
+    "AUDIT_DIRECTORY",
     "BOOTSTRAP_ARTEFACT_VERSION",
     "CASH_FIELD",
     "DECISIONS_DIRECTORY",
@@ -88,20 +108,26 @@ __all__ = [
     "OBSERVABILITY_VERSION",
     "OPERATIONAL_EXECUTION_TIMING_VERSION",
     "OPERATIONAL_SCORE_AVAILABILITY_VERSION",
+    "OPERATOR_INPUTS_VERSION",
     "PAPER_OPERATIONS_RUNTIME_BINDING_VERSION",
     "PERFORMANCE_ATTRIBUTION_BOUNDARY",
     "PERSISTED_DECISION_VERSION",
+    "PRODUCTION_COMPOSITION_VERSION",
     "RISK_AUTHORITY_RULE",
+    "RISK_POLICY_FILENAME",
     "RISK_TRANSFORMATION_VERSION",
     "RUNTIME_DIRECTORY",
     "RUNTIME_ENVIRONMENT_VERSION",
     "SUBMISSION_AUTHORITY_VERSION",
+    "SYMBOL_MAPPING_FILENAME",
     "AlphaTraderPaperOperationsEnvironment",
     "Code",
     "DecisionStatus",
     "EventStatus",
     "MissedSlotRecord",
     "OperationalEventSpec",
+    "OperationsComposition",
+    "OperatorInputStatus",
     "PaperBookBootstrapReport",
     "PaperOperationsRuntimeBinding",
     "PersistedStrategyDecision",
@@ -114,14 +140,22 @@ __all__ = [
     "RuntimeSubmissionAuthority",
     "StrategyDecisionStore",
     "bootstrap_paper_book",
+    "compose_operations",
+    "composition_readiness",
     "event_vocabulary",
     "execution_timing_profile",
     "expire_pending_executions",
     "missed_records",
     "observability_contract",
     "observability_fingerprint",
+    "operator_input_status",
     "read_bootstrap",
+    "read_risk_policy",
+    "read_symbol_mapping",
     "record_missed_slot",
     "score_availability_profile",
+    "stored_marks",
     "transformation_for",
+    "write_risk_policy",
+    "write_symbol_mapping",
 ]
