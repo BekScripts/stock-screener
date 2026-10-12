@@ -147,6 +147,14 @@ class OperationsComposition:
             "certified_adapter_constructible": self.adapter is not None,
             "transport_origin": str(getattr(self.transport, "origin", "")),
             "transport_audited": getattr(self.transport, "audit", None) is not None,
+            "binding_version": str(getattr(self.binding, "version", "")),
+            "binding_fingerprint": self.binding.fingerprint(),
+            "predecessor_fingerprint": str(getattr(self.binding, "predecessor_fingerprint", "")),
+            "risk_policy_fingerprint": str(getattr(self.binding, "risk_policy_fingerprint", "")),
+            "instrument_mapping_fingerprint": str(
+                getattr(self.binding, "instrument_mapping_fingerprint", "")
+            ),
+            "account_capability": dict(getattr(self.binding, "account_capability", {}) or {}),
             "live_capability": False,
             "live_hosts_refused": sorted(LIVE_HOSTS),
             "accounting_generation": self.binding.accounting_generation,
@@ -259,7 +267,7 @@ def compose_operations(
     # declares which securities this runtime may route also declares how they
     # trade. The default stays whole-shares-only and is widened only by that
     # declaration.
-    venue_binding = _declared_binding(run.binding, mapping)
+    venue_binding = _declared_binding(run.binding, mapping, binding=binding)
     adapter = AlpacaPaperAdapter(transport=run.transport, binding=venue_binding, mapping=mapping)
     environment = AlphaTraderPaperOperationsEnvironment(root=root, binding=binding, adapter=adapter)
     environment.require_generations()
@@ -335,30 +343,41 @@ def _resolve_marks(
     return stored_marks(settings=settings, mapping=mapping, as_of=str(getattr(slot, "session", "")))
 
 
-def _declared_binding(binding: Any, mapping: Any) -> Any:
-    """Widen a binding's capabilities to what the authored mapping declares.
+def _declared_binding(venue: Any, mapping: Any, *, binding: Any = None) -> Any:
+    """Widen a venue binding's capabilities to what is actually declared.
+
+    Two sources, in order. A `PAPER_OPERATIONS_RUNTIME_BINDING_V2` records the
+    capability an operator rebound to, and that recorded declaration is
+    authoritative — it is the field the environment proof compares against. For
+    a historical V1-only root there is no such record, so the capability comes
+    from the authored mapping, and only when *every* routable symbol supports
+    it: the capability check is account-wide while fractionability is per
+    instrument, so a partial claim would permit a fractional order for an
+    instrument that cannot take one.
 
     Args:
-        binding: The binding built from configuration, at its conservative
+        venue: The venue binding built from configuration, at its conservative
             default of whole shares only.
         mapping: The authored venue symbol mapping.
+        binding: The active runtime binding, V1 or V2.
 
     Returns:
-        The binding, with fractional quantities declared when the mapping says
-        every routable symbol supports them. Narrowing is never done here and
-        nothing is widened without a declaration.
+        The venue binding, widened only by a declaration. Narrowing is never
+        done here and nothing is widened by inference.
     """
     from dataclasses import replace
 
+    declared = getattr(binding, "account_capability", None)
+    if isinstance(declared, dict):
+        if not declared.get("fractional_quantities", False):
+            return venue
+        return replace(venue, capabilities=replace(venue.capabilities, fractional_quantities=True))
     symbols = tuple(mapping.entries)
     if not symbols or not all(row.fractionable for row in symbols):
-        return binding
-    if binding.capabilities.fractional_quantities:
-        return binding
-    return replace(
-        binding,
-        capabilities=replace(binding.capabilities, fractional_quantities=True),
-    )
+        return venue
+    if venue.capabilities.fractional_quantities:
+        return venue
+    return replace(venue, capabilities=replace(venue.capabilities, fractional_quantities=True))
 
 
 def _coordinator(

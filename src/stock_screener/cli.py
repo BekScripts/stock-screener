@@ -9566,8 +9566,10 @@ def paper_ops_runtime_status_command() -> None:
     from stock_screener.paper_runtime import (
         AUDIT_DIRECTORY,
         RuntimeBindingError,
+        RuntimeBindingHistory,
         RuntimeBindingStore,
         StrategyDecisionStore,
+        active_binding,
         missed_records,
         operator_input_status,
     )
@@ -9694,11 +9696,30 @@ def paper_ops_runtime_status_command() -> None:
     typer.echo("")
     typer.echo("  SUBMISSION READINESS")
     status = operator_input_status(root)
-    for label, value in (
+    history = RuntimeBindingHistory(root)
+    try:
+        active = active_binding(root)
+        binding_state = f"{active.version} {active.fingerprint()[:16]}…"
+    except RuntimeBindingError as exc:
+        active = None
+        binding_state = f"UNREADABLE: {exc}"
+    rows: list[tuple[str, str]] = [
+        ("active binding", binding_state),
+        ("supersessions", str(len(history.records()))),
         ("submission authority", "WIRED (paper-ops run-due composes it)"),
         ("request audit root", str(root / AUDIT_DIRECTORY)),
         ("operator inputs", "COMPLETE" if status.complete else f"MISSING {list(status.missing)}"),
-    ):
+    ]
+    predecessor = str(getattr(active, "predecessor_fingerprint", "") or "")
+    if active is not None and predecessor:
+        capability = dict(getattr(active, "account_capability", {}) or {})
+        rows[1:1] = [
+            ("predecessor", f"{predecessor[:16]}…"),
+            ("risk policy", f"{active.risk_policy_fingerprint[:16]}…"),
+            ("instrument mapping", f"{active.instrument_mapping_fingerprint[:16]}…"),
+            ("fractional capability", str(capability.get("fractional_quantities"))),
+        ]
+    for label, value in rows:
         typer.echo(f"    {label:26}: {value}")
     for line in status.detail:
         typer.echo(f"      {line}")

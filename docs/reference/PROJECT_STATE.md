@@ -36,9 +36,65 @@ appears without the run or the test that produced it.
 
 ## Current phase
 
-**P2.3.1E — paper deployment authority artefacts — is the current checkpoint**,
-on `feat/p2-execution-engine`. No soak is armed and no V3 exists. Real
-operations remain not armed and `KILLED / CONTROL_STATE_UNVERIFIABLE`.
+**P2.3.1F — authorized paper risk policy and lineage-preserving rebind — is the
+current checkpoint**, on `feat/p2-execution-engine`. No soak is armed, no V3
+exists, the real runtime has **not** been rebound, and real operations remain
+not armed and `KILLED / CONTROL_STATE_UNVERIFIABLE`.
+
+**The paper risk policy is authorised.** `PAPER_PORTFOLIO_RISK_POLICY_V1`
+(`6804fbb289cf7fb9…`) carries the owner's approved limits for `EXTERNAL_PAPER`
+and nothing else: 2% per position, 5% cash floor, 2% per trade, 25% annualised
+volatility ceiling, 1% position ADV and 0.25% trade ADV, a 96-hour risk-metric
+age bound, a 0.85 correlation threshold with a 3% correlated-pair cap, and a
+four-rung drawdown ladder. `authorized_for_live` is False and structurally so.
+
+Two of the owner's thirteen fields are mechanical restatements in the engine's
+own schema, not reinterpretations:
+
+| Owner's intent | Engine's schema | Why |
+| --- | --- | --- |
+| `min_position_weight: 0.0` | `None` | the engine refuses a non-positive minimum and documents `None` as "keep every target" — the same instruction |
+| `drawdown >= 0.05 → exposure 0.75` | `DrawdownBand(threshold=-0.05, max_gross_multiplier=0.75)` | a drawdown is a non-positive decimal and a band multiplies the base gross limit, which is 1.0 |
+
+`construction_mode` is `PRESERVE_ABSOLUTE_WEIGHTS`, chosen on measurement rather
+than preference: for a request summing below the budget the alternative scales
+each name **up** — 3.17× on a 0.30 request — which would both introduce exposure
+the strategy never asked for and trip the frozen
+`RISK_MAY_REDUCE_NEVER_EXPAND_STRATEGY_AUTHORITY_V1` rule.
+
+**One owner-approved field cannot be represented.** `max_positions: NO CAP` has
+no expression in `PORTFOLIO_RISK_ENGINE_V1_2`: the field is a plain `int`
+validated `>= 1`, and every *other* cap in the same dataclass uses `None` for
+absence. It is named as unrepresentable rather than substituted, and
+`engine_policy()` refuses until a caller states a representable value — because
+omitting it does not fail, it silently adopts `EXAMPLE_POLICY_V1`'s 20.
+
+**A runtime binding can now be superseded without resetting a book.**
+`PAPER_OPERATIONS_RUNTIME_BINDING_V2` is additive — V1 semantics are untouched
+and a V1-only root keeps working unchanged. A rebind preserves the accounting
+generation, the execution generation, the operations lineage and the bootstrap
+epoch; writes no `OpeningBalanceEvent` and reads no cash from the venue; and is
+refused outright if it would change the account, the strategy, any generation or
+the epoch. `bootstrap_paper_book` and `RuntimeBindingStore.write` keep their
+refusals: this is a different operation beside them, not a loosening of either.
+
+History is append-only and tamper-evident — a hash chain with a head anchor, the
+shape the operations and execution journals already use — so `binding A →
+authorised rebind → binding B` is reconstructible with both fingerprints and the
+reason. An unverifiable chain fails closed and does **not** fall back to the
+superseded binding: that binding was replaced deliberately.
+
+**Account capability is declared, never inferred.**
+`BrokerCapabilities.require_quantity` is account-wide while fractionability is
+per instrument, so an account-wide fractional claim is made only when *every*
+routable instrument in the bound mapping supports it. A partial claim would
+permit a fractional order for an instrument that cannot take one. On the real
+mapping, 59 of 1,880 routable instruments are whole-share-only, so enabling
+fractional capability means binding a fractionable-only subset — or accepting
+that those 59 are refused when selected.
+
+**P2.3.1E's artefacts stand unchanged.** `ALPACA_PAPER_INSTRUMENT_MAPPING_V1`
+(`4ae99e6120446bb1…`) was not regenerated.
 
 The two inputs P2.3.1D exposed are now separated along the line that matters,
 because they are not the same kind of thing:
@@ -509,6 +565,13 @@ frozen at the same commit; P2 branched from it.
 | P2.3.1E rebind plan | `PAPER_OPERATIONS_RUNTIME_REBIND_PLAN_V1`, `375df0b1fb10cd7f…` — not executed |
 | P2.3.1E rebind outcome | `REBIND_REQUIRES_NEW_GENERATIONS` — `account_binding_fingerprint` only |
 | P2.3.1E generations | capability-**independent**: `f"alphatrader-paper-{runtime_id}"` |
+| P2.3.1F risk policy | `PAPER_PORTFOLIO_RISK_POLICY_V1`, `6804fbb289cf7fb9…` — **AUTHORIZED for EXTERNAL_PAPER** |
+| P2.3.1F live authority | **none** — `authorized_for_live` False, structurally |
+| P2.3.1F unrepresentable | `max_positions: NO CAP` — named, never substituted |
+| P2.3.1F binding contract | `PAPER_OPERATIONS_RUNTIME_BINDING_V2` — additive, supersedes V1 |
+| P2.3.1F rebind history | `PAPER_OPERATIONS_RUNTIME_REBIND_CHAIN_V1` — append-only, anchored |
+| P2.3.1F lineages | accounting, execution, operations and bootstrap epoch all preserved |
+| P2.3.1F real rebind | **not executed** — the owner has not authorised the state transition |
 | H2 broker-paper orders | **NOT AUTHORISED** — its own frozen ladder says so |
 | Live trading | **NOT IMPLEMENTED, NOT AUTHORIZED** |
 | Production risk thresholds | **NOT AUTHORIZED** |
@@ -516,6 +579,35 @@ frozen at the same commit; P2 branched from it.
 | Production correlation thresholds | **NOT AUTHORIZED** |
 | Broker authority | **PAPER READ/SUBMIT, CERTIFIED — NO LIVE AUTHORITY** |
 | Live trading | **NOT AUTHORIZED** |
+
+**A rebind is not a bootstrap (P2.3.1F).** Superseding a runtime binding
+preserves the accounting generation, the execution generation, the operations
+lineage and the bootstrap epoch; it writes no `OpeningBalanceEvent` and reads no
+cash from the venue. A new policy or mapping is never a reason to reset
+accounting. `bootstrap_paper_book` and `RuntimeBindingStore.write` keep their
+existing refusals — the rebind is a separate operation, not a loosening of
+either — and a rebind that would change the account, the strategy, a generation
+or the epoch is refused by name.
+
+**A superseded binding stays readable and the chain stays honest (P2.3.1F).**
+`runtime/binding.json` is never rewritten. Supersessions are an append-only hash
+chain with a head anchor, so the path from the bootstrapped binding to the active
+one is reconstructible and a local truncation is detectable. An unverifiable
+chain fails closed rather than falling back to the superseded binding, which was
+replaced deliberately.
+
+**An account-wide capability needs every instrument (P2.3.1F).**
+`BrokerCapabilities.require_quantity` permits a fractional quantity for every
+instrument or for none, while fractionability belongs to the instrument. So
+account-wide fractional capability is declared only when every routable
+instrument in the bound mapping supports it. Claiming it because most do would
+permit a fractional order for one that cannot take it.
+
+**An engine default is not a neutral default (P2.3.1F).** Omitting
+`max_positions` from a `RiskPolicy` does not fail — it adopts
+`EXAMPLE_POLICY_V1`'s 20, which declares itself unauthorised. Every
+owner-approved limit is therefore stated explicitly, and a field the engine
+cannot express is refused rather than left to inherit.
 
 **Deployment evidence and deployment judgment are different artefacts
 (P2.3.1E).** An instrument mapping is read from the internal identity record and
@@ -4137,7 +4229,23 @@ care — nothing has a foreign key *to* it, so dropping it cascades to nothing.
 
 ## Known limitations
 
-**No authorised risk policy exists (P2.3.1E).** The candidate at
+**`max_positions: NO CAP` is unrepresentable (P2.3.1F).** The owner approved it
+and `PORTFOLIO_RISK_ENGINE_V1_2` has no expression for it: the field is a plain
+`int` validated `>= 1`, while every other cap in the same dataclass uses `None`
+for absence. `PaperRiskPolicy.engine_policy()` refuses until a caller supplies a
+representable value, and no sentinel is invented. Resolving it properly means
+either an owner-supplied numeric cap or an additive change making
+`max_positions: int | None` — consistent with the rest of the dataclass, but a
+change to the risk contract and so out of scope here.
+
+**The real runtime has not been rebound (P2.3.1F).** The operation exists and is
+tested, but the owner has authorised the architectural direction and the policy
+values, not the persistent state transition. Until it is run, the recorded
+`account_binding_fingerprint` still describes whole-share-only capability.
+
+**No authorised risk policy exists (P2.3.1E, resolved in P2.3.1F).** The
+candidate below was superseded by the authorised policy above; the note records
+what the gap was. The candidate at
 `docs/reference/deployment/paper-risk-policy-candidate.json` names 13 fields
 that require owner judgment and carries no invented value for any of them.
 Nothing in the repository declares `production_authorized=True`, and
@@ -6083,6 +6191,32 @@ requests for the 762-company cohort from **762 to 353**.
 ---
 
 ## Regression requirements
+
+**P2.3.1F adds `tests/integration/test_p2_3_1f_risk_authority_and_rebind.py`** —
+50 cases. `test_the_construction_mode_preserves_and_never_expands` is the one
+the mode choice rests on: it measures both modes on an under-invested request
+and shows the rejected one scaling each name up.
+`test_an_omitted_max_positions_would_have_inherited_the_example` demonstrates
+why the unrepresentable field is refused rather than defaulted, and
+`test_the_drawdown_ladder_reduces_exposure_as_approved` drives the real
+`derive_effective_policy` at five drawdowns and asserts the owner's exact
+exposures.
+
+On the rebind it pins: every lineage preserved with the ledger byte-identical and
+exactly one `OPENING_BALANCE`; the superseded binding unchanged and still
+readable; the active binding deterministically the successor; an append-only
+chain whose records name their predecessors; a tampered chain failing closed
+without reverting to the predecessor; a truncation detected by the anchor; a
+parametrised refusal for **each** field in `IMMUTABLE_ACROSS_REBIND`; a failed
+precondition blocking; a rebind arming nothing; and — AST-parsed rather than
+grepped, because the module's own docstring promises it — that the rebind
+references no `OpeningBalanceEvent`, no bootstrap and no account read.
+
+`test_a_rebound_runtime_accepts_a_fractional_quantity` and
+`test_a_whole_share_mapping_still_refuses_a_fractional_quantity` run through the
+real `compose_operations`: the first shows the P2.3.1D refusal gone with the
+quantity unchanged, the second shows it still standing where the mapping
+contains a whole-share instrument.
 
 **P2.3.1E adds `tests/integration/test_p2_3_1e_deployment_authority.py`** — 43
 cases. `test_every_risk_policy_field_is_inventoried` compares the inventory

@@ -33,16 +33,21 @@ from typing import Any
 
 __all__ = [
     "INSTRUMENT_MAPPING_VERSION",
+    "NO_CAP",
     "OWNER_APPROVAL_REQUIRED",
+    "OWNER_APPROVED_PAPER_LIMITS",
+    "PAPER_RISK_POLICY_VERSION",
     "REBIND_PLAN_VERSION",
     "RISK_POLICY_CANDIDATE_VERSION",
     "InstrumentMapping",
     "InstrumentRecord",
+    "PaperRiskPolicy",
     "PolicyField",
     "RebindPlan",
     "RiskPolicyCandidate",
     "Routability",
     "mapping_from_evidence",
+    "paper_risk_policy",
     "policy_field_inventory",
     "rebind_plan",
     "risk_policy_candidate",
@@ -1172,4 +1177,207 @@ def _prohibited() -> tuple[str, ...]:
         "reason to replace accumulated internal history with current broker cash.",
         "No paper re-arm. The control state is the operator's to change.",
         "No live authority. EXTERNAL_PAPER only.",
+    )
+
+
+#: The final paper risk policy contract, once an owner has approved its limits.
+PAPER_RISK_POLICY_VERSION = "PAPER_PORTFOLIO_RISK_POLICY_V1"
+
+#: The owner's declared intent for a cap that should not bind. Kept as a string
+#: so it can never be mistaken for a number: `PORTFOLIO_RISK_ENGINE_V1_2` has no
+#: representation for an absent `max_positions`, and the one thing that must not
+#: happen is this becoming 0, a large integer, or the current universe size.
+NO_CAP = "NO_CAP"
+
+#: The limits the owner approved for EXTERNAL_PAPER in P2.3.1F. Data, not code:
+#: every value here was supplied by the owner, none was derived from returns,
+#: and the two translations marked below are mechanical restatements of the
+#: owner's intent in the engine's own schema.
+OWNER_APPROVED_PAPER_LIMITS: dict[str, Any] = {
+    # Preserves the selected identities and their relative weights and permits
+    # only reduction. Chosen over NORMALIZE_TO_INVESTABLE_BUDGET on evidence:
+    # for a request summing below the budget, NORMALIZE scales each name up —
+    # measured at 3.17x on a 0.30 request — which would both introduce exposure
+    # the strategy did not ask for and trip the frozen
+    # RISK_MAY_REDUCE_NEVER_EXPAND_STRATEGY_AUTHORITY_V1 rule.
+    "construction_mode": "PRESERVE_ABSOLUTE_WEIGHTS",
+    "max_position_weight": 0.02,
+    "max_positions": NO_CAP,
+    "min_cash_weight": 0.05,
+    "max_trade_notional_weight": 0.02,
+    # Translation: the owner approved 0.0, meaning no minimum. The engine
+    # refuses a non-positive min_position_weight and documents `None` as "keep
+    # every target", which is the same instruction in the engine's schema.
+    "min_position_weight": None,
+    "max_portfolio_volatility": 0.25,
+    "max_position_adv_fraction": 0.01,
+    "max_trade_adv_fraction": 0.0025,
+    # Translation: a drawdown is a non-positive decimal in this schema, and a
+    # band carries a multiplier on the base gross limit rather than an absolute
+    # cap. With max_gross_exposure 1.0 the multiplier equals the owner's
+    # exposure, so 0.05 -> 0.75 becomes (-0.05, 0.75). The mode stays NORMAL on
+    # every band: the owner specified exposure caps and nothing else, and
+    # imposing REDUCE_ONLY or HALTED would add behaviour they did not ask for.
+    "drawdown_bands": (
+        (-0.05, 0.75, "drawdown>=5%"),
+        (-0.10, 0.50, "drawdown>=10%"),
+        (-0.15, 0.25, "drawdown>=15%"),
+        (-0.20, 0.00, "drawdown>=20%"),
+    ),
+    "max_risk_metric_age_seconds": 345600.0,
+    "correlation_threshold": 0.85,
+    "max_correlated_pair_exposure": 0.03,
+}
+
+
+@dataclass(frozen=True)
+class PaperRiskPolicy:
+    """The owner-approved paper risk policy, and the one field it cannot express.
+
+    Every limit is stated explicitly. Nothing is left to a default, because the
+    engine's defaults come from `EXAMPLE_POLICY_V1` — and omitting a field is
+    not harmless: constructing a `RiskPolicy` without `max_positions` silently
+    adopts that example's 20, which is the failure mode this artefact exists to
+    make impossible.
+
+    Attributes:
+        policy_id: The operational policy identity.
+        policy_version: Its version.
+        environment: `EXTERNAL_PAPER`. The only environment this authorises.
+        engine_version: The engine these limits belong to.
+        limits: The owner-approved values, as data.
+        authorized_for_paper: Whether the owner has approved these limits for
+            paper. True once they have.
+        authorized_for_live: Always False, and structurally so.
+        unrepresentable: Fields the owner approved that the engine cannot
+            express. Named rather than quietly substituted.
+    """
+
+    policy_id: str
+    policy_version: str
+    environment: str
+    engine_version: str
+    limits: dict[str, Any]
+    authorized_for_paper: bool
+    authorized_for_live: bool = False
+    unrepresentable: tuple[str, ...] = ()
+
+    def body(self) -> dict[str, Any]:
+        """The policy's semantic content, for fingerprinting."""
+        return {
+            "version": PAPER_RISK_POLICY_VERSION,
+            "policy_id": self.policy_id,
+            "policy_version": self.policy_version,
+            "environment": self.environment,
+            "engine_version": self.engine_version,
+            "authorized_for_paper": self.authorized_for_paper,
+            "authorized_for_live": self.authorized_for_live,
+            "limits": {key: self.limits[key] for key in sorted(self.limits)},
+            "unrepresentable": sorted(self.unrepresentable),
+        }
+
+    def fingerprint(self) -> str:
+        """A digest over every limit and the authorisation state."""
+        from stock_screener.execution import fingerprint_of
+
+        return fingerprint_of(self.body())
+
+    def as_json(self) -> dict[str, Any]:
+        """Return the policy as a JSON-safe mapping."""
+        return {
+            **self.body(),
+            "policy_fingerprint": self.fingerprint(),
+            "limitations": [
+                "EXTERNAL_PAPER only. LIVE, EXTERNAL_LIVE and PRODUCTION_LIVE are "
+                "not authorised and live trading remains NOT_IMPLEMENTED.",
+                "These are operational safety limits, not return-optimised "
+                "parameters. None was fitted to historical performance.",
+                "Approving this artefact does not authorise a runtime rebind, a "
+                "paper re-arm, or any broker mutation.",
+                "No value is inherited from EXAMPLE_POLICY_V1 or from an engine "
+                "default: every approved field is stated here explicitly.",
+            ],
+        }
+
+    def engine_policy(self, **resolve: Any) -> Any:
+        """Build the `RiskPolicy` the engine accepts.
+
+        Args:
+            **resolve: A value for each field in `unrepresentable`. Supplying
+                one is a statement that the owner has accepted a representable
+                substitute for their original intent.
+
+        Returns:
+            The policy. `production_authorized` is False: that flag describes
+            live capital, and this policy is authorised for paper only.
+
+        Raises:
+            RuntimeBindingError: `RUNTIME_RISK_POLICY_NOT_AUTHORED` if an
+                unrepresentable field is left unresolved. It is *not* filled
+                from the engine default — `RiskPolicy` omitting
+                `max_positions` silently takes 20 from the example policy, and
+                that substitution would be invisible.
+        """
+        from stock_screener.portfolio_risk import RiskPolicy
+        from stock_screener.portfolio_risk.drawdown import DrawdownBand
+        from stock_screener.portfolio_risk.policy import ConstructionMode, PolicyMode
+
+        from .errors import Code, RuntimeBindingError
+
+        missing = [name for name in self.unrepresentable if name not in resolve]
+        if missing:
+            raise RuntimeBindingError(
+                Code.RUNTIME_RISK_POLICY_NOT_AUTHORED,
+                f"the owner approved {missing} as values "
+                f"{[self.limits[name] for name in missing]}, which "
+                f"{self.engine_version} cannot represent. They are not filled from "
+                "the engine's defaults: omitting max_positions silently adopts "
+                "EXAMPLE_POLICY_V1's 20, and a substitution nobody can see is worse "
+                "than a refusal",
+            )
+        settings = dict(self.limits)
+        settings.update(resolve)
+        settings["construction_mode"] = ConstructionMode(settings["construction_mode"])
+        settings["drawdown_bands"] = tuple(
+            DrawdownBand(
+                threshold=float(threshold),
+                max_gross_multiplier=float(multiplier),
+                mode=PolicyMode.NORMAL,
+                label=str(label),
+            )
+            for threshold, multiplier, label in settings["drawdown_bands"]
+        )
+        derived: dict[str, Any] = {
+            "policy_id": self.policy_id,
+            "policy_version": self.policy_version,
+            "mode": PolicyMode.NORMAL,
+            "long_only": True,
+            "max_gross_exposure": 1.0,
+            "max_net_exposure": 1.0,
+            "production_authorized": False,
+        }
+        # A caller may override a derived field — a test exercising HALTED, say
+        # — but never an owner-approved limit silently: those come from
+        # `limits` and `resolve` only names fields the engine cannot express.
+        derived.update({key: value for key, value in settings.items() if key in derived})
+        settings = {key: value for key, value in settings.items() if key not in derived}
+        return RiskPolicy(**derived, **settings)
+
+
+def paper_risk_policy() -> PaperRiskPolicy:
+    """The owner-approved paper risk policy for this build.
+
+    Returns:
+        The policy. Authorised for paper; `max_positions` is named as
+        unrepresentable rather than substituted.
+    """
+    return PaperRiskPolicy(
+        policy_id="ALPHATRADER_PAPER",
+        policy_version="V1",
+        environment="EXTERNAL_PAPER",
+        engine_version="PORTFOLIO_RISK_ENGINE_V1_2",
+        limits=dict(OWNER_APPROVED_PAPER_LIMITS),
+        authorized_for_paper=True,
+        authorized_for_live=False,
+        unrepresentable=("max_positions",),
     )
