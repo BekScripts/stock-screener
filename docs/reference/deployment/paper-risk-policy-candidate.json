@@ -1,0 +1,491 @@
+{
+  "version": "PAPER_PORTFOLIO_RISK_POLICY_V1_CANDIDATE",
+  "policy_id": "ALPHATRADER_PAPER",
+  "policy_version": "V1",
+  "environment": "EXTERNAL_PAPER",
+  "engine_version": "PORTFOLIO_RISK_ENGINE_V1_2",
+  "authorized": false,
+  "fields": [
+    {
+      "name": "construction_mode",
+      "candidate": "PRESERVE_ABSOLUTE_WEIGHTS",
+      "authority": "OWNER_APPROVAL_REQUIRED"
+    },
+    {
+      "name": "correlation_threshold",
+      "candidate": "OWNER_APPROVAL_REQUIRED",
+      "authority": "OWNER_APPROVAL_REQUIRED"
+    },
+    {
+      "name": "drawdown_bands",
+      "candidate": "OWNER_APPROVAL_REQUIRED",
+      "authority": "OWNER_APPROVAL_REQUIRED"
+    },
+    {
+      "name": "long_only",
+      "candidate": true,
+      "authority": "derived \u2014 ALPHATRADER_COMPOUNDER_MONTHLY_V1 emits only positive weights, and no short-selling authority exists; the certified binding's capabilities declare short_selling=False"
+    },
+    {
+      "name": "max_correlated_pair_exposure",
+      "candidate": "OWNER_APPROVAL_REQUIRED",
+      "authority": "OWNER_APPROVAL_REQUIRED"
+    },
+    {
+      "name": "max_gross_exposure",
+      "candidate": 1.0,
+      "authority": "bounded above at 1.0 \u2014 no leverage or margin authority exists anywhere in the repository, and >1.0 requires borrowing"
+    },
+    {
+      "name": "max_net_exposure",
+      "candidate": 1.0,
+      "authority": "derived \u2014 under long_only every weight is positive, so net equals gross and a separate net cap can bind nothing tighter"
+    },
+    {
+      "name": "max_portfolio_volatility",
+      "candidate": "OWNER_APPROVAL_REQUIRED",
+      "authority": "OWNER_APPROVAL_REQUIRED"
+    },
+    {
+      "name": "max_position_adv_fraction",
+      "candidate": "OWNER_APPROVAL_REQUIRED",
+      "authority": "OWNER_APPROVAL_REQUIRED"
+    },
+    {
+      "name": "max_position_weight",
+      "candidate": "OWNER_APPROVAL_REQUIRED",
+      "authority": "OWNER_APPROVAL_REQUIRED"
+    },
+    {
+      "name": "max_positions",
+      "candidate": "OWNER_APPROVAL_REQUIRED",
+      "authority": "OWNER_APPROVAL_REQUIRED"
+    },
+    {
+      "name": "max_risk_metric_age_seconds",
+      "candidate": "OWNER_APPROVAL_REQUIRED",
+      "authority": "OWNER_APPROVAL_REQUIRED"
+    },
+    {
+      "name": "max_trade_adv_fraction",
+      "candidate": "OWNER_APPROVAL_REQUIRED",
+      "authority": "OWNER_APPROVAL_REQUIRED"
+    },
+    {
+      "name": "max_trade_notional_weight",
+      "candidate": "OWNER_APPROVAL_REQUIRED",
+      "authority": "OWNER_APPROVAL_REQUIRED"
+    },
+    {
+      "name": "min_cash_weight",
+      "candidate": "OWNER_APPROVAL_REQUIRED",
+      "authority": "OWNER_APPROVAL_REQUIRED"
+    },
+    {
+      "name": "min_position_weight",
+      "candidate": "OWNER_APPROVAL_REQUIRED",
+      "authority": "OWNER_APPROVAL_REQUIRED"
+    },
+    {
+      "name": "missing_correlation_policy",
+      "candidate": "REJECT_INCREASE",
+      "authority": "derived \u2014 as the other missing-metric policies"
+    },
+    {
+      "name": "missing_liquidity_policy",
+      "candidate": "REJECT_INCREASE",
+      "authority": "derived \u2014 as above"
+    },
+    {
+      "name": "missing_volatility_policy",
+      "candidate": "REJECT_INCREASE",
+      "authority": "derived \u2014 the repository's 'missing is not zero' rule, and REJECT_INCREASE is the conservative member"
+    },
+    {
+      "name": "mode",
+      "candidate": "NORMAL",
+      "authority": "derived \u2014 NORMAL is the engine's unrestricted mode and any other mode is a restriction nobody has asked for"
+    },
+    {
+      "name": "policy_id",
+      "candidate": "ALPHATRADER_PAPER",
+      "authority": "ALPHATRADER_PAPER \u2014 the operational policy identity the V2 soak protocol already bound"
+    },
+    {
+      "name": "policy_version",
+      "candidate": "V1",
+      "authority": "derived \u2014 V1 is the first"
+    },
+    {
+      "name": "production_authorized",
+      "candidate": false,
+      "authority": "derived \u2014 False, because the fields above are unresolved"
+    }
+  ],
+  "owner_approval_required": [
+    "construction_mode",
+    "max_position_weight",
+    "max_positions",
+    "min_cash_weight",
+    "max_trade_notional_weight",
+    "min_position_weight",
+    "max_portfolio_volatility",
+    "max_position_adv_fraction",
+    "max_trade_adv_fraction",
+    "drawdown_bands",
+    "max_risk_metric_age_seconds",
+    "correlation_threshold",
+    "max_correlated_pair_exposure"
+  ],
+  "derivable": [
+    "policy_id",
+    "policy_version",
+    "mode",
+    "long_only",
+    "max_gross_exposure",
+    "max_net_exposure",
+    "missing_volatility_policy",
+    "missing_liquidity_policy",
+    "missing_correlation_policy",
+    "production_authorized"
+  ],
+  "inventory": [
+    {
+      "name": "policy_id",
+      "unit": "identifier",
+      "meaning": "which policy this is",
+      "engine_default": "required",
+      "constraint": "IDENTITY",
+      "interacts_with": [],
+      "authority": "ALPHATRADER_PAPER \u2014 the operational policy identity the V2 soak protocol already bound",
+      "candidate": "ALPHATRADER_PAPER",
+      "needs_owner_approval": false,
+      "rationale": "not a limit; the identity is already recorded in the frozen V2 protocol's risk_policy_fingerprint body"
+    },
+    {
+      "name": "policy_version",
+      "unit": "identifier",
+      "meaning": "its version; a changed limit is a new version",
+      "engine_default": "required",
+      "constraint": "IDENTITY",
+      "interacts_with": [],
+      "authority": "derived \u2014 V1 is the first",
+      "candidate": "V1",
+      "needs_owner_approval": false,
+      "rationale": "not a limit"
+    },
+    {
+      "name": "mode",
+      "unit": "enum",
+      "meaning": "what the policy currently permits",
+      "engine_default": "NORMAL",
+      "constraint": "HARD",
+      "interacts_with": [
+        "drawdown_bands"
+      ],
+      "authority": "derived \u2014 NORMAL is the engine's unrestricted mode and any other mode is a restriction nobody has asked for",
+      "candidate": "NORMAL",
+      "needs_owner_approval": false,
+      "rationale": "the restrictive modes exist for a drawdown overlay to select; setting one as the standing mode would be a risk decision"
+    },
+    {
+      "name": "construction_mode",
+      "unit": "enum",
+      "meaning": "how an underinvested request is treated",
+      "engine_default": "PRESERVE_ABSOLUTE_WEIGHTS",
+      "constraint": "HARD",
+      "interacts_with": [
+        "max_gross_exposure",
+        "min_cash_weight"
+      ],
+      "authority": "OWNER_APPROVAL_REQUIRED",
+      "candidate": "PRESERVE_ABSOLUTE_WEIGHTS",
+      "needs_owner_approval": true,
+      "rationale": "materially changes exposure: the alternative scales an underinvested request up to the gross cap, which turns the strategy's own sizing into something else. The engine default is the non-amplifying choice, but choosing not to amplify is still a choice about how much capital is deployed"
+    },
+    {
+      "name": "long_only",
+      "unit": "boolean",
+      "meaning": "whether negative target weights are refused",
+      "engine_default": "True",
+      "constraint": "HARD",
+      "interacts_with": [
+        "max_net_exposure"
+      ],
+      "authority": "derived \u2014 ALPHATRADER_COMPOUNDER_MONTHLY_V1 emits only positive weights, and no short-selling authority exists; the certified binding's capabilities declare short_selling=False",
+      "candidate": true,
+      "needs_owner_approval": false,
+      "rationale": "permitting shorts would grant an authority neither the strategy nor the venue binding has"
+    },
+    {
+      "name": "max_gross_exposure",
+      "unit": "fraction of NAV",
+      "meaning": "cap on the sum of absolute target weights",
+      "engine_default": "1.0",
+      "constraint": "SOFT \u2014 the engine reduces to fit",
+      "interacts_with": [
+        "min_cash_weight",
+        "max_position_weight",
+        "max_positions"
+      ],
+      "authority": "bounded above at 1.0 \u2014 no leverage or margin authority exists anywhere in the repository, and >1.0 requires borrowing",
+      "candidate": 1.0,
+      "needs_owner_approval": false,
+      "rationale": "1.0 is the most permissive value that needs no leverage authority: it means 'never borrow'. Any value below 1.0 is a deliberate underinvestment and is owner judgment, so the bound is derived and the choice to sit exactly at it is not a risk appetite"
+    },
+    {
+      "name": "max_net_exposure",
+      "unit": "fraction of NAV or None",
+      "meaning": "cap on the sum of signed target weights",
+      "engine_default": "None (no cap)",
+      "constraint": "SOFT",
+      "interacts_with": [
+        "long_only",
+        "max_gross_exposure"
+      ],
+      "authority": "derived \u2014 under long_only every weight is positive, so net equals gross and a separate net cap can bind nothing tighter",
+      "candidate": 1.0,
+      "needs_owner_approval": false,
+      "rationale": "redundant with the gross cap for a long-only book; stated explicitly rather than left None so the artefact records that net exposure was considered"
+    },
+    {
+      "name": "max_position_weight",
+      "unit": "fraction of NAV",
+      "meaning": "cap on any single target weight",
+      "engine_default": "0.10",
+      "constraint": "SOFT",
+      "interacts_with": [
+        "max_positions",
+        "max_gross_exposure"
+      ],
+      "authority": "OWNER_APPROVAL_REQUIRED",
+      "candidate": "OWNER_APPROVAL_REQUIRED",
+      "needs_owner_approval": true,
+      "rationale": "single-name concentration is the most consequential limit here and nothing in the repository establishes one. The engine's 0.10 default comes from EXAMPLE_POLICY_V1, which is explicitly not authorised; adopting it would promote an example by reuse"
+    },
+    {
+      "name": "max_positions",
+      "unit": "count",
+      "meaning": "cap on the number of held positions",
+      "engine_default": "20",
+      "constraint": "HARD",
+      "interacts_with": [
+        "max_position_weight",
+        "min_position_weight"
+      ],
+      "authority": "OWNER_APPROVAL_REQUIRED",
+      "candidate": "OWNER_APPROVAL_REQUIRED",
+      "needs_owner_approval": true,
+      "rationale": "the strategy's own TARGET_COUNT_RULE selects ceil(eligible/10), which on the current cross-section of 1896 eligible names is 190. A cap below that silently truncates the strategy's selection and a cap above it binds nothing \u2014 either is a decision about how diversified the book should be"
+    },
+    {
+      "name": "min_cash_weight",
+      "unit": "fraction of NAV",
+      "meaning": "cash that must remain unallocated",
+      "engine_default": "0.05",
+      "constraint": "SOFT",
+      "interacts_with": [
+        "max_gross_exposure",
+        "construction_mode"
+      ],
+      "authority": "OWNER_APPROVAL_REQUIRED",
+      "candidate": "OWNER_APPROVAL_REQUIRED",
+      "needs_owner_approval": true,
+      "rationale": "a cash buffer trades expected return for settlement and rebalancing headroom. 0.0 and 0.05 are both defensible and the repository prefers neither"
+    },
+    {
+      "name": "max_trade_notional_weight",
+      "unit": "fraction of NAV or None",
+      "meaning": "cap on a single trade as a fraction of NAV",
+      "engine_default": "None (no cap)",
+      "constraint": "SOFT",
+      "interacts_with": [
+        "max_position_weight"
+      ],
+      "authority": "OWNER_APPROVAL_REQUIRED",
+      "candidate": "OWNER_APPROVAL_REQUIRED",
+      "needs_owner_approval": true,
+      "rationale": "bounds how fast the book may move in one session; no turnover or trade-size authority exists"
+    },
+    {
+      "name": "min_position_weight",
+      "unit": "fraction of NAV or None",
+      "meaning": "targets below this are dropped rather than held",
+      "engine_default": "None (keep every target)",
+      "constraint": "HARD",
+      "interacts_with": [
+        "max_positions"
+      ],
+      "authority": "OWNER_APPROVAL_REQUIRED",
+      "candidate": "OWNER_APPROVAL_REQUIRED",
+      "needs_owner_approval": true,
+      "rationale": "drops the strategy's smallest selections, so it changes which names are held and not merely how much"
+    },
+    {
+      "name": "max_portfolio_volatility",
+      "unit": "annualised fraction or None",
+      "meaning": "ceiling on estimated annualised portfolio volatility",
+      "engine_default": "None (no ceiling)",
+      "constraint": "SOFT",
+      "interacts_with": [
+        "missing_volatility_policy",
+        "max_risk_metric_age_seconds"
+      ],
+      "authority": "OWNER_APPROVAL_REQUIRED",
+      "candidate": "OWNER_APPROVAL_REQUIRED",
+      "needs_owner_approval": true,
+      "rationale": "requires both a risk appetite and a covariance source this runtime does not currently supply; leaving it None is itself a decision to run without a volatility ceiling"
+    },
+    {
+      "name": "max_position_adv_fraction",
+      "unit": "fraction of average daily volume or None",
+      "meaning": "a position may not exceed this fraction of the instrument's ADV",
+      "engine_default": "None (no cap)",
+      "constraint": "SOFT",
+      "interacts_with": [
+        "missing_liquidity_policy",
+        "max_trade_adv_fraction"
+      ],
+      "authority": "OWNER_APPROVAL_REQUIRED",
+      "candidate": "OWNER_APPROVAL_REQUIRED",
+      "needs_owner_approval": true,
+      "rationale": "a liquidity limit. `companies.average_volume` exists as an input but no authorised fraction of it does"
+    },
+    {
+      "name": "max_trade_adv_fraction",
+      "unit": "fraction of average daily volume or None",
+      "meaning": "a single change in exposure may not exceed this fraction of ADV",
+      "engine_default": "None (no cap)",
+      "constraint": "SOFT",
+      "interacts_with": [
+        "missing_liquidity_policy",
+        "max_position_adv_fraction"
+      ],
+      "authority": "OWNER_APPROVAL_REQUIRED",
+      "candidate": "OWNER_APPROVAL_REQUIRED",
+      "needs_owner_approval": true,
+      "rationale": "as above, for the trade rather than the resulting position"
+    },
+    {
+      "name": "drawdown_bands",
+      "unit": "ladder of (threshold, mode) bands",
+      "meaning": "the drawdown overlay ladder, shallowest first",
+      "engine_default": "() \u2014 no overlay",
+      "constraint": "HARD",
+      "interacts_with": [
+        "mode"
+      ],
+      "authority": "OWNER_APPROVAL_REQUIRED",
+      "candidate": "OWNER_APPROVAL_REQUIRED",
+      "needs_owner_approval": true,
+      "rationale": "every band is a pair of owner decisions \u2014 at what loss, and what to restrict. An empty ladder means the book never de-risks on drawdown, which is also a decision"
+    },
+    {
+      "name": "missing_volatility_policy",
+      "unit": "enum",
+      "meaning": "what an unknown volatility or absent covariance permits",
+      "engine_default": "REJECT_INCREASE",
+      "constraint": "HARD",
+      "interacts_with": [
+        "max_portfolio_volatility"
+      ],
+      "authority": "derived \u2014 the repository's 'missing is not zero' rule, and REJECT_INCREASE is the conservative member",
+      "candidate": "REJECT_INCREASE",
+      "needs_owner_approval": false,
+      "rationale": "an unknown risk metric must not permit a larger position; the permissive alternative treats absent evidence as safe"
+    },
+    {
+      "name": "missing_liquidity_policy",
+      "unit": "enum",
+      "meaning": "what an unknown ADV permits",
+      "engine_default": "REJECT_INCREASE",
+      "constraint": "HARD",
+      "interacts_with": [
+        "max_position_adv_fraction",
+        "max_trade_adv_fraction"
+      ],
+      "authority": "derived \u2014 as above",
+      "candidate": "REJECT_INCREASE",
+      "needs_owner_approval": false,
+      "rationale": "as above"
+    },
+    {
+      "name": "max_risk_metric_age_seconds",
+      "unit": "seconds or None",
+      "meaning": "how stale a risk metric may be",
+      "engine_default": "None (no bound)",
+      "constraint": "HARD",
+      "interacts_with": [
+        "missing_volatility_policy",
+        "missing_liquidity_policy",
+        "missing_correlation_policy"
+      ],
+      "authority": "OWNER_APPROVAL_REQUIRED",
+      "candidate": "OWNER_APPROVAL_REQUIRED",
+      "needs_owner_approval": true,
+      "rationale": "a freshness bound, and the operational freshness policies elsewhere are per-input rather than a single risk-metric age; no existing value transfers"
+    },
+    {
+      "name": "correlation_threshold",
+      "unit": "signed correlation or None",
+      "meaning": "the correlation at or above which a pair is concentrated",
+      "engine_default": "None (no pair control)",
+      "constraint": "SOFT",
+      "interacts_with": [
+        "max_correlated_pair_exposure",
+        "missing_correlation_policy"
+      ],
+      "authority": "OWNER_APPROVAL_REQUIRED",
+      "candidate": "OWNER_APPROVAL_REQUIRED",
+      "needs_owner_approval": true,
+      "rationale": "PROJECT_STATE records production correlation thresholds as NOT AUTHORIZED, and this runtime supplies no covariance source"
+    },
+    {
+      "name": "max_correlated_pair_exposure",
+      "unit": "fraction of NAV or None",
+      "meaning": "the greatest combined weight a concentrated pair may hold",
+      "engine_default": "None (no cap)",
+      "constraint": "SOFT",
+      "interacts_with": [
+        "correlation_threshold"
+      ],
+      "authority": "OWNER_APPROVAL_REQUIRED",
+      "candidate": "OWNER_APPROVAL_REQUIRED",
+      "needs_owner_approval": true,
+      "rationale": "meaningless without a threshold, and equally unauthorised"
+    },
+    {
+      "name": "missing_correlation_policy",
+      "unit": "enum",
+      "meaning": "what an undefined correlation permits",
+      "engine_default": "REJECT_INCREASE",
+      "constraint": "HARD",
+      "interacts_with": [
+        "correlation_threshold"
+      ],
+      "authority": "derived \u2014 as the other missing-metric policies",
+      "candidate": "REJECT_INCREASE",
+      "needs_owner_approval": false,
+      "rationale": "as above"
+    },
+    {
+      "name": "production_authorized",
+      "unit": "boolean",
+      "meaning": "whether these limits have been established as correct",
+      "engine_default": "False",
+      "constraint": "DECLARATION",
+      "interacts_with": [],
+      "authority": "derived \u2014 False, because the fields above are unresolved",
+      "candidate": false,
+      "needs_owner_approval": false,
+      "rationale": "the flag is evidence carried into every risk report, not a gate. Setting it True while any limit is unresolved would put a false declaration into the record"
+    }
+  ],
+  "policy_fingerprint": "4043156fc8cbb7aef42b0a490291452e47acd3d50e30128a19cab8981382f4b2",
+  "limitations": [
+    "NOT_AUTHORIZED: this is a candidate. Every field named in owner_approval_required is unresolved and no value for it appears anywhere in this repository.",
+    "EXTERNAL_PAPER only. No live authority is expressed or implied.",
+    "The engine's own defaults are not authority: they come from EXAMPLE_POLICY_V1, which declares production_authorized=False.",
+    "No limit here was chosen by measuring returns. Fitting a risk limit to historical performance is the failure this programme exists to avoid."
+  ]
+}

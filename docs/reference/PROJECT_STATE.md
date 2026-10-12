@@ -36,8 +36,69 @@ appears without the run or the test that produced it.
 
 ## Current phase
 
-**P2.3.1D — audited submission wired into `run-due` — is the current
-checkpoint**, on `feat/p2-execution-engine`. No soak is armed and no V3 exists.
+**P2.3.1E — paper deployment authority artefacts — is the current checkpoint**,
+on `feat/p2-execution-engine`. No soak is armed and no V3 exists. Real
+operations remain not armed and `KILLED / CONTROL_STATE_UNVERIFIABLE`.
+
+The two inputs P2.3.1D exposed are now separated along the line that matters,
+because they are not the same kind of thing:
+
+| Artefact | Kind | Status |
+| --- | --- | --- |
+| `ALPACA_PAPER_INSTRUMENT_MAPPING_V1` | **evidence** — every field read from the internal identity record or the venue | **complete**, `4ae99e6120446bb1…`, verified against real Alpaca PAPER |
+| `PAPER_PORTFOLIO_RISK_POLICY_V1_CANDIDATE` | **judgment** — states how much of a loss is acceptable | **candidate only**, `4043156fc8cbb7ae…`, 13 fields need owner approval |
+
+**The mapping is complete and verified.** One read-only `GET /v2/assets`
+(14,399 assets) against the real paper account, 0 POST, 0 DELETE. Of 1,896
+eligible identities — the `COMPOUNDER_V1_2` `SCORED`+`CURRENT` cross-section at
+`2026-08-26`, the prospective strategy universe rather than today's top decile —
+**1,880 are routable (99.16%)**: 15 `UNMAPPED` (the venue returned no asset) and
+1 `NOT_TRADABLE`. 1,821 are fractionable and 59 are whole-share-only.
+
+Identity is the durable `("COMPANY", companies.id)`; a ticker is routing
+metadata and never identity. Two identities claiming one symbol are both marked
+`AMBIGUOUS` and neither is routable — a ticker-keyed mapping would merge their
+positions. Fractionability comes from provider metadata only, and an unstated
+capability is `FRACTIONABILITY_UNKNOWN` and not routable, never silently true.
+
+**The risk policy cannot be completed here, and the approval surface is now
+finite and named.** The repository contains no `production_authorized=True`
+anywhere, and `EXAMPLE_POLICY_V1`'s own docstring reserves promotion for "a
+dedicated risk-policy phase with its own evidence". Of the engine's 23 fields,
+10 are derivable from existing frozen decisions and **13 require owner
+judgment**:
+
+`construction_mode` · `max_position_weight` · `max_positions` ·
+`min_cash_weight` · `max_trade_notional_weight` · `min_position_weight` ·
+`max_portfolio_volatility` · `max_position_adv_fraction` ·
+`max_trade_adv_fraction` · `drawdown_bands` · `max_risk_metric_age_seconds` ·
+`correlation_threshold` · `max_correlated_pair_exposure`
+
+No numeric limit carries an invented value, and none was chosen by measuring
+returns. `RiskPolicyCandidate.authorised_policy` refuses partial approval rather
+than filling the gap from the engine's defaults, because those defaults are the
+example's.
+
+**The rebind question is answered mechanically, and the answer is narrower than
+P2.3.1D assumed.** `PAPER_OPERATIONS_RUNTIME_BINDING_V1` binds *nothing* about a
+risk policy, a symbol mapping, instrument capabilities or fractionability — so
+authoring either artefact needs no rebind at all. The accounting and execution
+generations are `f"alphatrader-paper-{runtime_id}"` and are
+**capability-independent**. The single blocking field is
+`account_binding_fingerprint`, because `ExternalBrokerAccountBinding` digests its
+`capabilities` and the environment proof compares the adapter's binding against
+the recorded value.
+
+So instrument capability is runtime-binding metadata, **not accounting
+semantics**, and the contracts do not conflate them. What forces an operator
+action is that `RuntimeBindingStore.write` refuses to repoint a bound root
+(`RUNTIME_ALREADY_BOUND`) and `bootstrap_paper_book` refuses a root that already
+holds a book (`BOOTSTRAP_ALREADY_DONE`) — a refusal about the *binding*, not the
+ledger. `PAPER_OPERATIONS_RUNTIME_REBIND_PLAN_V1` (`375df0b1fb10cd7f…`) records
+`REBIND_REQUIRES_NEW_GENERATIONS` with that reasoning, and performs nothing.
+
+**P2.3.1D — audited submission wired into `run-due` — remains in force.** No
+soak is armed and no V3 exists.
 
 **There is now one production route from a scheduled slot to an audited paper
 order**, and `compose_operations` in `paper_runtime/composition.py` is it. The
@@ -442,6 +503,12 @@ frozen at the same commit; P2 branched from it.
 | P2.3.1D declared equity fee | `Decimal(0)`, declared in the composition root, never defaulted |
 | P2.3.1D real control state | unchanged: not armed, `KILLED / CONTROL_STATE_UNVERIFIABLE` |
 | P2.3.1D remaining blocker | the runtime binding pins whole-shares-only; fractional execution needs a re-bootstrap |
+| P2.3.1E instrument mapping | `ALPACA_PAPER_INSTRUMENT_MAPPING_V1`, `4ae99e6120446bb1…` — 1,880/1,896 routable |
+| P2.3.1E risk policy | `PAPER_PORTFOLIO_RISK_POLICY_V1_CANDIDATE`, `4043156fc8cbb7ae…` — **NOT AUTHORIZED** |
+| P2.3.1E approval surface | **13 of 23** risk fields require owner judgment; 10 derivable |
+| P2.3.1E rebind plan | `PAPER_OPERATIONS_RUNTIME_REBIND_PLAN_V1`, `375df0b1fb10cd7f…` — not executed |
+| P2.3.1E rebind outcome | `REBIND_REQUIRES_NEW_GENERATIONS` — `account_binding_fingerprint` only |
+| P2.3.1E generations | capability-**independent**: `f"alphatrader-paper-{runtime_id}"` |
 | H2 broker-paper orders | **NOT AUTHORISED** — its own frozen ladder says so |
 | Live trading | **NOT IMPLEMENTED, NOT AUTHORIZED** |
 | Production risk thresholds | **NOT AUTHORIZED** |
@@ -449,6 +516,26 @@ frozen at the same commit; P2 branched from it.
 | Production correlation thresholds | **NOT AUTHORIZED** |
 | Broker authority | **PAPER READ/SUBMIT, CERTIFIED — NO LIVE AUTHORITY** |
 | Live trading | **NOT AUTHORIZED** |
+
+**Deployment evidence and deployment judgment are different artefacts
+(P2.3.1E).** An instrument mapping is read from the internal identity record and
+the venue's own metadata, so it can be built and fingerprinted without anyone's
+approval. A risk policy states how much of a loss is acceptable, so it cannot be
+built at all without an owner. Keeping them in one artefact is how a composition
+root that needs *a* policy comes to accept any policy.
+
+**A ticker is routing metadata and never identity (P2.3.1E).** The durable
+identity is `("COMPANY", companies.id)`. Two identities claiming one symbol are
+both refused rather than merged, an unmapped identity has no venue symbol at all,
+and there is no fallback to the internal symbol — routing on a symbol the venue
+did not confirm is how an order reaches the wrong instrument.
+
+**An unstated venue capability is not a permitted one (P2.3.1E).**
+Fractionability comes from provider metadata only. A missing value is
+`FRACTIONABILITY_UNKNOWN` and not routable; it is never inferred from the fact
+that the strategy produces fractional quantities. A whole-share-only instrument
+*is* routable, and a fractional order for it is refused later by the certified
+adapter — the mapping layer never reshapes a quantity.
 
 **There is one production route to an external mutation (P2.3.1D).**
 `compose_operations` is the only place that builds a submission authority, and
@@ -4050,7 +4137,31 @@ care — nothing has a foreign key *to* it, so dropping it cascades to nothing.
 
 ## Known limitations
 
-**Fractional execution needs the runtime binding re-bootstrapped (P2.3.1D).**
+**No authorised risk policy exists (P2.3.1E).** The candidate at
+`docs/reference/deployment/paper-risk-policy-candidate.json` names 13 fields
+that require owner judgment and carries no invented value for any of them.
+Nothing in the repository declares `production_authorized=True`, and
+`compose_operations` refuses rather than falling back to `EXAMPLE_POLICY_V1`.
+
+**16 of 1,896 eligible identities are not routable (P2.3.1E).** 15 `UNMAPPED`
+and 1 `NOT_TRADABLE`, listed in
+`docs/reference/deployment/alpaca-paper-instrument-mapping.json`. Coverage is
+99.16% and is reported as such; a selected identity outside the mapping has no
+venue symbol and is refused.
+
+**A mapping is evidence at an instant, not a timeless fact (P2.3.1E).** The
+artefact records `evidence_at` and the provider payload's digest. An instrument
+reclassified, delisted or renamed afterwards makes the fingerprint stale, and
+the correct response is a new mapping fingerprint — never a silent edit of the
+bound one. If that happens inside a qualifying soak, the protocol is reviewed
+rather than the artefact rewritten.
+
+**Fractional execution needs the runtime binding re-bootstrapped (P2.3.1D,
+narrowed by P2.3.1E).** P2.3.1E established mechanically that neither the risk
+policy nor the symbol mapping is bound by
+`PAPER_OPERATIONS_RUNTIME_BINDING_V1`, and that the accounting and execution
+generations are capability-independent. The single blocking field is
+`account_binding_fingerprint`. The original note follows.
 The strategy sizes by weight, so its quantities are fractional; the execution
 planner preserves them deliberately; the adapter refuses to reshape one; and the
 real runtime's recorded `account_binding_fingerprint` `a894a8da…` was produced
@@ -5972,6 +6083,29 @@ requests for the 762-company cohort from **762 to 353**.
 ---
 
 ## Regression requirements
+
+**P2.3.1E adds `tests/integration/test_p2_3_1e_deployment_authority.py`** — 43
+cases. `test_every_risk_policy_field_is_inventoried` compares the inventory
+against `dataclasses.fields(RiskPolicy)` so a field cannot be left out of the
+approval surface by being forgotten; `test_no_numeric_limit_is_invented` asserts
+every concentration, liquidity, volatility and drawdown field carries
+`OWNER_APPROVAL_REQUIRED` rather than a plausible number; and
+`test_a_proposed_value_for_an_owner_field_is_never_used_unsupplied` proves a
+structural proposal cannot be consumed without the owner supplying it.
+
+On the mapping side it pins: two identities sharing a symbol both refused;
+an ambiguous identity having no venue symbol at all; fractionability taken from
+the provider and `None` never read as true; inactive and untradable assets not
+routable; a symbol the venue answered differently refused; coverage never
+overstated; a whole-share asset routable but never reshaped; and the fingerprint
+moving when the symbol, provider asset id, tradable, fractionable or status
+changes while being independent of input order.
+
+The rebind analysis is tested mechanically rather than asserted:
+`test_the_runtime_binding_binds_neither_artefact`,
+`test_the_generations_are_capability_independent` (which reads the generation
+formula out of `bootstrap.py`) and
+`test_the_capability_lives_inside_the_recorded_account_fingerprint`.
 
 **P2.3.1D adds `tests/integration/test_p2_3_1d_run_due_submission.py`** — 38
 cases, all driving `compose_operations`, the factory `run-due` calls. The
