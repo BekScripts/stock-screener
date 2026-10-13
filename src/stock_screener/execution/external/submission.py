@@ -571,7 +571,24 @@ def submit_order(
     binding.capabilities.require_order_type(str(order.order_type))
     binding.capabilities.require_time_in_force(str(order.time_in_force))
     binding.capabilities.require_quantity(send_quantity)
-    symbol = mapping.symbol_for(order.identity)
+    entry = mapping.entry_for(order.identity)
+    # Defence in depth. `require_quantity` above is an account-wide permission,
+    # and a deployment restricted to fractionable instruments legitimately holds
+    # it. That makes it exactly the wrong thing to rely on alone: it says the
+    # account may send fractions, not that *this* instrument can take one. So
+    # the instrument's own declared capability is checked too, and a fractional
+    # quantity for a whole-share-only entry is refused here even when every
+    # aggregate claim above it says yes.
+    if send_quantity != send_quantity.to_integral_value() and not entry.fractionable:
+        raise ExecutionError(
+            Code.BROKER_CAPABILITY_UNSUPPORTED,
+            f"{order.order_id}: {entry.symbol} is declared whole-share-only and the "
+            f"order asks for {send_quantity}. The account-wide capability is not "
+            "accepted as permission for one instrument, and the quantity is never "
+            "rounded to fit: a rounded order is a different order from the one the "
+            "risk engine authorised",
+        )
+    symbol = entry.symbol
     client_order_id = client_order_id_for(
         order.order_id, limit=binding.capabilities.client_order_id_limit
     )

@@ -83,6 +83,13 @@ class RuntimeSubmissionAuthority:
             fills presented to accounting. None of those facts were durable
             before, which is why no soak gate could read them.
         clock: The operational clock, for the journal.
+        deployment_universe: The frozen universe this deployment may reach, for
+            a binding that declares one. Every positive intent's identity is
+            checked against it before any order is planned.
+        deployment_capability: The frozen deployment-scoped capability proof.
+            Checked as an aggregate here; the adapter's per-instrument check
+            stays in force underneath, so a tampered proof cannot push a
+            fractional quantity at a whole-share-only instrument.
         fee_schedule: The fee to declare for an execution the venue priced
             without one. `None` declares nothing, and such a fill is then
             refused with `BROKER_FILL_FEE_UNKNOWN` rather than admitted at
@@ -102,8 +109,48 @@ class RuntimeSubmissionAuthority:
     journal: Any = None
     clock: Any = None
     fee_schedule: Decimal | None = None
+    deployment_universe: Any = None
+    deployment_capability: Any = None
     transformation: RiskTransformation | None = field(default=None, init=False)
     submitted: int = field(default=0, init=False)
+
+    def _require_deployable(self, intents: Any) -> None:
+        """Refuse any positive intent for an identity outside the deployment.
+
+        Checked on the identity, never on the symbol: a ticker is reassigned
+        when a company delists and another takes it, so matching on one could
+        admit the successor. Exits are exempt by construction — an intent at
+        weight zero asks to stop holding something, and refusing to stop
+        holding a name because it has since left the universe would strand it.
+
+        Args:
+            intents: The intents re-derived from the frozen decision.
+
+        Raises:
+            RuntimeBindingError: `RUNTIME_IDENTITY_NOT_IN_DEPLOYMENT_UNIVERSE`
+                naming the identities, or
+                `RUNTIME_DEPLOYMENT_CAPABILITY_UNPROVEN` if the bound capability
+                proof does not hold.
+        """
+        if self.deployment_capability is not None:
+            self.deployment_capability.require_supported()
+        if self.deployment_universe is None:
+            return
+        outside = [
+            row.identity.label
+            for row in intents
+            if float(row.requested_weight or 0.0) > 0.0
+            and not self.deployment_universe.contains(row.identity)
+        ]
+        if outside:
+            raise RuntimeBindingError(
+                Code.RUNTIME_IDENTITY_NOT_IN_DEPLOYMENT_UNIVERSE,
+                f"{len(outside)} positive intent(s) name identities outside this "
+                f"runtime's bound deployment universe: {outside[:5]}. Nothing is "
+                "routed by ticker and no substitute is chosen: an order this "
+                "deployment is not authorised to place is refused, and a "
+                "decision that produced one did not come from the bound strategy",
+            )
 
     def __call__(
         self,
@@ -137,7 +184,8 @@ class RuntimeSubmissionAuthority:
                 and the submission. Each refuses before any order is sent.
         """
         from stock_screener.portfolio_risk import evaluate
-        from stock_screener.strategies import CompounderMonthlyStrategy
+
+        from .resolver import resolve_strategy
 
         if self.risk_policy is None:
             raise RuntimeBindingError(
@@ -150,7 +198,17 @@ class RuntimeSubmissionAuthority:
         # The intents come from the record. The strategy is asked only to
         # re-derive its own contract from the frozen decision — not to rank
         # anything, which is why no bundle and no score source appear here.
-        intents = list(CompounderMonthlyStrategy().intents(decision))
+        # Its implementation comes from the version the *decision* names, so a
+        # V2 decision re-derives through V2: resolving it from a hardcoded class
+        # would silently rebuild a V2 decision's intents under V1's contract.
+        strategy = resolve_strategy(
+            strategy_id=decision.strategy_id,
+            strategy_version=decision.strategy_version,
+            strategy_fingerprint=decision.strategy_fingerprint,
+            universe=self.deployment_universe,
+        )
+        intents = list(strategy.intents(decision))
+        self._require_deployable(intents)
 
         portfolio, ledger, state = self._open_book(binding)
         snapshot = self._portfolio_snapshot(state, now=now)

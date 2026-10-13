@@ -56,6 +56,25 @@ MID_MONTH = "2026-11-03"
 SCORE_COMPUTED_AT = "2026-10-30T07:40:00+00:00"
 
 ACCOUNT = "a894a8dad3b7b87f" * 4
+
+
+def _bound_strategy(binding: Any) -> Any:
+    """The strategy production's resolver builds for this binding.
+
+    Tests construct the planner directly, so they supply what the composition
+    root would. Resolved rather than hardcoded on purpose: if the resolver and
+    the binding ever disagreed, these tests would stop building rather than
+    quietly exercise a strategy the binding does not name.
+    """
+    from stock_screener.paper_runtime.resolver import resolve_strategy
+
+    return resolve_strategy(
+        strategy_id=binding.strategy_id,
+        strategy_version=binding.strategy_version,
+        strategy_fingerprint=binding.strategy_fingerprint,
+    )
+
+
 GRANT = "b" * 64
 
 
@@ -467,7 +486,11 @@ def test_a_mid_month_observation_submits_nothing_and_implies_no_exit(
         if slot.purpose is RunPurpose.SESSION_OBSERVATION
     )
     planner = RuntimePlanner(
-        root=runtime["root"], binding=runtime["binding"], slot=slot, calendar=calendar
+        root=runtime["root"],
+        binding=runtime["binding"],
+        slot=slot,
+        calendar=calendar,
+        strategy=_bound_strategy(runtime["binding"]),
     )
 
     planned = planner(run_id="opsrun-x", mode=None, gate=None, account=ACCOUNT)
@@ -491,6 +514,7 @@ def decision_planner(runtime: Any, calendar: ExecutionCalendar, schedule: Any) -
         if slot.purpose is RunPurpose.STRATEGY_DECISION
     )
     return RuntimePlanner(
+        strategy=_bound_strategy(runtime["binding"]),
         root=runtime["root"],
         binding=runtime["binding"],
         slot=slot,
@@ -554,7 +578,11 @@ def test_a_decision_run_without_a_cross_section_is_refused(
         if slot.purpose is RunPurpose.STRATEGY_DECISION
     )
     planner = RuntimePlanner(
-        root=runtime["root"], binding=runtime["binding"], slot=slot, calendar=calendar
+        root=runtime["root"],
+        binding=runtime["binding"],
+        slot=slot,
+        calendar=calendar,
+        strategy=_bound_strategy(runtime["binding"]),
     )
 
     with pytest.raises(RuntimeBindingError, match="SCORE_SNAPSHOT_UNAVAILABLE"):
@@ -595,6 +623,7 @@ def test_a_stale_cross_section_blocks_the_decision(
         slot=slot,
         calendar=calendar,
         bundle_for=lambda _session: late,
+        strategy=_bound_strategy(runtime["binding"]),
     )
 
     from stock_screener.strategies import StrategyError

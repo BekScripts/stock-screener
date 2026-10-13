@@ -36,10 +36,89 @@ appears without the run or the test that produced it.
 
 ## Current phase
 
-**P2.3.1G — aligned paper risk contract and fractionable strategy universe — is
-the current checkpoint**, on `feat/p2-execution-engine`. No soak is armed, no V3
-exists, the real runtime has **not** been rebound or revised, and real operations
-remain not armed and `KILLED / CONTROL_STATE_UNVERIFIABLE`.
+**P2.3.1I — binding-driven paper deployment resolution — is the current
+checkpoint**, on `feat/p2-execution-engine`. No soak is armed, no V3 *soak*
+exists, the real runtime is **still bound to V1** and has not been rebound or
+revised, and real operations remain not armed and
+`KILLED / CONTROL_STATE_UNVERIFIABLE`.
+
+**P2.3.1H attempted the real V1 → V2 transition and stopped before mutating
+anything.** Every precondition was clean — `RECONCILED`, both ledgers verified,
+paper proof true, 0 incidents, no pending decision, 3 GET / 0 POST / 0 DELETE —
+and the reviewed mechanism turned out not to be executable. Four gaps, three of
+them needing source changes, so the phase returned C and wrote no runtime state.
+P2.3.1I closes them.
+
+**The runtime binding now decides which strategy production constructs.**
+`PAPER_RUNTIME_STRATEGY_RESOLVER_V1` is the one registry, and the eleven
+hardcoded `CompounderMonthlyStrategy()` sites are gone from every path that
+honours a binding. Two remain and are documented as deliberate: `strategy
+show-policy`, which inspects the frozen V1 authority and reads no binding, and
+`bootstrap-runtime`, which *creates* the first binding and opens a runtime at V1
+exactly as every existing root was opened. The resolver refuses an unknown id or
+version, refuses a fingerprint the installed code does not produce, and refuses
+to build V2 without its exact universe — there is no latest strategy, no nearest
+match and no fallback to V1.
+
+A planner no longer constructs a strategy at all. `RuntimePlanner.strategy` is
+injected by the composition root and `None` is a refusal, because a planner that
+defaulted would silently be running a policy the binding never named.
+
+**`PAPER_OPERATIONS_RUNTIME_BINDING_V3`** is additive beside V1 and V2, which
+keep their exact semantics — V2 stays in the codebase as the
+reviewed-but-insufficient contract P2.3.1H measured, and is not put into the real
+chain to reach V3. V3 subclasses V2, so every lineage and chain semantic is the
+same code, and adds four required fields: `risk_engine_version`,
+`deployment_universe_version`, `deployment_universe_fingerprint` and
+`deployment_capability_fingerprint`. A blank one is refused at construction, so
+the V2 gap cannot reappear as a V3 binding that names no universe.
+
+**`PAPER_DEPLOYMENT_EXECUTION_CAPABILITY_V1` resolves the capability
+contradiction by naming its scope instead of widening a claim.** What it asserts
+is *every identity this frozen deployment is authorized to submit satisfies the
+required execution capability* — and never that the provider or the account
+supports fractions everywhere. Both statements now coexist and disagree, which is
+the correct answer:
+
+| Claim | Value | About |
+| --- | --- | --- |
+| `account_capability.fractional_quantities` | **false** | the whole account; 59 of 1,880 routable instruments need whole shares |
+| deployment capability `supported` | **true** | the 1,821 identities this deployment may reach |
+
+It is derived from the full frozen mapping and the frozen universe, with no
+network and no argument a caller could use to assert it — the signature takes
+the two artefacts and the name of the requirement, nothing else. It is
+**universal, not majority**: one member missing from the mapping, not routable,
+not tradable, or whose fractionability the venue did not state makes it unproven.
+`FRACTIONABILITY_UNKNOWN` is counted apart from whole-share-only, because an
+unstated capability is not a stated absence of one.
+
+**An aggregate is not a licence.** P2.3.1I found that the operational submission
+path had *no* per-instrument fractionability check — only the certified canary
+had one, read from its live asset evidence. `submit_order` now checks the
+instrument's own declared capability as well, so a fractional quantity for a
+whole-share-only entry is refused even when every aggregate claim above it says
+yes, and the quantity is never rounded to fit. The canary also now records what
+its asset read established onto the mapping entry, so its guard and the
+submission guard read one source rather than two.
+
+**Four operator artefacts, each verified against the binding.** V3 requires
+`risk_policy.json`, `symbol_mapping.json`, `deployment_universe.json` and
+`deployment_capability.json`; V1 and V2 require only the first two, so a
+historical root is never told it is missing a V3 artefact. Each pinned artefact
+is refused unless it digests to the fingerprint the active binding names —
+missing, tampered, wrong version and wrong fingerprint all fail closed, and
+nothing falls back to a repository example, a built-in default or a provider
+lookup. The deployment universe is **never rebuilt from the venue**: it is frozen
+deployment authority, and a changed provider fact requires a new artefact and a
+reviewed transition.
+
+`revise_deployment` is the lineage-preserving V1 → V3 transition. It refuses
+without confirmation, refuses an unproven capability, refuses a crossed
+mapping/universe pair, refuses a changed strategy identity, and refuses while a
+decision awaits execution or a plan is half-executed or remote state is unknown.
+It writes no `OpeningBalanceEvent` and leaves the execution journal
+byte-identical. **It has not been run against the real runtime.**
 
 **The owner's `NO CAP` is now expressible, additively.**
 `PORTFOLIO_RISK_ENGINE_V1_3` extends `max_positions` to `int | None`: an integer
@@ -121,7 +200,7 @@ decision awaits execution** — revising underneath a pending decision would lea
 a decision in the store the bound strategy did not make and cannot be re-derived
 from. It has **not** been executed against the real runtime.
 
-**P2.3.1F remains in force below**, unchanged.
+**P2.3.1G and P2.3.1F remain in force below**, unchanged.
 
 **The paper risk policy is authorised.** `PAPER_PORTFOLIO_RISK_POLICY_V1`
 (`6804fbb289cf7fb9…`) carries the owner's approved limits for `EXTERNAL_PAPER`
@@ -666,6 +745,19 @@ frozen at the same commit; P2 branched from it.
 | P2.3.1G transition | `PAPER_OPERATIONS_STRATEGY_REVISION_V1` — 3 exempt fields, `strategy_id` not among them |
 | P2.3.1G real revision | **not executed** — the owner has not authorised the state transition |
 | P2.3.1G external calls | 1 read-only `GET /v2/assets`; 0 POST, 0 DELETE, 0 PAPER mutations |
+| P2.3.1H verdict | **C — reviewed revision not executable**; 0 real runtime state written |
+| P2.3.1H preflight | `RECONCILED`, both ledgers verified, 0 incidents, no pending decision |
+| P2.3.1H external calls | 3 read-only GET; 0 POST, 0 DELETE |
+| P2.3.1I resolver | `PAPER_RUNTIME_STRATEGY_RESOLVER_V1` — V1 and V2 registered; unknown fails closed |
+| P2.3.1I hardcoded V1 | **0** on any binding-driven path; 2 documented non-binding sites remain |
+| P2.3.1I binding | `PAPER_OPERATIONS_RUNTIME_BINDING_V3` — additive; binds universe + capability |
+| P2.3.1I capability | `PAPER_DEPLOYMENT_EXECUTION_CAPABILITY_V1` — deployment-scoped, never account-wide |
+| P2.3.1I account claim | still **false** — 59 whole-share-only instruments preserved in the full mapping |
+| P2.3.1I per-instrument check | **added** to `submit_order`; the operational path previously had none |
+| P2.3.1I operator artefacts | 4 for V3, each fingerprint-verified against the active binding |
+| P2.3.1I transition | `revise_deployment` — V1 → V3 direct; **not executed against the real runtime** |
+| P2.3.1I real runtime | still `PAPER_OPERATIONS_RUNTIME_BINDING_V1`, 0 operator files, 0 supersessions |
+| P2.3.1I external calls | **0** — every run used a scripted or absent transport |
 | H2 broker-paper orders | **NOT AUTHORISED** — its own frozen ladder says so |
 | Live trading | **NOT IMPLEMENTED, NOT AUTHORIZED** |
 | Production risk thresholds | **NOT AUTHORIZED** |
@@ -703,6 +795,33 @@ permit a fractional order for one that cannot take it.
 owner-approved limit is therefore stated explicitly, and a field the engine
 cannot express is refused rather than left to inherit.
 
+**The binding names the strategy; production never picks one (P2.3.1I).** A
+runtime that constructed an implementation and then asked the binding whether it
+agreed has one safe outcome — refusal, and an unusable runtime — and one unsafe
+one, V1 deciding under V2's label. Resolution runs the other way, through one
+registry, and an unknown id, version or fingerprint fails closed. There is no
+latest strategy and no fallback.
+
+**A capability claim is scoped, never widened (P2.3.1I).** The deployment
+supports fractional quantities and the account does not; both are true, because
+they are statements about different sets. Making the account-wide flag true to
+express the deployment's property would have bought a true sentence with a false
+one, and would have deleted the reason the 59 whole-share-only instruments are
+recorded at all. A capability proof is universal over its universe — one
+unverified member makes it unproven — and carries its own scope sentence, so a
+serialised proof cannot be mistaken for an account-wide claim.
+
+**An aggregate capability is not a per-order licence (P2.3.1I).** The operational
+submission path had no per-instrument fractionability check; only the canary did,
+and it read a different source. Both checks now exist and read the instrument's
+declared capability, so a tampered aggregate cannot push a fraction at a
+whole-share-only instrument, and no path rounds a quantity to make it fit.
+
+**A frozen deployment artefact is never rebuilt at run time (P2.3.1I).** The
+universe is authority, not a cache: re-deriving it from the venue would make a
+deployment's reach depend on when it ran. A changed provider fact requires a new
+artefact and a reviewed binding transition.
+
 **A new engine capability never relabels an old decision (P2.3.1G).** V1.3 is
 selected only by the capability that is new to it — a policy carrying an integer
 `max_positions` keeps the version it had, correlation control included — and the
@@ -726,6 +845,13 @@ never a research reason.
 **A target count is computed after every restriction, never before (P2.3.1G).**
 Taking the decile first and trimming afterwards makes the position count depend
 on how many unholdable names happened to rank above the line.
+
+**A field added to a persisted decision must round-trip too (P2.3.1I).** The
+`deployment_universe_fingerprint` was written into a decision's body and never
+read back, so every deployment-restricted decision recomputed to a different
+digest and was rejected as `DECISION_TAMPERED` — which is to say no V2 decision
+could ever have been executed. Tenth instance of the family. The guard is a test
+that decides, reloads and executes through the production path.
 
 **A field added to a chained record must round-trip (P2.3.1G).** The binding
 `transition` field was added to the write path and not the read path, so a

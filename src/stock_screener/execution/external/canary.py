@@ -627,6 +627,31 @@ class ExternalPaperCanary:
             cash_tolerance=self.CASH_TOLERANCE,
         )
 
+    def _declare_fractionable(self, symbol: str) -> None:
+        """Record on the mapping that the venue reports this symbol fractionable.
+
+        The canary already establishes the fact from its own asset read and
+        widens the binding's capability with it. The mapping entry has to carry
+        it too: the submission path checks the instrument's declared capability
+        per order, and leaving the entry at its whole-shares-only default would
+        make that check contradict the asset read the canary just performed.
+        One source of truth — the venue's own answer about this asset.
+
+        Args:
+            symbol: The venue symbol just read.
+        """
+        from .symbols import SymbolMapping
+
+        entry = self.run.mapping.entry_for(self.identity)
+        if entry.fractionable:
+            return
+        self.run.mapping = SymbolMapping.of(
+            [
+                replace(row, fractionable=True) if row.key == entry.key else row
+                for row in self.run.mapping.entries
+            ]
+        )
+
     def execute(
         self, *, quantity: Decimal, now: str, sleep: Any = time.sleep
     ) -> ExternalPaperCanaryReport:
@@ -655,6 +680,7 @@ class ExternalPaperCanary:
                 "the canary preconditions are not met, so nothing was submitted: "
                 + "; ".join(readiness.canary_blockers),
             )
+
         self.venue.require(ExecutionVenue.EXTERNAL_PAPER, context="running the paper canary")
 
         symbol = self.run.mapping.symbol_for(self.identity)
@@ -679,6 +705,7 @@ class ExternalPaperCanary:
                 self.run.binding,
                 capabilities=replace(self.run.binding.capabilities, fractional_quantities=True),
             )
+            self._declare_fractionable(symbol)
             self.adapter = AlpacaPaperAdapter(
                 transport=self.run.transport,
                 binding=self.run.binding,
@@ -891,6 +918,7 @@ class ExternalPaperCanary:
                 self.run.binding,
                 capabilities=replace(self.run.binding.capabilities, fractional_quantities=True),
             )
+            self._declare_fractionable(symbol)
             self.adapter = AlpacaPaperAdapter(
                 transport=self.run.transport,
                 binding=self.run.binding,

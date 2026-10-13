@@ -102,6 +102,11 @@ class RuntimePlanner:
         bundle_for: Supplies the research cross-section for a decision session.
             A callable rather than a value so an observation run never pays for
             a database read it does not need.
+        strategy: The strategy implementation the **runtime binding** names,
+            resolved by the composition root. Injected rather than constructed
+            here: a planner that chose its own implementation could run a
+            policy the binding does not name, which is the defect P2.3.1H
+            measured. `None` is refused on the decision path.
         submit: Performs an authorised submission through the certified
             execution path. Injected so this module holds no broker import and
             cannot construct an order even by accident.
@@ -114,7 +119,31 @@ class RuntimePlanner:
     calendar: ExecutionCalendar
     bundle_for: Any = None
     submit: Any = None
+    strategy: Any = None
     outcome: RuntimeOrchestrationOutcome | None = field(default=None, init=False)
+
+    def _bound_strategy(self) -> Any:
+        """The strategy implementation the runtime binding names.
+
+        Returns:
+            The injected strategy.
+
+        Raises:
+            RuntimeBindingError: `RUNTIME_STRATEGY_NOT_RESOLVABLE` when none was
+                injected. It is *not* defaulted to a strategy chosen here: a
+                planner that fell back to one implementation whenever the
+                composition root forgot to supply one is exactly how a runtime
+                comes to run a policy its binding does not name.
+        """
+        if self.strategy is None:
+            raise RuntimeBindingError(
+                Code.RUNTIME_STRATEGY_NOT_RESOLVABLE,
+                "no strategy was resolved for this run. The composition root "
+                "resolves it from the runtime binding and passes it in; a "
+                "planner does not construct one of its own, because the "
+                "fallback would silently be a policy the binding never named",
+            )
+        return self.strategy
 
     def __call__(self, **kwargs: Any) -> dict[str, Any]:
         """Run this slot's purpose under the coordinator's gate.
@@ -172,7 +201,6 @@ class RuntimePlanner:
         """
         from stock_screener.paper_operations.strategy_schedule import RunPurpose
         from stock_screener.strategies import (
-            CompounderMonthlyStrategy,
             StrategyState,
             StrategyStateStore,
         )
@@ -203,7 +231,7 @@ class RuntimePlanner:
                 ),
             )
 
-        strategy = CompounderMonthlyStrategy()
+        strategy = self._bound_strategy()
         self.binding.require_strategy(
             strategy_id=strategy.strategy_id,
             strategy_version=strategy.strategy_version,
@@ -255,7 +283,6 @@ class RuntimePlanner:
         frozen selection may actually be held.
         """
         from stock_screener.paper_operations.strategy_schedule import RunPurpose
-        from stock_screener.strategies import CompounderMonthlyStrategy
 
         clock = kwargs.get("clock")
         now = clock.iso() if clock is not None else ""
@@ -276,7 +303,11 @@ class RuntimePlanner:
         # Re-verify at execution time. A persisted decision is not a standing
         # permission: the strategy build, the grant and the account are all
         # checked again, because any of them can have changed since the close.
-        strategy = CompounderMonthlyStrategy()
+        # Resolved for verification only. The decision that executes is the
+        # persisted one: nothing below re-ranks, re-selects or re-weights, and
+        # the strategy is constructed solely to prove the installed build still
+        # matches the frozen decision.
+        strategy = self._bound_strategy()
         self.binding.require_strategy(
             strategy_id=record.decision.strategy_id,
             strategy_version=record.decision.strategy_version,

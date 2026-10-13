@@ -53,14 +53,18 @@ __all__ = [
     "REBIND_CHAIN_VERSION",
     "REBIND_GENESIS",
     "RUNTIME_BINDING_V2_VERSION",
+    "RUNTIME_BINDING_V3_VERSION",
     "STRATEGY_REVISION_FIELDS",
     "STRATEGY_REVISION_VERSION",
+    "V3_DEPLOYMENT_FIELDS",
     "PaperOperationsRuntimeBindingV2",
+    "PaperOperationsRuntimeBindingV3",
     "RebindRecord",
     "RuntimeBindingHistory",
     "account_capability_from_mapping",
     "active_binding",
     "rebind_runtime",
+    "revise_deployment",
     "revise_strategy",
 ]
 
@@ -97,6 +101,24 @@ IMMUTABLE_ACROSS_REBIND: tuple[str, ...] = (
     "bootstrap_evidence_fingerprint",
 )
 
+
+#: The corrected deployment-binding contract. Additive: V1 and V2 keep their
+#: exact semantics and their fingerprints, and V2 stays in the codebase as the
+#: reviewed-but-insufficient contract P2.3.1H measured. What V2 could not do is
+#: bind a deployment universe or a deployment-scoped capability, so a runtime on
+#: V2 could claim to deploy V2's strategy while having no way to say which
+#: identities it was allowed to reach.
+RUNTIME_BINDING_V3_VERSION = "PAPER_OPERATIONS_RUNTIME_BINDING_V3"
+
+#: The fields V3 declares beyond V2, each required and each with a production
+#: consumer. Data so the coverage guard can check them rather than trusting a
+#: docstring that says they are wired.
+V3_DEPLOYMENT_FIELDS: tuple[str, ...] = (
+    "risk_engine_version",
+    "deployment_universe_version",
+    "deployment_universe_fingerprint",
+    "deployment_capability_fingerprint",
+)
 
 #: The strategy-revision transition contract. A *distinct* operation from a
 #: lineage-preserving rebind, and named so an auditor reading the chain can see
@@ -279,6 +301,77 @@ class PaperOperationsRuntimeBindingV2:
             f"accounting         : {self.inherited.get('accounting_generation')}",
             f"execution journal  : {self.inherited.get('execution_journal_generation')}",
             f"bootstrap epoch    : {self.inherited.get('bootstrap_epoch')}",
+        )
+
+
+@dataclass(frozen=True)
+class PaperOperationsRuntimeBindingV3(PaperOperationsRuntimeBindingV2):
+    """A runtime binding that also binds what the deployment may reach.
+
+    Subclasses V2 so every lineage, supersession and chain semantic is literally
+    the same code rather than a second implementation that could disagree. The
+    four added fields are the ones P2.3.1H proved missing: without them a
+    binding can name a strategy that only deploys across a frozen universe and
+    then fail to say which universe, which is a deployment authority with its
+    subject left blank.
+
+    Attributes:
+        risk_engine_version: Which engine the bound policy is authorised
+            against. Recorded rather than inferred from the policy, because the
+            engine a decision ran under is what makes it reproducible.
+        deployment_universe_version: The universe contract.
+        deployment_universe_fingerprint: The exact universe. Production loads
+            the artefact and refuses unless it digests to this.
+        deployment_capability_fingerprint: The exact deployment-scoped
+            capability proof. Scoped, never an account-wide claim — see
+            `deployment_capability`.
+    """
+
+    risk_engine_version: str = ""
+    deployment_universe_version: str = ""
+    deployment_universe_fingerprint: str = ""
+    deployment_capability_fingerprint: str = ""
+
+    def __post_init__(self) -> None:
+        """Refuse a V3 binding with a blank deployment field.
+
+        The fields carry `""` defaults for dataclass inheritance only. A blank
+        one is refused here, so the contract cannot be satisfied by omission —
+        which is how the V2 gap would otherwise reappear as a V3 binding that
+        names no universe.
+
+        Raises:
+            RuntimeBindingError: `RUNTIME_REBIND_REFUSED` naming every blank
+                field.
+        """
+        blank = [name for name in V3_DEPLOYMENT_FIELDS if not str(getattr(self, name, "")).strip()]
+        if blank:
+            raise RuntimeBindingError(
+                Code.RUNTIME_REBIND_REFUSED,
+                f"a {RUNTIME_BINDING_V3_VERSION} binding must state {blank}. A "
+                "deployment binding with a blank universe or capability is the "
+                "defect this contract exists to close, and an empty string is "
+                "not a value",
+            )
+
+    def body(self) -> dict[str, Any]:
+        """The binding's semantic content, V2's plus the deployment fields."""
+        return {
+            **super().body(),
+            "risk_engine_version": self.risk_engine_version,
+            "deployment_universe_version": self.deployment_universe_version,
+            "deployment_universe_fingerprint": self.deployment_universe_fingerprint,
+            "deployment_capability_fingerprint": self.deployment_capability_fingerprint,
+        }
+
+    def summary_lines(self) -> tuple[str, ...]:
+        """Render the binding for a terminal, with its deployment authority."""
+        return (
+            *super().summary_lines(),
+            f"risk engine               : {self.risk_engine_version}",
+            f"deployment universe       : {self.deployment_universe_version}",
+            f"universe fingerprint      : {self.deployment_universe_fingerprint[:32]}…",
+            f"capability fingerprint    : {self.deployment_capability_fingerprint[:32]}…",
         )
 
 
@@ -513,7 +606,30 @@ class RuntimeBindingHistory:
 
 
 def _binding_from_body(body: dict[str, Any]) -> PaperOperationsRuntimeBindingV2:
-    """Rebuild a V2 binding from its stored body."""
+    """Rebuild a superseding binding from its stored body.
+
+    Dispatches on the recorded version. A V3 record rebuilds as V3 with its
+    deployment fields read back by name — reading it as a V2 would drop them
+    silently and the chain hash would stop reproducing, which is the write-path
+    / read-path defect this project has now hit nine times.
+    """
+    carried: dict[str, Any] = {}
+    if str(body.get("version", "")) == RUNTIME_BINDING_V3_VERSION:
+        carried = {name: str(body[name]) for name in V3_DEPLOYMENT_FIELDS if name in body}
+        return PaperOperationsRuntimeBindingV3(
+            version=str(body["version"]),
+            predecessor_fingerprint=str(body["predecessor_fingerprint"]),
+            inherited=dict(body["inherited"]),
+            account_binding_fingerprint=str(body["account_binding_fingerprint"]),
+            risk_policy_fingerprint=str(body["risk_policy_fingerprint"]),
+            instrument_mapping_fingerprint=str(body["instrument_mapping_fingerprint"]),
+            account_capability=dict(body["account_capability"]),
+            reason=str(body.get("reason", "")),
+            code_commit=str(body.get("code_commit", "")),
+            created_at=str(body.get("created_at", "")),
+            transition=str(body.get("transition", REBIND_CHAIN_VERSION)),
+            **carried,
+        )
     return PaperOperationsRuntimeBindingV2(
         version=str(body["version"]),
         predecessor_fingerprint=str(body["predecessor_fingerprint"]),
@@ -919,3 +1035,208 @@ def _require_paper_policy(risk_policy: Any) -> None:
             f"{getattr(risk_policy, 'environment', '')!r}; this operation binds "
             "EXTERNAL_PAPER only",
         )
+
+
+def revise_deployment(
+    *,
+    root: Path,
+    strategy: Any,
+    authorization: Any,
+    risk_policy: Any,
+    mapping: Any,
+    universe: Any,
+    capability: Any,
+    account_binding_fingerprint: str,
+    reason: str,
+    now: str,
+    code_commit: str = "",
+    decisions: Any = None,
+    executions: Any = None,
+    confirmed: bool = False,
+) -> PaperOperationsRuntimeBindingV3:
+    """Supersede a runtime binding with a corrected V3 deployment authority.
+
+    The transition P2.3.1H could not perform. It revises the strategy, its
+    grant, the risk policy, the instrument-mapping binding, the deployment
+    universe and the deployment-scoped capability in one reviewed step, and it
+    binds all of them — which is precisely what V2 could not do.
+
+    It supersedes whatever is active, V1 included, and does **not** require a V2
+    binding in the chain first. V2 was reviewed and found insufficient; putting
+    one in the lineage to reach V3 would record a deployment that was never
+    operated. The reason this transition writes says so.
+
+    Not a bootstrap. No `OpeningBalanceEvent`, no cash read, and the accounting
+    generation, execution generation, operations lineage and bootstrap epoch all
+    carry across and are compared field by field afterwards.
+
+    Args:
+        root: The operations root.
+        strategy: The revised strategy. Read for its id, version and
+            fingerprint; nothing is decided here.
+        authorization: The deployment grant for this exact strategy.
+        risk_policy: The authorised paper risk policy.
+        mapping: The **full** frozen instrument mapping. Full: it stays the
+            routing evidence, including the instruments the deployment excludes.
+        universe: The frozen deployment universe.
+        capability: The deployment-scoped capability proof. Must be proven, and
+            must have been derived from exactly this mapping and universe.
+        account_binding_fingerprint: The venue binding digest. Account identity,
+            and never widened to carry the deployment's capability.
+        reason: Why, for a reviewer.
+        now: When.
+        code_commit: The build performing it.
+        decisions: A `StrategyDecisionStore`, or None to skip. A decision
+            awaiting execution refuses the transition.
+        executions: Anything exposing `remote_state_unknown()` or
+            `partially_executed()`, or None to skip.
+        confirmed: Must be True.
+
+    Returns:
+        The new active binding.
+
+    Raises:
+        RuntimeBindingError: `RUNTIME_REBIND_REFUSED` without confirmation, for
+            an unauthorised or live-claiming policy, for a grant that does not
+            cover this strategy, for a changed strategy identity, or when a
+            field outside the declared exemption moved;
+            `RUNTIME_DEPLOYMENT_CAPABILITY_UNPROVEN` for an unproven capability;
+            `RUNTIME_OPERATOR_INPUT_FINGERPRINT_MISMATCH` when the capability
+            was not derived from the mapping and universe being bound;
+            `RUNTIME_REBIND_PRECONDITION_FAILED` for in-flight authority;
+            `RUNTIME_NOT_BOUND` for a root with nothing to supersede.
+    """
+    from .binding import RuntimeBindingStore
+    from .deployment_capability import DEPLOYMENT_CAPABILITY_VERSION
+    from .universe import DEPLOYMENT_UNIVERSE_VERSION
+
+    if not confirmed:
+        raise RuntimeBindingError(
+            Code.RUNTIME_REBIND_REFUSED,
+            "a deployment revision changes which policy decides for a live set "
+            "of books and which identities it may reach, and requires explicit "
+            "confirmation. It is not implied by having the artefacts",
+        )
+    _require_paper_policy(risk_policy)
+
+    # The universe must come from the mapping being bound, and the capability
+    # from both. Checked before anything is written: a proof about other
+    # evidence is not a proof about this deployment.
+    if universe.mapping_fingerprint != mapping.fingerprint():
+        raise RuntimeBindingError(
+            Code.RUNTIME_OPERATOR_INPUT_FINGERPRINT_MISMATCH,
+            f"the deployment universe was derived from mapping "
+            f"{universe.mapping_fingerprint[:16]}… and the mapping being bound is "
+            f"{mapping.fingerprint()[:16]}…. A universe and the routing evidence "
+            "it was derived from are one artefact pair, and crossing them would "
+            "authorise identities against evidence nobody checked",
+        )
+    if (
+        capability.instrument_mapping_fingerprint != mapping.fingerprint()
+        or capability.deployment_universe_fingerprint != universe.fingerprint()
+    ):
+        raise RuntimeBindingError(
+            Code.RUNTIME_OPERATOR_INPUT_FINGERPRINT_MISMATCH,
+            "the capability proof was derived from a different mapping or "
+            "universe than the ones being bound. A capability is a statement "
+            "about one exact deployment and does not transfer to another",
+        )
+    capability.require_supported()
+
+    fingerprint = strategy.fingerprint()
+    strategy_version = str(strategy.strategy_version)
+    strategy_id = str(strategy.strategy_id)
+    authorization.require(
+        strategy_id=strategy_id,
+        strategy_version=strategy_version,
+        fingerprint=fingerprint,
+        environment="EXTERNAL_PAPER",
+    )
+
+    history = RuntimeBindingHistory(root)
+    predecessor = history.active() or RuntimeBindingStore(root).require()
+    if str(getattr(predecessor, "strategy_id", strategy_id)) != strategy_id:
+        raise RuntimeBindingError(
+            Code.RUNTIME_REBIND_REFUSED,
+            f"this runtime is bound to strategy "
+            f"{getattr(predecessor, 'strategy_id', '')!r} and the revision names "
+            f"{strategy_id!r}. A revision changes a strategy's version, never its "
+            "identity: a different strategy deciding for these books would share "
+            "an accounting lineage with decisions it never made",
+        )
+    _require_no_inflight_authority(decisions, executions)
+
+    inherited = _inherit(predecessor)
+    inherited.update(
+        {
+            "strategy_version": strategy_version,
+            "strategy_fingerprint": fingerprint,
+            "strategy_authorization_fingerprint": authorization.fingerprint(),
+        }
+    )
+    binding = PaperOperationsRuntimeBindingV3(
+        version=RUNTIME_BINDING_V3_VERSION,
+        predecessor_fingerprint=predecessor.fingerprint(),
+        inherited=inherited,
+        account_binding_fingerprint=account_binding_fingerprint,
+        risk_policy_fingerprint=risk_policy.fingerprint(),
+        instrument_mapping_fingerprint=mapping.fingerprint(),
+        # Account identity's own capability record, unchanged in meaning: it
+        # still describes the full mapping and still says fractional support is
+        # not account-wide. The deployment's capability is a separate field.
+        account_capability=account_capability_from_mapping(mapping),
+        reason=reason,
+        code_commit=code_commit,
+        created_at=now,
+        transition=STRATEGY_REVISION_VERSION,
+        risk_engine_version=str(getattr(risk_policy, "engine_version", "")),
+        deployment_universe_version=DEPLOYMENT_UNIVERSE_VERSION,
+        deployment_universe_fingerprint=universe.fingerprint(),
+        deployment_capability_fingerprint=capability.fingerprint(),
+    )
+    assert binding.account_capability["derived_from_mapping"] == mapping.fingerprint()  # noqa: S101
+    assert DEPLOYMENT_CAPABILITY_VERSION in capability.body()["version"]  # noqa: S101
+    _require_only_deployment_changed(predecessor, binding, allowed=STRATEGY_REVISION_FIELDS)
+    history.append(binding, now=now)
+    return binding
+
+
+def _require_no_inflight_authority(decisions: Any, executions: Any) -> None:
+    """Refuse a transition while any execution authority is unresolved.
+
+    Args:
+        decisions: A decision store, or None.
+        executions: An execution-state reporter, or None.
+
+    Raises:
+        RuntimeBindingError: `RUNTIME_REBIND_PRECONDITION_FAILED` for a pending
+            decision, a partially executed plan, or unknown remote state. None
+            of the three is migrated: a decision the newly bound strategy did
+            not make is neither executable under it nor explainable by it.
+    """
+    if decisions is not None:
+        pending = decisions.pending()
+        if pending is not None:
+            raise RuntimeBindingError(
+                Code.RUNTIME_REBIND_PRECONDITION_FAILED,
+                f"decision {pending.decision.decision_session} is "
+                f"{pending.status} and has not reached a terminal state. "
+                "Revising the deployment underneath it would leave a decision "
+                "the bound strategy did not make and cannot be re-derived from. "
+                "Let it execute, miss or be superseded first",
+            )
+    if executions is None:
+        return
+    for probe, label in (
+        ("remote_state_unknown", "remote state is unknown"),
+        ("partially_executed", "a plan is partially executed"),
+    ):
+        check = getattr(executions, probe, None)
+        if callable(check) and check():
+            raise RuntimeBindingError(
+                Code.RUNTIME_REBIND_PRECONDITION_FAILED,
+                f"{label}, so this runtime's execution authority is unresolved. "
+                "A deployment revision over an ambiguous execution state would "
+                "make it impossible to say afterwards which authority a fill "
+                "belonged to",
+            )

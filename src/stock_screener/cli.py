@@ -8491,6 +8491,40 @@ def _operations_root() -> Path:
     return Path(".operations")
 
 
+def _bound_strategy(root: Path, binding: Any) -> Any:
+    """The strategy implementation this runtime's binding names.
+
+    The CLI resolves nothing of its own. Every command that reports or verifies
+    a deployed runtime asks the binding, through the one production resolver, so
+    a terminal can never show a strategy the runtime would not actually run.
+
+    Args:
+        root: The operations root, for the deployment artefacts.
+        binding: The active runtime binding.
+
+    Returns:
+        The strategy.
+
+    Raises:
+        RuntimeBindingError: As the resolver and the operator-input readers do.
+            Nothing is defaulted and nothing falls back to an earlier version.
+    """
+    from stock_screener.paper_runtime.operator_inputs import read_deployment_universe
+    from stock_screener.paper_runtime.resolver import resolve_strategy
+
+    universe = None
+    if getattr(binding, "deployment_universe_fingerprint", ""):
+        universe = read_deployment_universe(
+            root, expected_fingerprint=binding.deployment_universe_fingerprint
+        )
+    return resolve_strategy(
+        strategy_id=binding.strategy_id,
+        strategy_version=binding.strategy_version,
+        strategy_fingerprint=binding.strategy_fingerprint,
+        universe=universe,
+    )
+
+
 def _paper_ops_stores() -> tuple[Any, Any, Any, Any]:
     """Open the operational stores.
 
@@ -9089,6 +9123,9 @@ def strategy_show_policy_command() -> None:
     from stock_screener.strategies import CompounderMonthlyStrategy
 
     _bootstrap()
+    # Not a runtime path: this inspects the frozen V1 strategy authority and
+    # reads no binding, so there is nothing for the resolver to resolve. Use
+    # `paper-ops runtime-status` to see what a deployed runtime actually runs.
     strategy = CompounderMonthlyStrategy()
     typer.echo("")
     for key, value in strategy.policy().items():
@@ -9349,6 +9386,10 @@ def paper_ops_bootstrap_runtime_command(
 
     now = datetime.now(UTC).isoformat()
     root = _operations_root()
+    # Bootstrap *creates* the first binding, so there is no binding to resolve
+    # from — this is the origin of the lineage and it opens a runtime at V1,
+    # exactly as every existing root was opened. Moving a runtime to a later
+    # strategy is a reviewed binding transition, never a bootstrap.
     strategy = CompounderMonthlyStrategy()
 
     typer.echo("")
@@ -9580,7 +9621,6 @@ def paper_ops_runtime_status_command() -> None:
     )
     from stock_screener.paper_runtime.strategy_schedule_view import next_slots
     from stock_screener.portfolio_accounting import PortfolioStore
-    from stock_screener.strategies import CompounderMonthlyStrategy
 
     _bootstrap()
     root = _operations_root()
@@ -9590,7 +9630,11 @@ def paper_ops_runtime_status_command() -> None:
         typer.echo(f"{exc}")
         raise typer.Exit(code=1) from exc
 
-    strategy = CompounderMonthlyStrategy()
+    try:
+        strategy = _bound_strategy(root, binding)
+    except RuntimeBindingError as exc:
+        typer.echo(f"{exc}")
+        raise typer.Exit(code=1) from exc
     typer.echo("")
     typer.echo("  RUNTIME")
     for label, value in (
@@ -9757,7 +9801,6 @@ def paper_ops_runtime_smoke_command() -> None:
         score_availability_profile,
     )
     from stock_screener.strategies import (
-        CompounderMonthlyStrategy,
         StrategyError,
         load_bundle,
     )
@@ -9771,7 +9814,11 @@ def paper_ops_runtime_smoke_command() -> None:
         raise typer.Exit(code=1) from exc
 
     now = datetime.now(UTC).isoformat()
-    strategy = CompounderMonthlyStrategy()
+    try:
+        strategy = _bound_strategy(root, binding)
+    except RuntimeBindingError as exc:
+        typer.echo(f"STOPPED: {exc}")
+        raise typer.Exit(code=1) from exc
     typer.echo("")
     typer.echo(f"  OBSERVE_ONLY runtime smoke at {now}")
     typer.echo(f"  runtime {binding.runtime_id} / binding {binding.fingerprint()[:16]}…")
@@ -9917,7 +9964,6 @@ def paper_ops_soak_arm_v2_command(
         window_for,
     )
     from stock_screener.portfolio_accounting import PortfolioStore
-    from stock_screener.strategies import CompounderMonthlyStrategy
 
     settings = _bootstrap()
     if not confirm:
@@ -9929,13 +9975,15 @@ def paper_ops_soak_arm_v2_command(
 
     now = datetime.now(UTC).isoformat()
     root = _operations_root()
-    strategy = CompounderMonthlyStrategy()
     store = SoakV2Store(root)
 
     typer.echo("")
     typer.echo("  1/6  runtime binding")
     try:
         binding = RuntimeBindingStore(root).require()
+        # Resolved from the binding, not chosen here: arming a soak against a
+        # strategy the runtime would not run would preregister the wrong rules.
+        strategy = _bound_strategy(root, binding)
     except RuntimeBindingError as exc:
         typer.echo(f"STOPPED: {exc}")
         raise typer.Exit(code=1) from exc

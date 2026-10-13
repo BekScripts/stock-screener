@@ -59,6 +59,24 @@ if TYPE_CHECKING:
 
 pytestmark = pytest.mark.integration
 
+
+def _bound_strategy(binding: Any) -> Any:
+    """The strategy production's resolver builds for this binding.
+
+    Tests construct the planner directly, so they supply what the composition
+    root would. Resolved rather than hardcoded on purpose: if the resolver and
+    the binding ever disagreed, these tests would stop building rather than
+    quietly exercise a strategy the binding does not name.
+    """
+    from stock_screener.paper_runtime.resolver import resolve_strategy
+
+    return resolve_strategy(
+        strategy_id=binding.strategy_id,
+        strategy_version=binding.strategy_version,
+        strategy_fingerprint=binding.strategy_fingerprint,
+    )
+
+
 PAPER_URL = "https://paper-api.alpaca.markets"
 ACCOUNT_ID = "paper-account-1"
 DECISION_SESSION = "2026-10-30"
@@ -81,7 +99,7 @@ def mapping() -> SymbolMapping:
     """A mapping covering the three selectable identities."""
     return SymbolMapping.of(
         [
-            VenueSymbol(kind="COMPANY", identity_id=key, symbol=value)
+            VenueSymbol(kind="COMPANY", identity_id=key, symbol=value, fractionable=True)
             for key, value in SYMBOLS.items()
         ]
     )
@@ -696,7 +714,12 @@ def test_a_missed_execution_cannot_then_be_executed(tmp_path: Path) -> None:
         if row.purpose is RunPurpose.STRATEGY_EXECUTION
     )
     planner = RuntimePlanner(
-        root=root, binding=runtime, slot=slot, calendar=calendar(), submit=_never_submit
+        root=root,
+        binding=runtime,
+        slot=slot,
+        calendar=calendar(),
+        submit=_never_submit,
+        strategy=_bound_strategy(runtime),
     )
 
     with pytest.raises(RuntimeBindingError, match="DECISION_EXECUTION_WINDOW_MISSED"):
@@ -725,6 +748,7 @@ def execution_planner(tmp_path: Path, runtime: Any, **kwargs: Any) -> Any:
         if row.purpose is RunPurpose.STRATEGY_EXECUTION
     )
     return RuntimePlanner(
+        strategy=_bound_strategy(runtime),
         root=tmp_path / ".operations",
         binding=runtime,
         slot=slot,
@@ -830,15 +854,63 @@ def test_a_kill_between_two_orders_stops_only_the_second(tmp_path: Path) -> None
 def test_a_changed_strategy_fingerprint_blocks_execution(tmp_path: Path) -> None:
     # §44. The decision stays valid; it simply may not be executed by a build
     # the runtime was not bound to.
+    #
+    # P2.3.1I moved *where* this is refused, not whether it is. Production now
+    # resolves the strategy from the binding, so a binding naming a fingerprint
+    # the installed code does not produce is refused while the run is being
+    # composed — before a planner exists at all. That is strictly earlier than
+    # the previous RUNTIME_STRATEGY_MISMATCH at execution time, and the test
+    # asserts the refusal that actually happens now.
     from dataclasses import replace
 
     runtime, _, _ = pending_decision(tmp_path)
-    planner = execution_planner(
-        tmp_path, replace(runtime, strategy_fingerprint="c" * 64), submit=_never_submit
-    )
+    unbound = replace(runtime, strategy_fingerprint="c" * 64)
 
-    with pytest.raises(RuntimeBindingError, match="RUNTIME_STRATEGY_MISMATCH"):
-        planner(run_id="opsrun-exec", mode=None, gate=RecordingGate(), account="x", clock=None)
+    with pytest.raises(RuntimeBindingError, match="RUNTIME_STRATEGY_NOT_RESOLVABLE"):
+        execution_planner(tmp_path, unbound, submit=_never_submit)
+
+
+def test_execution_verifies_the_persisted_decisions_own_fingerprint(tmp_path: Path) -> None:
+    # The run-time guard §44 also relies on, still in force and distinct from
+    # resolution. Resolution reads the *binding*; this check reads the
+    # *persisted decision*, so a decision made by another build is refused even
+    # when the binding and the installed code agree.
+    #
+    # Asserted on the code rather than by tampering with a store: the execution
+    # path must pass the decision's own fields to `require_strategy`, and
+    # passing the installed strategy's instead would make the check vacuous —
+    # it would compare the binding against itself.
+    import ast
+    import inspect
+
+    from stock_screener.paper_runtime import orchestration
+
+    tree = ast.parse(inspect.getsource(orchestration))
+    calls = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "require_strategy"
+    ]
+    from_decision = [
+        call
+        for call in calls
+        if any(
+            isinstance(kw.value, ast.Attribute)
+            and isinstance(kw.value.value, ast.Attribute)
+            and kw.value.value.attr == "decision"
+            for kw in call.keywords
+        )
+    ]
+
+    assert len(calls) == 2
+    assert len(from_decision) == 1
+
+    runtime, _, _ = pending_decision(tmp_path)
+    planner = execution_planner(tmp_path, runtime, submit=_never_submit)
+
+    assert planner.strategy.fingerprint() == runtime.strategy_fingerprint
 
 
 def test_a_changed_deployment_grant_blocks_execution(tmp_path: Path) -> None:

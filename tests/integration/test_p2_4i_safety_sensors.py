@@ -52,6 +52,24 @@ if TYPE_CHECKING:
 
 pytestmark = pytest.mark.integration
 
+
+def _bound_strategy(binding: Any) -> Any:
+    """The strategy production's resolver builds for this binding.
+
+    Tests construct the planner directly, so they supply what the composition
+    root would. Resolved rather than hardcoded on purpose: if the resolver and
+    the binding ever disagreed, these tests would stop building rather than
+    quietly exercise a strategy the binding does not name.
+    """
+    from stock_screener.paper_runtime.resolver import resolve_strategy
+
+    return resolve_strategy(
+        strategy_id=binding.strategy_id,
+        strategy_version=binding.strategy_version,
+        strategy_fingerprint=binding.strategy_fingerprint,
+    )
+
+
 PAPER = "https://paper-api.alpaca.markets"
 
 
@@ -552,6 +570,7 @@ class Runtime:
         slot = self.schedule.slot_for(now)
         assert slot is not None, f"no slot is open at {now}"
         planner = RuntimePlanner(
+            strategy=_bound_strategy(self.binding),
             root=self.root,
             binding=self.binding,
             slot=slot,
@@ -637,7 +656,7 @@ def runtime_for(tmp_path: Path, *, proven: bool = True) -> Runtime:
         binding=external,
         mapping=SymbolMapping.of(
             [
-                VenueSymbol(kind="COMPANY", identity_id=key, symbol=value)
+                VenueSymbol(kind="COMPANY", identity_id=key, symbol=value, fractionable=True)
                 for key, value in SYMBOLS.items()
             ]
         ),

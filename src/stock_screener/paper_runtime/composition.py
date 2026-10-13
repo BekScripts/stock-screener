@@ -136,11 +136,48 @@ class OperationsComposition:
         """
         from stock_screener.execution.external import LIVE_HOSTS
 
+        from .deployment_capability import DEPLOYMENT_CAPABILITY_VERSION
         from .operator_inputs import operator_input_status
+        from .resolver import STRATEGY_RESOLVER_VERSION
 
+        binding_version = str(getattr(self.binding, "version", ""))
+        universe = getattr(self.submit, "deployment_universe", None)
+        capability = getattr(self.submit, "deployment_capability", None)
         return {
-            "operator_inputs": operator_input_status(self.root).as_json(),
+            "operator_inputs": operator_input_status(
+                self.root, binding_version=binding_version
+            ).as_json(),
             "composition_version": PRODUCTION_COMPOSITION_VERSION,
+            # The strategy this runtime actually constructed, resolved from the
+            # binding. Reported so a readiness check answers "which policy would
+            # decide" from the object that would decide, rather than from the
+            # version string the binding happens to carry.
+            "strategy_resolver_version": STRATEGY_RESOLVER_VERSION,
+            "resolved_strategy_version": str(
+                getattr(self.planner.strategy, "strategy_version", "")
+            ),
+            "resolved_strategy_fingerprint": (
+                self.planner.strategy.fingerprint() if self.planner.strategy is not None else ""
+            ),
+            "deployment_universe_version": str(
+                getattr(self.binding, "deployment_universe_version", "")
+            ),
+            "deployment_universe_fingerprint": (
+                universe.fingerprint() if universe is not None else ""
+            ),
+            "deployment_universe_members": universe.size if universe is not None else 0,
+            "deployment_universe_source_mapping": (
+                universe.mapping_fingerprint if universe is not None else ""
+            ),
+            "deployment_capability_version": DEPLOYMENT_CAPABILITY_VERSION,
+            "deployment_capability_fingerprint": (
+                capability.fingerprint() if capability is not None else ""
+            ),
+            "deployment_capability_supported": (
+                bool(capability.supported) if capability is not None else False
+            ),
+            "deployment_capability_scope": (capability.scope if capability is not None else ""),
+            "risk_engine_version": str(getattr(self.binding, "risk_engine_version", "")),
             "submission_authority_constructible": self.submit is not None,
             "request_audit_constructible": self.audit is not None,
             "request_audit_root": str(self.audit.root) if self.audit is not None else "",
@@ -223,8 +260,14 @@ def compose_operations(
     from stock_screener.execution.external.request_audit import RequestAuditStore
 
     from .environment import AlphaTraderPaperOperationsEnvironment
-    from .operator_inputs import read_risk_policy, read_symbol_mapping
+    from .operator_inputs import (
+        read_deployment_capability,
+        read_deployment_universe,
+        read_risk_policy,
+        read_symbol_mapping,
+    )
     from .orchestration import RuntimePlanner
+    from .resolver import resolve_strategy
     from .submission import RuntimeSubmissionAuthority
 
     # The run id first: it is derived from the slot and the *persisted* binding,
@@ -259,6 +302,27 @@ def compose_operations(
     # failing later with a guessed number.
     mapping = read_symbol_mapping(root)
     risk_policy = read_risk_policy(root)
+    # The deployment authority, read from the binding rather than chosen here.
+    # A binding that names a universe fingerprint gets exactly that universe or
+    # the composition fails: the alternative — building the strategy without it
+    # — is how a deployment comes to reach identities nobody authorised.
+    universe = None
+    capability = None
+    if getattr(binding, "deployment_universe_fingerprint", ""):
+        universe = read_deployment_universe(
+            root, expected_fingerprint=binding.deployment_universe_fingerprint
+        )
+        capability = read_deployment_capability(
+            root, expected_fingerprint=binding.deployment_capability_fingerprint
+        )
+        _require_deployment_authority(binding, universe=universe, capability=capability)
+    # The binding names which strategy decides. Nothing here picks one.
+    strategy = resolve_strategy(
+        strategy_id=binding.strategy_id,
+        strategy_version=binding.strategy_version,
+        strategy_fingerprint=binding.strategy_fingerprint,
+        universe=universe,
+    )
     # Fractionability is a property of the instrument, not of the venue, so a
     # venue-level default is necessarily wrong for one side or the other — the
     # certified canary makes exactly this point and declares the capability
@@ -267,7 +331,7 @@ def compose_operations(
     # declares which securities this runtime may route also declares how they
     # trade. The default stays whole-shares-only and is widened only by that
     # declaration.
-    venue_binding = _declared_binding(run.binding, mapping, binding=binding)
+    venue_binding = _declared_binding(run.binding, mapping, binding=binding, capability=capability)
     adapter = AlpacaPaperAdapter(transport=run.transport, binding=venue_binding, mapping=mapping)
     environment = AlphaTraderPaperOperationsEnvironment(root=root, binding=binding, adapter=adapter)
     environment.require_generations()
@@ -280,6 +344,8 @@ def compose_operations(
         marks=_resolve_marks(marks, settings=settings, mapping=mapping, slot=slot),
         intent_log=SubmissionIntentLog(root / "submissions"),
         fee_schedule=DECLARED_EQUITY_FEE,
+        deployment_universe=universe,
+        deployment_capability=capability,
     )
     planner = RuntimePlanner(
         root=root,
@@ -288,6 +354,7 @@ def compose_operations(
         calendar=calendar,
         bundle_for=bundle_for,
         submit=submit,
+        strategy=strategy,
     )
     coordinator = _coordinator(
         root=root,
@@ -343,30 +410,46 @@ def _resolve_marks(
     return stored_marks(settings=settings, mapping=mapping, as_of=str(getattr(slot, "session", "")))
 
 
-def _declared_binding(venue: Any, mapping: Any, *, binding: Any = None) -> Any:
+def _declared_binding(
+    venue: Any, mapping: Any, *, binding: Any = None, capability: Any = None
+) -> Any:
     """Widen a venue binding's capabilities to what is actually declared.
 
-    Two sources, in order. A `PAPER_OPERATIONS_RUNTIME_BINDING_V2` records the
-    capability an operator rebound to, and that recorded declaration is
-    authoritative — it is the field the environment proof compares against. For
-    a historical V1-only root there is no such record, so the capability comes
-    from the authored mapping, and only when *every* routable symbol supports
-    it: the capability check is account-wide while fractionability is per
-    instrument, so a partial claim would permit a fractional order for an
-    instrument that cannot take one.
+    Three sources, in order of authority.
+
+    A **proven deployment capability** comes first, and it is what a V3 binding
+    supplies. `BrokerCapabilities.fractional_quantities` is the adapter's
+    execution permission for this run, and under a deployment restricted to
+    identities the venue states are fractionable every order the run can produce
+    is submittable — so the permission is granted. Nothing about the account's
+    own record changes: the persisted `account_capability` still says fractional
+    support is *not* account-wide, because whole-share-only instruments still
+    exist outside this deployment. The two statements are about different
+    scopes and both stay true. The per-instrument check in the adapter remains
+    the per-order guard, so this permission is not a licence.
+
+    Next, a `PAPER_OPERATIONS_RUNTIME_BINDING_V2` records the capability an
+    operator rebound to. For a historical V1-only root there is no such record,
+    so the capability comes from the authored mapping, and only when *every*
+    routable symbol supports it: a partial claim would permit a fractional
+    order for an instrument that cannot take one.
 
     Args:
         venue: The venue binding built from configuration, at its conservative
             default of whole shares only.
         mapping: The authored venue symbol mapping.
-        binding: The active runtime binding, V1 or V2.
+        binding: The active runtime binding, V1, V2 or V3.
+        capability: The frozen deployment-scoped capability proof, where the
+            binding declares one.
 
     Returns:
-        The venue binding, widened only by a declaration. Narrowing is never
-        done here and nothing is widened by inference.
+        The venue binding, widened only by a declaration or a proof. Narrowing
+        is never done here and nothing is widened by inference.
     """
     from dataclasses import replace
 
+    if capability is not None and getattr(capability, "supported", False):
+        return replace(venue, capabilities=replace(venue.capabilities, fractional_quantities=True))
     declared = getattr(binding, "account_capability", None)
     if isinstance(declared, dict):
         if not declared.get("fractional_quantities", False):
@@ -453,3 +536,44 @@ def composition_readiness(
     finally:
         composition.close()
     return {**report, "ready": True, "detail": ""}
+
+
+def _require_deployment_authority(binding: Any, *, universe: Any, capability: Any) -> None:
+    """Refuse a deployment whose artefacts do not agree with each other.
+
+    Three statements have to line up before a run is allowed: the universe was
+    derived from the mapping the binding names, the capability was proven about
+    exactly that mapping and that universe, and the capability was in fact
+    proven. Any crossed pair would authorise identities against evidence nobody
+    reviewed together.
+
+    Args:
+        binding: The active runtime binding.
+        universe: The loaded deployment universe.
+        capability: The loaded deployment capability proof.
+
+    Raises:
+        RuntimeBindingError: `RUNTIME_OPERATOR_INPUT_FINGERPRINT_MISMATCH` for a
+            crossed pair, or `RUNTIME_DEPLOYMENT_CAPABILITY_UNPROVEN` for a
+            capability that was recorded as not proven.
+    """
+    bound_mapping = str(getattr(binding, "instrument_mapping_fingerprint", ""))
+    if bound_mapping and universe.mapping_fingerprint != bound_mapping:
+        raise RuntimeBindingError(
+            Code.RUNTIME_OPERATOR_INPUT_FINGERPRINT_MISMATCH,
+            f"the deployment universe was derived from mapping "
+            f"{universe.mapping_fingerprint[:16]}… and this runtime binds "
+            f"{bound_mapping[:16]}…. The universe and its routing evidence are "
+            "one artefact pair and are not crossed",
+        )
+    if (
+        capability.instrument_mapping_fingerprint != universe.mapping_fingerprint
+        or capability.deployment_universe_fingerprint != universe.fingerprint()
+    ):
+        raise RuntimeBindingError(
+            Code.RUNTIME_OPERATOR_INPUT_FINGERPRINT_MISMATCH,
+            "the deployment capability proves something about a different "
+            "mapping or universe than the ones this runtime binds. A capability "
+            "is a statement about one exact deployment",
+        )
+    capability.require_supported()

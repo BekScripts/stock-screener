@@ -46,14 +46,22 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 __all__ = [
+    "DEPLOYMENT_CAPABILITY_FILENAME",
+    "DEPLOYMENT_UNIVERSE_FILENAME",
     "OPERATOR_INPUTS_VERSION",
+    "OPERATOR_INPUT_FILES",
+    "REQUIRED_OPERATOR_INPUTS",
     "RISK_POLICY_FILENAME",
     "SYMBOL_MAPPING_FILENAME",
     "OperatorInputStatus",
     "operator_input_status",
+    "read_deployment_capability",
+    "read_deployment_universe",
     "read_risk_policy",
     "read_symbol_mapping",
     "stored_marks",
+    "write_deployment_capability",
+    "write_deployment_universe",
     "write_risk_policy",
     "write_symbol_mapping",
 ]
@@ -64,6 +72,39 @@ OPERATOR_INPUTS_VERSION = "OPERATOR_AUTHORED_RUNTIME_INPUTS_V1"
 #: Where each artefact lives, under `<root>/runtime/`.
 RISK_POLICY_FILENAME = "risk_policy.json"
 SYMBOL_MAPPING_FILENAME = "symbol_mapping.json"
+DEPLOYMENT_UNIVERSE_FILENAME = "deployment_universe.json"
+DEPLOYMENT_CAPABILITY_FILENAME = "deployment_capability.json"
+
+#: Which artefacts each runtime-binding contract requires. Data rather than a
+#: branch, so the coverage guard can check every declared artefact has a writer,
+#: a reader, a fingerprint validator and a production consumer — and so a V1
+#: root goes on needing exactly what it always needed.
+REQUIRED_OPERATOR_INPUTS: dict[str, tuple[str, ...]] = {
+    "PAPER_OPERATIONS_RUNTIME_BINDING_V1": ("RISK_POLICY", "SYMBOL_MAPPING"),
+    "PAPER_OPERATIONS_RUNTIME_BINDING_V2": ("RISK_POLICY", "SYMBOL_MAPPING"),
+    "PAPER_OPERATIONS_RUNTIME_BINDING_V3": (
+        "RISK_POLICY",
+        "SYMBOL_MAPPING",
+        "DEPLOYMENT_UNIVERSE",
+        "DEPLOYMENT_CAPABILITY",
+    ),
+}
+
+#: Each artefact's file and the binding field whose fingerprint it must match.
+#: An artefact with no binding field is content an operator authors freely; one
+#: with a field is an immutable authority and is verified on every read.
+OPERATOR_INPUT_FILES: dict[str, tuple[str, str]] = {
+    "RISK_POLICY": (RISK_POLICY_FILENAME, ""),
+    "SYMBOL_MAPPING": (SYMBOL_MAPPING_FILENAME, ""),
+    "DEPLOYMENT_UNIVERSE": (
+        DEPLOYMENT_UNIVERSE_FILENAME,
+        "deployment_universe_fingerprint",
+    ),
+    "DEPLOYMENT_CAPABILITY": (
+        DEPLOYMENT_CAPABILITY_FILENAME,
+        "deployment_capability_fingerprint",
+    ),
+}
 
 
 @dataclass(frozen=True)
@@ -106,16 +147,23 @@ def _directory(root: Path) -> Path:
     return root / RUNTIME_DIRECTORY
 
 
-def operator_input_status(root: Path) -> OperatorInputStatus:
+def operator_input_status(root: Path, *, binding_version: str = "") -> OperatorInputStatus:
     """Report which operator inputs exist, without reading a network.
 
     Args:
         root: The operations root.
+        binding_version: The active binding contract, which decides what is
+            required. Empty asks only for the two artefacts every contract
+            needs, so a caller with no binding in hand is never told that a V1
+            root is missing a V3 artefact.
 
     Returns:
         The status.
     """
     directory = _directory(root)
+    required = REQUIRED_OPERATOR_INPUTS.get(
+        binding_version, REQUIRED_OPERATOR_INPUTS["PAPER_OPERATIONS_RUNTIME_BINDING_V1"]
+    )
     policy = (directory / RISK_POLICY_FILENAME).exists()
     mapping = (directory / SYMBOL_MAPPING_FILENAME).exists()
     missing: list[str] = []
@@ -133,10 +181,22 @@ def operator_input_status(root: Path) -> OperatorInputStatus:
             f"no authored symbol mapping at runtime/{SYMBOL_MAPPING_FILENAME}; "
             "nothing declares which securities this runtime may route to the venue"
         )
+    for name in ("DEPLOYMENT_UNIVERSE", "DEPLOYMENT_CAPABILITY"):
+        if name not in required:
+            continue
+        filename, _ = OPERATOR_INPUT_FILES[name]
+        if (directory / filename).exists():
+            continue
+        missing.append(name)
+        detail.append(
+            f"no authored {name.lower().replace('_', ' ')} at runtime/{filename}; "
+            "the bound strategy deploys only across a frozen universe whose "
+            "capability was proven offline, and neither is rebuilt at run time"
+        )
     return OperatorInputStatus(
         risk_policy_present=policy,
         symbol_mapping_present=mapping,
-        missing=tuple(missing),
+        missing=tuple(name for name in missing if name in required),
         detail=tuple(detail),
     )
 
@@ -211,7 +271,13 @@ def read_risk_policy(root: Path) -> Any:
                 None if body.get("max_net_exposure") is None else float(body["max_net_exposure"])
             ),
             max_position_weight=float(body["max_position_weight"]),
-            max_positions=int(body["max_positions"]),
+            # `null` is an explicit no-cap under PORTFOLIO_RISK_ENGINE_V1_3 and
+            # is not the same thing as the key being absent: the key is still
+            # required above, so a policy that forgot to state a cap is refused
+            # while one that states there is none is honoured.
+            max_positions=(
+                None if body.get("max_positions") is None else int(body["max_positions"])
+            ),
             min_cash_weight=float(body["min_cash_weight"]),
             production_authorized=bool(body.get("production_authorized", False)),
         )
@@ -353,4 +419,224 @@ def write_symbol_mapping(root: Path, symbols: list[dict[str, Any]]) -> Path:
 
     path = _directory(root) / SYMBOL_MAPPING_FILENAME
     atomic_write_verified(path, {"version": OPERATOR_INPUTS_VERSION, "symbols": list(symbols)})
+    return path
+
+
+def _require_fingerprint(path: Path, *, got: str, expected: str, what: str) -> None:
+    """Refuse an artefact that does not digest to what the binding names.
+
+    Args:
+        path: Where it was read from.
+        got: The artefact's own fingerprint, recomputed from its content.
+        expected: The fingerprint the active binding records. Empty skips the
+            check, for an artefact no binding field pins.
+        what: The artefact, for the message.
+
+    Raises:
+        RuntimeBindingError: `RUNTIME_OPERATOR_INPUT_FINGERPRINT_MISMATCH`. The
+            same refusal for tamper, for drift and for the wrong file — the
+            runtime cannot tell them apart and must not guess.
+    """
+    if not expected or got == expected:
+        return
+    raise RuntimeBindingError(
+        Code.RUNTIME_OPERATOR_INPUT_FINGERPRINT_MISMATCH,
+        f"{what} at {path} digests to {got[:16]}… and the active runtime binding "
+        f"names {expected[:16]}…. It is not accepted and nothing is substituted: "
+        "a deployment authority that could be edited after it was bound would "
+        "authorise whatever the editor chose",
+    )
+
+
+def read_deployment_universe(root: Path, *, expected_fingerprint: str = "") -> Any:
+    """Read the frozen deployment universe this runtime is bound to.
+
+    Reconstructed from the stored body rather than re-derived from the provider.
+    That is the whole point of freezing it: the identities a deployment may
+    reach must not change because the venue reclassified something between the
+    review and the run.
+
+    Args:
+        root: The operations root.
+        expected_fingerprint: The fingerprint the active binding names. The
+            artefact is refused unless it matches.
+
+    Returns:
+        The `DeploymentUniverse`.
+
+    Raises:
+        RuntimeBindingError: `RUNTIME_DEPLOYMENT_UNIVERSE_NOT_AUTHORED` when
+            absent, `RUNTIME_OPERATOR_INPUT_UNREADABLE` when malformed or of an
+            unknown contract version, or
+            `RUNTIME_OPERATOR_INPUT_FINGERPRINT_MISMATCH` when it does not
+            digest to the bound value.
+    """
+    from .universe import (
+        DEPLOYMENT_UNIVERSE_VERSION,
+        DeploymentExclusion,
+        DeploymentUniverse,
+    )
+
+    path = _directory(root) / DEPLOYMENT_UNIVERSE_FILENAME
+    body = _read_body(
+        path,
+        code=Code.RUNTIME_DEPLOYMENT_UNIVERSE_NOT_AUTHORED,
+        what="the runtime deployment universe",
+    )
+    if str(body.get("version", "")) != DEPLOYMENT_UNIVERSE_VERSION:
+        raise RuntimeBindingError(
+            Code.RUNTIME_OPERATOR_INPUT_UNREADABLE,
+            f"the deployment universe at {path} declares version "
+            f"{body.get('version')!r} and this build reads "
+            f"{DEPLOYMENT_UNIVERSE_VERSION}. An unknown contract is refused "
+            "rather than parsed hopefully",
+        )
+    try:
+        universe = DeploymentUniverse(
+            members=tuple((str(kind), int(identity_id)) for kind, identity_id in body["members"]),
+            exclusions=tuple(
+                DeploymentExclusion(
+                    kind=str(row["kind"]),
+                    identity_id=int(row["identity_id"]),
+                    reason=str(row["reason"]),
+                )
+                for row in body.get("exclusions", ())
+            ),
+            mapping_fingerprint=str(body["mapping_fingerprint"]),
+            provider=str(body["provider"]),
+            environment=str(body["environment"]),
+            evidence_at=str(body["evidence_at"]),
+            source_universe=str(body["source_universe"]),
+            source_universe_as_of=str(body["source_universe_as_of"]),
+        )
+    except Exception as exc:
+        raise RuntimeBindingError(
+            Code.RUNTIME_OPERATOR_INPUT_UNREADABLE,
+            f"the deployment universe at {path} is not valid: {type(exc).__name__}: {exc}",
+        ) from exc
+    if not universe.members:
+        raise RuntimeBindingError(
+            Code.RUNTIME_OPERATOR_INPUT_UNREADABLE,
+            f"the deployment universe at {path} has no members. An empty universe "
+            "selects nothing and would read as a quiet no-op rather than the "
+            "misconfiguration it is",
+        )
+    _require_fingerprint(
+        path,
+        got=universe.fingerprint(),
+        expected=expected_fingerprint,
+        what="the deployment universe",
+    )
+    return universe
+
+
+def read_deployment_capability(root: Path, *, expected_fingerprint: str = "") -> Any:
+    """Read the frozen deployment-scoped capability proof.
+
+    Args:
+        root: The operations root.
+        expected_fingerprint: The fingerprint the active binding names.
+
+    Returns:
+        The `DeploymentExecutionCapability`.
+
+    Raises:
+        RuntimeBindingError: `RUNTIME_DEPLOYMENT_CAPABILITY_NOT_AUTHORED` when
+            absent, `RUNTIME_OPERATOR_INPUT_UNREADABLE` when malformed or of an
+            unknown contract version, or
+            `RUNTIME_OPERATOR_INPUT_FINGERPRINT_MISMATCH` when it does not
+            digest to the bound value.
+    """
+    from .deployment_capability import (
+        DEPLOYMENT_CAPABILITY_VERSION,
+        DeploymentExecutionCapability,
+    )
+
+    path = _directory(root) / DEPLOYMENT_CAPABILITY_FILENAME
+    body = _read_body(
+        path,
+        code=Code.RUNTIME_DEPLOYMENT_CAPABILITY_NOT_AUTHORED,
+        what="the runtime deployment capability",
+    )
+    if str(body.get("version", "")) != DEPLOYMENT_CAPABILITY_VERSION:
+        raise RuntimeBindingError(
+            Code.RUNTIME_OPERATOR_INPUT_UNREADABLE,
+            f"the deployment capability at {path} declares version "
+            f"{body.get('version')!r} and this build reads "
+            f"{DEPLOYMENT_CAPABILITY_VERSION}",
+        )
+    try:
+        capability = DeploymentExecutionCapability(
+            provider=str(body["provider"]),
+            environment=str(body["environment"]),
+            instrument_mapping_fingerprint=str(body["instrument_mapping_fingerprint"]),
+            deployment_universe_fingerprint=str(body["deployment_universe_fingerprint"]),
+            required_capability=str(body["required_capability"]),
+            eligible_identities=int(body["eligible_identities"]),
+            verified_identities=int(body["verified_identities"]),
+            missing_identities=tuple(str(row) for row in body.get("missing_identities", ())),
+            non_routable_identities=tuple(
+                str(row) for row in body.get("non_routable_identities", ())
+            ),
+            non_tradable_identities=tuple(
+                str(row) for row in body.get("non_tradable_identities", ())
+            ),
+            non_fractionable_identities=tuple(
+                str(row) for row in body.get("non_fractionable_identities", ())
+            ),
+            unknown_fractionability_identities=tuple(
+                str(row) for row in body.get("unknown_fractionability_identities", ())
+            ),
+            supported=bool(body["supported"]),
+            scope=str(body["scope"]),
+        )
+    except Exception as exc:
+        raise RuntimeBindingError(
+            Code.RUNTIME_OPERATOR_INPUT_UNREADABLE,
+            f"the deployment capability at {path} is not valid: {type(exc).__name__}: {exc}",
+        ) from exc
+    _require_fingerprint(
+        path,
+        got=capability.fingerprint(),
+        expected=expected_fingerprint,
+        what="the deployment capability",
+    )
+    return capability
+
+
+def write_deployment_universe(root: Path, universe: Any) -> Path:
+    """Persist a frozen deployment universe as an operator artefact.
+
+    Writes the universe's own serialisation, so what is read back digests to
+    exactly what was reviewed. It authorises nothing: the binding transition is
+    what makes an artefact authoritative.
+
+    Args:
+        root: The operations root.
+        universe: The `DeploymentUniverse` to freeze.
+
+    Returns:
+        Where it was written.
+    """
+    from stock_screener.paper_operations import atomic_write_verified
+
+    path = _directory(root) / DEPLOYMENT_UNIVERSE_FILENAME
+    atomic_write_verified(path, universe.as_json())
+    return path
+
+
+def write_deployment_capability(root: Path, capability: Any) -> Path:
+    """Persist a frozen deployment-scoped capability proof.
+
+    Args:
+        root: The operations root.
+        capability: The `DeploymentExecutionCapability` to freeze.
+
+    Returns:
+        Where it was written.
+    """
+    from stock_screener.paper_operations import atomic_write_verified
+
+    path = _directory(root) / DEPLOYMENT_CAPABILITY_FILENAME
+    atomic_write_verified(path, capability.as_json())
     return path

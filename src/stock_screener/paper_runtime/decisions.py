@@ -302,6 +302,14 @@ class PersistedStrategyDecision:
                 excluded_counts={
                     str(k): int(v) for k, v in dict(raw.get("excluded_counts", {})).items()
                 },
+                # Read back by name. A strategy that restricts a deployment
+                # universe binds its fingerprint into the decision's own body,
+                # so dropping it here would make every such decision recompute
+                # to a different digest and be rejected as DECISION_TAMPERED —
+                # which is to say no deployment-restricted decision could ever
+                # be executed. Absent for a strategy that restricts nothing,
+                # exactly as the body omits it.
+                deployment_universe_fingerprint=str(raw.get("deployment_universe_fingerprint", "")),
             )
             record = cls(
                 decision=decision,
