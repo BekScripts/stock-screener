@@ -36,6 +36,9 @@ __all__ = [
     "NO_CAP",
     "OWNER_APPROVAL_REQUIRED",
     "OWNER_APPROVED_PAPER_LIMITS",
+    "OWNER_APPROVED_PAPER_LIMITS_V2",
+    "PAPER_RISK_POLICY_V2_ENGINE",
+    "PAPER_RISK_POLICY_V2_VERSION",
     "PAPER_RISK_POLICY_VERSION",
     "REBIND_PLAN_VERSION",
     "RISK_POLICY_CANDIDATE_VERSION",
@@ -48,6 +51,7 @@ __all__ = [
     "Routability",
     "mapping_from_evidence",
     "paper_risk_policy",
+    "paper_risk_policy_v2",
     "policy_field_inventory",
     "rebind_plan",
     "risk_policy_candidate",
@@ -1230,6 +1234,30 @@ OWNER_APPROVED_PAPER_LIMITS: dict[str, Any] = {
 }
 
 
+#: The paper risk policy contract bound to `PORTFOLIO_RISK_ENGINE_V1_3`. V1 is
+#: kept exactly as it was authorised — same values, same fingerprint, same named
+#: gap — because rewriting an approved artefact to look as though the gap had
+#: never existed would erase the record of what the owner actually approved
+#: against which engine.
+PAPER_RISK_POLICY_V2_VERSION = "PAPER_PORTFOLIO_RISK_POLICY_V2"
+
+#: The engine V2 is authorised against.
+PAPER_RISK_POLICY_V2_ENGINE = "PORTFOLIO_RISK_ENGINE_V1_3"
+
+#: V1's limits with the one field V1.2 could not represent now represented.
+#: Derived from `OWNER_APPROVED_PAPER_LIMITS` rather than retyped, so the other
+#: twelve values cannot drift between the two contracts: a second hand-written
+#: copy of thirteen numbers is a second chance to get one of them wrong.
+OWNER_APPROVED_PAPER_LIMITS_V2: dict[str, Any] = {
+    **OWNER_APPROVED_PAPER_LIMITS,
+    # The owner approved NO CAP. V1.3 expresses that as the absence of a cap,
+    # which is what `None` is here — not 0, not -1, not a large integer, and
+    # not the size of the current universe. A sentinel cap is still a cap, and
+    # the universe size would silently become a limit the day it grew.
+    "max_positions": None,
+}
+
+
 @dataclass(frozen=True)
 class PaperRiskPolicy:
     """The owner-approved paper risk policy, and the one field it cannot express.
@@ -1251,6 +1279,10 @@ class PaperRiskPolicy:
         authorized_for_live: Always False, and structurally so.
         unrepresentable: Fields the owner approved that the engine cannot
             express. Named rather than quietly substituted.
+        contract_version: Which paper-policy contract this is. An instance field
+            rather than a module constant because V2 exists alongside V1: V1
+            still fingerprints to exactly what it fingerprinted to, and the
+            label travels with the artefact rather than with the build.
     """
 
     policy_id: str
@@ -1261,11 +1293,12 @@ class PaperRiskPolicy:
     authorized_for_paper: bool
     authorized_for_live: bool = False
     unrepresentable: tuple[str, ...] = ()
+    contract_version: str = PAPER_RISK_POLICY_VERSION
 
     def body(self) -> dict[str, Any]:
         """The policy's semantic content, for fingerprinting."""
         return {
-            "version": PAPER_RISK_POLICY_VERSION,
+            "version": self.contract_version,
             "policy_id": self.policy_id,
             "policy_version": self.policy_version,
             "environment": self.environment,
@@ -1362,6 +1395,29 @@ class PaperRiskPolicy:
         derived.update({key: value for key, value in settings.items() if key in derived})
         settings = {key: value for key, value in settings.items() if key not in derived}
         return RiskPolicy(**derived, **settings)
+
+
+def paper_risk_policy_v2() -> PaperRiskPolicy:
+    """The owner-approved paper risk policy against `PORTFOLIO_RISK_ENGINE_V1_3`.
+
+    The same thirteen owner-approved values as V1. The only difference is the
+    engine: V1.3 can represent an absent position cap, so `max_positions` is
+    expressed rather than named as a gap, and `unrepresentable` is empty.
+
+    Returns:
+        The policy. Authorised for paper, never for live.
+    """
+    return PaperRiskPolicy(
+        policy_id="ALPHATRADER_PAPER",
+        policy_version="V2",
+        environment="EXTERNAL_PAPER",
+        engine_version=PAPER_RISK_POLICY_V2_ENGINE,
+        limits=dict(OWNER_APPROVED_PAPER_LIMITS_V2),
+        authorized_for_paper=True,
+        authorized_for_live=False,
+        unrepresentable=(),
+        contract_version=PAPER_RISK_POLICY_V2_VERSION,
+    )
 
 
 def paper_risk_policy() -> PaperRiskPolicy:

@@ -192,7 +192,9 @@ def load_request(
             else float(policy_raw["max_net_exposure"])
         ),
         max_position_weight=float(policy_raw["max_position_weight"]),
-        max_positions=int(policy_raw["max_positions"]),
+        max_positions=(
+            None if policy_raw.get("max_positions") is None else int(policy_raw["max_positions"])
+        ),
         min_cash_weight=float(policy_raw["min_cash_weight"]),
         max_trade_notional_weight=(
             None

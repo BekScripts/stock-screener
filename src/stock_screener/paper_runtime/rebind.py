@@ -53,12 +53,15 @@ __all__ = [
     "REBIND_CHAIN_VERSION",
     "REBIND_GENESIS",
     "RUNTIME_BINDING_V2_VERSION",
+    "STRATEGY_REVISION_FIELDS",
+    "STRATEGY_REVISION_VERSION",
     "PaperOperationsRuntimeBindingV2",
     "RebindRecord",
     "RuntimeBindingHistory",
     "account_capability_from_mapping",
     "active_binding",
     "rebind_runtime",
+    "revise_strategy",
 ]
 
 #: The superseding binding contract. Additive: V1 semantics are untouched and a
@@ -95,6 +98,26 @@ IMMUTABLE_ACROSS_REBIND: tuple[str, ...] = (
 )
 
 
+#: The strategy-revision transition contract. A *distinct* operation from a
+#: lineage-preserving rebind, and named so an auditor reading the chain can see
+#: which of the two happened without inferring it from which fields moved.
+STRATEGY_REVISION_VERSION = "PAPER_OPERATIONS_STRATEGY_REVISION_V1"
+
+#: The only fields a strategy revision may move, and the reason this is a
+#: separate tuple rather than a deletion from `IMMUTABLE_ACROSS_REBIND`: the
+#: invariant is not weakened, it is made conditional on an operation that says
+#: out loud what it is changing. A plain rebind still passes no exemptions and
+#: still refuses every one of these. `strategy_id` is deliberately absent — a
+#: different strategy is a different runtime, not a revision of this one — and
+#: so are all three generations and the bootstrap epoch, because a revised
+#: selection rule does not restart the books.
+STRATEGY_REVISION_FIELDS: tuple[str, ...] = (
+    "strategy_version",
+    "strategy_fingerprint",
+    "strategy_authorization_fingerprint",
+)
+
+
 @dataclass(frozen=True)
 class PaperOperationsRuntimeBindingV2:
     """A runtime binding that supersedes another and binds its deployment inputs.
@@ -119,6 +142,13 @@ class PaperOperationsRuntimeBindingV2:
         reason: Why this rebind happened, for a reviewer.
         code_commit: The build that performed it.
         created_at: When.
+        transition: Which transition produced this binding. Defaults to the
+            lineage-preserving rebind and is omitted from the fingerprinted
+            body when it is that default, so every rebind recorded before this
+            field existed digests to exactly what it digested to. A strategy
+            revision sets it, and then the chain states which operation
+            happened instead of leaving it to be inferred from which fields
+            moved.
     """
 
     version: str
@@ -131,6 +161,7 @@ class PaperOperationsRuntimeBindingV2:
     reason: str
     code_commit: str
     created_at: str
+    transition: str = REBIND_CHAIN_VERSION
 
     def __getattr__(self, name: str) -> Any:
         """Read an inherited V1 field as if it were declared here.
@@ -202,7 +233,7 @@ class PaperOperationsRuntimeBindingV2:
 
     def body(self) -> dict[str, Any]:
         """The binding's semantic content, for fingerprinting."""
-        return {
+        body: dict[str, Any] = {
             "version": self.version,
             "predecessor_fingerprint": self.predecessor_fingerprint,
             "inherited": {key: self.inherited[key] for key in sorted(self.inherited)},
@@ -214,6 +245,9 @@ class PaperOperationsRuntimeBindingV2:
             },
             "live_trading": "NOT_IMPLEMENTED_NOT_AUTHORIZED",
         }
+        if self.transition != REBIND_CHAIN_VERSION:
+            body["transition"] = self.transition
+        return body
 
     def fingerprint(self) -> str:
         """A digest over the binding."""
@@ -491,6 +525,11 @@ def _binding_from_body(body: dict[str, Any]) -> PaperOperationsRuntimeBindingV2:
         reason=str(body.get("reason", "")),
         code_commit=str(body.get("code_commit", "")),
         created_at=str(body.get("created_at", "")),
+        # Read back by name, defaulting to the rebind transition: a record
+        # written before this field existed carries no key, and a record that
+        # does carry one must round-trip to the same body or its chain hash
+        # will not reproduce.
+        transition=str(body.get("transition", REBIND_CHAIN_VERSION)),
     )
 
 
@@ -608,25 +647,7 @@ def rebind_runtime(
             "a rebind changes persistent operator state and requires explicit "
             "confirmation. It is not implied by having the artefacts",
         )
-    if not getattr(risk_policy, "authorized_for_paper", False):
-        raise RuntimeBindingError(
-            Code.RUNTIME_REBIND_REFUSED,
-            "the risk policy is not authorised for paper. A candidate is not an "
-            "authority, and a rebind does not grant one",
-        )
-    if getattr(risk_policy, "authorized_for_live", False):
-        raise RuntimeBindingError(
-            Code.RUNTIME_REBIND_REFUSED,
-            "the risk policy claims live authorisation. Live trading is "
-            "NOT_IMPLEMENTED and NOT_AUTHORIZED, and no binding here may imply it",
-        )
-    if str(getattr(risk_policy, "environment", "")) != "EXTERNAL_PAPER":
-        raise RuntimeBindingError(
-            Code.RUNTIME_REBIND_REFUSED,
-            f"the risk policy names environment "
-            f"{getattr(risk_policy, 'environment', '')!r}; this operation binds "
-            "EXTERNAL_PAPER only",
-        )
+    _require_paper_policy(risk_policy)
 
     history = RuntimeBindingHistory(root)
     predecessor = history.active() or RuntimeBindingStore(root).require()
@@ -683,12 +704,20 @@ def _inherit(predecessor: Any) -> dict[str, Any]:
     return carried
 
 
-def _require_only_deployment_changed(predecessor: Any, binding: Any) -> None:
+def _require_only_deployment_changed(
+    predecessor: Any, binding: Any, *, allowed: tuple[str, ...] = ()
+) -> None:
     """Refuse a rebind that would change anything but deployment metadata.
 
     Args:
         predecessor: The binding being superseded.
         binding: The superseding binding.
+        allowed: Immutable fields this particular transition is permitted to
+            move. Empty by default, which is the lineage-preserving rebind and
+            is unchanged: it exempts nothing. A caller must name an exemption
+            explicitly, and only `revise_strategy` does, so the invariant stays
+            exactly as strong for every operation that does not declare itself
+            a strategy revision.
 
     Raises:
         RuntimeBindingError: `RUNTIME_REBIND_REFUSED` naming every field that
@@ -698,6 +727,8 @@ def _require_only_deployment_changed(predecessor: Any, binding: Any) -> None:
     """
     moved: list[str] = []
     for name in IMMUTABLE_ACROSS_REBIND:
+        if name in allowed:
+            continue
         before = getattr(predecessor, name, None)
         after = binding.inherited.get(name)
         if before is not None and after != before:
@@ -708,4 +739,183 @@ def _require_only_deployment_changed(predecessor: Any, binding: Any) -> None:
             f"a lineage-preserving rebind may not change {moved}. Changing an "
             "account, a strategy, a generation or the bootstrap epoch is a "
             "different operation and needs its own review",
+        )
+
+
+def revise_strategy(
+    *,
+    root: Path,
+    strategy: Any,
+    authorization: Any,
+    risk_policy: Any,
+    mapping: Any,
+    account_binding_fingerprint: str,
+    reason: str,
+    now: str,
+    code_commit: str = "",
+    decisions: Any = None,
+    confirmed: bool = False,
+) -> PaperOperationsRuntimeBindingV2:
+    """Bind a runtime to a revised strategy, preserving every other lineage.
+
+    A distinct operation from `rebind_runtime`, and distinct for a reason worth
+    stating. A rebind says *the same strategy now routes through different
+    deployment inputs*; this says *a different, separately authorised strategy
+    now decides for the same books*. Both preserve the accounting generation,
+    the execution journal generation, the operations lineage and the bootstrap
+    epoch — neither is a bootstrap and neither writes an opening balance — but
+    only this one may move the strategy's version, fingerprint and grant, and
+    it says so in the chain rather than leaving an auditor to infer it.
+
+    The strategy-fingerprint invariant is not weakened to allow this. It is
+    passed an explicit exemption naming the three fields this transition exists
+    to change; every other caller passes none, so a rebind that quietly carried
+    a new strategy is refused exactly as before.
+
+    Args:
+        root: The operations root.
+        strategy: The revised strategy. Its `strategy_id`, `strategy_version`
+            and `fingerprint()` are read; nothing is decided here.
+        authorization: The deployment grant for *this* strategy. Verified
+            against the strategy's own fingerprint, so a grant approving the
+            predecessor cannot carry the revision.
+        risk_policy: The authorised paper risk policy.
+        mapping: The verified instrument mapping.
+        account_binding_fingerprint: The venue binding digest.
+        reason: Why, for a reviewer.
+        now: When.
+        code_commit: The build performing it.
+        decisions: A `StrategyDecisionStore`, or None to skip the check. When
+            supplied, a decision still awaiting execution refuses the revision.
+        confirmed: Must be True.
+
+    Returns:
+        The new active binding.
+
+    Raises:
+        RuntimeBindingError: `RUNTIME_REBIND_REFUSED` without confirmation, for
+            an unauthorised or live-claiming policy, for a grant that does not
+            cover this exact strategy, for a revision that would change the
+            strategy *identity* rather than its version, or when any field
+            outside the declared exemption moved;
+            `RUNTIME_REBIND_PRECONDITION_FAILED` when a decision is pending;
+            `RUNTIME_NOT_BOUND` for a root with nothing to supersede.
+    """
+    from .binding import RuntimeBindingStore
+
+    if not confirmed:
+        raise RuntimeBindingError(
+            Code.RUNTIME_REBIND_REFUSED,
+            "a strategy revision changes which policy decides for a live set of "
+            "books and requires explicit confirmation. It is not implied by "
+            "having a newer strategy available",
+        )
+    _require_paper_policy(risk_policy)
+
+    fingerprint = strategy.fingerprint()
+    strategy_version = str(strategy.strategy_version)
+    strategy_id = str(strategy.strategy_id)
+    # The grant is checked against the strategy's own digest before anything is
+    # written. A grant names one exact policy, so this is what stops the
+    # predecessor's approval from being stretched over a revision nobody
+    # reviewed.
+    authorization.require(
+        strategy_id=strategy_id,
+        strategy_version=strategy_version,
+        fingerprint=fingerprint,
+        environment="EXTERNAL_PAPER",
+    )
+
+    history = RuntimeBindingHistory(root)
+    predecessor = history.active() or RuntimeBindingStore(root).require()
+    if str(getattr(predecessor, "strategy_id", strategy_id)) != strategy_id:
+        raise RuntimeBindingError(
+            Code.RUNTIME_REBIND_REFUSED,
+            f"this runtime is bound to strategy "
+            f"{getattr(predecessor, 'strategy_id', '')!r} and the revision names "
+            f"{strategy_id!r}. A revision changes a strategy's version, never its "
+            "identity: a different strategy deciding for these books is a new "
+            "runtime, because its decisions would share an accounting lineage "
+            "with decisions it never made",
+        )
+    if fingerprint == getattr(predecessor, "strategy_fingerprint", None):
+        raise RuntimeBindingError(
+            Code.RUNTIME_REBIND_REFUSED,
+            "the revised strategy fingerprints identically to the bound one, so "
+            "there is nothing to revise. Recording a transition that changed "
+            "nothing would put a reviewed-looking entry in the chain for a "
+            "review that had no subject",
+        )
+
+    if decisions is not None:
+        pending = decisions.pending()
+        if pending is not None:
+            raise RuntimeBindingError(
+                Code.RUNTIME_REBIND_PRECONDITION_FAILED,
+                f"decision {pending.decision.decision_session} is "
+                f"{pending.status} and has not reached a terminal state. Revising "
+                "the strategy underneath it would leave a decision in the store "
+                "that the bound strategy did not make and cannot be re-derived "
+                "from — it is neither executable nor explainable. Let it execute, "
+                "miss or be superseded first",
+            )
+
+    inherited = _inherit(predecessor)
+    inherited.update(
+        {
+            "strategy_version": strategy_version,
+            "strategy_fingerprint": fingerprint,
+            "strategy_authorization_fingerprint": authorization.fingerprint(),
+        }
+    )
+    binding = PaperOperationsRuntimeBindingV2(
+        version=RUNTIME_BINDING_V2_VERSION,
+        predecessor_fingerprint=predecessor.fingerprint(),
+        inherited=inherited,
+        account_binding_fingerprint=account_binding_fingerprint,
+        risk_policy_fingerprint=risk_policy.fingerprint(),
+        instrument_mapping_fingerprint=mapping.fingerprint(),
+        account_capability=account_capability_from_mapping(mapping),
+        reason=reason,
+        code_commit=code_commit,
+        created_at=now,
+        transition=STRATEGY_REVISION_VERSION,
+    )
+    _require_only_deployment_changed(predecessor, binding, allowed=STRATEGY_REVISION_FIELDS)
+    history.append(binding, now=now)
+    return binding
+
+
+def _require_paper_policy(risk_policy: Any) -> None:
+    """Refuse a risk policy that does not authorise exactly paper.
+
+    One definition, shared by both transitions, so a second transition cannot
+    be added with a quietly laxer version of the same three checks.
+
+    Args:
+        risk_policy: The policy offered.
+
+    Raises:
+        RuntimeBindingError: `RUNTIME_REBIND_REFUSED` for a policy that is not
+            paper-authorised, that claims live authorisation, or that names an
+            environment other than `EXTERNAL_PAPER`.
+    """
+    if not getattr(risk_policy, "authorized_for_paper", False):
+        raise RuntimeBindingError(
+            Code.RUNTIME_REBIND_REFUSED,
+            "the risk policy is not authorised for paper. A candidate is not an "
+            "authority, and a rebind does not grant one",
+        )
+    if getattr(risk_policy, "authorized_for_live", False):
+        raise RuntimeBindingError(
+            Code.RUNTIME_REBIND_REFUSED,
+            "the risk policy claims live authorisation. Live trading is "
+            "NOT_IMPLEMENTED and NOT_AUTHORIZED, and no binding here may imply it",
+        )
+    if str(getattr(risk_policy, "environment", "")) != "EXTERNAL_PAPER":
+        raise RuntimeBindingError(
+            Code.RUNTIME_REBIND_REFUSED,
+            f"the risk policy names environment "
+            f"{getattr(risk_policy, 'environment', '')!r}; this operation binds "
+            "EXTERNAL_PAPER only",
         )

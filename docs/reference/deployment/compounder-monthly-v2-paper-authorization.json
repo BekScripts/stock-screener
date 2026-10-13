@@ -1,0 +1,20 @@
+{
+  "approved_by": "repository owner \u2014 P2.3.1G \u00a70 and \u00a720",
+  "authorises": "deployment of this exact policy to a paper venue",
+  "authorization_fingerprint": "ff008ecad69b7c03a9781cd49eb926a19d38c1166576b09ff9c2c6d10f3d98b6",
+  "authorization_id": "ALPHATRADER_PAPER_COMPOUNDER_MONTHLY_V2_PAPER_GRANT_001",
+  "code_commit": "59e86d569df1a9e123b604058eada2cfc517025d",
+  "contract": "STRATEGY_DEPLOYMENT_AUTHORIZATION_V1",
+  "created_at": "2026-10-13T00:00:00+00:00",
+  "does_not_authorise": [
+    "any order, quantity or security",
+    "any sizing decision \u2014 the risk engine remains the only sizing authority",
+    "live trading, which is NOT_IMPLEMENTED and NOT_AUTHORIZED"
+  ],
+  "environment": "EXTERNAL_PAPER",
+  "live_trading": "NOT_IMPLEMENTED_NOT_AUTHORIZED",
+  "notes": "Approves ALPHATRADER_COMPOUNDER_MONTHLY_V2 for EXTERNAL_PAPER only. V2 is V1's selection restricted to the identities the paper venue will accept a fractional quantity for, with the restriction held in strategy authority. This grant is version- and fingerprint-specific: it does not cover V1, and it stops covering V2 the moment any rule in its policy changes. It binds no deployment universe snapshot \u2014 venue fractionability changes as the venue changes it, and a grant that expired on every such change would be re-approved without review. The universe actually used is bound into each decision's own fingerprint instead. Approving this authorises no rebind, no re-arm, no order and no live trading.",
+  "strategy_fingerprint": "a15887f81fa6dca1c5cd032ffbcbe70c32df0d3755c1d4b7911609ec4bd1d840",
+  "strategy_id": "ALPHATRADER_COMPOUNDER_MONTHLY",
+  "strategy_version": "ALPHATRADER_COMPOUNDER_MONTHLY_V2"
+}

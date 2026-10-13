@@ -36,10 +36,92 @@ appears without the run or the test that produced it.
 
 ## Current phase
 
-**P2.3.1F — authorized paper risk policy and lineage-preserving rebind — is the
-current checkpoint**, on `feat/p2-execution-engine`. No soak is armed, no V3
-exists, the real runtime has **not** been rebound, and real operations remain
-not armed and `KILLED / CONTROL_STATE_UNVERIFIABLE`.
+**P2.3.1G — aligned paper risk contract and fractionable strategy universe — is
+the current checkpoint**, on `feat/p2-execution-engine`. No soak is armed, no V3
+exists, the real runtime has **not** been rebound or revised, and real operations
+remain not armed and `KILLED / CONTROL_STATE_UNVERIFIABLE`.
+
+**The owner's `NO CAP` is now expressible, additively.**
+`PORTFOLIO_RISK_ENGINE_V1_3` extends `max_positions` to `int | None`: an integer
+`>= 1` keeps V1.2's count cap exactly, and `None` skips the count constraint and
+nothing else. The default stays `20`, which is load-bearing — defaulting it to
+`None` would silently uncap every policy written before this phase and relabel
+its decisions. A policy carrying an integer never reaches the V1.3 label, so
+V1.2's decisions, fingerprints and goldens reproduce byte for byte, correlation
+control included. Absence is expressed as absence: not `0`, not `-1`, not a
+large integer, not the universe size. `0` and `-1` are still refused.
+
+The one site that needed real care was the construction stage's truncation.
+`ranked[: policy.max_positions]` is the whole list for `None` — but
+`ranked[policy.max_positions :]` is *also* the whole list, so the obvious
+one-liner would have kept every name and rejected every name at once. It is an
+explicit branch.
+
+**`PAPER_PORTFOLIO_RISK_POLICY_V2`** (`9b367ed04a448ea7…`) carries the same
+thirteen owner-approved values against V1.3, derived from V1's own dict rather
+than retyped, with `max_positions: None` and `unrepresentable: ()` — so
+`engine_policy()` needs no argument and no substitution. **V1 is not rewritten:**
+`PAPER_PORTFOLIO_RISK_POLICY_V1` keeps its V1.2 binding, its named gap and its
+exact fingerprint `6804fbb289cf7fb9…`, because editing an approved artefact to
+look as though the gap had never existed would erase the record of what the owner
+approved against which engine.
+
+**`ALPHATRADER_PAPER_FRACTIONABLE_UNIVERSE_V1`** (`b5e4e946b3716c1d…`) is the
+deployment universe: `routable AND provider-stated fractionable`, derived
+mechanically from `ALPACA_PAPER_INSTRUMENT_MAPPING_V1` and never authored. There
+is no include list, no symbol allowlist and no override — the module exports one
+lower-case name, `fractionable_universe`, and it reads a mapping. Membership is
+`(kind, identity_id)`; no symbol appears in the body at all.
+
+Re-derived against the real venue and the real cross-section, the mapping
+fingerprint reproduced `4ae99e6120446bb1…` exactly, so the universe comes from
+the authorised evidence: **1,821 of 1,896** considered identities are deployable
+— 15 `UNMAPPED`, 1 `NOT_TRADABLE`, 59 `WHOLE_SHARE_ONLY`. One read-only
+`GET /v2/assets`, 0 POST, 0 DELETE.
+
+**`ALPHATRADER_COMPOUNDER_MONTHLY_V2`** (`a15887f81fa6dca1…`) is V1's selection
+over that universe, and the restriction lives **in strategy authority**. It
+subclasses V1 and overrides only the population it ranks, so every other rule —
+the ranking, `ceil(N/10)`, equal `1/K`, long-only, no hysteresis, no overlay, the
+monthly cadence, the close-of-session instant — is V1's rule by construction. A
+test drives both over identical evidence with a universe that excludes nothing
+and asserts the decisions match field for field.
+
+Three properties are load-bearing:
+
+| Property | Why |
+| --- | --- |
+| The decile is counted **after** the intersection | 9 deployable names ask for 1, not 2-then-trimmed. Otherwise the position count depends on how many undeployable names ranked above the line |
+| A research-eligible company excluded only for deployment is `DEPLOYMENT_NOT_FRACTIONALLY_ROUTABLE` | It passed `is_rank_eligible`. Folding it into a research reason puts a false statement about the business into the record |
+| The decision binds the universe fingerprint | A decision made against one set of venue capabilities can never be read as one made against another |
+
+A company failing both research and deployment keeps its *research* reason: the
+venue was never the binding constraint, and claiming it was would overstate what
+the restriction costs. `considered_count` stays the full offered count.
+
+**A V1 decision digests exactly what it always did.** The
+`deployment_universe_fingerprint` key enters the fingerprinted body only when a
+strategy restricts a universe; adding it unconditionally would have changed every
+recorded V1 decision fingerprint to record that nothing about V1 had moved.
+
+**A strategy revision is a named transition, not a weakened invariant.**
+`PAPER_OPERATIONS_STRATEGY_REVISION_V1` may move exactly
+`strategy_version`, `strategy_fingerprint` and
+`strategy_authorization_fingerprint`. `strategy_id`, all three generations and
+the bootstrap epoch stay immutable — a *different* strategy deciding for these
+books is a new runtime, because its decisions would share an accounting lineage
+with decisions it never made. The invariant was not loosened: the check takes an
+`allowed` exemption that defaults to empty, so a plain rebind still refuses every
+one of those fields, and a test asserts that default off the signature.
+
+A revision writes no `OpeningBalanceEvent` and reads no cash, verifies the grant
+against the strategy's own fingerprint before writing anything, refuses an
+identical fingerprint as a transition with no subject, and **refuses while a
+decision awaits execution** — revising underneath a pending decision would leave
+a decision in the store the bound strategy did not make and cannot be re-derived
+from. It has **not** been executed against the real runtime.
+
+**P2.3.1F remains in force below**, unchanged.
 
 **The paper risk policy is authorised.** `PAPER_PORTFOLIO_RISK_POLICY_V1`
 (`6804fbb289cf7fb9…`) carries the owner's approved limits for `EXTERNAL_PAPER`
@@ -94,7 +176,8 @@ fractional capability means binding a fractionable-only subset — or accepting
 that those 59 are refused when selected.
 
 **P2.3.1E's artefacts stand unchanged.** `ALPACA_PAPER_INSTRUMENT_MAPPING_V1`
-(`4ae99e6120446bb1…`) was not regenerated.
+(`4ae99e6120446bb1…`) was not regenerated. P2.3.1G re-derived it from the venue
+to verify the deployment universe and it reproduced the same fingerprint.
 
 The two inputs P2.3.1D exposed are now separated along the line that matters,
 because they are not the same kind of thing:
@@ -492,6 +575,7 @@ frozen at the same commit; P2 branched from it.
 | S1.0 environments | **EXTERNAL_PAPER only**; live absent and named forbidden |
 | S1.0 efficacy claim | **NONE** — an authority, not a validated edge |
 | S1.0 checkpoint | tag `s1-compounder-strategy-authority-complete` (`91f7e06`) |
+| S1.0 deployment variant | **ALPHATRADER_COMPOUNDER_MONTHLY_V2** (P2.3.1G) — V1's rules over the fractionable universe; V1 unchanged |
 | P2.3.1B | **INTEGRATION PARTIAL** — foundations built, execution path not |
 | P2.3.1B schedule | **PAPER_OPERATIONS_SCHEDULE_V1_1** — additive; V1 run ids unchanged |
 | P2.3.1B decision slot | month-end session, **16:00 ET close** |
@@ -572,6 +656,16 @@ frozen at the same commit; P2 branched from it.
 | P2.3.1F rebind history | `PAPER_OPERATIONS_RUNTIME_REBIND_CHAIN_V1` — append-only, anchored |
 | P2.3.1F lineages | accounting, execution, operations and bootstrap epoch all preserved |
 | P2.3.1F real rebind | **not executed** — the owner has not authorised the state transition |
+| P2.3.1G engine | `PORTFOLIO_RISK_ENGINE_V1_3` — additive, `max_positions: int \| None`; default still 20 |
+| P2.3.1G risk policy | `PAPER_PORTFOLIO_RISK_POLICY_V2`, `9b367ed04a448ea7…` — AUTHORIZED for `EXTERNAL_PAPER`, no unrepresentable field |
+| P2.3.1G V1 policy | `6804fbb289cf7fb9…` — unchanged, still bound to V1.2 with `max_positions` named |
+| P2.3.1G universe | `ALPHATRADER_PAPER_FRACTIONABLE_UNIVERSE_V1`, `b5e4e946b3716c1d…` — **1,821 of 1,896** |
+| P2.3.1G universe rule | `ROUTABLE_AND_PROVIDER_STATED_FRACTIONABLE_V1` — derived from the mapping, never authored |
+| P2.3.1G strategy | `ALPHATRADER_COMPOUNDER_MONTHLY_V2`, `a15887f81fa6dca1…` — restriction in strategy authority |
+| P2.3.1G V2 grant | `ff008ecad69b7c03…` — `EXTERNAL_PAPER` only, version- and fingerprint-specific |
+| P2.3.1G transition | `PAPER_OPERATIONS_STRATEGY_REVISION_V1` — 3 exempt fields, `strategy_id` not among them |
+| P2.3.1G real revision | **not executed** — the owner has not authorised the state transition |
+| P2.3.1G external calls | 1 read-only `GET /v2/assets`; 0 POST, 0 DELETE, 0 PAPER mutations |
 | H2 broker-paper orders | **NOT AUTHORISED** — its own frozen ladder says so |
 | Live trading | **NOT IMPLEMENTED, NOT AUTHORIZED** |
 | Production risk thresholds | **NOT AUTHORIZED** |
@@ -608,6 +702,36 @@ permit a fractional order for one that cannot take it.
 `EXAMPLE_POLICY_V1`'s 20, which declares itself unauthorised. Every
 owner-approved limit is therefore stated explicitly, and a field the engine
 cannot express is refused rather than left to inherit.
+
+**A new engine capability never relabels an old decision (P2.3.1G).** V1.3 is
+selected only by the capability that is new to it — a policy carrying an integer
+`max_positions` keeps the version it had, correlation control included — and the
+engine default stays `20`. A version label is a claim that a decision reproduces
+from a named pipeline, so widening a field must not move decisions that the
+widening never touched.
+
+**Slice semantics are not a substitute for an explicit branch (P2.3.1G).**
+`ranked[:None]` is the whole list and `ranked[None:]` is *also* the whole list,
+so a truncation written as a pair of complementary slices keeps everything and
+rejects everything at once for an absent cap. Absence gets its own branch.
+
+**A deployment restriction belongs in strategy authority (P2.3.1G).** Narrowing
+the universe underneath the strategy — in execution, in order sizing, in
+quantity rounding — means the decision record claims a position the account never
+held. The strategy must not ask for what cannot be placed, and the record must
+say, per company, that the reason was the venue. A research-eligible company
+excluded for a venue capability is `DEPLOYMENT_NOT_FRACTIONALLY_ROUTABLE` and
+never a research reason.
+
+**A target count is computed after every restriction, never before (P2.3.1G).**
+Taking the decile first and trimming afterwards makes the position count depend
+on how many unholdable names happened to rank above the line.
+
+**A field added to a chained record must round-trip (P2.3.1G).** The binding
+`transition` field was added to the write path and not the read path, so a
+reloaded record digested to a different body and the supersession chain stopped
+verifying. The guard is a test that reloads from disk and re-verifies the chain,
+not an assertion on the object still in memory.
 
 **Deployment evidence and deployment judgment are different artefacts
 (P2.3.1E).** An instrument mapping is read from the internal identity record and

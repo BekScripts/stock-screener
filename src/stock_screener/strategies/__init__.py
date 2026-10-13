@@ -41,6 +41,12 @@ from .compounder_monthly import (
     is_decision_session,
     target_count,
 )
+from .compounder_monthly_fractionable import (
+    DEPLOYMENT_EXCLUSION_REASON,
+    STRATEGY_VERSION_V2,
+    CompounderMonthlyFractionableStrategy,
+    DeploymentUniverseView,
+)
 from .errors import Code, StrategyError
 from .fingerprint import FINGERPRINT_SCHEME, strategy_fingerprint_of
 from .models import (
@@ -62,6 +68,7 @@ __all__ = [
     "AUTHORIZED_ENVIRONMENTS",
     "CADENCE",
     "DECILE_FRACTION",
+    "DEPLOYMENT_EXCLUSION_REASON",
     "FINGERPRINT_SCHEME",
     "FORBIDDEN_ENVIRONMENTS",
     "SELECTION_RULE",
@@ -70,9 +77,12 @@ __all__ = [
     "STRATEGY_MANIFEST_VERSION",
     "STRATEGY_STATE_VERSION",
     "STRATEGY_VERSION",
+    "STRATEGY_VERSION_V2",
     "TARGET_COUNT_RULE",
     "Code",
+    "CompounderMonthlyFractionableStrategy",
     "CompounderMonthlyStrategy",
+    "DeploymentUniverseView",
     "StrategyDecision",
     "StrategyDeploymentAuthorization",
     "StrategyError",

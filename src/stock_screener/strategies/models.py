@@ -288,6 +288,11 @@ class StrategyDecision:
             order is implied here and none is computed.
         previous_decision_fingerprint: What this supersedes, when anything.
         excluded_counts: Why records were not selectable, by reason.
+        deployment_universe_fingerprint: The deployment universe this was
+            decided against, for a strategy that restricts one. Empty for a
+            strategy that does not, and omitted from the fingerprinted body
+            when empty — a V1 decision digests exactly what it always did,
+            which is what keeps its recorded fingerprints valid.
     """
 
     strategy_id: str
@@ -306,6 +311,7 @@ class StrategyDecision:
     exits: tuple[SecurityIdentity, ...] = ()
     previous_decision_fingerprint: str | None = None
     excluded_counts: dict[str, int] = field(default_factory=dict)
+    deployment_universe_fingerprint: str = ""
 
     @property
     def selected_identities(self) -> tuple[SecurityIdentity, ...]:
@@ -314,7 +320,7 @@ class StrategyDecision:
 
     def body(self) -> dict[str, Any]:
         """Return the decision's semantic content. Carries no credential."""
-        return {
+        body: dict[str, Any] = {
             "strategy_id": self.strategy_id,
             "strategy_version": self.strategy_version,
             "strategy_fingerprint": self.strategy_fingerprint,
@@ -332,6 +338,11 @@ class StrategyDecision:
             "previous_decision_fingerprint": self.previous_decision_fingerprint,
             "excluded_counts": dict(sorted(self.excluded_counts.items())),
         }
+        if self.deployment_universe_fingerprint:
+            # Bound into the digest, so a decision made against one set of venue
+            # capabilities can never be mistaken for one made against another.
+            body["deployment_universe_fingerprint"] = self.deployment_universe_fingerprint
+        return body
 
     def fingerprint(self) -> str:
         """Digest the decision."""

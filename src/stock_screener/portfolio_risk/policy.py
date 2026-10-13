@@ -128,7 +128,12 @@ class RiskPolicy:
         max_gross_exposure: Cap on the sum of absolute target weights.
         max_net_exposure: Cap on the sum of signed target weights. None is no cap.
         max_position_weight: Cap on any single target weight.
-        max_positions: Cap on the number of held positions.
+        max_positions: Cap on the number of held positions. `None` is no cap —
+            the count constraint is skipped and every other limit still
+            applies. V1.2 and earlier only ever carry an integer, so a policy
+            written before `PORTFOLIO_RISK_ENGINE_V1_3` behaves exactly as it
+            did; absence is expressed as absence rather than as a large number,
+            because a sentinel cap is a cap somebody will one day hit.
         min_cash_weight: Cash that must remain unallocated.
         max_trade_notional_weight: Cap on a single trade as a fraction of NAV.
             None is no cap.
@@ -172,7 +177,7 @@ class RiskPolicy:
     max_gross_exposure: float = 1.0
     max_net_exposure: float | None = None
     max_position_weight: float = 0.10
-    max_positions: int = 20
+    max_positions: int | None = 20
     min_cash_weight: float = 0.05
     max_trade_notional_weight: float | None = None
     min_position_weight: float | None = None
@@ -208,7 +213,7 @@ class RiskPolicy:
                 f"max_position_weight must be positive, got {self.max_position_weight!r}; "
                 "a policy permitting no position size authorises nothing"
             )
-        if self.max_positions < 1:
+        if self.max_positions is not None and self.max_positions < 1:
             raise PolicyError(f"max_positions must be at least 1, got {self.max_positions!r}")
         if self.max_net_exposure is not None and self.max_net_exposure < 0 and self.long_only:
             raise PolicyError(
@@ -276,6 +281,9 @@ class RiskPolicy:
         # would otherwise scale weights toward a budget it can never reach.
         if (
             self.construction_mode is ConstructionMode.NORMALIZE_TO_INVESTABLE_BUDGET
+            # With no count cap the per-name capacity is unbounded, so a policy
+            # that promises to fill its budget always can.
+            and self.max_positions is not None
             and self.max_position_weight * self.max_positions < self.investable_budget - 1e-12
         ):
             raise PolicyError(

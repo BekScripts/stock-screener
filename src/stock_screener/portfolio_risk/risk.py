@@ -305,9 +305,16 @@ def authorize(
         requested,
         key=lambda key: (-constructed.priorities.get(key, 0.0), key[0], key[1]),
     )
-    kept = ranked[: policy.max_positions]
-    for key in ranked[policy.max_positions :]:
-        rejected[key] = [ReasonCode.MAX_POSITION_COUNT]
+    # No cap keeps every ranked request. Written as an explicit branch rather
+    # than relying on slice semantics: `ranked[:None]` is the whole list but
+    # `ranked[None:]` is *also* the whole list, so the obvious one-liner would
+    # keep everything and reject everything at the same time.
+    if policy.max_positions is None:
+        kept = list(ranked)
+    else:
+        kept = ranked[: policy.max_positions]
+        for key in ranked[policy.max_positions :]:
+            rejected[key] = [ReasonCode.MAX_POSITION_COUNT]
     weights = {key: requested[key] for key in kept}
 
     # stage 2 — per-name cap

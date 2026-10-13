@@ -211,6 +211,24 @@ class CompounderMonthlyStrategy:
 
         return fingerprint_of(self.policy())
 
+    def decision_instant_for(self, session: str) -> str:
+        """The instant a decision for this session is made.
+
+        One definition, so a subclass that must check its inputs before
+        narrowing them cannot drift to a different close.
+
+        Args:
+            session: An ISO date.
+
+        Returns:
+            The session's close, ISO-8601 with offset.
+        """
+        from datetime import date as _date
+
+        from stock_screener.pit.decision_time import DecisionPoint, decision_instant
+
+        return decision_instant(_date.fromisoformat(session), DecisionPoint.CLOSE).isoformat()
+
     def decide(
         self,
         bundle: StrategyInputBundle,
@@ -241,8 +259,6 @@ class CompounderMonthlyStrategy:
                 nothing can execute must not be recorded as actionable; and
                 whatever `require_admissible` raises.
         """
-        from stock_screener.pit.decision_time import DecisionPoint, decision_instant
-
         if session not in calendar.sessions:
             raise StrategyError(
                 Code.STRATEGY_SESSION_NOT_IN_CALENDAR,
@@ -263,11 +279,7 @@ class CompounderMonthlyStrategy:
                 f"carries {bundle.score_version!r}. No comparison crosses versions",
             )
 
-        from datetime import date as _date
-
-        decision_at = decision_instant(
-            _date.fromisoformat(session), DecisionPoint.CLOSE
-        ).isoformat()
+        decision_at = self.decision_instant_for(session)
         bundle.require_admissible(decision_at=decision_at)
 
         execution = calendar.next_session(session)
@@ -307,8 +319,11 @@ class CompounderMonthlyStrategy:
         exits = tuple(identity for identity in held if identity.key not in selected_keys)
 
         return StrategyDecision(
-            strategy_id=STRATEGY_ID,
-            strategy_version=STRATEGY_VERSION,
+            # Read from the instance, not the module constants: the values are
+            # identical for V1, and a subclass that narrows the universe must
+            # stamp its own identity rather than claim V1 decided.
+            strategy_id=self.strategy_id,
+            strategy_version=self.strategy_version,
             strategy_fingerprint=self.fingerprint(),
             decision_session=session,
             decision_at=decision_at,
@@ -346,11 +361,11 @@ class CompounderMonthlyStrategy:
         """
         from stock_screener.portfolio_risk import Direction, StrategyIntent
 
-        if decision.strategy_version != STRATEGY_VERSION:
+        if decision.strategy_version != self.strategy_version:
             raise StrategyError(
                 Code.STRATEGY_INPUT_VERSION_MISMATCH,
                 f"decision was made by {decision.strategy_version!r}, not "
-                f"{STRATEGY_VERSION!r}; intents are never re-derived across versions",
+                f"{self.strategy_version!r}; intents are never re-derived across versions",
             )
         digest = decision.fingerprint()
         rows: list[StrategyIntent] = [

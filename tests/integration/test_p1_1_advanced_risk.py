@@ -984,6 +984,7 @@ def test_every_control_binding_at_once_respects_every_limit() -> None:
     decision = evaluate(intents, snapshot, policy, risk=risk)
     report = _report(decision)
 
+    assert policy.max_positions is not None
     assert len(decision.approved.targets) <= policy.max_positions
     assert all(w <= policy.max_position_weight + 1e-9 for w in decision.approved.targets.values())
     assert (
@@ -1539,6 +1540,7 @@ def test_every_generated_case_satisfies_every_invariant(
     assert all(weight >= 0 for weight in targets.values()), name
     assert all(math.isfinite(weight) for weight in targets.values()), name
     assert all(weight <= policy.max_position_weight + 1e-7 for weight in targets.values()), name
+    assert policy.max_positions is not None, name
     assert len(targets) <= policy.max_positions, name
     assert decision.approved.gross_exposure <= effective_gross + 1e-7, name
     assert decision.approved.cash_target_weight >= policy.min_cash_weight - 1e-7, name

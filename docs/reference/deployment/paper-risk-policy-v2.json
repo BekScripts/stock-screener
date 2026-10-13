@@ -1,0 +1,53 @@
+{
+  "authorized_for_live": false,
+  "authorized_for_paper": true,
+  "engine_version": "PORTFOLIO_RISK_ENGINE_V1_3",
+  "environment": "EXTERNAL_PAPER",
+  "limitations": [
+    "EXTERNAL_PAPER only. LIVE, EXTERNAL_LIVE and PRODUCTION_LIVE are not authorised and live trading remains NOT_IMPLEMENTED.",
+    "These are operational safety limits, not return-optimised parameters. None was fitted to historical performance.",
+    "Approving this artefact does not authorise a runtime rebind, a paper re-arm, or any broker mutation.",
+    "No value is inherited from EXAMPLE_POLICY_V1 or from an engine default: every approved field is stated here explicitly."
+  ],
+  "limits": {
+    "construction_mode": "PRESERVE_ABSOLUTE_WEIGHTS",
+    "correlation_threshold": 0.85,
+    "drawdown_bands": [
+      [
+        -0.05,
+        0.75,
+        "drawdown>=5%"
+      ],
+      [
+        -0.1,
+        0.5,
+        "drawdown>=10%"
+      ],
+      [
+        -0.15,
+        0.25,
+        "drawdown>=15%"
+      ],
+      [
+        -0.2,
+        0.0,
+        "drawdown>=20%"
+      ]
+    ],
+    "max_correlated_pair_exposure": 0.03,
+    "max_portfolio_volatility": 0.25,
+    "max_position_adv_fraction": 0.01,
+    "max_position_weight": 0.02,
+    "max_positions": null,
+    "max_risk_metric_age_seconds": 345600.0,
+    "max_trade_adv_fraction": 0.0025,
+    "max_trade_notional_weight": 0.02,
+    "min_cash_weight": 0.05,
+    "min_position_weight": null
+  },
+  "policy_fingerprint": "9b367ed04a448ea71e19bf064d4ffb7bcc6d06fcd832fd99c246746e2cc3f04b",
+  "policy_id": "ALPHATRADER_PAPER",
+  "policy_version": "V2",
+  "unrepresentable": [],
+  "version": "PAPER_PORTFOLIO_RISK_POLICY_V2"
+}

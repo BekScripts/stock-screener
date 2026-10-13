@@ -53,6 +53,7 @@ if TYPE_CHECKING:
 log = structlog.get_logger(__name__)
 
 __all__ = [
+    "NO_POSITION_CAP_ENGINE_VERSION",
     "TURNOVER_DEFINITION_ID",
     "ApprovedPortfolio",
     "InvariantViolationError",
@@ -68,6 +69,15 @@ TURNOVER_DEFINITION_ID = "PORTFOLIO_WEIGHT_TURNOVER_ESTIMATE_V1"
 #: labels and their own stage orders, so their decisions and golden outputs still
 #: reproduce rather than being relabelled by a later phase.
 MULTI_STRATEGY_ENGINE_VERSION = "PORTFOLIO_RISK_ENGINE_V1_2"
+
+#: The engine version when the policy declares no position-count cap. Additive:
+#: the only semantic difference from V1.2 is that `max_positions=None` skips the
+#: count constraint, and every other rule — the weight cap, the cash floor, the
+#: trade cap, volatility, ADV, drawdown scaling, metric freshness, correlation
+#: and the long-only and gross limits — applies unchanged. A policy carrying an
+#: integer cap never reaches this label, so V1.2's decisions and goldens
+#: reproduce byte for byte.
+NO_POSITION_CAP_ENGINE_VERSION = "PORTFOLIO_RISK_ENGINE_V1_3"
 
 #: The engine version when market-risk inputs are supplied. V1 is preserved
 #: exactly: with no risk snapshot the engine reports V1 and reproduces a V1
@@ -233,7 +243,7 @@ def _assert_invariants(outcome: RiskOutcome, policy: RiskPolicy) -> None:
             failures.append(
                 f"{label} at {weight} exceeds max_position_weight {policy.max_position_weight}"
             )
-    if len(approved) > policy.max_positions:
+    if policy.max_positions is not None and len(approved) > policy.max_positions:
         failures.append(f"{len(approved)} positions exceeds max_positions {policy.max_positions}")
     gross_limit = (
         outcome.effective.max_gross_exposure
@@ -413,6 +423,11 @@ def _engine_version(
     Returns:
         The engine version string.
     """
+    # Checked first because it is the newest capability and a strict superset:
+    # a no-cap policy ran a pipeline no earlier version could express, so
+    # labelling it V1.2 would claim a reproducibility that does not hold.
+    if policy.max_positions is None:
+        return NO_POSITION_CAP_ENGINE_VERSION
     if allocation is not None or policy.uses_correlation_control:
         return MULTI_STRATEGY_ENGINE_VERSION
     return ADVANCED_ENGINE_VERSION if risk is not None else ENGINE_VERSION
@@ -560,7 +575,9 @@ def evaluate(
     version = _engine_version(risk, policy, allocation)
     stage_order = (
         ADVANCED_STAGE_ORDER_V1_2
-        if version == MULTI_STRATEGY_ENGINE_VERSION
+        # V1.3 runs V1.2's pipeline with the count stage permitting everything,
+        # so it keeps V1.2's stage order rather than falling back to V1.1's.
+        if version in {MULTI_STRATEGY_ENGINE_VERSION, NO_POSITION_CAP_ENGINE_VERSION}
         else ADVANCED_STAGE_ORDER
     )
     if aggregated is not None:
