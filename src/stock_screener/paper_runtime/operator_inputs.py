@@ -52,17 +52,20 @@ __all__ = [
     "OPERATOR_INPUT_FILES",
     "REQUIRED_OPERATOR_INPUTS",
     "RISK_POLICY_FILENAME",
+    "STRATEGY_AUTHORIZATION_FILENAME",
     "SYMBOL_MAPPING_FILENAME",
     "OperatorInputStatus",
     "operator_input_status",
     "read_deployment_capability",
     "read_deployment_universe",
     "read_risk_policy",
+    "read_strategy_authorization",
     "read_symbol_mapping",
     "stored_marks",
     "write_deployment_capability",
     "write_deployment_universe",
     "write_risk_policy",
+    "write_strategy_authorization",
     "write_symbol_mapping",
 ]
 
@@ -74,6 +77,7 @@ RISK_POLICY_FILENAME = "risk_policy.json"
 SYMBOL_MAPPING_FILENAME = "symbol_mapping.json"
 DEPLOYMENT_UNIVERSE_FILENAME = "deployment_universe.json"
 DEPLOYMENT_CAPABILITY_FILENAME = "deployment_capability.json"
+STRATEGY_AUTHORIZATION_FILENAME = "strategy_authorization.json"
 
 #: Which artefacts each runtime-binding contract requires. Data rather than a
 #: branch, so the coverage guard can check every declared artefact has a writer,
@@ -87,6 +91,7 @@ REQUIRED_OPERATOR_INPUTS: dict[str, tuple[str, ...]] = {
         "SYMBOL_MAPPING",
         "DEPLOYMENT_UNIVERSE",
         "DEPLOYMENT_CAPABILITY",
+        "STRATEGY_AUTHORIZATION",
     ),
 }
 
@@ -103,6 +108,10 @@ OPERATOR_INPUT_FILES: dict[str, tuple[str, str]] = {
     "DEPLOYMENT_CAPABILITY": (
         DEPLOYMENT_CAPABILITY_FILENAME,
         "deployment_capability_fingerprint",
+    ),
+    "STRATEGY_AUTHORIZATION": (
+        STRATEGY_AUTHORIZATION_FILENAME,
+        "strategy_authorization_fingerprint",
     ),
 }
 
@@ -181,7 +190,7 @@ def operator_input_status(root: Path, *, binding_version: str = "") -> OperatorI
             f"no authored symbol mapping at runtime/{SYMBOL_MAPPING_FILENAME}; "
             "nothing declares which securities this runtime may route to the venue"
         )
-    for name in ("DEPLOYMENT_UNIVERSE", "DEPLOYMENT_CAPABILITY"):
+    for name in ("DEPLOYMENT_UNIVERSE", "DEPLOYMENT_CAPABILITY", "STRATEGY_AUTHORIZATION"):
         if name not in required:
             continue
         filename, _ = OPERATOR_INPUT_FILES[name]
@@ -639,4 +648,73 @@ def write_deployment_capability(root: Path, capability: Any) -> Path:
 
     path = _directory(root) / DEPLOYMENT_CAPABILITY_FILENAME
     atomic_write_verified(path, capability.as_json())
+    return path
+
+
+def read_strategy_authorization(root: Path, *, expected_fingerprint: str = "") -> Any:
+    """Read the deployment grant this runtime is bound to.
+
+    The grant is an operator artefact rather than something production
+    reconstructs, for the same reason the risk policy is: it records a judgement
+    only an owner can make. Production's job is to check that the grant on disk
+    is the one the binding names, and then to ask it whether this exact
+    strategy, universe and environment are covered.
+
+    Args:
+        root: The operations root.
+        expected_fingerprint: The fingerprint the active binding names. The
+            artefact is refused unless it matches.
+
+    Returns:
+        The `StrategyDeploymentAuthorizationV2`.
+
+    Raises:
+        RuntimeBindingError: `RUNTIME_STRATEGY_AUTHORIZATION_NOT_AUTHORED` when
+            absent, `RUNTIME_OPERATOR_INPUT_UNREADABLE` when malformed or of an
+            unknown contract, or
+            `RUNTIME_OPERATOR_INPUT_FINGERPRINT_MISMATCH` when it does not
+            digest to the bound value.
+    """
+    from stock_screener.strategies import StrategyDeploymentAuthorizationV2, StrategyError
+
+    path = _directory(root) / STRATEGY_AUTHORIZATION_FILENAME
+    body = _read_body(
+        path,
+        code=Code.RUNTIME_STRATEGY_AUTHORIZATION_NOT_AUTHORED,
+        what="the runtime strategy deployment authorization",
+    )
+    try:
+        grant = StrategyDeploymentAuthorizationV2.from_body(body)
+    except StrategyError as exc:
+        raise RuntimeBindingError(
+            Code.RUNTIME_OPERATOR_INPUT_UNREADABLE,
+            f"the strategy authorization at {path} is not valid: {exc}",
+        ) from exc
+    _require_fingerprint(
+        path,
+        got=grant.fingerprint(),
+        expected=expected_fingerprint,
+        what="the strategy deployment authorization",
+    )
+    return grant
+
+
+def write_strategy_authorization(root: Path, authorization: Any) -> Path:
+    """Persist a deployment grant as an operator artefact.
+
+    Writes the grant's own serialisation, so what is read back digests to
+    exactly what was approved. It authorises nothing by being written: the
+    binding transition is what makes an artefact authoritative.
+
+    Args:
+        root: The operations root.
+        authorization: The grant to freeze.
+
+    Returns:
+        Where it was written.
+    """
+    from stock_screener.paper_operations import atomic_write_verified
+
+    path = _directory(root) / STRATEGY_AUTHORIZATION_FILENAME
+    atomic_write_verified(path, authorization.as_json())
     return path

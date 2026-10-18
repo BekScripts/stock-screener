@@ -109,11 +109,13 @@ from .operator_inputs import (
     read_deployment_capability,
     read_deployment_universe,
     read_risk_policy,
+    read_strategy_authorization,
     read_symbol_mapping,
     stored_marks,
     write_deployment_capability,
     write_deployment_universe,
     write_risk_policy,
+    write_strategy_authorization,
     write_symbol_mapping,
 )
 from .orchestration import RuntimeOrchestrationOutcome, RuntimePlanner
@@ -270,6 +272,7 @@ __all__ = [
     "read_deployment_capability",
     "read_deployment_universe",
     "read_risk_policy",
+    "read_strategy_authorization",
     "read_symbol_mapping",
     "rebind_plan",
     "rebind_runtime",
@@ -285,5 +288,6 @@ __all__ = [
     "write_deployment_capability",
     "write_deployment_universe",
     "write_risk_policy",
+    "write_strategy_authorization",
     "write_symbol_mapping",
 ]

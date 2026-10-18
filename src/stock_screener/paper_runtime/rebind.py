@@ -1106,6 +1106,8 @@ def revise_deployment(
             `RUNTIME_REBIND_PRECONDITION_FAILED` for in-flight authority;
             `RUNTIME_NOT_BOUND` for a root with nothing to supersede.
     """
+    from stock_screener.strategies import require_authorization
+
     from .binding import RuntimeBindingStore
     from .deployment_capability import DEPLOYMENT_CAPABILITY_VERSION
     from .universe import DEPLOYMENT_UNIVERSE_VERSION
@@ -1146,11 +1148,15 @@ def revise_deployment(
     fingerprint = strategy.fingerprint()
     strategy_version = str(strategy.strategy_version)
     strategy_id = str(strategy.strategy_id)
-    authorization.require(
+    # Checked through the dispatching checker, so a grant that binds a universe
+    # is asked about this universe rather than about the strategy alone.
+    require_authorization(
+        authorization,
         strategy_id=strategy_id,
         strategy_version=strategy_version,
         fingerprint=fingerprint,
         environment="EXTERNAL_PAPER",
+        universe_fingerprint=universe.fingerprint(),
     )
 
     history = RuntimeBindingHistory(root)

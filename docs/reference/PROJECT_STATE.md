@@ -36,8 +36,58 @@ appears without the run or the test that produced it.
 
 ## Current phase
 
-**P2.3.1I — binding-driven paper deployment resolution — is the current
-checkpoint**, on `feat/p2-execution-engine`. No soak is armed, no V3 *soak*
+**P2.3.1I2 — paper deployment authorization bound to its universe — is the
+current checkpoint**, on `feat/p2-execution-engine`. The real runtime is still
+bound to V1, still not armed, still `KILLED / CONTROL_STATE_UNVERIFIABLE`.
+
+**P2.3.1H2 stopped before writing anything, for two reasons.** The phase
+specification carried no operator grant — the authorization §0 requires has to be
+a statement in the operator's own message, or the gate authorizes itself — so the
+verdict was B and nothing was written. The preflight was clean (`RECONCILED`,
+both ledgers verified, 0 incidents, no pending decision, 3 GET / 0 POST / 0
+DELETE) and every target verified.
+
+It also surfaced a real contract gap, which P2.3.1I2 closes. §13 of that phase
+asked the V2 grant to bind the deployment-universe fingerprint, and it did not —
+deliberately, under P2.3.1G's reasoning that venue fractionability changes would
+churn grants. **The owner overruled that**: V2 ranks the intersection of research
+eligibility and the deployment universe, so a different universe changes which
+companies are eligible and can change the resulting portfolio. A grant that did
+not name the universe authorised outcomes nobody had reviewed.
+
+**`STRATEGY_DEPLOYMENT_AUTHORIZATION_V2`** is additive beside V1, which keeps its
+exact schema and whose issued grant `ff008eca…` stays byte-identical as the
+record of what was approved when a universe was not yet part of the authority. V2
+binds the strategy fingerprint **and** the universe fingerprint and version, plus
+the environment and an explicit `authorization_state` — so a withdrawn grant can
+be kept as evidence rather than deleted. The grant in force is
+`2e009948019e6541…`, naming strategy `a15887f8…` over universe `b5e4e946…`, and
+recording `ff008eca…` as what it supersedes. Provenance only: naming a
+predecessor promotes nothing.
+
+No wildcards, in either direction. A grant cannot be *issued* with a blank
+universe, and a grant cannot be *checked* without one — `require_authorization`
+refuses rather than falling back to the weaker question, because a caller that
+forgot the universe would otherwise get V1's authority out of a V2 grant and
+nothing would record that the stronger check never ran. A changed universe
+fingerprint means the grant does not apply and a new one must be reviewed. That
+cost is the point.
+
+**Production asks the grant, not only the binding.** The grant is now a fifth
+fingerprint-pinned operator artefact (`runtime/strategy_authorization.json`),
+required by V3 and not by V1 or V2. `compose_operations` loads it, refuses it
+unless it digests to the fingerprint the active binding names, and then puts the
+exact strategy, universe and environment to it. Checking only the binding would
+have made the grant decorative, since the binding is what the transition wrote in
+the first place.
+
+**Three authorities now independently record the universe** — the grant, the V3
+runtime binding and the strategy decision — and a test reads the field off each
+contract rather than trusting that they agree.
+
+**P2.3.1I remains in force below**, unchanged.
+
+**P2.3.1I — binding-driven paper deployment resolution**, on `feat/p2-execution-engine`. No soak is armed, no V3 *soak*
 exists, the real runtime is **still bound to V1** and has not been rebound or
 revised, and real operations remain not armed and
 `KILLED / CONTROL_STATE_UNVERIFIABLE`.
@@ -758,6 +808,14 @@ frozen at the same commit; P2 branched from it.
 | P2.3.1I transition | `revise_deployment` — V1 → V3 direct; **not executed against the real runtime** |
 | P2.3.1I real runtime | still `PAPER_OPERATIONS_RUNTIME_BINDING_V1`, 0 operator files, 0 supersessions |
 | P2.3.1I external calls | **0** — every run used a scripted or absent transport |
+| P2.3.1H2 verdict | **B — authorization required**; 0 real runtime state written; 3 GET / 0 POST / 0 DELETE |
+| P2.3.1I2 contract | `STRATEGY_DEPLOYMENT_AUTHORIZATION_V2` — binds strategy **and** universe |
+| P2.3.1I2 grant in force | `2e009948019e6541a26c373940742034300f1034dec6a84662e43ec7616bd8c9` |
+| P2.3.1I2 historical grant | `ff008ecad69b7c03…` — byte-identical, V1 contract, not promoted |
+| P2.3.1I2 wildcards | **none** — a blank universe cannot be issued and cannot be checked |
+| P2.3.1I2 operator artefacts | **5** for V3; the grant is fingerprint-pinned by the binding |
+| P2.3.1I2 universe authorities | grant + runtime binding + strategy decision, all three |
+| P2.3.1I2 real runtime | untouched — still V1, 0 operator files, 0 supersessions |
 | H2 broker-paper orders | **NOT AUTHORISED** — its own frozen ladder says so |
 | Live trading | **NOT IMPLEMENTED, NOT AUTHORIZED** |
 | Production risk thresholds | **NOT AUTHORIZED** |
@@ -794,6 +852,21 @@ permit a fractional order for one that cannot take it.
 `EXAMPLE_POLICY_V1`'s 20, which declares itself unauthorised. Every
 owner-approved limit is therefore stated explicitly, and a field the engine
 cannot express is refused rather than left to inherit.
+
+**A grant must name every input that can change the outcome (P2.3.1I2).** Binding
+a strategy's fingerprint is sufficient authority only when its behaviour is a
+function of its own rules. V2 of the Compounder ranks a population it is *given*,
+so the universe is part of what was approved: the same approved policy over a
+different universe can choose a different portfolio, and a grant silent about the
+universe would cover that without review. Neither side has a wildcard, and a
+universe-binding grant checked without a universe is refused rather than narrowed
+to the weaker question.
+
+**An authority that is only checked against itself is decorative (P2.3.1I2).** The
+runtime binding records which grant applies; the grant records what an owner
+approved. Production loads the grant, pins it to the fingerprint the binding
+names, and asks it the question — because verifying the binding against the
+binding would prove nothing about the approval.
 
 **The binding names the strategy; production never picks one (P2.3.1I).** A
 runtime that constructed an implementation and then asked the binding whether it

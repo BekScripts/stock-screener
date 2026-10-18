@@ -258,12 +258,14 @@ def compose_operations(
         SubmissionIntentLog,
     )
     from stock_screener.execution.external.request_audit import RequestAuditStore
+    from stock_screener.strategies import require_authorization
 
     from .environment import AlphaTraderPaperOperationsEnvironment
     from .operator_inputs import (
         read_deployment_capability,
         read_deployment_universe,
         read_risk_policy,
+        read_strategy_authorization,
         read_symbol_mapping,
     )
     from .orchestration import RuntimePlanner
@@ -323,6 +325,23 @@ def compose_operations(
         strategy_fingerprint=binding.strategy_fingerprint,
         universe=universe,
     )
+    # And the grant is asked, separately, whether this exact strategy over this
+    # exact universe is authorised. The binding's own agreement is not accepted
+    # as the answer: the binding records which grant applies, while the grant
+    # records what an owner actually approved, and checking only the first would
+    # make the second decorative.
+    if universe is not None:
+        authorization = read_strategy_authorization(
+            root, expected_fingerprint=binding.strategy_authorization_fingerprint
+        )
+        require_authorization(
+            authorization,
+            strategy_id=strategy.strategy_id,
+            strategy_version=strategy.strategy_version,
+            fingerprint=strategy.fingerprint(),
+            environment="EXTERNAL_PAPER",
+            universe_fingerprint=universe.fingerprint(),
+        )
     # Fractionability is a property of the instrument, not of the venue, so a
     # venue-level default is necessarily wrong for one side or the other — the
     # certified canary makes exactly this point and declares the capability

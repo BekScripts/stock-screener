@@ -57,6 +57,7 @@ from stock_screener.paper_runtime import (
     write_deployment_capability,
     write_deployment_universe,
     write_risk_policy,
+    write_strategy_authorization,
     write_symbol_mapping,
 )
 from stock_screener.paper_runtime.composition import compose_operations, composition_readiness
@@ -72,7 +73,7 @@ from stock_screener.strategies import (
     STRATEGY_VERSION_V2,
     CompounderMonthlyFractionableStrategy,
     CompounderMonthlyStrategy,
-    StrategyDeploymentAuthorization,
+    StrategyDeploymentAuthorizationV2,
 )
 
 pytestmark = pytest.mark.integration
@@ -240,19 +241,30 @@ def v2_strategy(universe: Any) -> CompounderMonthlyFractionableStrategy:
     return CompounderMonthlyFractionableStrategy(universe)
 
 
-def grant_for(strategy: Any, **overrides: Any) -> StrategyDeploymentAuthorization:
-    """A paper deployment grant covering exactly this strategy."""
+def grant_for(
+    strategy: Any, universe: Any = None, **overrides: Any
+) -> StrategyDeploymentAuthorizationV2:
+    """A paper deployment grant covering exactly this strategy and universe.
+
+    V2 of the authorization contract: P2.3.1I2 made the deployment universe part
+    of the granted authority, so a grant for a universe-restricted strategy has
+    to name the universe it approves.
+    """
     settings: dict[str, Any] = {
         "authorization_id": "TEST_GRANT",
         "strategy_id": strategy.strategy_id,
         "strategy_version": strategy.strategy_version,
         "strategy_fingerprint": strategy.fingerprint(),
+        "deployment_universe_version": DEPLOYMENT_UNIVERSE_VERSION,
+        "deployment_universe_fingerprint": (
+            strategy.universe.fingerprint() if universe is None else universe.fingerprint()
+        ),
         "environment": "EXTERNAL_PAPER",
         "code_commit": "d05b3d0",
         "created_at": NOW,
     }
     settings.update(overrides)
-    return StrategyDeploymentAuthorization(**settings)
+    return StrategyDeploymentAuthorizationV2(**settings)
 
 
 def author_policy(root: Path, **overrides: Any) -> None:
@@ -315,6 +327,7 @@ def author_v3(
     write_capability: bool = True,
     policy: bool = True,
     mapping_file: bool = True,
+    write_authorization: bool = True,
 ) -> V3Runtime:
     """Revise a temporary V1 runtime to a V3 deployment, writing the artefacts.
 
@@ -337,6 +350,8 @@ def author_v3(
         write_deployment_universe(root, built_universe)
     if write_capability:
         write_deployment_capability(root, capability)
+    if write_authorization:
+        write_strategy_authorization(root, grant_for(strategy))
 
     binding = revise_deployment(
         root=root,
@@ -1201,12 +1216,14 @@ def test_a_v1_to_v3_transition_is_refused_with_unresolved_execution_state(
 
 
 @pytest.mark.integration
-def test_the_v3_contract_requires_four_operator_artefacts() -> None:
+def test_the_v3_contract_requires_five_operator_artefacts() -> None:
+    """P2.3.1I2 added the grant: production checks it, so it must be present."""
     assert REQUIRED_OPERATOR_INPUTS[RUNTIME_BINDING_V3_VERSION] == (
         "RISK_POLICY",
         "SYMBOL_MAPPING",
         "DEPLOYMENT_UNIVERSE",
         "DEPLOYMENT_CAPABILITY",
+        "STRATEGY_AUTHORIZATION",
     )
 
 
@@ -1234,12 +1251,14 @@ def test_every_required_operator_artefact_has_a_writer_reader_and_validator() ->
         "SYMBOL_MAPPING": "write_symbol_mapping",
         "DEPLOYMENT_UNIVERSE": "write_deployment_universe",
         "DEPLOYMENT_CAPABILITY": "write_deployment_capability",
+        "STRATEGY_AUTHORIZATION": "write_strategy_authorization",
     }
     readers = {
         "RISK_POLICY": "read_risk_policy",
         "SYMBOL_MAPPING": "read_symbol_mapping",
         "DEPLOYMENT_UNIVERSE": "read_deployment_universe",
         "DEPLOYMENT_CAPABILITY": "read_deployment_capability",
+        "STRATEGY_AUTHORIZATION": "read_strategy_authorization",
     }
     for name in REQUIRED_OPERATOR_INPUTS[RUNTIME_BINDING_V3_VERSION]:
         assert callable(getattr(module, writers[name])), name
