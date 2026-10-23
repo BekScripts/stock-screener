@@ -101,7 +101,7 @@ def test_clean_codex_comment_approves_exact_reviewed_head(tmp_path: Path) -> Non
         "created_at": "2026-10-23T19:01:00Z",
         "user": _bot(),
         "body": (
-            f"Codex Review: Didn't find any major issues. 👍\n\n**Reviewed commit:** `{HEAD[:10]}`"
+            f"Codex Review: Didn't find any major issues. 👍\n\n**Reviewed commit:** `{HEAD}`"
         ),
     }
 
@@ -116,7 +116,10 @@ def test_stale_clean_comment_does_not_approve_current_head(tmp_path: Path) -> No
         "id": 1,
         "created_at": "2026-10-23T19:01:00Z",
         "user": _bot(),
-        "body": "Codex Review: Didn't find any major issues. 👍\n\n**Reviewed commit:** `1234567890`",
+        "body": (
+            "Codex Review: Didn't find any major issues. 👍\n\n"
+            "**Reviewed commit:** `1234567890`"
+        ),
     }
 
     result = _classify(tmp_path, issue_comments=[comment])
@@ -191,7 +194,7 @@ def test_newer_clean_comment_overrides_older_finding_on_same_head(tmp_path: Path
         "created_at": "2026-10-23T19:05:00Z",
         "user": _bot(),
         "body": (
-            f"Codex Review: Didn't find any major issues. 👍\n\n**Reviewed commit:** `{HEAD[:12]}`"
+            f"Codex Review: Didn't find any major issues. 👍\n\n**Reviewed commit:** `{HEAD}`"
         ),
     }
 
@@ -217,7 +220,7 @@ def test_completed_summary_is_clean_fallback_when_no_review_was_submitted(
             "## Codex Review Summary\n\n"
             "| Review | Status | Commit | Review trigger |\n"
             "| --- | --- | --- | --- |\n"
-            f"| 📝 **Code Review** | ✅ **Completed** | `{HEAD[:7]}` | PR opened |"
+            f"| 📝 **Code Review** | ✅ **Completed** | `{HEAD}` | PR opened |"
         ),
     }
 
@@ -239,11 +242,108 @@ def test_summary_does_not_mix_completed_old_head_with_pending_current_head(
             "| Review | Status | Commit | Review trigger |\n"
             "| --- | --- | --- | --- |\n"
             "| 📝 **Code Review** | ✅ **Completed** | `1234567` | earlier push |\n"
-            f"| 📝 **Code Review** | ⏳ **In progress** | `{HEAD[:7]}` | latest push |"
+            f"| 📝 **Code Review** | ⏳ **In progress** | `{HEAD}` | latest push |"
         ),
     }
 
     result = _classify(tmp_path, issue_comments=[summary])
+
+    assert result == {"status": "WAITING"}
+
+
+
+def test_abbreviated_sha_cannot_approve_a_different_head_with_same_prefix(
+    tmp_path: Path,
+) -> None:
+    shared_prefix = HEAD[:12]
+    different_head = shared_prefix + "0" * (40 - len(shared_prefix))
+    assert different_head != HEAD
+    comment = {
+        "id": 5,
+        "created_at": "2026-10-23T19:01:00Z",
+        "user": _bot(),
+        "body": (
+            "Codex Review: Didn't find any major issues. 👍\n\n"
+            f"**Reviewed commit:** `{shared_prefix}`"
+        ),
+    }
+
+    result = _classify(tmp_path, issue_comments=[comment])
+
+    assert result == {"status": "WAITING"}
+
+
+@pytest.mark.parametrize(
+    "token",
+    ["HUMAN_REQUIRED", "ARCHITECTURE_BLOCKED"],
+)
+def test_body_only_stop_finding_is_preserved_without_inline_comments(
+    tmp_path: Path,
+    token: str,
+) -> None:
+    review = _review()
+    review["body"] = f"{token}: owner decision required before proceeding."
+
+    result = _classify(tmp_path, reviews=[review])
+
+    payload = _review_payload(result)
+    assert payload["verdict"] == token
+    findings = payload["findings"]
+    assert isinstance(findings, list)
+    assert token in findings[0]["details"]
+
+
+def test_newer_body_only_stop_finding_blocks_older_clean_comment(
+    tmp_path: Path,
+) -> None:
+    clean = {
+        "id": 6,
+        "created_at": "2026-10-23T18:59:00Z",
+        "user": _bot(),
+        "body": (
+            "Codex Review: Didn't find any major issues. 👍\n\n"
+            f"**Reviewed commit:** `{HEAD}`"
+        ),
+    }
+    review = _review(submitted_at="2026-10-23T19:00:00Z")
+    review["body"] = "HUMAN_REQUIRED: operator approval is required."
+
+    result = _classify(tmp_path, reviews=[review], issue_comments=[clean])
+
+    assert _review_payload(result)["verdict"] == "HUMAN_REQUIRED"
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "**P1 unmatched finding**\n\nThis review parent has not been fetched yet.",
+        "HUMAN_REQUIRED: unmatched stop finding.",
+    ],
+)
+def test_completed_summary_waits_when_inline_finding_parent_is_missing(
+    tmp_path: Path,
+    body: str,
+) -> None:
+    summary = {
+        "id": 7,
+        "updated_at": "2026-10-23T19:06:00Z",
+        "user": _bot(),
+        "body": (
+            "<!-- codex-pull-request-review-summary -->\n\n"
+            "## Codex Review Summary\n\n"
+            "| Review | Status | Commit | Review trigger |\n"
+            "| --- | --- | --- | --- |\n"
+            f"| 📝 **Code Review** | ✅ **Completed** | `{HEAD}` | PR opened |"
+        ),
+    }
+    orphan = _finding(body)
+    orphan["pull_request_review_id"] = 404
+
+    result = _classify(
+        tmp_path,
+        issue_comments=[summary],
+        review_comments=[orphan],
+    )
 
     assert result == {"status": "WAITING"}
 
