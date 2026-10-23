@@ -69,7 +69,23 @@ is_forbidden_change() {
 }
 
 declare -a publishable=()
-declare -A seen=()
+
+# Deduplication by scanning the collected list rather than with an associative
+# array. `declare -A` is bash 4, and macOS still ships bash 3.2 as /bin/bash,
+# so this script aborted at startup on a stock Mac — before any of its refusals
+# could run, which is the worst moment for a safety script to fail. The lists
+# here are a handful of paths, so the scan costs nothing, and comparing whole
+# strings also avoids the separator ambiguity a newline-delimited "seen" string
+# would have for a path that itself contains a newline.
+already_collected() {
+  local needle="$1" candidate
+  for candidate in ${publishable+"${publishable[@]}"}; do
+    if [[ "$candidate" == "$needle" ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
 
 consider_path() {
   local path="$1"
@@ -83,8 +99,7 @@ consider_path() {
     return 0
   fi
 
-  if [[ -z "${seen[$path]+x}" ]]; then
-    seen["$path"]=1
+  if ! already_collected "$path"; then
     publishable+=("$path")
   fi
 }
