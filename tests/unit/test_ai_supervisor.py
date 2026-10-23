@@ -6,6 +6,10 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
+pytestmark = pytest.mark.unit
+
 ROOT = Path(__file__).resolve().parents[2]
 SUPERVISOR_SCRIPT = ROOT / "scripts" / "ai_supervisor.py"
 _GIT = shutil.which("git")
@@ -88,6 +92,31 @@ def _init_repo(tmp_path: Path, state: dict[str, object] | None = None) -> Path:
     return repo
 
 
+def _commit_all(repo: Path, message: str = "commit") -> None:
+    _git(repo, "add", "-A")
+    _git(
+        repo,
+        "-c",
+        "user.name=test",
+        "-c",
+        "user.email=test@example.invalid",
+        "commit",
+        "-m",
+        message,
+    )
+
+
+def _repo_with_state_on_main(tmp_path: Path) -> tuple[Path, Path]:
+    repo = _init_repo(tmp_path)
+    reference = repo / "docs" / "reference"
+    reference.mkdir(parents=True)
+    state = reference / "PROJECT_STATE.md"
+    state.write_text("# Project state\n", encoding="utf-8")
+    (reference / "roadmap.md").write_text("# Roadmap\n", encoding="utf-8")
+    _commit_all(repo, "main")
+    return repo, state
+
+
 def _supervisor(
     repo: Path,
     *args: str,
@@ -97,9 +126,7 @@ def _supervisor(
 
 
 def test_checked_in_supervisor_state_is_shadow_and_has_no_mutation_authority() -> None:
-    raw: object = json.loads(
-        (ROOT / ".ai" / "supervisor-state.json").read_text(encoding="utf-8")
-    )
+    raw: object = json.loads((ROOT / ".ai" / "supervisor-state.json").read_text(encoding="utf-8"))
     assert isinstance(raw, dict)
     state = raw
     actions = state["actions"]
@@ -166,7 +193,8 @@ def test_render_keeps_roadmap_selective_instead_of_preloading_it(
         f"# Roadmap\n\n{roadmap_sentinel}\n",
         encoding="utf-8",
     )
-    output = tmp_path / "prompt.md"
+    _commit_all(repo)
+    output = repo / ".claude" / "tmp" / "prompt.md"
 
     result = _supervisor(repo, "render", "--output", str(output))
 
@@ -179,10 +207,108 @@ def test_render_keeps_roadmap_selective_instead_of_preloading_it(
     assert '"push": false' in rendered
 
 
+def test_render_rejects_untracked_project_state(tmp_path: Path) -> None:
+    repo = _init_repo(tmp_path)
+    _commit_all(repo, "main")
+    reference = repo / "docs" / "reference"
+    reference.mkdir(parents=True)
+    (reference / "PROJECT_STATE.md").write_text("# State\n", encoding="utf-8")
+
+    result = _supervisor(repo, "render", check=False)
+
+    assert result.returncode != 0
+    assert "untracked" in result.stderr
+
+
+def test_render_rejects_state_added_only_on_a_feature_branch(tmp_path: Path) -> None:
+    repo = _init_repo(tmp_path)
+    _commit_all(repo, "main")
+    _git(repo, "checkout", "-b", "feature")
+    reference = repo / "docs" / "reference"
+    reference.mkdir(parents=True)
+    (reference / "PROJECT_STATE.md").write_text("# State\n", encoding="utf-8")
+    _commit_all(repo, "feature")
+
+    result = _supervisor(repo, "render", check=False)
+
+    assert result.returncode != 0
+    assert "not on main" in result.stderr
+
+
+def test_render_rejects_state_modified_only_on_a_feature_branch(
+    tmp_path: Path,
+) -> None:
+    repo, state = _repo_with_state_on_main(tmp_path)
+    _git(repo, "checkout", "-b", "feature")
+    state.write_text("# Forged state\n", encoding="utf-8")
+    _commit_all(repo, "feature")
+
+    result = _supervisor(repo, "render", check=False)
+
+    assert result.returncode != 0
+    assert "differs from main" in result.stderr
+
+
+def test_render_rejects_dirty_project_state(tmp_path: Path) -> None:
+    repo, state = _repo_with_state_on_main(tmp_path)
+    state.write_text("# Edited\n", encoding="utf-8")
+
+    result = _supervisor(repo, "render", check=False)
+
+    assert result.returncode != 0
+    assert "dirty" in result.stderr
+
+
+def test_render_accepts_state_matching_main_and_prints_to_stdout(
+    tmp_path: Path,
+) -> None:
+    repo, _ = _repo_with_state_on_main(tmp_path)
+    _git(repo, "checkout", "-b", "feature")
+
+    result = _supervisor(repo, "render")
+
+    assert '"mode": "SHADOW"' in result.stdout
+
+
+def test_render_refuses_outputs_outside_the_scratch_directory(tmp_path: Path) -> None:
+    repo, _ = _repo_with_state_on_main(tmp_path)
+    protected = repo / "AGENTS.md"
+    protected.write_text("original\n", encoding="utf-8")
+    outside = tmp_path / "outside.md"
+    outside.write_text("original\n", encoding="utf-8")
+
+    for target in (
+        protected,
+        outside,
+        repo / ".claude" / "tmp" / ".." / ".." / "AGENTS.md",
+        repo / ".claude" / "tmp" / "x.txt",
+    ):
+        result = _supervisor(repo, "render", "--output", str(target), check=False)
+        assert result.returncode != 0
+
+    assert protected.read_text(encoding="utf-8") == "original\n"
+    assert outside.read_text(encoding="utf-8") == "original\n"
+
+
+def test_render_refuses_symlinked_output(tmp_path: Path) -> None:
+    repo, _ = _repo_with_state_on_main(tmp_path)
+    victim = tmp_path / "victim.md"
+    victim.write_text("original\n", encoding="utf-8")
+    scratch = repo / ".claude" / "tmp"
+    scratch.mkdir(parents=True)
+    (scratch / "link.md").symlink_to(victim)
+    (repo / "linkdir").symlink_to(tmp_path)
+    (scratch / "dir").symlink_to(tmp_path)
+
+    for target in (scratch / "link.md", scratch / "dir" / "victim.md"):
+        result = _supervisor(repo, "render", "--output", str(target), check=False)
+        assert result.returncode != 0
+
+    assert victim.read_text(encoding="utf-8") == "original\n"
+
+
 def test_supervise_skill_is_advisory_and_does_not_call_mutation_commands() -> None:
-    skill = (ROOT / ".agents" / "skills" / "supervise" / "SKILL.md").read_text(
-        encoding="utf-8"
-    )
+    skill = (ROOT / ".agents" / "skills" / "supervise" / "SKILL.md").read_text(encoding="utf-8")
 
     assert "disable-model-invocation: true" in skill
     assert "advisory only" in skill

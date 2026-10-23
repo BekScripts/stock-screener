@@ -6,13 +6,17 @@ import argparse
 import json
 import shutil
 import subprocess
-from collections.abc import Callable
 from pathlib import Path
-from typing import cast
+from typing import TYPE_CHECKING, cast
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 STATE_RELATIVE_PATH = Path(".ai/supervisor-state.json")
 CONTRACT_RELATIVE_PATH = Path(".ai/SUPERVISOR_CONTRACT.md")
 PROMPT_RELATIVE_PATH = Path(".ai/CODEX_SUPERVISOR_PROMPT.md")
+OUTPUT_RELATIVE_DIR = Path(".claude/tmp")
+AUTHORITATIVE_REFS = ("origin/main", "main")
 
 _GIT = shutil.which("git")
 if _GIT is None:
@@ -59,7 +63,7 @@ def _load_json_object(path: Path) -> dict[str, object]:
     raw: object = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(raw, dict):
         raise SupervisorStateError(f"{path} must contain a JSON object")
-    return cast(dict[str, object], raw)
+    return cast("dict[str, object]", raw)
 
 
 def _require_str(payload: dict[str, object], key: str) -> str:
@@ -78,11 +82,9 @@ def _require_int(payload: dict[str, object], key: str) -> int:
 
 def _require_string_list(payload: dict[str, object], key: str) -> list[str]:
     value = payload.get(key)
-    if not isinstance(value, list) or not all(
-        isinstance(item, str) and item for item in value
-    ):
+    if not isinstance(value, list) or not all(isinstance(item, str) and item for item in value):
         raise SupervisorStateError(f"{key!r} must be a list of non-empty strings")
-    return cast(list[str], value)
+    return cast("list[str]", value)
 
 
 def _safe_repo_path(root: Path, raw: str, *, label: str) -> Path:
@@ -95,6 +97,74 @@ def _safe_repo_path(root: Path, raw: str, *, label: str) -> Path:
     except ValueError as exc:
         raise SupervisorStateError(f"{label} escapes the repository") from exc
     return resolved
+
+
+def _git_output(root: Path, *args: str) -> str | None:
+    completed = subprocess.run(  # noqa: S603
+        [GIT, *args],
+        cwd=root,
+        check=False,
+        text=True,
+        capture_output=True,
+    )
+    if completed.returncode != 0:
+        return None
+    return completed.stdout
+
+
+def _verify_state_provenance(root: Path, project_state: Path) -> None:
+    """Require the project-state file to be committed and identical on main."""
+    relative = project_state.relative_to(root).as_posix()
+    if _git_output(root, "ls-files", "--error-unmatch", "--", relative) is None:
+        raise SupervisorStateError(
+            f"authoritative project state is untracked ({relative}); "
+            "do not infer state from an unmerged branch"
+        )
+    status = _git_output(root, "status", "--porcelain", "--", relative)
+    if status is None or status.strip():
+        raise SupervisorStateError(
+            f"authoritative project state is dirty or unverifiable ({relative})"
+        )
+    for ref in AUTHORITATIVE_REFS:
+        if _git_output(root, "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}") is None:
+            continue
+        on_main = _git_output(root, "show", f"{ref}:{relative}")
+        if on_main is None:
+            raise SupervisorStateError(
+                f"authoritative project state is not on {ref} ({relative}); "
+                "do not infer state from an unmerged branch"
+            )
+        if on_main != project_state.read_text(encoding="utf-8"):
+            raise SupervisorStateError(
+                f"authoritative project state differs from {ref} ({relative}); "
+                "do not infer state from an unmerged branch"
+            )
+        return
+    raise SupervisorStateError(
+        "cannot establish provenance: no authoritative main reference "
+        f"({', '.join(AUTHORITATIVE_REFS)}) is available"
+    )
+
+
+def _safe_output_path(root: Path, raw: Path) -> Path:
+    """Confine rendered output to the scratch directory, rejecting symlinks."""
+    candidate = raw if raw.is_absolute() else root / raw
+    try:
+        relative = Path(*candidate.relative_to(root / OUTPUT_RELATIVE_DIR).parts)
+    except ValueError:
+        relative = Path()
+    if not relative.parts or ".." in relative.parts:
+        raise SupervisorStateError(f"--output must be a file inside {OUTPUT_RELATIVE_DIR}/")
+    current = root
+    for part in (*OUTPUT_RELATIVE_DIR.parts, *relative.parts):
+        current = current / part
+        if current.is_symlink():
+            raise SupervisorStateError("--output must not traverse a symlink")
+    if current.exists() and not current.is_file():
+        raise SupervisorStateError("--output must be a regular file")
+    if current.suffix != ".md":
+        raise SupervisorStateError("--output must be a .md scratch artifact")
+    return current
 
 
 def _validate_state(root: Path) -> dict[str, object]:
@@ -116,14 +186,10 @@ def _validate_state(root: Path) -> dict[str, object]:
     actions_raw = payload.get("actions")
     if not isinstance(actions_raw, dict):
         raise SupervisorStateError("'actions' must be an object")
-    actions = cast(dict[str, object], actions_raw)
+    actions = cast("dict[str, object]", actions_raw)
     if set(actions) != EXPECTED_ACTION_KEYS:
         raise SupervisorStateError("supervisor action keys do not match the fail-closed schema")
-    enabled = sorted(
-        key
-        for key, value in actions.items()
-        if not isinstance(value, bool) or value
-    )
+    enabled = sorted(key for key, value in actions.items() if not isinstance(value, bool) or value)
     if enabled:
         raise SupervisorStateError(
             "shadow supervisor has mutation authority enabled: " + ", ".join(enabled)
@@ -158,10 +224,7 @@ def _cmd_validate(_: argparse.Namespace) -> int:
     if project_state.is_file():
         print(f"Authoritative project state: {project_state.relative_to(root)}")
     else:
-        print(
-            "Authoritative project state: MISSING "
-            f"({project_state.relative_to(root)})"
-        )
+        print(f"Authoritative project state: MISSING ({project_state.relative_to(root)})")
     return 0
 
 
@@ -181,6 +244,8 @@ def _cmd_render(args: argparse.Namespace) -> int:
             "infer state from an unmerged branch"
         )
 
+    _verify_state_provenance(root, project_state)
+
     planning_sources = _require_string_list(payload, "planning_sources")
     prompt = (root / PROMPT_RELATIVE_PATH).read_text(encoding="utf-8")
     state_text = json.dumps(payload, indent=2, sort_keys=True)
@@ -190,9 +255,16 @@ def _cmd_render(args: argparse.Namespace) -> int:
         .replace("{{PROJECT_STATE_PATH}}", project_state_raw)
         .replace("{{PLANNING_SOURCES}}", planning_text)
     )
-    output = cast(Path, args.output)
+    text = rendered.rstrip() + "\n"
+    requested = cast("Path | None", args.output)
+    if requested is None:
+        print(text, end="")
+        return 0
+    output = _safe_output_path(root, requested)
     output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_text(rendered.rstrip() + "\n", encoding="utf-8")
+    if output.parent.resolve() != output.parent:
+        raise SupervisorStateError("--output must not traverse a symlink")
+    output.write_text(text, encoding="utf-8")
     print(output)
     return 0
 
@@ -213,7 +285,12 @@ def _parser() -> argparse.ArgumentParser:
         "render",
         help="render the shadow supervisor prompt without mutating repository state",
     )
-    render.add_argument("--output", type=Path, required=True)
+    render.add_argument(
+        "--output",
+        type=Path,
+        default=None,
+        help=f"scratch .md file inside {OUTPUT_RELATIVE_DIR}/ (default: stdout)",
+    )
     render.set_defaults(func=_cmd_render)
 
     return parser
@@ -224,7 +301,7 @@ def main() -> int:
     parser = _parser()
     args = parser.parse_args()
     try:
-        handler = cast(Callable[[argparse.Namespace], int], args.func)
+        handler = cast("Callable[[argparse.Namespace], int]", args.func)
         return handler(args)
     except (
         OSError,
