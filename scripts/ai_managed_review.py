@@ -87,9 +87,17 @@ def _extract_reviewed_sha(body: str) -> str:
 
 
 def _head_matches(candidate: str, head_sha: str) -> bool:
+    """Return whether candidate is the exact full PR-head commit id.
+
+    Managed Codex often renders abbreviated SHAs for people, but an abbreviation
+    is display evidence rather than merge authority: two different commits can
+    share that prefix. The adapter therefore accepts only the full 40-hex commit
+    identity. A future workflow may resolve display abbreviations through GitHub
+    before classification, but this network-free layer never guesses.
+    """
     normalized = candidate.strip().lower()
     head = head_sha.strip().lower()
-    return len(normalized) >= 7 and head.startswith(normalized)
+    return len(normalized) == 40 and len(head) == 40 and normalized == head
 
 
 def _review_matches_head(review: dict[str, object], head_sha: str) -> bool:
@@ -182,6 +190,21 @@ def _finding(comment: dict[str, object]) -> dict[str, object]:
     }
 
 
+def _review_body_finding(review: dict[str, object]) -> dict[str, object] | None:
+    """Return a finding carried by the review body itself, when one exists."""
+    body = _text(review, "body").strip()
+    if not body or body.startswith(CLEAN_PREFIX):
+        return None
+
+    boilerplate = (
+        "### 💡 Codex Review\n\nHere are some automated review suggestions",
+        "## Codex Review\n\nHere are some automated review suggestions",
+    )
+    if any(body.startswith(prefix) for prefix in boilerplate):
+        return None
+    return _finding({"body": body})
+
+
 def _review_decision(
     head_sha: str,
     reviews: list[dict[str, object]],
@@ -207,8 +230,9 @@ def _review_decision(
         for comment in review_comments
         if _is_codex(comment) and _integer(comment, "pull_request_review_id") == review_id
     ]
-    if not comments:
-        body = _text(review, "body")
+    body = _text(review, "body")
+    body_finding = _review_body_finding(review)
+    if not comments and body_finding is None:
         if body.startswith(CLEAN_PREFIX):
             return (
                 _stamp(review),
@@ -220,12 +244,11 @@ def _review_decision(
             )
         return None
 
-    review_body = _text(review, "body")
     comment_bodies = [_text(comment, "body") for comment in comments]
-    verdict = _verdict([review_body, *comment_bodies])
+    verdict = _verdict([body, *comment_bodies])
     findings = [_finding(comment) for comment in comments]
-    if verdict in {"HUMAN_REQUIRED", "ARCHITECTURE_BLOCKED"} and verdict in review_body:
-        findings.insert(0, _finding({"body": review_body}))
+    if body_finding is not None:
+        findings.insert(0, body_finding)
     return (
         _stamp(review),
         {
@@ -271,15 +294,37 @@ def classify(
     review_decision = _review_decision(head_sha, reviews, review_comments)
     comment_decision = _comment_decision(head_sha, issue_comments)
 
+    matching_reviews = [
+        review
+        for review in reviews
+        if _is_codex(review) and _review_matches_head(review, head_sha)
+    ]
+    known_review_ids = {
+        review_id
+        for review in reviews
+        if _is_codex(review)
+        if (review_id := _integer(review, "id")) is not None
+    }
+    has_orphaned_finding = any(
+        _is_codex(comment)
+        and (parent := _integer(comment, "pull_request_review_id")) is not None
+        and parent not in known_review_ids
+        for comment in review_comments
+    )
+    if has_orphaned_finding:
+        return {"status": "WAITING"}
+
+    if review_decision is None and matching_reviews:
+        latest_review_stamp = max(_stamp(review) for review in matching_reviews)
+        if comment_decision is None or latest_review_stamp >= comment_decision[0]:
+            return {"status": "WAITING"}
+
     candidates = [candidate for candidate in (review_decision, comment_decision) if candidate]
     if candidates:
         _, review = max(candidates, key=lambda candidate: candidate[0])
         return {"status": "READY", "review": review}
 
-    has_matching_review = any(
-        _is_codex(review) and _review_matches_head(review, head_sha) for review in reviews
-    )
-    if not has_matching_review and any(
+    if not matching_reviews and any(
         _is_codex(comment) and _summary_matches_head(comment, head_sha)
         for comment in issue_comments
     ):
