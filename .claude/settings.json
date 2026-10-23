@@ -16,13 +16,17 @@
       "Bash(git branch:*)",
       "Bash(git show:*)",
       "Bash(rg:*)",
-      "Read(//Users/**)"
+      "Read(//Users/**)",
+      "Bash(gh issue view:*)",
+      "Bash(gh pr view:*)"
     ],
     "ask": [
       "Bash(git push:*)",
       "Bash(git commit:*)",
       "Bash(gh pr create:*)",
-      "Edit(.github/workflows/**)"
+      "Edit(.github/workflows/**)",
+      "Bash(gh issue create:*)",
+      "Bash(gh issue edit:*)"
     ],
     "deny": [
       "Read(./.env)",
@@ -35,6 +39,18 @@
       "Bash(git push --force:*)",
       "Bash(git reset --hard:*)",
       "Bash(rm -rf:*)"
+    ]
+  },
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cd \"$CLAUDE_PROJECT_DIR\" && uv run scripts/ai_task.py context"
+          }
+        ]
+      }
     ]
   }
 }
