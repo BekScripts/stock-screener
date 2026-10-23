@@ -159,6 +159,7 @@ jobs:
           allowed_bots: "claude[bot]"
           track_progress: false
           display_report: false
+          use_commit_signing: true
           prompt: |
             You are the implementation agent for PR
             #${{ github.event.pull_request.number }}.
@@ -175,11 +176,15 @@ jobs:
 
             Run make check after the fixes. If frontend files changed, run
             make check-web when dependencies are available.
+
+            After verification succeeds, use
+            mcp__github_file_ops__commit_files to publish the modified files as
+            one ordinary fix commit to the current PR branch. Do not create a
+            different branch, merge, rebase, or change workflow files.
           claude_args: >-
             --permission-mode dontAsk
             --tools "Read,Write,Edit,Bash"
-            --allowedTools "Read,Write,Edit,Bash(make:*),Bash(git status:*),Bash(git diff:*),Bash(rg:*),Bash(uv run:*),Bash(uv sync:*),Bash(npm:*)"
-            --disallowedTools "mcp__*"
+            --allowedTools "Read,Write,Edit,Bash(make:*),Bash(git status:*),Bash(git diff:*),Bash(rg:*),Bash(uv run:*),Bash(uv sync:*),Bash(npm:*),mcp__github_file_ops__commit_files"
 
       - name: Diagnose Claude execution failure
         if: steps.verdict.outputs.can_fix == 'true' && steps.claude_fix.outcome == 'failure'
