@@ -103,14 +103,22 @@ def _review_matches_head(review: dict[str, object], head_sha: str) -> bool:
 
 def _clean_comment_matches_head(comment: dict[str, object], head_sha: str) -> bool:
     body = _text(comment, "body")
-    return body.startswith(CLEAN_PREFIX) and _head_matches(_extract_reviewed_sha(body), head_sha)
+    reviewed_sha = _extract_reviewed_sha(body)
+    return body.startswith(CLEAN_PREFIX) and _head_matches(reviewed_sha, head_sha)
 
 
 def _summary_matches_head(comment: dict[str, object], head_sha: str) -> bool:
     body = _text(comment, "body")
-    if SUMMARY_MARKER not in body or SUMMARY_COMPLETED not in body:
+    if SUMMARY_MARKER not in body:
         return False
-    return any(_head_matches(match.group("sha"), head_sha) for match in SUMMARY_SHA_RE.finditer(body))
+
+    for line in body.splitlines():
+        if "**Code Review**" not in line or SUMMARY_COMPLETED not in line:
+            continue
+        match = SUMMARY_SHA_RE.search(line)
+        if match is not None and _head_matches(match.group("sha"), head_sha):
+            return True
+    return False
 
 
 def _severity(body: str) -> str:
@@ -155,7 +163,10 @@ def _finding(comment: dict[str, object]) -> dict[str, object]:
         required_fix = "Stop for explicit human/operator approval; do not auto-fix this finding."
     elif verdict == "ARCHITECTURE_BLOCKED":
         rule = ".ai/REVIEW_CONTRACT.md architecture boundary"
-        required_fix = "Stop for an explicit architecture/authority decision; do not auto-fix this finding."
+        required_fix = (
+            "Stop for an explicit architecture/authority decision; "
+            "do not auto-fix this finding."
+        )
     else:
         rule = "Managed Codex Code Review finding"
         required_fix = (
@@ -212,9 +223,12 @@ def _review_decision(
             )
         return None
 
-    bodies = [_text(comment, "body") for comment in comments]
-    verdict = _verdict(bodies)
+    review_body = _text(review, "body")
+    comment_bodies = [_text(comment, "body") for comment in comments]
+    verdict = _verdict([review_body, *comment_bodies])
     findings = [_finding(comment) for comment in comments]
+    if verdict in {"HUMAN_REQUIRED", "ARCHITECTURE_BLOCKED"} and verdict in review_body:
+        findings.insert(0, _finding({"body": review_body}))
     return (
         _stamp(review),
         {
