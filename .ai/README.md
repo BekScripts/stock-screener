@@ -16,6 +16,10 @@ Then add the repository Actions variable:
 
 - `AI_PR_LOOP_ENABLED=true`
 
+In **Settings → Actions → General → Workflow permissions**, allow GitHub Actions
+to use a read/write repository token; the workflow needs `contents: write` only
+to commit an independently approved Claude fix back to the PR branch.
+
 Do not put Alpaca credentials or runtime secrets in GitHub Actions.
 
 After the first successful run, protect `main` and require:
