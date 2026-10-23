@@ -13,7 +13,7 @@ permissions:
 
 concurrency:
   group: ai-pr-review-${{ github.event.pull_request.number }}
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   review:
@@ -175,11 +175,21 @@ jobs:
 
             Run make check after the fixes. If frontend files changed, run
             make check-web when dependencies are available.
+
+            After verification succeeds, do not stage, commit, or push with
+            git directly. Run exactly:
+            ./scripts/ai-safe-push.sh
+
+            The audited wrapper filters the action's temporary config
+            restorations, stages only publishable fix files, creates exactly one
+            fix commit on EVENT_HEAD_SHA, verifies that the remote PR branch has
+            not advanced, and performs a non-force update to this PR branch.
+            Do not create another branch, merge, rebase, force-push, or change
+            workflow files.
           claude_args: >-
             --permission-mode dontAsk
             --tools "Read,Write,Edit,Bash"
-            --allowedTools "Read,Write,Edit,Bash(make:*),Bash(git status:*),Bash(git diff:*),Bash(rg:*),Bash(uv run:*),Bash(uv sync:*),Bash(npm:*)"
-            --disallowedTools "mcp__*"
+            --allowedTools "Read,Write,Edit,Bash(make:*),Bash(git status:*),Bash(git diff:*),Bash(./scripts/ai-safe-push.sh),Bash(rg:*),Bash(uv run:*),Bash(uv sync:*),Bash(npm:*)"
 
       - name: Diagnose Claude execution failure
         if: steps.verdict.outputs.can_fix == 'true' && steps.claude_fix.outcome == 'failure'
