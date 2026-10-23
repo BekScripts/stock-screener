@@ -167,6 +167,25 @@ def test_stop_tokens_prevent_automatic_fix(
     assert _review_payload(result)["verdict"] == expected
 
 
+def test_review_body_stop_marker_overrides_ordinary_inline_finding(
+    tmp_path: Path,
+) -> None:
+    review = _review()
+    review["body"] = (
+        "### 💡 Codex Review\n\n"
+        "HUMAN_REQUIRED: owner authorization is required before this transition."
+    )
+    finding = _finding("**P2 ordinary defect**\n\nThis can be fixed in code.")
+
+    result = _classify(tmp_path, reviews=[review], review_comments=[finding])
+    payload = _review_payload(result)
+    findings = payload["findings"]
+
+    assert payload["verdict"] == "HUMAN_REQUIRED"
+    assert isinstance(findings, list)
+    assert "HUMAN_REQUIRED" in findings[0]["details"]
+
+
 def test_newer_clean_comment_overrides_older_finding_on_same_head(tmp_path: Path) -> None:
     finding = _finding("**P1 old finding**\n\nAn earlier pass found this.")
     clean = {
@@ -208,6 +227,28 @@ def test_completed_summary_is_clean_fallback_when_no_review_was_submitted(
     result = _classify(tmp_path, issue_comments=[summary])
 
     assert _review_payload(result)["verdict"] == "APPROVE"
+
+
+def test_summary_does_not_mix_completed_old_head_with_pending_current_head(
+    tmp_path: Path,
+) -> None:
+    summary = {
+        "id": 4,
+        "updated_at": "2026-10-23T19:07:00Z",
+        "user": _bot(),
+        "body": (
+            "<!-- codex-pull-request-review-summary -->\n\n"
+            "## Codex Review Summary\n\n"
+            "| Review | Status | Commit | Review trigger |\n"
+            "| --- | --- | --- | --- |\n"
+            "| 📝 **Code Review** | ✅ **Completed** | `1234567` | earlier push |\n"
+            f"| 📝 **Code Review** | ⏳ **In progress** | `{HEAD[:7]}` | latest push |"
+        ),
+    }
+
+    result = _classify(tmp_path, issue_comments=[summary])
+
+    assert result == {"status": "WAITING"}
 
 
 def test_non_codex_feedback_is_ignored(tmp_path: Path) -> None:
