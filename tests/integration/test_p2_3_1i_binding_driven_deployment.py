@@ -630,7 +630,7 @@ def test_no_binding_driven_production_path_constructs_a_strategy_directly() -> N
     strategy constructor counts.
     """
     offenders: list[str] = []
-    runtime = Path("src/stock_screener/paper_runtime")
+    runtime = REPO_ROOT / "src" / "stock_screener" / "paper_runtime"
     for path in sorted(runtime.glob("*.py")):
         tree = ast.parse(path.read_text(encoding="utf-8"))
         for node in ast.walk(tree):
@@ -1559,7 +1559,7 @@ def test_the_cli_composes_through_one_route(paper_runtime: Any) -> None:
 @pytest.mark.integration
 def test_production_never_rebuilds_the_universe_from_the_provider() -> None:
     """§12. The frozen artefact is the authority; no run re-derives it."""
-    runtime_dir = Path("src/stock_screener/paper_runtime")
+    runtime_dir = REPO_ROOT / "src" / "stock_screener" / "paper_runtime"
     offenders: list[str] = []
     for path in sorted(runtime_dir.glob("*.py")):
         if path.name in {"universe.py", "deployment.py"}:
@@ -1822,11 +1822,18 @@ def test_the_submission_authority_refuses_an_unproven_bound_capability(
 
 @pytest.mark.integration
 def test_no_production_path_reshapes_a_quantity(paper_runtime: Any) -> None:
-    """§23. No rounding, truncation, ceil or floor of an approved quantity."""
+    """§23. No rounding, truncation, ceil or floor of an approved quantity.
+
+    Two assertions rather than one, because "no arithmetic anywhere" is false:
+    there is a `round` on a reported coverage ratio, and a test asserting
+    something false gets weakened until it passes. What must not exist is a
+    reshaper at all, or a `round` touching a quantity.
+    """
     offenders: list[str] = []
+    rounded_quantities: list[str] = []
     for directory in (
-        Path("src/stock_screener/paper_runtime"),
-        Path("src/stock_screener/execution/external"),
+        REPO_ROOT / "src" / "stock_screener" / "paper_runtime",
+        REPO_ROOT / "src" / "stock_screener" / "execution" / "external",
     ):
         for path in sorted(directory.glob("*.py")):
             tree = ast.parse(path.read_text(encoding="utf-8"))
@@ -1836,10 +1843,14 @@ def test_no_production_path_reshapes_a_quantity(paper_runtime: Any) -> None:
                 name = getattr(node.func, "id", "") or getattr(node.func, "attr", "")
                 if name in {"quantize", "ceil", "floor", "trunc"}:
                     offenders.append(f"{path.name}:{node.lineno} {name}()")
-                if name == "round" and not isinstance(node.func, ast.Attribute):
-                    offenders.append(f"{path.name}:{node.lineno} round()")
+                if name == "round" and any(
+                    "quantity" in ast.unparse(argument).lower() or "qty" in ast.unparse(argument)
+                    for argument in node.args
+                ):
+                    rounded_quantities.append(f"{path.name}:{node.lineno} round()")
 
     assert offenders == []
+    assert rounded_quantities == []
 
 
 @pytest.mark.integration

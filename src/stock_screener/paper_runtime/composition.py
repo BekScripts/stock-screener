@@ -262,6 +262,7 @@ def compose_operations(
 
     from .environment import AlphaTraderPaperOperationsEnvironment
     from .operator_inputs import (
+        read_account_identity,
         read_deployment_capability,
         read_deployment_universe,
         read_risk_policy,
@@ -342,6 +343,15 @@ def compose_operations(
             environment="EXTERNAL_PAPER",
             universe_fingerprint=universe.fingerprint(),
         )
+    # Account identity, where the binding declares one. Loaded and pinned
+    # separately from the deployment capability: the proof in the environment
+    # compares identity alone, and a runtime that could not produce the identity
+    # it claims to be bound to must not reach a venue at all.
+    if getattr(binding, "account_identity_fingerprint", ""):
+        bound_identity = read_account_identity(
+            root, expected_fingerprint=binding.account_identity_fingerprint
+        )
+        _require_account_identity(binding, run.binding, declared=bound_identity)
     # Fractionability is a property of the instrument, not of the venue, so a
     # venue-level default is necessarily wrong for one side or the other — the
     # certified canary makes exactly this point and declares the capability
@@ -596,3 +606,44 @@ def _require_deployment_authority(binding: Any, *, universe: Any, capability: An
             "is a statement about one exact deployment",
         )
     capability.require_supported()
+
+
+def _require_account_identity(binding: Any, venue: Any, *, declared: Any) -> None:
+    """Refuse unless the configured venue is the account the runtime is bound to.
+
+    Checked at composition, before a transport is handed to an adapter, and
+    checked on identity alone. The capabilities the venue binding carries are
+    not consulted: they describe what a deployment may send, not which account
+    it would send to, and consulting them here is what made a legitimate
+    capability change read as an account mismatch.
+
+    Args:
+        binding: The active runtime binding.
+        venue: The venue binding built from configuration.
+        declared: The `ExternalBrokerAccountIdentity` the operator authored and
+            the binding pins.
+
+    Raises:
+        RuntimeBindingError: `RUNTIME_BINDING_INVALID` when the configured
+            account is not the bound one, or when the authored identity does not
+            describe the account the binding names.
+    """
+    from stock_screener.execution import ExecutionError
+    from stock_screener.execution.external import account_identity_of
+
+    configured = account_identity_of(venue)
+    try:
+        declared.require_matches(configured, context="composing an operational run")
+    except ExecutionError as exc:
+        raise RuntimeBindingError(
+            Code.RUNTIME_BINDING_INVALID,
+            f"this runtime is bound to an account the configuration does not "
+            f"reach: {exc}. Nothing is composed against a different account, "
+            "whatever its capabilities",
+        ) from exc
+    if declared.fingerprint() != str(getattr(binding, "account_identity_fingerprint", "")):
+        raise RuntimeBindingError(
+            Code.RUNTIME_BINDING_INVALID,
+            "the authored account identity does not digest to the fingerprint the "
+            "active binding names",
+        )

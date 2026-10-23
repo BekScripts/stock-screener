@@ -54,11 +54,14 @@ __all__ = [
     "REBIND_GENESIS",
     "RUNTIME_BINDING_V2_VERSION",
     "RUNTIME_BINDING_V3_VERSION",
+    "RUNTIME_BINDING_V4_VERSION",
     "STRATEGY_REVISION_FIELDS",
     "STRATEGY_REVISION_VERSION",
     "V3_DEPLOYMENT_FIELDS",
+    "V4_IDENTITY_FIELDS",
     "PaperOperationsRuntimeBindingV2",
     "PaperOperationsRuntimeBindingV3",
+    "PaperOperationsRuntimeBindingV4",
     "RebindRecord",
     "RuntimeBindingHistory",
     "account_capability_from_mapping",
@@ -118,6 +121,22 @@ V3_DEPLOYMENT_FIELDS: tuple[str, ...] = (
     "deployment_universe_version",
     "deployment_universe_fingerprint",
     "deployment_capability_fingerprint",
+)
+
+#: The corrected deployment-binding contract. Additive beside V1, V2 and V3,
+#: all of which keep their exact semantics and fingerprints. What V3 could not
+#: express is the distinction P2.3.1J established: it recorded one
+#: `account_binding_fingerprint` that digested the account *and* the
+#: capabilities declared beside it, so a deployment proving fractional support
+#: for its own universe could only be expressed by appearing to change accounts.
+#: V4 records identity and provenance as two separate fields.
+RUNTIME_BINDING_V4_VERSION = "PAPER_OPERATIONS_RUNTIME_BINDING_V4"
+
+#: The fields V4 declares beyond V3. Data, so the coverage guard can check each
+#: has a production consumer rather than trusting a docstring.
+V4_IDENTITY_FIELDS: tuple[str, ...] = (
+    "account_identity_fingerprint",
+    "bootstrap_account_binding_fingerprint",
 )
 
 #: The strategy-revision transition contract. A *distinct* operation from a
@@ -376,6 +395,82 @@ class PaperOperationsRuntimeBindingV3(PaperOperationsRuntimeBindingV2):
 
 
 @dataclass(frozen=True)
+class PaperOperationsRuntimeBindingV4(PaperOperationsRuntimeBindingV3):
+    """A runtime binding whose account identity is separate from its capability.
+
+    Subclasses V3, so every lineage, deployment and chain semantic is the same
+    code rather than a third implementation that could disagree with the other
+    two. The two added fields are what P2.3.1J separated:
+
+    - `account_identity_fingerprint` is what the environment proof compares. It
+      digests provider, environment and the account fingerprint, and nothing
+      else, so widening a capability for a deployment cannot make the identity
+      check fail about the correct account.
+    - `bootstrap_account_binding_fingerprint` is the historical digest recorded
+      at bootstrap — capabilities included, as they were then declared. It is
+      **provenance only**: nothing is proven against it, and it is carried so
+      the chain can still say which binding this runtime's books were opened
+      under. Keeping it is what makes the old evidence readable without
+      reinterpreting what it meant.
+
+    `account_binding_fingerprint`, inherited from V2, keeps its V2 meaning: the
+    venue binding this transition bound. It is not redefined.
+
+    Attributes:
+        account_identity_fingerprint: The capability-independent identity the
+            proof compares. Required.
+        bootstrap_account_binding_fingerprint: The bootstrap-era binding digest,
+            for provenance. Required, because a runtime that could not say what
+            it was opened under has lost the link to its own books.
+    """
+
+    account_identity_fingerprint: str = ""
+    bootstrap_account_binding_fingerprint: str = ""
+
+    def __post_init__(self) -> None:
+        """Refuse a V4 binding with a blank identity or provenance field.
+
+        Raises:
+            RuntimeBindingError: `RUNTIME_REBIND_REFUSED` naming every blank
+                field. The defaults exist for dataclass inheritance only: a
+                blank identity fingerprint would make the proof compare against
+                nothing and silently fall back to the legacy digest, which is
+                the conflation this contract exists to end.
+        """
+        super().__post_init__()
+        blank = [name for name in V4_IDENTITY_FIELDS if not str(getattr(self, name, "")).strip()]
+        if blank:
+            raise RuntimeBindingError(
+                Code.RUNTIME_REBIND_REFUSED,
+                f"a {RUNTIME_BINDING_V4_VERSION} binding must state {blank}. An "
+                "absent account identity would let the proof fall back to the "
+                "legacy digest without anyone noticing, and absent provenance "
+                "would lose the link between these books and the binding they "
+                "were opened under",
+            )
+
+    def body(self) -> dict[str, Any]:
+        """The binding's semantic content, V3's plus the identity fields."""
+        return {
+            **super().body(),
+            "account_identity_fingerprint": self.account_identity_fingerprint,
+            "bootstrap_account_binding_fingerprint": (self.bootstrap_account_binding_fingerprint),
+            # Named rather than merely absent: a reader of a stored binding must
+            # not be able to mistake the deployment's proven capability for a
+            # claim about everything the account can trade.
+            "account_wide_fractional_claim": False,
+        }
+
+    def summary_lines(self) -> tuple[str, ...]:
+        """Render the binding for a terminal, with both account authorities."""
+        return (
+            *super().summary_lines(),
+            f"account identity          : {self.account_identity_fingerprint[:32]}…",
+            f"bootstrap account binding : {self.bootstrap_account_binding_fingerprint[:32]}…",
+        )
+
+
+@dataclass(frozen=True)
 class RebindRecord:
     """One supersession, chained to the one before it.
 
@@ -614,6 +709,26 @@ def _binding_from_body(body: dict[str, Any]) -> PaperOperationsRuntimeBindingV2:
     / read-path defect this project has now hit nine times.
     """
     carried: dict[str, Any] = {}
+    if str(body.get("version", "")) == RUNTIME_BINDING_V4_VERSION:
+        carried = {
+            name: str(body[name])
+            for name in (*V3_DEPLOYMENT_FIELDS, *V4_IDENTITY_FIELDS)
+            if name in body
+        }
+        return PaperOperationsRuntimeBindingV4(
+            version=str(body["version"]),
+            predecessor_fingerprint=str(body["predecessor_fingerprint"]),
+            inherited=dict(body["inherited"]),
+            account_binding_fingerprint=str(body["account_binding_fingerprint"]),
+            risk_policy_fingerprint=str(body["risk_policy_fingerprint"]),
+            instrument_mapping_fingerprint=str(body["instrument_mapping_fingerprint"]),
+            account_capability=dict(body["account_capability"]),
+            reason=str(body.get("reason", "")),
+            code_commit=str(body.get("code_commit", "")),
+            created_at=str(body.get("created_at", "")),
+            transition=str(body.get("transition", REBIND_CHAIN_VERSION)),
+            **carried,
+        )
     if str(body.get("version", "")) == RUNTIME_BINDING_V3_VERSION:
         carried = {name: str(body[name]) for name in V3_DEPLOYMENT_FIELDS if name in body}
         return PaperOperationsRuntimeBindingV3(
@@ -1050,6 +1165,7 @@ def revise_deployment(
     reason: str,
     now: str,
     code_commit: str = "",
+    account_identity: Any = None,
     decisions: Any = None,
     executions: Any = None,
     confirmed: bool = False,
@@ -1081,8 +1197,12 @@ def revise_deployment(
         universe: The frozen deployment universe.
         capability: The deployment-scoped capability proof. Must be proven, and
             must have been derived from exactly this mapping and universe.
-        account_binding_fingerprint: The venue binding digest. Account identity,
-            and never widened to carry the deployment's capability.
+        account_binding_fingerprint: The venue binding digest for this
+            transition. Never widened to carry the deployment's capability.
+        account_identity: The `ExternalBrokerAccountIdentity` this runtime talks
+            to. Supplying it produces a `PAPER_OPERATIONS_RUNTIME_BINDING_V4`,
+            whose environment proof compares identity alone; omitting it
+            produces the V3 binding unchanged.
         reason: Why, for a reviewer.
         now: When.
         code_commit: The build performing it.
@@ -1180,8 +1300,27 @@ def revise_deployment(
             "strategy_authorization_fingerprint": authorization.fingerprint(),
         }
     )
-    binding = PaperOperationsRuntimeBindingV3(
-        version=RUNTIME_BINDING_V3_VERSION,
+    # V4 when an account identity is supplied, V3 otherwise. Additive: a caller
+    # that supplies no identity gets exactly the V3 binding it got before, and
+    # one that does gets a binding whose proof no longer depends on which
+    # capabilities happened to be declared beside the account.
+    settings: dict[str, Any] = {}
+    if account_identity is not None:
+        contract = RUNTIME_BINDING_V4_VERSION
+        factory: Any = PaperOperationsRuntimeBindingV4
+        settings = {
+            "account_identity_fingerprint": account_identity.fingerprint(),
+            # The bootstrap-era digest, carried forward from the predecessor
+            # chain. Provenance only: nothing is proven against it, and it is
+            # never recomputed, because recomputing it under today's
+            # capabilities is precisely how its meaning would be rewritten.
+            "bootstrap_account_binding_fingerprint": _bootstrap_account_digest(predecessor),
+        }
+    else:
+        contract = RUNTIME_BINDING_V3_VERSION
+        factory = PaperOperationsRuntimeBindingV3
+    binding: PaperOperationsRuntimeBindingV3 = factory(
+        version=contract,
         predecessor_fingerprint=predecessor.fingerprint(),
         inherited=inherited,
         account_binding_fingerprint=account_binding_fingerprint,
@@ -1199,6 +1338,7 @@ def revise_deployment(
         deployment_universe_version=DEPLOYMENT_UNIVERSE_VERSION,
         deployment_universe_fingerprint=universe.fingerprint(),
         deployment_capability_fingerprint=capability.fingerprint(),
+        **settings,
     )
     assert binding.account_capability["derived_from_mapping"] == mapping.fingerprint()  # noqa: S101
     assert DEPLOYMENT_CAPABILITY_VERSION in capability.body()["version"]  # noqa: S101
@@ -1246,3 +1386,38 @@ def _require_no_inflight_authority(decisions: Any, executions: Any) -> None:
                 "make it impossible to say afterwards which authority a fill "
                 "belonged to",
             )
+
+
+def _bootstrap_account_digest(predecessor: Any) -> str:
+    """The bootstrap-era account binding digest, carried forward unchanged.
+
+    Reads the predecessor's own provenance field where it has one — a V4
+    binding already carries it — and otherwise takes the predecessor's
+    `account_binding_fingerprint`, which for the origin V1 binding *is* the
+    bootstrap digest. Never recomputed from today's capabilities: recomputing it
+    is exactly how a recorded fingerprint would come to mean something it never
+    meant.
+
+    Args:
+        predecessor: The binding being superseded.
+
+    Returns:
+        The bootstrap-era digest.
+
+    Raises:
+        RuntimeBindingError: `RUNTIME_REBIND_REFUSED` when the predecessor
+            carries neither, because a runtime that cannot say what its books
+            were opened under has lost the link to them.
+    """
+    carried = str(getattr(predecessor, "bootstrap_account_binding_fingerprint", "") or "")
+    if carried:
+        return carried
+    origin = str(getattr(predecessor, "account_binding_fingerprint", "") or "")
+    if origin:
+        return origin
+    raise RuntimeBindingError(
+        Code.RUNTIME_REBIND_REFUSED,
+        "the superseded binding names no account binding, so this transition "
+        "cannot record which binding these books were opened under. Provenance "
+        "is not invented",
+    )

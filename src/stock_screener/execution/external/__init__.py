@@ -40,6 +40,11 @@ and venue fills.
 
 from __future__ import annotations
 
+from .account_identity import (
+    ACCOUNT_IDENTITY_CONTRACT,
+    ExternalBrokerAccountIdentity,
+    account_identity_of,
+)
 from .alpaca import (
     ACCOUNT_PATH,
     ACTIVITIES_PATH,
@@ -172,6 +177,7 @@ from .transport import (
 
 __all__ = [
     "ACCOUNT_FINGERPRINT_SALT",
+    "ACCOUNT_IDENTITY_CONTRACT",
     "ACCOUNT_PATH",
     "ACTIVITIES_PATH",
     "ADAPTER_VERSION",
@@ -230,6 +236,7 @@ __all__ = [
     "ExternalBreak",
     "ExternalBreakSeverity",
     "ExternalBrokerAccountBinding",
+    "ExternalBrokerAccountIdentity",
     "ExternalExecutionFill",
     "ExternalOrderSnapshot",
     "ExternalPaperAccountSnapshot",
@@ -258,6 +265,7 @@ __all__ = [
     "VenueBinding",
     "VenueSymbol",
     "account_fingerprint",
+    "account_identity_of",
     "approved_paper_origin",
     "canonical_evidence",
     "check_no_credentials",

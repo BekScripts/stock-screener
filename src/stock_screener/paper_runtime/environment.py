@@ -117,9 +117,24 @@ class AlphaTraderPaperOperationsEnvironment:
     def prove_paper_environment(self) -> dict[str, Any]:
         """Prove the venue is the bound paper account.
 
+        **Identity only.** What is compared is provider, environment and the
+        account fingerprint — never the capabilities declared beside them. A
+        runtime binding that records an `account_identity_fingerprint` is proven
+        against that; one that does not is proven exactly as it always was,
+        against the whole binding digest, so a V1, V2 or V3 root keeps its
+        historical semantics unchanged.
+
+        The distinction is the whole point of P2.3.1J. A deployment that proves
+        fractional support for its own universe legitimately widens the
+        adapter's capability, which moves the full binding digest — and under
+        the old comparison that read as *"the venue answered for an account this
+        runtime is not bound to"* about the correct account. Identity and
+        execution capability are different authorities; only the first belongs
+        in this check.
+
         Returns:
-            Whether it is proven, the account binding fingerprint the venue
-            answered for, and a sanitised detail.
+            Whether it is proven, the fingerprint the venue answered for, which
+            authority was compared, and a sanitised detail.
 
         Raises:
             Exception: Whatever the transport raises when the venue cannot be
@@ -133,17 +148,42 @@ class AlphaTraderPaperOperationsEnvironment:
                 "this environment has no broker adapter, so the paper venue cannot be "
                 "proven. An unproven venue is never assumed to be the right one",
             )
+        from stock_screener.execution.external import account_identity_of
+
         evidence = self.adapter.account_evidence()
         account = evidence.value
         self._account = account
-        fingerprint = self.adapter.binding.binding_fingerprint()
+        # The venue's own account id was already checked against the bound one
+        # by the adapter when it read the account — `require_account` inside
+        # `account_evidence()`. Not repeated here: a second copy of that check
+        # is a second thing to keep in step with the first.
+        expected_identity = str(getattr(self.binding, "account_identity_fingerprint", "") or "")
+        if expected_identity:
+            answered = account_identity_of(self.adapter.binding).fingerprint()
+            authority = "EXTERNAL_BROKER_ACCOUNT_IDENTITY_V1"
+        else:
+            # A binding from before identity was separated. Compared exactly as
+            # it was, because reinterpreting a recorded fingerprint to mean
+            # something narrower would make old evidence say something it never
+            # said.
+            answered = self.adapter.binding.binding_fingerprint()
+            expected_identity = self.binding.account_binding_fingerprint
+            authority = "ACCOUNT_BINDING_DIGEST_LEGACY"
+        proven = answered == expected_identity
         return {
-            "proven": fingerprint == self.binding.account_binding_fingerprint,
-            "account_binding_fingerprint": fingerprint,
+            "proven": proven,
+            # The account binding this runtime is *bound to*, which is what an
+            # operating grant was issued against and what a run id is derived
+            # from. Deliberately not the digest the comparison used: overloading
+            # this key with an identity digest would make every arming grant
+            # stop matching the moment identity got its own authority, which is
+            # the same conflation one layer further out.
+            "account_binding_fingerprint": self.binding.account_binding_fingerprint,
+            "account_identity_fingerprint": answered,
+            "account_identity_expected": expected_identity,
+            "account_identity_authority": authority,
             "detail": (
-                ""
-                if fingerprint == self.binding.account_binding_fingerprint
-                else "the venue answered for an account this runtime is not bound to"
+                "" if proven else "the venue answered for an account this runtime is not bound to"
             ),
             "status": getattr(account, "status", ""),
             "trading_blocked": bool(getattr(account, "trading_blocked", False)),

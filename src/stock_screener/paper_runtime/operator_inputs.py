@@ -46,6 +46,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 __all__ = [
+    "ACCOUNT_IDENTITY_FILENAME",
     "DEPLOYMENT_CAPABILITY_FILENAME",
     "DEPLOYMENT_UNIVERSE_FILENAME",
     "OPERATOR_INPUTS_VERSION",
@@ -56,12 +57,14 @@ __all__ = [
     "SYMBOL_MAPPING_FILENAME",
     "OperatorInputStatus",
     "operator_input_status",
+    "read_account_identity",
     "read_deployment_capability",
     "read_deployment_universe",
     "read_risk_policy",
     "read_strategy_authorization",
     "read_symbol_mapping",
     "stored_marks",
+    "write_account_identity",
     "write_deployment_capability",
     "write_deployment_universe",
     "write_risk_policy",
@@ -78,6 +81,7 @@ SYMBOL_MAPPING_FILENAME = "symbol_mapping.json"
 DEPLOYMENT_UNIVERSE_FILENAME = "deployment_universe.json"
 DEPLOYMENT_CAPABILITY_FILENAME = "deployment_capability.json"
 STRATEGY_AUTHORIZATION_FILENAME = "strategy_authorization.json"
+ACCOUNT_IDENTITY_FILENAME = "account_identity.json"
 
 #: Which artefacts each runtime-binding contract requires. Data rather than a
 #: branch, so the coverage guard can check every declared artefact has a writer,
@@ -92,6 +96,14 @@ REQUIRED_OPERATOR_INPUTS: dict[str, tuple[str, ...]] = {
         "DEPLOYMENT_UNIVERSE",
         "DEPLOYMENT_CAPABILITY",
         "STRATEGY_AUTHORIZATION",
+    ),
+    "PAPER_OPERATIONS_RUNTIME_BINDING_V4": (
+        "RISK_POLICY",
+        "SYMBOL_MAPPING",
+        "DEPLOYMENT_UNIVERSE",
+        "DEPLOYMENT_CAPABILITY",
+        "STRATEGY_AUTHORIZATION",
+        "ACCOUNT_IDENTITY",
     ),
 }
 
@@ -112,6 +124,10 @@ OPERATOR_INPUT_FILES: dict[str, tuple[str, str]] = {
     "STRATEGY_AUTHORIZATION": (
         STRATEGY_AUTHORIZATION_FILENAME,
         "strategy_authorization_fingerprint",
+    ),
+    "ACCOUNT_IDENTITY": (
+        ACCOUNT_IDENTITY_FILENAME,
+        "account_identity_fingerprint",
     ),
 }
 
@@ -190,7 +206,12 @@ def operator_input_status(root: Path, *, binding_version: str = "") -> OperatorI
             f"no authored symbol mapping at runtime/{SYMBOL_MAPPING_FILENAME}; "
             "nothing declares which securities this runtime may route to the venue"
         )
-    for name in ("DEPLOYMENT_UNIVERSE", "DEPLOYMENT_CAPABILITY", "STRATEGY_AUTHORIZATION"):
+    for name in (
+        "DEPLOYMENT_UNIVERSE",
+        "DEPLOYMENT_CAPABILITY",
+        "STRATEGY_AUTHORIZATION",
+        "ACCOUNT_IDENTITY",
+    ):
         if name not in required:
             continue
         filename, _ = OPERATOR_INPUT_FILES[name]
@@ -717,4 +738,69 @@ def write_strategy_authorization(root: Path, authorization: Any) -> Path:
 
     path = _directory(root) / STRATEGY_AUTHORIZATION_FILENAME
     atomic_write_verified(path, authorization.as_json())
+    return path
+
+
+def read_account_identity(root: Path, *, expected_fingerprint: str = "") -> Any:
+    """Read the account identity this runtime is bound to.
+
+    Identity only: provider, environment and the account fingerprint. It is a
+    separate artefact from the deployment capability on purpose — the two
+    answer different questions, and a single record would make a capability
+    change look like an account change, which is the defect P2.3.1J resolved.
+
+    Args:
+        root: The operations root.
+        expected_fingerprint: The fingerprint the active binding names. The
+            artefact is refused unless it matches.
+
+    Returns:
+        The `ExternalBrokerAccountIdentity`.
+
+    Raises:
+        RuntimeBindingError: `RUNTIME_ACCOUNT_IDENTITY_NOT_AUTHORED` when
+            absent, `RUNTIME_OPERATOR_INPUT_UNREADABLE` when malformed or of an
+            unknown contract, or
+            `RUNTIME_OPERATOR_INPUT_FINGERPRINT_MISMATCH` when it does not
+            digest to the bound value.
+    """
+    from stock_screener.execution import ExecutionError
+    from stock_screener.execution.external import ExternalBrokerAccountIdentity
+
+    path = _directory(root) / ACCOUNT_IDENTITY_FILENAME
+    body = _read_body(
+        path,
+        code=Code.RUNTIME_ACCOUNT_IDENTITY_NOT_AUTHORED,
+        what="the runtime account identity",
+    )
+    try:
+        identity = ExternalBrokerAccountIdentity.from_body(body)
+    except ExecutionError as exc:
+        raise RuntimeBindingError(
+            Code.RUNTIME_OPERATOR_INPUT_UNREADABLE,
+            f"the account identity at {path} is not valid: {exc}",
+        ) from exc
+    _require_fingerprint(
+        path,
+        got=identity.fingerprint(),
+        expected=expected_fingerprint,
+        what="the account identity",
+    )
+    return identity
+
+
+def write_account_identity(root: Path, identity: Any) -> Path:
+    """Persist an account identity as an operator artefact.
+
+    Args:
+        root: The operations root.
+        identity: The `ExternalBrokerAccountIdentity` to freeze.
+
+    Returns:
+        Where it was written.
+    """
+    from stock_screener.paper_operations import atomic_write_verified
+
+    path = _directory(root) / ACCOUNT_IDENTITY_FILENAME
+    atomic_write_verified(path, identity.as_json())
     return path

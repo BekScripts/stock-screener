@@ -36,8 +36,62 @@ appears without the run or the test that produced it.
 
 ## Current phase
 
-**P2.3.1I2 — paper deployment authorization bound to its universe — is the
+**P2.3.1J — account identity separated from deployment capability — is the
 current checkpoint**, on `feat/p2-execution-engine`. The real runtime is still
+bound to V1, still not armed, still `KILLED / CONTROL_STATE_UNVERIFIABLE`, and
+still holds **no** operator deployment artefacts.
+
+**P2.3.1H2's retry stopped at the mapping gate.** The reconstructed mapping
+digested to `7254c49c…`, not the reviewed `4ae99e61…`: `COMPANY:4496` (`CCO`) is
+no longer returned by Alpaca, moving `ROUTABLE 1880 → 1879` and
+`UNMAPPED 15 → 16`. Per the phase's own rule nothing was written. Deployment
+*membership* is unaffected — still exactly 1,821, since `CCO` was one of the 59
+whole-share-only names — but the universe fingerprint changes anyway because its
+body digests the source mapping and the exclusion counts. That is provenance
+working, not churn to be suppressed. **The refresh has not been done**; it is the
+next phase.
+
+**One fingerprint was carrying two authorities, and P2.3.1J splits them.** The
+real recorded `account_binding_fingerprint` `a894a8da…` was computed with
+`fractional_quantities=False`, and `ExternalBrokerAccountBinding.body()` digests
+capabilities. So when a deployment proved fractional support for its own universe
+and production widened the adapter to send those fractions, the identity check
+compared a different digest and reported *"the venue answered for an account this
+runtime is not bound to"* — about the correct account. Measured:
+
+| | binding digest | identity digest |
+| --- | --- | --- |
+| whole-share | `a894a8da…` (the recorded value) | `2872641c…` |
+| fractional | `aaa50d3a…` | `2872641c…` |
+
+`EXTERNAL_BROKER_ACCOUNT_IDENTITY_V1` digests provider, environment and the
+account fingerprint — **four keys, and every omission is load-bearing**:
+capabilities, the deployment universe, the symbol mapping, the risk policy and
+the strategy are all absent, so none of them can move it. The historical binding
+digest is untouched and still means what it meant.
+
+The proof is now two questions asked separately: identity against the identity
+authority, then deployment capability against the mapping and universe. A V4
+binding is proven against its `account_identity_fingerprint`; a V1, V2 or V3 root
+is proven exactly as before, against the whole binding digest, so no recorded
+evidence is reinterpreted.
+
+**`PAPER_OPERATIONS_RUNTIME_BINDING_V4`** is additive beside V1–V3 and records
+the two as separate fields: `account_identity_fingerprint`, which the proof
+compares, and `bootstrap_account_binding_fingerprint`, which is **provenance
+only** — carried forward from the predecessor, never recomputed, because
+recomputing it under today's capabilities is exactly how a recorded fingerprint
+would come to mean something it never meant. It also states
+`account_wide_fractional_claim: false` explicitly.
+
+Account identity became a sixth fingerprint-pinned operator artefact, required
+by V4 and by no earlier contract. The separation needs no new generation, no new
+bootstrap epoch and no `OpeningBalanceEvent`: capability metadata is not
+economic state.
+
+**P2.3.1I2 remains in force below**, unchanged.
+
+**P2.3.1I2 — paper deployment authorization bound to its universe**, on `feat/p2-execution-engine`. The real runtime is still
 bound to V1, still not armed, still `KILLED / CONTROL_STATE_UNVERIFIABLE`.
 
 **P2.3.1H2 stopped before writing anything, for two reasons.** The phase
@@ -816,6 +870,16 @@ frozen at the same commit; P2 branched from it.
 | P2.3.1I2 operator artefacts | **5** for V3; the grant is fingerprint-pinned by the binding |
 | P2.3.1I2 universe authorities | grant + runtime binding + strategy decision, all three |
 | P2.3.1I2 real runtime | untouched — still V1, 0 operator files, 0 supersessions |
+| P2.3.1H2 retry verdict | **C — provider mapping drift**; 0 artefacts written, 5 GET / 0 POST / 0 DELETE |
+| P2.3.1H2 drift | `COMPANY:4496` (`CCO`) `ROUTABLE → UNMAPPED`; mapping `7254c49c…` ≠ `4ae99e61…` |
+| P2.3.1H2 universe impact | membership unchanged at 1,821; fingerprint changes on provenance |
+| P2.3.1J identity contract | `EXTERNAL_BROKER_ACCOUNT_IDENTITY_V1` — 4 keys, 0 capability fields |
+| P2.3.1J identity digest | `2872641c…` for the real account, identical under either capability |
+| P2.3.1J historical binding | `a894a8da…` unchanged, still capability-bearing, still provenance |
+| P2.3.1J binding | `PAPER_OPERATIONS_RUNTIME_BINDING_V4` — additive; identity + provenance split |
+| P2.3.1J operator artefacts | **6** for V4; account identity is fingerprint-pinned |
+| P2.3.1J real runtime | untouched — still V1, 0 operator files, 0 supersessions |
+| P2.3.1J mapping refresh | **not performed** — deferred to the refresh phase |
 | H2 broker-paper orders | **NOT AUTHORISED** — its own frozen ladder says so |
 | Live trading | **NOT IMPLEMENTED, NOT AUTHORIZED** |
 | Production risk thresholds | **NOT AUTHORIZED** |
@@ -852,6 +916,33 @@ permit a fractional order for one that cannot take it.
 `EXAMPLE_POLICY_V1`'s 20, which declares itself unauthorised. Every
 owner-approved limit is therefore stated explicitly, and a field the engine
 cannot express is refused rather than left to inherit.
+
+**Identity and capability are different authorities (P2.3.1J).** "Is this my
+account?" is a fact about the venue; "may this deployment send a fraction?" is a
+fact about a frozen universe. While they shared a fingerprint, the only way to
+express a capability change was to appear to change accounts — so a correct
+deployment read as a wrong account. An identity digest therefore carries provider,
+environment and the account fingerprint, and nothing that any deployment can
+move.
+
+**A recorded fingerprint is never recomputed to mean something new (P2.3.1J).**
+The bootstrap-era account digest included the capabilities declared at the time.
+It is carried forward as provenance and nothing is proven against it, because
+re-deriving it under today's capabilities would quietly rewrite what the original
+evidence said.
+
+**A fingerprint returned by a proof is not interchangeable with the one a grant
+was issued against (P2.3.1J).** Overloading `account_binding_fingerprint` with
+the identity digest made every operating grant stop matching — the same
+conflation one layer out, found because an armed test run went `BLOCKED` with
+`PAPER_OPERATIONS_NOT_ARMED`. The proof now returns both under distinct names.
+
+**A source scan anchored on a relative path tests nothing (P2.3.1J).**
+`tests/conftest.py` moves every test to a temporary working directory, so
+`Path("src/...")` globs an empty directory and the assertion passes vacuously.
+Three such scans were doing that; anchored at the repository root, one of them
+immediately failed on a legitimate `round` of a reported ratio, which is why the
+quantity rule is now two precise assertions rather than one false one.
 
 **A grant must name every input that can change the outcome (P2.3.1I2).** Binding
 a strategy's fingerprint is sufficient authority only when its behaviour is a
