@@ -365,7 +365,6 @@ def main() -> int:
         return handler(args)
     except (OSError, subprocess.CalledProcessError, TaskStateError, json.JSONDecodeError) as exc:
         parser.error(str(exc))
-        return 2
 
 
 if __name__ == "__main__":
