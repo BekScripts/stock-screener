@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
@@ -146,6 +148,50 @@ def _verify_state_provenance(root: Path, project_state: Path) -> None:
     )
 
 
+def _verify_declaration_on_main(root: Path, declared: str) -> None:
+    """Require main's own supervisor state to declare the same authority file."""
+    relative = STATE_RELATIVE_PATH.as_posix()
+    for ref in AUTHORITATIVE_REFS:
+        if _git_output(root, "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}") is None:
+            continue
+        raw = _git_output(root, "show", f"{ref}:{relative}")
+        if raw is None:
+            raise SupervisorStateError(
+                f"supervisor state is not on {ref} ({relative}); "
+                "the authority declaration cannot be trusted from an unmerged branch"
+            )
+        try:
+            parsed: object = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise SupervisorStateError(f"supervisor state on {ref} is not valid JSON") from exc
+        if not isinstance(parsed, dict):
+            raise SupervisorStateError(f"supervisor state on {ref} must be a JSON object")
+        trusted = cast("dict[str, object]", parsed).get("authoritative_project_state")
+        if trusted != declared:
+            raise SupervisorStateError(
+                f"authoritative_project_state differs from the declaration on {ref}; "
+                "do not infer state from an unmerged branch"
+            )
+        return
+    raise SupervisorStateError(
+        "cannot establish provenance: no authoritative main reference "
+        f"({', '.join(AUTHORITATIVE_REFS)}) is available"
+    )
+
+
+def _write_scratch_file(output: Path, text: str) -> None:
+    """Atomically replace the scratch entry so hard links are never written through."""
+    fd, tmp_name = tempfile.mkstemp(dir=output.parent, prefix=".render-", suffix=".tmp")
+    tmp = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(text)
+        tmp.replace(output)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
+
+
 def _safe_output_path(root: Path, raw: Path) -> Path:
     """Confine rendered output to the scratch directory, rejecting symlinks."""
     candidate = raw if raw.is_absolute() else root / raw
@@ -244,6 +290,7 @@ def _cmd_render(args: argparse.Namespace) -> int:
             "infer state from an unmerged branch"
         )
 
+    _verify_declaration_on_main(root, project_state_raw)
     _verify_state_provenance(root, project_state)
 
     planning_sources = _require_string_list(payload, "planning_sources")
@@ -264,7 +311,7 @@ def _cmd_render(args: argparse.Namespace) -> int:
     output.parent.mkdir(parents=True, exist_ok=True)
     if output.parent.resolve() != output.parent:
         raise SupervisorStateError("--output must not traverse a symlink")
-    output.write_text(text, encoding="utf-8")
+    _write_scratch_file(output, text)
     print(output)
     return 0
 

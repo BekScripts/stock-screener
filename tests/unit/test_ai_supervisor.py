@@ -290,6 +290,37 @@ def test_render_refuses_outputs_outside_the_scratch_directory(tmp_path: Path) ->
     assert outside.read_text(encoding="utf-8") == "original\n"
 
 
+def test_render_rejects_authority_declaration_redirected_on_a_feature_branch(
+    tmp_path: Path,
+) -> None:
+    repo, _ = _repo_with_state_on_main(tmp_path)
+    _git(repo, "checkout", "-b", "feature")
+    state = _base_state()
+    state["authoritative_project_state"] = "docs/reference/roadmap.md"
+    (repo / ".ai" / "supervisor-state.json").write_text(json.dumps(state), encoding="utf-8")
+    _commit_all(repo, "redirect")
+
+    result = _supervisor(repo, "render", check=False)
+
+    assert result.returncode != 0
+    assert "differs from the declaration" in result.stderr
+
+
+def test_render_does_not_write_through_a_hard_linked_output(tmp_path: Path) -> None:
+    repo, _ = _repo_with_state_on_main(tmp_path)
+    protected = repo / "AGENTS.md"
+    protected.write_text("original\n", encoding="utf-8")
+    scratch = repo / ".claude" / "tmp"
+    scratch.mkdir(parents=True)
+    target = scratch / "out.md"
+    target.hardlink_to(protected)
+
+    _supervisor(repo, "render", "--output", str(target))
+
+    assert protected.read_text(encoding="utf-8") == "original\n"
+    assert '"mode": "SHADOW"' in target.read_text(encoding="utf-8")
+
+
 def test_render_refuses_symlinked_output(tmp_path: Path) -> None:
     repo, _ = _repo_with_state_on_main(tmp_path)
     victim = tmp_path / "victim.md"
