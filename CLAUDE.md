@@ -56,9 +56,9 @@ agent in the GitHub AI review loop.
   `AI PR review loop`, to create and push ordinary fix commits to the current
   PR branch only. That is the explicit commit/push approval required by the
   git-workflow skill for this mode.
-- After the requested fix is verified, stage the current fix, commit it, and
-  publish only to the current PR branch. The workflow grants only the narrow
-  publication commands needed for that same-branch update.
+- After the requested fix is verified, publish the modified files only through
+  `mcp__github_file_ops__commit_files` to the current PR branch. The workflow
+  intentionally does not grant raw shell push permission in automated fix mode.
 - That authorization does not permit merge, rebase, force-push, writes to
   `main`, runtime re-arm, broker mutation, deployment/state transition, secret
   changes, or LIVE trading.
