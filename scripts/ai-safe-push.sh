@@ -42,7 +42,7 @@ fi
 
 is_ignored_restoration() {
   case "$1" in
-    CLAUDE.md|CLAUDE.local.md|.mcp.json|.claude.json|.gitmodules|.ripgreprc|.ai/current-review.json)
+    CLAUDE.md|CLAUDE.local.md|.mcp.json|.claude.json|.gitmodules|.ripgreprc|.ai/current-review.json|.ai/current-task.md)
       return 0
       ;;
     .claude|.claude/*|.claude-pr|.claude-pr/*|.husky|.husky/*)
