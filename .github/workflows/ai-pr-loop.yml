@@ -118,7 +118,7 @@ jobs:
             printf '**Verdict:** `%s`\n\n' "$VERDICT"
             jq -r '.summary' "$REVIEW_FILE"
             echo
-            jq -r '.findings[]? | "- **\(.severity)** `\(.file // \"repository\"):\(.line // \"-\")` — **\(.title)**\n  - Rule: `\(.rule)`\n  - \(.details)\n  - Required fix: \(.required_fix)"' "$REVIEW_FILE"
+            jq -r '.findings[]? | (.file // "repository") as $file | (if .line == null then "-" else (.line | tostring) end) as $line | "- **\(.severity)** `\($file):\($line)` — **\(.title)**\n  - Rule: `\(.rule)`\n  - \(.details)\n  - Required fix: \(.required_fix)"' "$REVIEW_FILE"
             echo
             if [ "$CAN_FIX" = true ]; then
               echo "Claude automatic fix attempt ${NEXT_ROUNDS}/2 is queued."
