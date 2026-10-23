@@ -1,0 +1,106 @@
+{
+  "label": "MULTI-SESSION",
+  "note": "1000 shares worked across three calendar sessions at a 10% ceiling, with volumes of 4000, 3500 and 3000 giving capacities of 400, 350 and 300. Three distinct DAY children fill 400, 350 and 250; the first two expire and the third completes. Note the calendar: Friday's residual rolls to Monday, not to Saturday.",
+  "execution_plan_id": "MULTI-SESSION",
+  "as_of": "2026-10-02T16:00:00-04:00",
+  "created_at": "2026-10-02T16:00:00-04:00",
+  "first_session": "2026-10-02",
+  "approved_portfolio_fingerprint": "apapapapapapapapapapapapapapapapapapapapapapapapapapapapapapapap",
+  "valued_snapshot_fingerprint": "vsvsvsvsvsvsvsvsvsvsvsvsvsvsvsvsvsvsvsvsvsvsvsvsvsvsvsvsvsvsvsvs",
+  "securities": [
+    {
+      "label": "BIGPOS",
+      "kind": "COMPANY",
+      "identity_id": 8101,
+      "symbol": "BIG"
+    }
+  ],
+  "execution_policy": {
+    "policy_id": "MULTI-SESSION_POLICY",
+    "adverse_slippage_bps": "0",
+    "max_volume_participation": "0.10",
+    "maximum_execution_sessions": 3,
+    "spread_required": true,
+    "volume_required": true
+  },
+  "calendar": {
+    "name": "EXAMPLE_CALENDAR",
+    "sessions": [
+      "2026-10-02",
+      "2026-10-05",
+      "2026-10-06",
+      "2026-10-08"
+    ]
+  },
+  "opening": {
+    "event_id": "PAPER-OB",
+    "effective_at": "2026-10-02T09:30:00-04:00",
+    "source_id": "PAPER_BOOK_IMPORT",
+    "source_fingerprint": "fp-open",
+    "cash": "500000.0000",
+    "positions": []
+  },
+  "intents": [
+    {
+      "identity": "BIGPOS",
+      "action": "ENTER",
+      "current_weight": 0.0,
+      "target_weight": 0.2,
+      "notional_delta": 100000.0,
+      "strategy_id": "ALPHA"
+    }
+  ],
+  "sizing": {
+    "as_of": "2026-10-02T16:00:00-04:00",
+    "nav": "500000.0000",
+    "cash": "500000.0000",
+    "source": "SESSION_CLOSE",
+    "prices": [
+      {
+        "identity": "BIGPOS",
+        "price": "100.00000000"
+      }
+    ]
+  },
+  "market_sessions": [
+    {
+      "session": "2026-10-02",
+      "as_of": "2026-10-02T16:00:00-04:00",
+      "source": "PAPER",
+      "quotes": [
+        {
+          "identity": "BIGPOS",
+          "bid": "99.00000000",
+          "ask": "101.00000000",
+          "observed_share_volume": "4000"
+        }
+      ]
+    },
+    {
+      "session": "2026-10-05",
+      "as_of": "2026-10-05T16:00:00-04:00",
+      "source": "PAPER",
+      "quotes": [
+        {
+          "identity": "BIGPOS",
+          "bid": "99.00000000",
+          "ask": "101.00000000",
+          "observed_share_volume": "3500"
+        }
+      ]
+    },
+    {
+      "session": "2026-10-06",
+      "as_of": "2026-10-06T16:00:00-04:00",
+      "source": "PAPER",
+      "quotes": [
+        {
+          "identity": "BIGPOS",
+          "bid": "99.00000000",
+          "ask": "101.00000000",
+          "observed_share_volume": "3000"
+        }
+      ]
+    }
+  ]
+}

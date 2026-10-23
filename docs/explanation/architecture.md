@@ -205,6 +205,189 @@ changes without a new version turns a change in the rules into an apparent chang
 in the business, which is exactly what the score-change views would surface
 first. See [ADR-0006](../adr/0006-score-snapshots-are-versioned-and-immutable.md).
 
+## Authority is layered, and the layers are permanent
+
+The screener answers *what is worth holding*. Deciding what is actually held, and
+then what is actually traded, are different questions with different failure
+modes, so they are different layers — and the separation is a project invariant
+rather than a current arrangement:
+
+| Layer | Authority | May not |
+| --- | --- | --- |
+| Strategy | signal: what is worth holding | size a position, or reach execution |
+| Allocation policy | maximum capital authority per strategy | be inferred from a strategy count |
+| Multi-strategy allocator | capital sleeves | let one sleeve claim another's capacity |
+| Portfolio engine | aggregate economic exposure | overrule a limit |
+| Risk engine | veto and resize: what is permitted | be bypassed by a strategy |
+| Execution engine *(later)* | order planning | choose what to hold |
+| Broker adapter *(later)* | external action | decide anything |
+
+Capital authority is as deliberate as risk authority. Several strategies may
+request capital only under an explicit allocation policy; nothing splits capital
+fifty-fifty because there happen to be two of them. Budgets are ceilings, and the
+capacity a strategy does not use becomes cash rather than another strategy's
+position — otherwise one strategy's restraint would quietly fund another's risk.
+Exposure aggregates by durable identity so two strategies wanting one security hold
+one position; attribution is kept separately, because afterwards the question is
+rarely what the portfolio holds but which strategy put it there.
+
+Two consequences are load-bearing.
+
+**A strategy may request; it may not insist.** `portfolio_risk.evaluate` is the
+only path from intents to targets, and nothing in the strategy-facing surface
+accepts a force, bypass or override argument. That is checked by a test walking
+every signature in the package, because the value of the rule is precisely that it
+holds on the day someone wants it not to.
+
+**Risk controls only reduce risk.** The portfolio layer's advanced stages each
+impose a *ceiling* seeded at the pre-risk weight and only ever lowered, so no
+later stage can restore exposure an earlier one removed. The case that forced the
+design: filling an investable budget would otherwise hand a liquidity-capped
+name's freed budget to another name, leaving aggregate risk unchanged and
+defeating the cap. The freed budget becomes cash instead, and an invariant
+asserts no approved target exceeds its pre-risk value. The stage order is frozen
+and documented, because reordering it changes results — so it is an engine-version
+change, not a refactor.
+
+**Risk inputs fail closed rather than understating risk.** A covariance matrix is
+validated for positive semidefiniteness before it is given any authority, and a
+materially negative portfolio variance raises instead of clamping to zero. That
+clamp was the one failure mode in this layer that looked like perfect safety: a
+portfolio whose risk the matrix could not describe would have reported a volatility
+of zero. The same principle governs every missing metric — an unknown volatility is
+not zero, an unknown ADV is not infinite, and an undefined correlation is not
+uncorrelated.
+
+**Only the broker adapter will ever hold credentials or submit an order.** Every
+layer above it is structurally incapable of reaching one: `portfolio_risk` imports
+no HTTP client, no socket and no broker SDK, and its execution intents are inert
+data with no quantity, no venue and no side effect. Keeping the capability absent
+rather than merely unused is what makes the boundary enforceable later, when there
+is something real on the other side of it.
+
+**A target is not a holding.** The risk engine decides what a portfolio *should*
+contain. `portfolio_accounting` records what it *does* contain, and the two are
+separate objects with separate truth conditions. State there is derived only by
+replaying an append-only ledger whose hash chain makes tamper, deletion,
+reordering and insertion detectable from the records alone; there is no setter, no
+constructor from a broker statement, and no function anywhere that writes a target
+into a holding. A system that conflated them would report the portfolio it wanted
+rather than the one it has — and would do so with every identity still appearing
+to balance.
+
+The same reasoning drives the one rule that looks like stubbornness:
+reconciliation never adopts an external figure. A difference between the ledger
+and a custodian is evidence that something happened the ledger was not told
+about. Setting the ledger to match destroys that evidence and leaves the cause in
+place, so the break stays open until someone decides what event explains it. That
+decision then enters the ledger as an event, which is the only mechanism by which
+holdings change.
+
+Who owns what is accounted the same way. A global weighted-average cost is
+exact for the portfolio and misleading for its strategies the moment two of them
+enter the same security at different prices — and, less obviously, wrong for the
+portfolio too, because the pooled average also decides what the remaining basis
+is. So each `(security, owner)` pair keeps its own weighted-average pool, and
+every global figure is derived by summing them rather than maintained beside
+them. Two independently mutating authorities would eventually disagree, and the
+disagreement would present as a reconciliation failure rather than as the bug it
+is. None of this is tax accounting: there is no lot selection, no holding period
+and no wash-sale rule, because those answer a question this engine does not ask.
+
+The same instinct governs the ledger's durability. A hash chain proves its
+records are consistent and cannot prove there were no more of them — a truncated
+ledger is a perfectly valid shorter chain. A mandatory head anchor records how
+far the ledger actually got, so a shorter one is detected rather than accepted,
+and it never moves backward: lowering it to match would erase the only evidence
+that something is missing. What it cannot do is detect a ledger and its anchor
+rolled back *together*, because local files cannot establish that they are the
+latest state of themselves. That limit is documented rather than papered over,
+and closing it needs an anchor held where the ledger's writer cannot reach.
+
+Accounting also uses different arithmetic on purpose. Exactness is the point of a
+cash balance, so every figure there is a `Decimal` and the identities are compared
+exactly rather than within a tolerance. Risk arithmetic is statistical, where
+`float64` is both faster and honest about the precision available. One adapter
+converts between them, in one direction.
+
+**An order is not a position, and a target is not an order.** Those are two
+separate claims and both are load-bearing. The risk engine authorises targets;
+the execution layer turns authorised deltas into orders; only an admitted
+accounting fill changes the book. Creating, submitting or acknowledging an order
+touches no ledger, and the simulated broker holds no cash, positions or P&L of
+its own — buying power is accounting's cash and holdings are accounting's
+holdings. A broker with its own balances would be two books that agree until they
+do not, and the disagreement would arrive as a reconciliation break whose cause
+is the simulator.
+
+The handoff between the two is where both failure modes are expensive, so the
+fill is deliberately two facts rather than one: *it happened* (durable in the
+execution journal) and *it is in the book* (durable in the ledger). Each is
+durable before the next begins, and the accounting event id is derived from the
+fill id rather than generated — so a crash between them leaves a state recovery
+can finish exactly once, and a retry is a no-op rather than a second trade.
+
+The friction that layer does model is deliberately narrow and deliberately
+declared. It crosses the quoted spread, applies an adverse slippage somebody
+chose, and caps each fill at a share of the session's traded volume — and every
+one of those numbers is an input with a fingerprint rather than something the
+engine derived. That matters more than it looks: a cost model fitted to make a
+backtest match an observed result becomes a free parameter of the strategy, and
+the strategy's apparent edge then partly comes from the assumption picked to
+flatter it. So nothing in the package reads a return to choose a cost.
+
+What it still does not model is impact, latency and queue position, and the
+manifest says so. Impact in particular is a function of an order's own size
+against available liquidity; a flat haircut is not an approximation of that, and
+a large order will look cheaper than it would trade. The point of the engine is
+that the same inputs produce the same orders, fills and book every time, which is
+what makes an execution bug findable — a simulator full of plausible-looking cost
+models has many more places for one to hide.
+
+The time dimension is where the second real correction landed. A DAY order lives
+for one session, so it now *ends* at that session's close and a residual reaches
+the next session as a new child order rather than by the old one surviving
+overnight. The next session comes from an explicit calendar, never from adding a
+day to a date — a Friday residual belongs to Monday, and arithmetic would have
+placed a child order on a day the market was shut and filled it against a
+snapshot that cannot exist.
+
+**The first code that can act outside this process is one subpackage, and that
+containment is the design.** `execution/external/` reaches a provider's paper
+venue; every module above it imports no HTTP client and takes no credential,
+which a test asserts by reading their imports. The adapter receives its
+transport by injection and never builds one, so the whole of it — including
+every failure a venue can produce — is exercised in the ordinary gate with no
+network at all.
+
+Two decisions inside it are worth stating, because the permissive alternatives
+are each one line long. The first is that **live trading is refused by
+construction rather than by configuration.** There is no flag, host, key prefix
+or setting that enables it; a live host and a live key prefix are each rejected
+on their own, an *unrecognised* host or prefix is rejected too rather than
+assumed safe, and a session's venue enum has no third member to fall back to.
+The reason for refusing the unrecognised case is that the cost of guessing wrong
+is asymmetric: being too strict stops a run, and being too lenient places a real
+order.
+
+The second is that **an order submission is never retried.** A request that
+times out may or may not have created an order, so repeating it is how a
+duplicate position appears. Instead the order is given a name before the request
+is made — derived from the local order id, so it survives a crash that loses
+every in-memory fact — the intent is written durably first, exactly one request
+is sent, and an ambiguous answer is resolved by *asking* the venue about that
+name. When asking does not settle it, the answer is "unknown" and it stays
+unknown: the intent remains on disk, preflight refuses to plan anything new, and
+a person decides. That is slower than a retry and it is the only version that
+cannot double a position.
+
+The same refusal to be helpful governs what comes back. A reconciliation
+compares three records — journal, book, venue — because two cannot localise a
+disagreement, and it repairs none of them. Adopting the broker's figure would
+not resolve a break; it would destroy the evidence that there was one, and if the
+broker was the record in error it would write a false position into a ledger
+that keeps it forever.
+
 ## What is deliberately absent
 
 Not every company gets a number. A bank, an ineligible security and a company
@@ -244,6 +427,37 @@ ids quote what one says, and only the second can support a claim about a
 business. Numbers found in filing text are scoped to the claim citing that
 excerpt rather than pooled across the brief. The full workflow, guardrails and
 limitations are in the [Phase 3 brief](../reference/project-phases/phase3.md).
+
+## Where the project stands, and what comes next
+
+The data foundation is complete and frozen. Every later stage reads it
+through the backtest data contract and none of them changes it.
+
+```text
+Evidence / data foundation ........ COMPLETE  (SEC_EVIDENCE_GENERATION_V2, frozen)
+        ↓
+Historical research contract ...... COMPLETE  (PIT_RESEARCH_DATASET_V2, BACKTEST_DATA_CONTRACT_V1)
+        ↓
+Strategy research ................. R1 — active (R1.0–R1.9 done, R1.10 V2 window armed)
+        ↓
+Portfolio construction
+        ↓
+Paper trading
+        ↓
+Supervised live
+        ↓
+Constrained autonomous execution
+```
+
+The contract is the boundary between the two halves. Above it, research
+code binds to the dataset's digests or refuses to run, sees only what was
+knowable at the decision close, executes at the next session's open, keeps
+forward returns as labels it may not import into features, and emits a
+run manifest that names the population a result was selected from. Below
+it, nothing is acquired, mutated or re-planned: the residual gaps are an
+accepted property of the dataset, and reopening evidence acquisition takes a
+reviewed correctness defect, not a wish for a larger sample. See
+[Backtest data contract](../reference/backtest-contract.md).
 
 ## Decisions
 

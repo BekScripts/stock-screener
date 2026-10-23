@@ -1060,6 +1060,7 @@ def build_company_metrics(
     liquidity_window: int = DEFAULT_LIQUIDITY_WINDOW,
     bar_volume_basis: VolumeBasis = VolumeBasis.UNKNOWN,
     fx: FxConversion | None = None,
+    share_basis_close: float | None = None,
 ) -> CompanyMetrics:
     """Calculate every derived metric for one company.
 
@@ -1080,6 +1081,16 @@ def build_company_metrics(
             performs no I/O. None for a domestic company, where no conversion is
             needed, and also None when a foreign company's rate could not be
             found, in which case every ratio needing both sides returns None.
+        share_basis_close: The latest close on the same share basis the filed
+            share count is stated in, used **only** for the calculated market
+            capitalisation. Defaults to None, which uses the latest stored close
+            and is correct for a current run, where the two bases agree. A
+            point-in-time caller supplies the as-traded price instead: stored
+            closes carry today's basis, so a pre-split date multiplies a
+            pre-split share count by a post-split price and undervalues the
+            company by exactly the split factor. Nothing else takes it — returns
+            and the 52-week range stay on the adjusted basis, where a split is
+            correctly a non-event.
 
     Returns:
         A fully populated `CompanyMetrics`, with None in every position the
@@ -1108,7 +1119,10 @@ def build_company_metrics(
     current_growth = yoy_revenue_growth(ordered)
     prior_growth = previous_yoy_revenue_growth(ordered)
 
-    calculated = calculated_market_cap(price, latest_common_shares(ordered))
+    calculated = calculated_market_cap(
+        price if share_basis_close is None else share_basis_close,
+        latest_common_shares(ordered),
+    )
     market_cap, market_cap_source = resolve_market_cap(profile.market_cap, calculated)
     converted_market_cap, applied_fx = convert_market_cap(
         market_cap, reporting_currency, quote_currency, fx

@@ -40,23 +40,33 @@ separately and joined on the period end.
 from __future__ import annotations
 
 import json
-from datetime import date, timedelta
+from collections.abc import Mapping
+from datetime import UTC, date, datetime, timedelta
 from typing import TYPE_CHECKING, Any, NamedTuple
 
 import httpx
 import structlog
 
-from api_clients._http import RateLimiter, RetryPolicy, request_json, request_text
+from api_clients._http import (
+    RateLimiter,
+    RequestMeter,
+    RetryPolicy,
+    request_json,
+    request_text,
+)
 from api_clients.errors import ProviderDataError, ProviderError
 from api_clients.filing_text import clean_filing_text, extract_sections
 from api_clients.filing_xbrl import merge_instance_facts, parse_filing_instance
 from domain import (
     CADENCE_BANDS,
+    AcceptedFiling,
     CompanyProfile,
     Filing,
     FilingExcerpt,
+    FilingObservation,
     FinancialPeriod,
     PeriodCadence,
+    StatementProfile,
     classify_cadence,
     classify_statement_profile,
     normalise_ticker,
@@ -65,7 +75,7 @@ from domain import (
 log = structlog.get_logger(__name__)
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterable, Mapping, Sequence
+    from collections.abc import Callable, Iterable, Sequence
 
 PROVIDER_NAME = "sec-edgar"
 
@@ -545,6 +555,7 @@ class SecEdgarFundamentals:
         timeout_seconds: float = 60.0,
         limiter: RateLimiter | None = None,
         retry: RetryPolicy | None = None,
+        meter: RequestMeter | None = None,
         client: httpx.Client | None = None,
     ) -> None:
         if not user_agent.strip():
@@ -559,6 +570,7 @@ class SecEdgarFundamentals:
         )
         self._limiter = limiter or RateLimiter(DEFAULT_MIN_INTERVAL_SECONDS)
         self._retry = retry or RetryPolicy()
+        self._meter = meter
         self._cik_by_ticker: dict[str, int] | None = None
         self._facts_cache: tuple[str, dict[str, Any]] | None = None
         self._submissions_cache: tuple[str, dict[str, Any]] | None = None
@@ -649,49 +661,173 @@ class SecEdgarFundamentals:
 
         payload = self._company_facts(cik)
         all_facts = payload.get("facts", {})
-        concepts = _detect_concept_set(all_facts)
-        if concepts is None:
+        periods = periods_from_facts_document(all_facts)
+        if not periods:
             return []
-        book = all_facts.get(concepts.namespace, {})
-        dei = all_facts.get("dei", {})
-        # The currency the filer tagged, not an assumption. Everything money-
-        # denominated below is read from this unit key; reading `USD` from a
-        # company that files in EUR finds nothing at all, which is exactly how
-        # ASML — whose concepts all match the us-gaap chains — produced no
-        # periods whatsoever.
-        unit = _detect_currency(all_facts, concepts) or _USD
-
-        # Which cadence this filer actually reports on, read from its revenue
-        # facts. Everything below is then read at that one cadence, so a year
-        # and the quarters inside it never both become periods and nothing is
-        # counted twice.
-        cadence, period_starts = _detect_cadence(book, concepts, unit)
-        if cadence is PeriodCadence.UNKNOWN:
-            # Nothing said. The quarterly path is what this adapter has always
-            # done and what the domestic universe needs, so an undetectable
-            # filer keeps the old behaviour rather than losing its history.
-            cadence = PeriodCadence.QUARTERLY
-        if cadence is PeriodCadence.QUARTERLY:
-            flows, cost_sources = _quarterly_flows(book, concepts, unit)
-        else:
-            flows, cost_sources = _reported_flows(book, concepts, cadence, unit)
-        instants = _instant_series_for(book, dei, concepts, unit)
-        period_ends = sorted({end for series in flows.values() for end in series})
-        periods = [
-            _build_period(
-                period_end,
-                flows,
-                instants,
-                cost_sources,
-                currency=unit,
-                cadence=cadence,
-                period_start=period_starts.get(period_end),
-            )
-            for period_end in period_ends
-        ]
 
         periods.extend(self._periods_from_newer_filing(cik, all_facts, periods))
         return periods[-limit:] if limit > 0 else periods
+
+    def get_filing_observations(self, ticker: str) -> list[FilingObservation]:
+        """Return every reported fact behind this filer's statements, undeduplicated.
+
+        `get_financial_statements` resolves each period to its most recently
+        filed value, which is what a metric engine wants and what destroys the
+        record of when a figure became knowable. This returns the unresolved
+        facts instead: one observation per concept, per period, per filing, each
+        carrying the `filed_date`, accession and form the SEC published with it.
+        A restated quarter therefore appears twice, which is the point.
+
+        Scope is deliberately the concepts this project already reads — the
+        chains in the detected `_ConceptSet`, plus the cover-page share count —
+        rather than every tag in the document. A complete XBRL warehouse would
+        be a different project and most of it would never be queried.
+
+        Costs nothing extra when called after `get_financial_statements` for the
+        same ticker: both read the single-entry company-facts cache.
+
+        Args:
+            ticker: The symbol to look up.
+
+        Returns:
+            Every observation found, in no particular order. Empty when the SEC
+            does not cover the symbol or tags none of the known concepts.
+
+        Raises:
+            ProviderError: If a request failed or the payload was unusable.
+        """
+        symbol = normalise_ticker(ticker)
+        cik = self._cik_for(symbol)
+        if cik is None:
+            return []
+        return self.get_filing_observations_by_cik(cik)
+
+    def get_filing_observations_by_cik(self, cik: int) -> list[FilingObservation]:
+        """Return every reported fact behind a filer's statements, by CIK.
+
+        The CIK-addressed path, for a security the current ticker map cannot
+        resolve — every delisted issuer. A delisted ticker is absent from
+        `company_tickers.json`, or reused by a different filer, so a survivorship
+        study must reach EDGAR by the stable CIK instead. The fundamentals of an
+        acquired, bankrupt or wound-up filer remain in `companyfacts` under their
+        CIK for years after the security stops trading.
+
+        Args:
+            cik: The SEC filer identifier.
+
+        Returns:
+            Every observation found, in no particular order. Empty when the SEC
+            has no XBRL facts for the CIK — a pre-2009 filer, or one whose
+            statements are filed with another regulator.
+
+        Raises:
+            ProviderError: If a request failed or the payload was unusable.
+        """
+        payload = self._company_facts(cik)
+        all_facts = payload.get("facts", {})
+        concepts = _detect_concept_set(all_facts)
+        if concepts is None:
+            return []
+
+        observations: list[FilingObservation] = []
+        # The cover-page share count is read from two places by the
+        # normalisation — `concepts.common_shares` in the filer's own taxonomy
+        # and `_COMMON_SHARES_DEI_TAGS` in `dei` — so both must be captured or a
+        # rebuilt document loses the count that market capitalisation is
+        # calculated from.
+        for namespace, tags in (
+            (concepts.namespace, _statement_concepts(concepts)),
+            (concepts.namespace, concepts.common_shares),
+            ("dei", _COMMON_SHARES_DEI_TAGS),
+        ):
+            book = all_facts.get(namespace, {})
+            if not isinstance(book, dict):
+                continue
+            for tag in tags:
+                observations.extend(_observations_for_tag(book, namespace, tag))
+        return observations
+
+    def get_statement_profile_by_cik(self, cik: int) -> StatementProfile:
+        """Classify a filer as a bank or a general company, by CIK.
+
+        Read from the *whole* facts document — every concept the filing tags, not
+        the handful the metric engine reads — because a bank is recognised by its
+        deposit-funding and loan-book concepts, which the statement chains do not
+        include. Reuses the frozen `classify_statement_profile`, so a delisted
+        bank is declined the score for the same reason a live one is.
+
+        Args:
+            cik: The SEC filer identifier.
+
+        Returns:
+            `FINANCIAL_INSTITUTION` for a filer whose concepts report deposit
+            funding with corroboration, otherwise `GENERAL`.
+
+        Raises:
+            ProviderError: If a request failed or the payload was unusable.
+        """
+        payload = self._company_facts(cik)
+        all_facts = payload.get("facts", {})
+        return classify_statement_profile(all_facts)
+
+    def get_filing_acceptance(self, ticker: str) -> list[AcceptedFiling]:
+        """Return when the SEC accepted each of this filer's submissions.
+
+        `companyfacts` publishes a filing date and nothing finer, so it cannot
+        say whether a document was public at the moment a decision was taken.
+        The submissions index publishes `acceptanceDateTime` per accession, and
+        every fact carries an accession, so the two join exactly.
+
+        Reads the older submission files as well as the recent block. The recent
+        block holds a thousand filings, which for a long-established filer stops
+        around a decade back — and the observation record reaches to 2009, so
+        stopping at `recent` would leave the earliest filings undated and
+        therefore unusable point-in-time.
+
+        Args:
+            ticker: The symbol to look up.
+
+        Returns:
+            One record per accession, in no particular order. Empty when the SEC
+            does not cover the symbol.
+
+        Raises:
+            ProviderError: If a request failed or a payload was unusable.
+        """
+        symbol = normalise_ticker(ticker)
+        cik = self._cik_for(symbol)
+        if cik is None:
+            return []
+
+        payload = self._submissions(cik)
+        filings = payload.get("filings", {})
+        found: list[AcceptedFiling] = []
+        found.extend(_acceptance_from_index(filings.get("recent", {})))
+        for extra in filings.get("files", []) or []:
+            name = extra.get("name") if isinstance(extra, Mapping) else None
+            if not isinstance(name, str) or not name:
+                continue
+            found.extend(_acceptance_from_index(self._submissions_file(name)))
+        return found
+
+    def _submissions_file(self, name: str) -> Mapping[str, Any]:
+        """Fetch one of the older submission index files.
+
+        Not cached: each is read once per company during a backfill, and holding
+        one would evict the recent block that the same pass is still using.
+        """
+        payload = request_json(
+            self._client,
+            "GET",
+            f"{self._data_base_url}/submissions/{name}",
+            provider=PROVIDER_NAME,
+            meter=self._meter,
+            limiter=self._limiter,
+            retry=self._retry,
+        )
+        if not isinstance(payload, dict):
+            raise ProviderDataError(f"sec returned an unexpected submissions file {name!r}")
+        return payload
 
     def _periods_from_newer_filing(
         self,
@@ -838,6 +974,7 @@ class SecEdgarFundamentals:
             "GET",
             url,
             provider=PROVIDER_NAME,
+            meter=self._meter,
             limiter=self._limiter,
             retry=self._retry,
         )
@@ -854,6 +991,30 @@ class SecEdgarFundamentals:
             )
             for section in sections
         ]
+
+    def cik_for(self, ticker: str) -> int | None:
+        """Return the SEC filer number for a ticker, or None when unmapped.
+
+        The public face of the map this adapter already loads for its own
+        lookups, so an evidence harvest resolves identifiers through the same
+        source of truth the scanner uses rather than standing up a second one.
+
+        Normalisation is `normalise_ticker`'s and is deliberately not extended
+        here: the SEC writes class shares with a dash (`BRK-B`) while parts of
+        this project carry them with a dot (`BC.PRC`), and translating between
+        the two would be a guess about which security is meant. An unmapped
+        ticker stays unresolved.
+
+        Args:
+            ticker: The symbol to look up, in any case.
+
+        Returns:
+            The CIK, or None when the SEC's file does not carry the symbol.
+
+        Raises:
+            ProviderError: If the ticker file could not be read.
+        """
+        return self._cik_for(normalise_ticker(ticker))
 
     def _cik_for(self, symbol: str) -> int | None:
         """Return the SEC filer number for a ticker, loading the map once."""
@@ -872,6 +1033,7 @@ class SecEdgarFundamentals:
             "GET",
             f"{self._www_base_url}/files/company_tickers.json",
             provider=PROVIDER_NAME,
+            meter=self._meter,
             limiter=self._limiter,
             retry=self._retry,
         )
@@ -921,6 +1083,7 @@ class SecEdgarFundamentals:
             "GET",
             f"{self._data_base_url}/submissions/CIK{key}.json",
             provider=PROVIDER_NAME,
+            meter=self._meter,
             limiter=self._limiter,
             retry=self._retry,
         )
@@ -973,6 +1136,7 @@ class SecEdgarFundamentals:
                 "GET",
                 url,
                 provider=PROVIDER_NAME,
+                meter=self._meter,
                 limiter=self._limiter,
                 retry=self._retry,
             )
@@ -1034,6 +1198,7 @@ class SecEdgarFundamentals:
             "GET",
             f"{self._data_base_url}/api/xbrl/companyfacts/CIK{key}.json",
             provider=PROVIDER_NAME,
+            meter=self._meter,
             limiter=self._limiter,
             retry=self._retry,
         )
@@ -1042,6 +1207,38 @@ class SecEdgarFundamentals:
 
         self._facts_cache = (key, payload)
         return payload
+
+
+def filings_from_submissions(
+    payload: Mapping[str, Any], cik: int, *, keep_forms: frozenset[str] = FILING_FORMS
+) -> list[Filing]:
+    """Turn a stored submissions document into filing metadata.
+
+    The same parse `get_filings` performs, over a payload the caller already
+    holds rather than one this module fetches. That distinction is the whole
+    point for an evidence corpus: the submissions JSON is downloaded once,
+    stored with its provenance, and expanded from disk afterwards, so expansion
+    costs no request and re-reads exactly the bytes that were kept.
+
+    Args:
+        payload: A parsed `submissions/CIK##########.json` document.
+        cik: The filer the document describes, used to build document URLs.
+        keep_forms: Which forms to keep. The default drops the ownership
+            reports and prospectus supplements that dominate the index.
+
+    Returns:
+        The filings, newest first. Empty when the document carries no usable
+        recent index — a shape this refuses rather than guesses at.
+    """
+    filings_block = payload.get("filings")
+    if not isinstance(filings_block, dict):
+        return []
+    index = filings_block.get("recent")
+    if not isinstance(index, dict):
+        return []
+    filings = _filings_from_index(index, cik, keep_forms=keep_forms)
+    filings.sort(key=lambda filing: (filing.filed, filing.accession), reverse=True)
+    return filings
 
 
 def _filings_from_index(
@@ -2055,3 +2252,251 @@ def load_cik_map_from_file(path: str) -> dict[str, int]:
         for entry in payload.values()
         if isinstance(entry, dict) and isinstance(entry.get("ticker"), str)
     }
+
+
+def _statement_concepts(concepts: _ConceptSet) -> tuple[str, ...]:
+    """Return every concept name in a set, minus the namespace field.
+
+    The set is a record of tag chains; this flattens it so the observation
+    reader knows exactly which concepts to keep and no more.
+    """
+    seen: list[str] = []
+    for field, value in zip(concepts._fields, concepts, strict=True):
+        # `common_shares` is excluded here and requested separately: the
+        # normalisation reads it under a different unit and with a form
+        # exclusion, and its `dei` counterpart uses different tag names.
+        if field in {"namespace", "common_shares"} or not isinstance(value, tuple):
+            continue
+        seen.extend(tag for tag in value if tag not in seen)
+    return tuple(seen)
+
+
+def _observations_for_tag(
+    book: Mapping[str, Any], namespace: str, tag: str
+) -> list[FilingObservation]:
+    """Return one observation per fact filed under one concept, in every unit.
+
+    Every unit is read, not just the money one: a share count is tagged in
+    `shares` and a figure filed in two currencies is two genuine observations of
+    the same period. Deduplication happens at the storage layer, by fingerprint,
+    where it can distinguish a repeat from a revision.
+    """
+    units = book.get(tag, {}).get("units")
+    if not isinstance(units, dict):
+        return []
+
+    observations: list[FilingObservation] = []
+    for unit, entries in units.items():
+        if not isinstance(entries, list):
+            continue
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            period_end = _as_date(entry.get("end"))
+            value = _as_float(entry.get("val"))
+            if period_end is None or value is None:
+                continue
+            observations.append(
+                FilingObservation(
+                    taxonomy=namespace,
+                    concept=tag,
+                    value=value,
+                    unit=str(unit)[:20],
+                    period_end=period_end,
+                    period_start=_as_date(entry.get("start")),
+                    filed_date=_as_date(entry.get("filed")),
+                    accession=_as_text(entry.get("accn"), 30),
+                    form=_as_text(entry.get("form"), 20),
+                    fiscal_year=entry.get("fy") if isinstance(entry.get("fy"), int) else None,
+                    fiscal_period=_as_text(entry.get("fp"), 10),
+                    frame=_as_text(entry.get("frame"), 40),
+                    source=PROVIDER_NAME,
+                )
+            )
+    return observations
+
+
+def _as_text(value: Any, limit: int) -> str | None:
+    """Return a trimmed string, or None when the field is absent or not text."""
+    if not isinstance(value, str) or not value:
+        return None
+    return value[:limit]
+
+
+def periods_from_facts_document(all_facts: Mapping[str, Any]) -> list[FinancialPeriod]:
+    """Normalise a company-facts document into reported periods.
+
+    The whole of this adapter's normalisation, and none of its I/O. It is a
+    separate function so that two callers can share it byte for byte:
+    `get_financial_statements`, which fetches the document from the SEC, and
+    `periods_from_observations`, which rebuilds one from the stored fact-level
+    record as it stood on a past date.
+
+    That sharing is the point. A point-in-time metric is only trustworthy if it
+    was normalised by exactly the code that normalised the live one — a second
+    implementation would drift, and the drift would look like history.
+
+    Args:
+        all_facts: The `facts` block of a company-facts document, keyed by
+            taxonomy namespace.
+
+    Returns:
+        One period per reporting date, oldest first. Empty when no known
+        taxonomy is tagged.
+    """
+    concepts = _detect_concept_set(all_facts)
+    if concepts is None:
+        return []
+    book = all_facts.get(concepts.namespace, {})
+    dei = all_facts.get("dei", {})
+    # The currency the filer tagged, not an assumption. Everything money-
+    # denominated below is read from this unit key; reading `USD` from a
+    # company that files in EUR finds nothing at all, which is exactly how
+    # ASML — whose concepts all match the us-gaap chains — produced no
+    # periods whatsoever.
+    unit = _detect_currency(all_facts, concepts) or _USD
+
+    # Which cadence this filer actually reports on, read from its revenue
+    # facts. Everything below is then read at that one cadence, so a year
+    # and the quarters inside it never both become periods and nothing is
+    # counted twice.
+    cadence, period_starts = _detect_cadence(book, concepts, unit)
+    if cadence is PeriodCadence.UNKNOWN:
+        # Nothing said. The quarterly path is what this adapter has always
+        # done and what the domestic universe needs, so an undetectable
+        # filer keeps the old behaviour rather than losing its history.
+        cadence = PeriodCadence.QUARTERLY
+    if cadence is PeriodCadence.QUARTERLY:
+        flows, cost_sources = _quarterly_flows(book, concepts, unit)
+    else:
+        flows, cost_sources = _reported_flows(book, concepts, cadence, unit)
+    instants = _instant_series_for(book, dei, concepts, unit)
+    period_ends = sorted({end for series in flows.values() for end in series})
+    return [
+        _build_period(
+            period_end,
+            flows,
+            instants,
+            cost_sources,
+            currency=unit,
+            cadence=cadence,
+            period_start=period_starts.get(period_end),
+        )
+        for period_end in period_ends
+    ]
+
+
+def facts_document_from_observations(
+    observations: Iterable[FilingObservation],
+) -> dict[str, Any]:
+    """Rebuild a company-facts document from stored fact-level observations.
+
+    The inverse of `_observations_for_tag`. An observation carries every field
+    the SEC publishes on a fact, so the document can be reassembled exactly —
+    which is what lets the frozen normalisation run over it unchanged.
+
+    Nothing is resolved or de-duplicated here. Competing facts for one period
+    are all placed back in the list, because choosing between them is
+    `_latest_filed`'s job and doing it here would bypass the very logic this
+    function exists to reuse.
+
+    Args:
+        observations: The observations to rebuild from. The caller has already
+            applied whatever temporal filter it wants.
+
+    Returns:
+        A `facts` block keyed by taxonomy, then concept, then unit.
+    """
+    document: dict[str, Any] = {}
+    for item in observations:
+        units = (
+            document.setdefault(item.taxonomy, {})
+            .setdefault(item.concept, {"units": {}})["units"]
+            .setdefault(item.unit, [])
+        )
+        fact: dict[str, Any] = {"end": item.period_end.isoformat(), "val": item.value}
+        if item.period_start is not None:
+            fact["start"] = item.period_start.isoformat()
+        if item.filed_date is not None:
+            fact["filed"] = item.filed_date.isoformat()
+        for key, value in (
+            ("accn", item.accession),
+            ("form", item.form),
+            ("fy", item.fiscal_year),
+            ("fp", item.fiscal_period),
+            ("frame", item.frame),
+        ):
+            if value is not None:
+                fact[key] = value
+        units.append(fact)
+    return document
+
+
+def periods_from_observations(
+    observations: Iterable[FilingObservation],
+) -> list[FinancialPeriod]:
+    """Normalise stored observations into reported periods.
+
+    The point-in-time counterpart to `get_financial_statements`. The caller
+    supplies whichever observations were available on the date it cares about;
+    this turns them into periods using the same normalisation the live path
+    uses, and performs no I/O.
+
+    Args:
+        observations: Observations to normalise, already filtered by the
+            caller's `as_of` bound.
+
+    Returns:
+        One period per reporting date, oldest first.
+    """
+    return periods_from_facts_document(facts_document_from_observations(observations))
+
+
+def _acceptance_from_index(index: Mapping[str, Any]) -> list[AcceptedFiling]:
+    """Return one acceptance record per row of a submissions index.
+
+    The index is column-oriented — parallel lists rather than a list of objects —
+    so the columns are zipped back together, and a row missing either the
+    accession or the timestamp is skipped rather than guessed at.
+    """
+    accessions = _string_column(index, "accessionNumber")
+    accepted = _string_column(index, "acceptanceDateTime")
+    filed = _string_column(index, "filingDate")
+    forms = _string_column(index, "form")
+    rows = min(len(accessions), len(accepted))
+
+    found: list[AcceptedFiling] = []
+    for position in range(rows):
+        accession = accessions[position]
+        instant = _as_instant(accepted[position])
+        if not accession or instant is None:
+            continue
+        found.append(
+            AcceptedFiling(
+                accession=accession[:30],
+                accepted_at=instant,
+                filed_date=_as_date(filed[position]) if position < len(filed) else None,
+                form=_as_text(forms[position], 20) if position < len(forms) else None,
+                source=PROVIDER_NAME,
+            )
+        )
+    return found
+
+
+def _as_instant(value: str) -> datetime | None:
+    """Parse an ISO timestamp into an aware UTC datetime, or None.
+
+    The SEC writes these with a `Z` suffix, which `fromisoformat` did not accept
+    before 3.11 and which is normalised here regardless. A value carrying no
+    offset is rejected rather than assumed to be UTC — guessing a timezone is
+    exactly the kind of silent assumption this field exists to remove.
+    """
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return None
+    return parsed.astimezone(UTC)

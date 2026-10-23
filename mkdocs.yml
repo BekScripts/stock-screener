@@ -51,10 +51,36 @@ nav:
       - Score and rank the market: how-to/score-and-rank.md
   - Reference:
       - reference/index.md
+      - Project state: reference/PROJECT_STATE.md
       - Configuration: reference/configuration.md
       - Commands: reference/commands.md
       - Metrics: reference/metrics.md
       - CompounderScore: reference/compounder-score.md
+      - Market signals: reference/market-signals.md
+      - Point-in-time metrics: reference/point-in-time.md
+      - Backtest readiness: reference/backtest-readiness.md
+      - Backtest data contract: reference/backtest-contract.md
+      - R1 backtest harness: reference/backtest-harness.md
+      - R1.1 signal review: reference/signal-review.md
+      - R1.2 quarterly experiment: reference/quarterly-experiment.md
+      - R1.3 turnover forensics: reference/turnover-forensics.md
+      - R1.4 H2 preregistration: reference/membership-hypothesis.md
+      - R1.5 H2 experiment: reference/hysteresis-experiment.md
+      - R1.6 H2 candidate and shadow protocol: reference/prospective-protocol.md
+      - R1.7 prospective shadow runner: reference/prospective-runner.md
+      - R1.9 prospective source plane: reference/prospective-source.md
+      - R1.10 V2 window certification: reference/prospective-window.md
+      - R1.12 prospective capture pipeline: reference/prospective-capture.md
+      - P1.0 portfolio and risk engine: reference/portfolio-risk-engine.md
+      - P1.3 portfolio accounting: reference/portfolio-accounting.md
+      - P2.0-P2.2 paper execution engine: reference/execution-engine.md
+      - P2.3 paper operations control plane: reference/paper-operations.md
+      - P2.4 paper shadow soak protocol: reference/paper-shadow-soak.md
+      - S1.0 AlphaTrader strategy authority: reference/strategy-authority.md
+      - Security identity: reference/security-identity.md
+      - Listing evidence: reference/listing-evidence.md
+      - Storage layout: reference/storage-layout.md
+      - A3 planning inputs: reference/a3-planning-inputs.md
       - Project brief: reference/project-intro.md
       - Phase 1 brief: reference/project-phases/phase1.md
       - Phase 2 brief: reference/project-phases/phase2.md
@@ -80,3 +106,5 @@ nav:
       - 0009 The research contract is its own package: adr/0009-the-research-contract-is-its-own-package.md
       - 0010 Deep research is its own package: adr/0010-deep-research-is-its-own-package.md
       - 0011 Use GitHub as the AI review bus: adr/0011-use-github-as-the-ai-review-bus.md
+      - 0012 Market signals are stored: adr/0012-market-signals-are-stored-not-recomputed.md
+      - 0013 Point-in-time metrics reuse normalisation: adr/0013-point-in-time-metrics-reuse-the-provider-normalisation.md

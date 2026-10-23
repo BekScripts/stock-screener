@@ -1,0 +1,475 @@
+{
+  "attribution": {
+    "attributed_market_value": "43000.0000",
+    "cash": "248496.5500",
+    "cash_attribution_note": "cash is not attributed to a strategy. It is fungible, it funds whichever strategy trades next, and splitting it by any rule would make a strategy's reported exposure depend on an allocation nobody decided. The capital allocator in P1.2 decides what a strategy may spend; the ledger records what it actually holds.",
+    "nav": "336571.5500",
+    "policy": "PORTFOLIO_STRATEGY_ATTRIBUTION_V1",
+    "strategies": [
+      {
+        "cost_basis": "24500.0000",
+        "holdings": {
+          "COMPANY:1207": "26160.0000"
+        },
+        "is_unattributed": false,
+        "market_value": "26160.0000",
+        "realised_pnl": "0",
+        "strategy_id": "COMPOUNDER_V1_2",
+        "unrealised_pnl": "1660.0000",
+        "weight": "0.0777"
+      },
+      {
+        "cost_basis": "15840.0000",
+        "holdings": {
+          "COMPANY:2884": "16840.0000"
+        },
+        "is_unattributed": false,
+        "market_value": "16840.0000",
+        "realised_pnl": "540.0000",
+        "strategy_id": "MEAN_REVERSION_V0",
+        "unrealised_pnl": "1000.0000",
+        "weight": "0.0500"
+      },
+      {
+        "cost_basis": "44200.0000",
+        "holdings": {
+          "COMPANY:4101": "45075.0000"
+        },
+        "is_unattributed": true,
+        "market_value": "45075.0000",
+        "realised_pnl": "0",
+        "strategy_id": "UNATTRIBUTED_EXISTING",
+        "unrealised_pnl": "875.0000",
+        "weight": "0.1339"
+      }
+    ],
+    "strategy_count": 3,
+    "unattributed_market_value": "45075.0000"
+  },
+  "external_statement": {
+    "as_of": "2026-10-02T16:00:00-04:00",
+    "cash": "248196.5500",
+    "complete": true,
+    "notes": [],
+    "position_count": 3,
+    "source": "CUSTODIAN_STATEMENT"
+  },
+  "ledger": {
+    "head_hash": "cf96829fadb760c269c359e09ad2f8e1d9cb7212eb044561a2e1e69821df4bd5",
+    "record_count": 8,
+    "verification": {
+      "chain_version": "PORTFOLIO_LEDGER_HASH_CHAIN_V1",
+      "failure": null,
+      "head_hash": "cf96829fadb760c269c359e09ad2f8e1d9cb7212eb044561a2e1e69821df4bd5",
+      "record_count": 8,
+      "verified": true
+    }
+  },
+  "manifest": {
+    "corporate_actions": {
+      "default": "REFUSE",
+      "policy": "PORTFOLIO_CORPORATE_ACTIONS_V1",
+      "rationale": "an unmodelled action is refused rather than approximated, because a guessed cost basis is indistinguishable from a correct one downstream, and an ignored action leaves the ledger describing a security that no longer exists as recorded",
+      "refused_by_name": {
+        "CASH_IN_LIEU": "it realises a fractional position at a price the event does not state, so the realised amount would be invented",
+        "MERGER": "the treatment depends on the exchange ratio, any cash component and whether the exchange is taxable; each decides a different cost basis for the surviving holding",
+        "RETURN_OF_CAPITAL": "it reduces cost basis rather than being income, and treating it as a dividend would overstate income and understate every later realised gain",
+        "RIGHTS_DISTRIBUTION": "the subscription price and whether the rights were exercised, sold or lapsed each produce a different outcome",
+        "SPINOFF": "basis must be allocated between parent and child by relative fair value at distribution, which the event does not carry",
+        "STOCK_DIVIDEND": "it resembles a split but is not always one; whether basis is reallocated depends on the character of the distribution",
+        "SYMBOL_SUBSTITUTION": "a symbol change is display-only and already harmless here, since identity is `(kind, identity_id)` and never the ticker. A substitution that actually changes the security is a different security",
+        "TENDER_OFFER": "the proration factor decides how much was actually tendered, and it is not known until after the offer closes"
+      },
+      "supported": {
+        "CASH_DIVIDEND": "credited to cash as income, with cost basis untouched. Entitlement is the producer's responsibility: inferring it from current holdings would miss a position sold between the ex-date and the pay date and would credit one bought after it.",
+        "SPLIT": "quantity scales by the ratio and total cost does not, so average cost moves by exactly the ratio and no gain or loss is created. A reverse split's fractional residue is recorded rather than rounded away."
+      }
+    },
+    "error_codes": [
+      "ATTRIBUTION_DOES_NOT_SUM",
+      "ATTRIBUTION_EXCEEDS_SLICE",
+      "ATTRIBUTION_RECONCILIATION_FAILED",
+      "CASH_MISMATCH",
+      "CHECKPOINT_UNVERIFIABLE",
+      "EVENT_ID_CONFLICT",
+      "EVENT_INVALID",
+      "EVENT_TIME_REGRESSION",
+      "EXTERNAL_POSITION_MISSING_INTERNAL",
+      "FORBIDDEN_LEDGER_NAMESPACE",
+      "INCOMPLETE_EXTERNAL",
+      "INCOMPLETE_INTERNAL",
+      "INSUFFICIENT_CASH",
+      "INSUFFICIENT_POSITION",
+      "INTERNAL_POSITION_MISSING_EXTERNAL",
+      "LEDGER_EMPTY",
+      "LEDGER_HASH_CHAIN_MISMATCH",
+      "LEDGER_SEQUENCE_GAP",
+      "MARK_AFTER_VALUATION_TIME",
+      "MARK_INVALID",
+      "MARK_STALE",
+      "NAV_IDENTITY_VIOLATED",
+      "OPENING_BALANCE_ALREADY_EXISTS",
+      "OPENING_BALANCE_REQUIRED",
+      "PARTIAL_EVENT_RECORD",
+      "PERSISTENCE_VERIFY_FAILED",
+      "PNL_DECOMPOSITION_VIOLATED",
+      "POSITION_QUANTITY_MISMATCH",
+      "SELL_ATTRIBUTION_REQUIRED",
+      "SHORT_POSITION_NOT_SUPPORTED",
+      "SPLIT_RATIO_INVALID",
+      "UNATTRIBUTED_EXISTING",
+      "UNSUPPORTED_CORPORATE_ACTION",
+      "VALUATION_INCOMPLETE"
+    ],
+    "invariants": [
+      "cash = opening + deposits - withdrawals - purchases + sales - fees + dividends",
+      "NAV = cash + market value of holdings",
+      "total P&L = realised + unrealised + income - fees",
+      "NAV - inception NAV at cost = total P&L + net external flows - unpriced cost basis (zero for a complete valuation)",
+      "attribution sums to the quantity held, per security"
+    ],
+    "manifest_fingerprint": "cb3f375767e9f39aabd9f8a6d08b373d5601742a2198adfcd46bb4c2e32166af",
+    "manifest_version": "PORTFOLIO_ACCOUNTING_MANIFEST_V1",
+    "money": {
+      "cash_scale": "0.0001",
+      "float_conversion": "via repr, so 0.1 is Decimal('0.1') and not its binary expansion",
+      "policy_id": "PORTFOLIO_ACCOUNTING_DECIMAL_V1",
+      "price_scale": "1E-8",
+      "quantisation_boundary": "intermediate products keep full precision; figures reaching a ledger record, a fingerprint or a report are quantised to their declared scale",
+      "quantity_scale": "1E-8",
+      "ratio_scale": "1E-10",
+      "representation": "decimal.Decimal throughout; never binary float",
+      "why_decimal_here": "cash is a balance accumulated over thousands of events. Float drift in a balance is invisible until a reconciliation break appears months later and nobody can say which trade caused it.",
+      "why_the_risk_layer_differs": "the risk engine consumes float inputs and emits weights, and quantises before hashing. The two representations meet in exactly one place, the accounting-to-risk adapter, so they are never mixed silently.",
+      "working_precision": 50
+    },
+    "never_does": [
+      "place or cancel an order",
+      "simulate a fill",
+      "count an external cash flow as P&L",
+      "repair a reconciliation break by adopting the external figure",
+      "infer a dividend entitlement from current holdings",
+      "write a risk target into a holding"
+    ],
+    "policies": {
+      "accounting_engine": "PORTFOLIO_ACCOUNTING_V1",
+      "corporate_actions": "PORTFOLIO_CORPORATE_ACTIONS_V1",
+      "cost_basis": "WEIGHTED_AVERAGE_COST_V1",
+      "ledger_chain": "PORTFOLIO_LEDGER_HASH_CHAIN_V1",
+      "mark_admissibility": "PORTFOLIO_MARK_ADMISSIBILITY_V1",
+      "money": "PORTFOLIO_ACCOUNTING_DECIMAL_V1",
+      "pnl_decomposition": "PORTFOLIO_PNL_DECOMPOSITION_V1",
+      "reconciliation": "PORTFOLIO_RECONCILIATION_V1",
+      "risk_adapter": "PORTFOLIO_ACCOUNTING_TO_RISK_V1",
+      "store": "PORTFOLIO_STORE_V1",
+      "strategy_attribution": "PORTFOLIO_STRATEGY_ATTRIBUTION_V1"
+    },
+    "refusals": [
+      "a buy the cash balance cannot fund",
+      "a sale beyond the quantity held",
+      "a sale whose ownership is ambiguous and unstated",
+      "a mark stamped after the valuation instant",
+      "a valuation missing any held position",
+      "a corporate action whose economics are not modelled",
+      "an event id reused with a different payload",
+      "an event taking effect before the ledger's last event",
+      "a second opening balance",
+      "overwriting a stored ledger record",
+      "a store rooted in a research or evidence namespace"
+    ],
+    "risk_seam": {
+      "accounting_arithmetic": "Decimal, exact, quantised by money.py",
+      "direction": "ACCOUNTING_TO_RISK_ONLY",
+      "risk_arithmetic": "float64, quantised to 10 places",
+      "targets_never_become_holdings": "the risk engine returns targets; only a FillEvent on the ledger changes a holding. There is no function here that writes a target into a position, because a system where approving a target also recorded it would report a portfolio that was never bought.",
+      "version": "PORTFOLIO_ACCOUNTING_TO_RISK_V1"
+    },
+    "staleness_limit_hours": 96
+  },
+  "marks": {
+    "mark_count": 3,
+    "mark_policy": "PORTFOLIO_MARK_ADMISSIBILITY_V1",
+    "marks": [
+      {
+        "as_of": "2026-10-02T16:00:00-04:00",
+        "identity": "COMPANY:1207",
+        "price": "32.70000000",
+        "source": "SESSION_CLOSE"
+      },
+      {
+        "as_of": "2026-10-02T16:00:00-04:00",
+        "identity": "COMPANY:2884",
+        "price": "21.05000000",
+        "source": "SESSION_CLOSE"
+      },
+      {
+        "as_of": "2026-10-02T16:00:00-04:00",
+        "identity": "COMPANY:4101",
+        "price": "90.15000000",
+        "source": "SESSION_CLOSE"
+      }
+    ],
+    "staleness_limit_hours": 96,
+    "valuation_time": "2026-10-02T16:00:00-04:00"
+  },
+  "reconciliation": {
+    "as_of": "2026-10-02T16:00:00-04:00",
+    "auto_repair": "NOT_IMPLEMENTED_BY_DESIGN",
+    "break_count": 4,
+    "breaks": [
+      {
+        "code": "CASH_MISMATCH",
+        "difference": "-300.0000",
+        "external": "248196.5500",
+        "identity": null,
+        "internal": "248496.5500",
+        "likely_causes": [
+          "a fill, fee or interest posting the ledger was never told about",
+          "a deposit or withdrawal that reached the account but not the ledger",
+          "a dividend credited externally and not recorded as an event",
+          "the statement describes a different instant than the replayed state"
+        ],
+        "severity": "CRITICAL"
+      },
+      {
+        "code": "POSITION_QUANTITY_MISMATCH",
+        "difference": "-50.00000000",
+        "external": "750.00000000",
+        "identity": "COMPANY:2884",
+        "internal": "800.00000000",
+        "likely_causes": [
+          "a partial fill recorded in full, or a fill not recorded at all",
+          "a split or stock dividend applied by the custodian and not here",
+          "a transfer in or out that was never recorded as an event"
+        ],
+        "severity": "CRITICAL"
+      },
+      {
+        "code": "INTERNAL_POSITION_MISSING_EXTERNAL",
+        "difference": "-500.00000000",
+        "external": "0",
+        "identity": "COMPANY:4101",
+        "internal": "500.00000000",
+        "likely_causes": [
+          "a sale that never reached the ledger",
+          "a delisting, liquidation or mandatory exchange",
+          "a transfer out",
+          "the statement is incomplete and this holding was not in the part that was retrieved"
+        ],
+        "severity": "CRITICAL"
+      },
+      {
+        "code": "EXTERNAL_POSITION_MISSING_INTERNAL",
+        "difference": "60.00000000",
+        "external": "60.00000000",
+        "identity": "COMPANY:9502",
+        "internal": "0",
+        "likely_causes": [
+          "a fill that never reached the ledger",
+          "a spinoff or merger consideration delivered as a new security",
+          "a transfer in",
+          "a symbol resolved to the wrong durable identity, which would pair with an INTERNAL_POSITION_MISSING_EXTERNAL for the other"
+        ],
+        "severity": "CRITICAL"
+      }
+    ],
+    "checked": {
+      "cash": true,
+      "cash_tolerance": "0",
+      "external_complete": true,
+      "external_positions": 3,
+      "identities_compared": 4,
+      "internal_established": true,
+      "internal_open_positions": 3
+    },
+    "critical_count": 4,
+    "ledger_head_hash": "cf96829fadb760c269c359e09ad2f8e1d9cb7212eb044561a2e1e69821df4bd5",
+    "ledger_sequence": 8,
+    "policy": "PORTFOLIO_RECONCILIATION_V1",
+    "reconciled": false,
+    "remediation": "a break is resolved by deciding what event explains it and appending that event to the ledger. This engine never adopts the external figure: overwriting the ledger would erase the only evidence that something happened which it was not told about, and leave the cause in place.",
+    "source": "CUSTODIAN_STATEMENT"
+  },
+  "state": {
+    "cash": "248496.5500",
+    "cash_summary": {
+      "balance": "248496.5500",
+      "deposits": "50000.0000",
+      "dividends": "310.0000",
+      "external_flow_net": "38000.0000",
+      "fees": "13.4500",
+      "opening": "250000.0000",
+      "purchases": "48260.0000",
+      "sales": "8460.0000",
+      "withdrawals": "12000.0000"
+    },
+    "closed_positions": [],
+    "cost_basis_policy": "WEIGHTED_AVERAGE_COST_V1",
+    "dividend_income": "310.0000",
+    "fees_paid": "13.4500",
+    "inception_nav_at_cost": "294200.0000",
+    "last_effective_at": "2026-10-02T15:45:00-04:00",
+    "ledger_head_hash": "cf96829fadb760c269c359e09ad2f8e1d9cb7212eb044561a2e1e69821df4bd5",
+    "ledger_sequence": 8,
+    "open_position_count": 3,
+    "opening_cost_basis": "44200.0000",
+    "positions": [
+      {
+        "attribution": [
+          {
+            "quantity": "800.00000000",
+            "strategy_id": "COMPOUNDER_V1_2"
+          }
+        ],
+        "average_cost": "30.62500000",
+        "cost_basis_policy": "WEIGHTED_AVERAGE_COST_V1",
+        "dividends_received": "0",
+        "fees_paid": "3.9500",
+        "identity": {
+          "identity_id": 1207,
+          "kind": "COMPANY",
+          "symbol": null
+        },
+        "label": "COMPANY:1207",
+        "quantity": "800.00000000",
+        "realised_pnl": "0",
+        "total_cost": "24500.0000"
+      },
+      {
+        "attribution": [
+          {
+            "quantity": "800.00000000",
+            "strategy_id": "MEAN_REVERSION_V0"
+          }
+        ],
+        "average_cost": "19.80000000",
+        "cost_basis_policy": "WEIGHTED_AVERAGE_COST_V1",
+        "dividends_received": "0",
+        "fees_paid": "9.5000",
+        "identity": {
+          "identity_id": 2884,
+          "kind": "COMPANY",
+          "symbol": null
+        },
+        "label": "COMPANY:2884",
+        "quantity": "800.00000000",
+        "realised_pnl": "540.0000",
+        "total_cost": "15840.0000"
+      },
+      {
+        "attribution": [
+          {
+            "quantity": "500.00000000",
+            "strategy_id": "UNATTRIBUTED_EXISTING"
+          }
+        ],
+        "average_cost": "88.40000000",
+        "cost_basis_policy": "WEIGHTED_AVERAGE_COST_V1",
+        "dividends_received": "310.0000",
+        "fees_paid": "0",
+        "identity": {
+          "identity_id": 4101,
+          "kind": "COMPANY",
+          "symbol": null
+        },
+        "label": "COMPANY:4101",
+        "quantity": "500.00000000",
+        "realised_pnl": "0",
+        "total_cost": "44200.0000"
+      }
+    ],
+    "realised_pnl": "540.0000",
+    "total_cost_basis": "84540.0000",
+    "unattributed_quantity": "500.0000",
+    "unsupported_actions": []
+  },
+  "valuation": {
+    "cash": "248496.5500",
+    "cost_basis_policy": "WEIGHTED_AVERAGE_COST_V1",
+    "coverage": {
+      "market_value": "88075.0000",
+      "missing": [],
+      "priced_count": 3,
+      "stale": []
+    },
+    "gross_exposure": "0.2617",
+    "inception_nav_at_cost": "294200.0000",
+    "ledger_head_hash": "cf96829fadb760c269c359e09ad2f8e1d9cb7212eb044561a2e1e69821df4bd5",
+    "ledger_sequence": 8,
+    "mark_policy": "PORTFOLIO_MARK_ADMISSIBILITY_V1",
+    "market_value": "88075.0000",
+    "nav": "336571.5500",
+    "pnl": {
+      "external_flow_net": "38000.0000",
+      "fees": "13.4500",
+      "identity": "total = realised + unrealised + income - fees",
+      "income": "310.0000",
+      "nav_change_since_inception": "42371.5500",
+      "note": "realised is gross of fees and fees are subtracted once, so a purchase commission is charged exactly as a sale commission is; external flows change NAV and never P&L",
+      "policy": "PORTFOLIO_PNL_DECOMPOSITION_V1",
+      "realised": "540.0000",
+      "total": "4371.5500",
+      "unpriced_cost_basis": "0",
+      "unrealised": "3535.0000"
+    },
+    "position_count": 3,
+    "positions": [
+      {
+        "average_cost": "30.62500000",
+        "cost_basis": "24500.0000",
+        "identity": {
+          "identity_id": 1207,
+          "kind": "COMPANY",
+          "symbol": null
+        },
+        "is_stale": false,
+        "label": "COMPANY:1207",
+        "mark_as_of": "2026-10-02T16:00:00-04:00",
+        "mark_price": "32.70000000",
+        "market_value": "26160.0000",
+        "quantity": "800.00000000",
+        "realised_pnl": "0",
+        "unrealised_pnl": "1660.0000",
+        "weight": "0.0777"
+      },
+      {
+        "average_cost": "19.80000000",
+        "cost_basis": "15840.0000",
+        "identity": {
+          "identity_id": 2884,
+          "kind": "COMPANY",
+          "symbol": null
+        },
+        "is_stale": false,
+        "label": "COMPANY:2884",
+        "mark_as_of": "2026-10-02T16:00:00-04:00",
+        "mark_price": "21.05000000",
+        "market_value": "16840.0000",
+        "quantity": "800.00000000",
+        "realised_pnl": "540.0000",
+        "unrealised_pnl": "1000.0000",
+        "weight": "0.0500"
+      },
+      {
+        "average_cost": "88.40000000",
+        "cost_basis": "44200.0000",
+        "identity": {
+          "identity_id": 4101,
+          "kind": "COMPANY",
+          "symbol": null
+        },
+        "is_stale": false,
+        "label": "COMPANY:4101",
+        "mark_as_of": "2026-10-02T16:00:00-04:00",
+        "mark_price": "90.15000000",
+        "market_value": "45075.0000",
+        "quantity": "500.00000000",
+        "realised_pnl": "0",
+        "unrealised_pnl": "875.0000",
+        "weight": "0.1339"
+      }
+    ],
+    "stale_marks": [],
+    "valuation_time": "2026-10-02T16:00:00-04:00"
+  }
+}

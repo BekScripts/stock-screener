@@ -11,12 +11,20 @@ cheaper than the package plumbing that would silence it.
 
 from __future__ import annotations
 
-from datetime import date, timedelta
-from typing import TYPE_CHECKING
+import hashlib
+import io
+import json
+from dataclasses import dataclass
+from datetime import UTC, date, datetime, timedelta
+from typing import TYPE_CHECKING, Any
 
 import pytest
+from botocore.exceptions import ClientError
+from botocore.response import StreamingBody
 
 from api_clients import MockFundamentals, MockMarketData
+from api_clients.errors import ProviderRequestError
+from api_clients.sec_documents import FetchedDocument
 from data_access import (
     PRELIMINARY,
     CompanyRepository,
@@ -49,12 +57,66 @@ from domain import (
     VolumeBasis,
 )
 from stock_screener.config import Settings, get_settings
+from stock_screener.sec_evidence import (
+    TICKER_MAP_URL,
+    ArtifactNotFoundError,
+    ArtifactStat,
+    EvidenceWriteError,
+    IdentityRow,
+    StorageUnavailableError,
+    StoredArtifact,
+    validate_key,
+)
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Callable, Iterator, Mapping
     from pathlib import Path
 
     from sqlalchemy.orm import Session
+
+    from stock_screener.sec_evidence import EvidenceStorage
+
+
+def pytest_addoption(parser: pytest.Parser) -> None:
+    """Opt-ins for the two suites that reach a real external service."""
+    parser.addoption(
+        "--live-b2",
+        action="store_true",
+        default=False,
+        help="run tests marked live_b2 against the configured Backblaze bucket",
+    )
+    parser.addoption(
+        "--live-paper",
+        action="store_true",
+        default=False,
+        help=(
+            "run tests marked live_paper against the configured PAPER broker "
+            "account. These submit real paper orders, so `make check` never "
+            "passes this flag. There is no live-trading equivalent of this "
+            "option, and adding one would not be sufficient to enable live "
+            "trading — the adapter refuses a live environment by construction."
+        ),
+    )
+
+
+def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
+    """Skip the opt-in suites unless asked for. `make check` never opts in.
+
+    This is what keeps `make check` free of external side effects: the paper
+    adapter's own behaviour is covered against an injected fake transport, and
+    only the tests that would place a real paper order carry `live_paper`.
+    """
+    for option, marker, service in (
+        ("--live-b2", "live_b2", "Backblaze"),
+        ("--live-paper", "live_paper", "paper broker"),
+    ):
+        if config.getoption(option):
+            continue
+        skip = pytest.mark.skip(reason=f"live {service} test; pass {option} to run it")
+        for item in items:
+            if marker in item.keywords:
+                item.add_marker(skip)
+
 
 #: Every variable `Settings` reads. A field added to `Settings` without a line
 #: here leaks the developer's real environment into the tests, and the failure
@@ -68,6 +130,10 @@ _SETTINGS_ENV_VARS = (
     "FUNDAMENTALS_PROVIDER",
     "FIXTURE_PATH",
     "ALPACA_API_KEY",
+    "ALPACA_PAPER_KEY_ID",
+    "ALPACA_PAPER_SECRET_KEY",
+    "ALPACA_PAPER_ACCOUNT_ID",
+    "ALPACA_PAPER_BASE_URL",
     "ALPACA_SECRET_KEY",
     "ALPACA_TRADING_BASE_URL",
     "ALPACA_DATA_BASE_URL",
@@ -76,6 +142,13 @@ _SETTINGS_ENV_VARS = (
     "FUNDAMENTALS_BASE_URL",
     "FUNDAMENTALS_API_ROOT",
     "SEC_USER_AGENT",
+    "SEC_EVIDENCE_DIR",
+    "SEC_CONTROL_DIR",
+    "SEC_STORAGE_BACKEND",
+    "B2_ENDPOINT_URL",
+    "B2_BUCKET",
+    "B2_KEY_ID",
+    "B2_APPLICATION_KEY",
     "PROVIDER_MAX_ATTEMPTS",
     "PROVIDER_RETRY_BACKOFF_SECONDS",
     "PROVIDER_MIN_REQUEST_INTERVAL_SECONDS",
@@ -202,6 +275,339 @@ class Make:
 def make() -> type[Make]:
     """Return the builders for synthetic price and fundamental history."""
     return Make
+
+
+class MemoryEvidenceStorage:
+    """An `EvidenceStorage` that is a dict. No filesystem, no `Path`, no root.
+
+    The point of this class is what it lacks. Any evidence-layer function
+    that works against it provably needs nothing from a local directory,
+    which is the seam a remote backend will later be plugged into. It is
+    deliberately tiny — a mapping, key validation, and two testing hooks:
+    `failing` names operations that raise `StorageUnavailableError`, so a
+    test can show a backend fault stays loud; `listed` records every prefix
+    handed to `list_prefix`, so a test can show a scoped audit stayed scoped.
+
+    Reached through the `memory_storage` fixture rather than imported — see
+    `Make` for why.
+    """
+
+    def __init__(self, failing: frozenset[str] = frozenset()) -> None:
+        self._objects: dict[str, bytes] = {}
+        self.failing = failing
+        self.listed: list[str] = []
+
+    def _check(self, operation: str) -> None:
+        if operation in self.failing:
+            raise StorageUnavailableError(f"memory backend: {operation} is unavailable")
+
+    def exists(self, key: str) -> bool:
+        """Whether the key was written."""
+        validate_key(key)
+        self._check("exists")
+        return key in self._objects
+
+    def stat(self, key: str) -> ArtifactStat:
+        """Size of what was written under the key."""
+        validate_key(key)
+        self._check("stat")
+        if key not in self._objects:
+            raise ArtifactNotFoundError(key)
+        return ArtifactStat(key=key, bytes=len(self._objects[key]))
+
+    def read_bytes(self, key: str) -> bytes:
+        """The bytes written under the key."""
+        validate_key(key)
+        self._check("read_bytes")
+        if key not in self._objects:
+            raise ArtifactNotFoundError(key)
+        return self._objects[key]
+
+    def write_bytes(self, key: str, data: bytes) -> StoredArtifact:
+        """Keep the bytes under the key. Never touches a manifest."""
+        validate_key(key)
+        if "write_bytes" in self.failing:
+            raise EvidenceWriteError("memory backend: write_bytes did not complete")
+        self._objects[key] = bytes(data)
+        return StoredArtifact(key=key, bytes=len(data), sha256=hashlib.sha256(data).hexdigest())
+
+    def digest(self, key: str) -> str:
+        """SHA-256 of the bytes written under the key."""
+        validate_key(key)
+        self._check("digest")
+        return hashlib.sha256(self.read_bytes(key)).hexdigest()
+
+    def list_prefix(self, prefix: str) -> Iterator[str]:
+        """Every key strictly beneath the prefix, sorted; `""` lists everything."""
+        if prefix:
+            validate_key(prefix.removesuffix("/"))
+        self._check("list_prefix")
+        self.listed.append(prefix)
+        prefix = prefix.removesuffix("/")
+        yield from sorted(
+            key for key in self._objects if not prefix or key.startswith(prefix + "/")
+        )
+
+
+@pytest.fixture
+def memory_storage() -> type[MemoryEvidenceStorage]:
+    """Return the in-memory `EvidenceStorage` used to prove backend neutrality."""
+    return MemoryEvidenceStorage
+
+
+def _memory_storage_satisfies_the_contract(storage: MemoryEvidenceStorage) -> EvidenceStorage:
+    """Static proof, checked by mypy, that the fake is structurally a backend."""
+    return storage
+
+
+def s3_error(code: str, status: int, operation: str) -> ClientError:
+    """A `ClientError` shaped the way botocore raises one for an S3 response."""
+    response: dict[str, Any] = {
+        "Error": {"Code": code, "Message": code},
+        "ResponseMetadata": {"HTTPStatusCode": status},
+    }
+    return ClientError(response, operation)  # type: ignore[arg-type]  # stubs want every metadata key
+
+
+class FakeS3Client:
+    """A stateful stand-in for the S3 client `B2EvidenceStorage` drives.
+
+    A dict of objects behind the four calls the backend makes — `head_object`,
+    `get_object`, `put_object`, `get_paginator("list_objects_v2")` — answering
+    with the same shapes botocore returns: a `StreamingBody` for a GET, a
+    `ClientError` carrying `404` for a HEAD of nothing and `NoSuchKey` for a
+    GET of nothing, pages with `Contents` and continuation. What it lacks is
+    the point: no network, no credentials, no bucket.
+
+    Three testing hooks. `failing` maps an operation name to the exception
+    it should raise, so a test can show a 403, a 5xx or a connection fault
+    stays loud. `calls` records every operation with its key, so a test can
+    show an unsafe key issued no request and no delete was ever issued.
+    `page_size` and `reverse_pages` make listing paginate and arrive out of
+    order, so a test can show the backend sorts and deduplicates rather than
+    trusting the server.
+
+    Reached through the `fake_s3` fixture rather than imported — see `Make`.
+    """
+
+    def __init__(
+        self,
+        *,
+        page_size: int = 1000,
+        reverse_pages: bool = False,
+        failing: dict[str, BaseException] | None = None,
+    ) -> None:
+        self.objects: dict[str, tuple[bytes, dict[str, str]]] = {}
+        self.calls: list[tuple[str, str]] = []
+        self.buckets_seen: set[str] = set()
+        self.failing = failing or {}
+        self.page_size = page_size
+        self.reverse_pages = reverse_pages
+        #: Set by a test to make the bucket "hold" different metadata or
+        #: bytes than were uploaded — a corrupted or truncated upload.
+        self.tamper_after_put: dict[str, tuple[bytes, dict[str, str]]] = {}
+
+    def _call(self, operation: str, key: str, bucket: str) -> None:
+        self.calls.append((operation, key))
+        self.buckets_seen.add(bucket)
+        if operation in self.failing:
+            raise self.failing[operation]
+
+    def head_object(self, *, Bucket: str, Key: str) -> dict[str, Any]:  # noqa: N803 - SDK spelling
+        """HEAD: size and metadata, or a bare 404."""
+        self._call("head_object", Key, Bucket)
+        if Key not in self.objects:
+            raise s3_error("404", 404, "HeadObject")
+        data, metadata = self.objects[Key]
+        return {"ContentLength": len(data), "Metadata": dict(metadata), "ETag": '"not-a-sha"'}
+
+    def get_object(self, *, Bucket: str, Key: str) -> dict[str, Any]:  # noqa: N803 - SDK spelling
+        """GET: a streaming body, or NoSuchKey."""
+        self._call("get_object", Key, Bucket)
+        if Key not in self.objects:
+            raise s3_error("NoSuchKey", 404, "GetObject")
+        data, _ = self.objects[Key]
+        return {"Body": StreamingBody(io.BytesIO(data), len(data)), "ContentLength": len(data)}
+
+    def put_object(
+        self,
+        *,
+        Bucket: str,  # noqa: N803 - SDK spelling
+        Key: str,  # noqa: N803 - SDK spelling
+        Body: bytes,  # noqa: N803 - SDK spelling
+        ContentLength: int,  # noqa: N803 - SDK spelling
+        Metadata: Mapping[str, str],  # noqa: N803 - SDK spelling
+    ) -> dict[str, Any]:
+        """PUT: store bytes and metadata; ETag is deliberately not a digest."""
+        self._call("put_object", Key, Bucket)
+        assert len(Body) == ContentLength
+        self.objects[Key] = (bytes(Body), dict(Metadata))
+        if Key in self.tamper_after_put:
+            self.objects[Key] = self.tamper_after_put[Key]
+        return {"ETag": '"not-a-sha"'}
+
+    def delete_object(self, *, Bucket: str, Key: str) -> dict[str, Any]:  # noqa: N803 - SDK spelling
+        """Never called by the backend; recorded so a test can prove it."""
+        self._call("delete_object", Key, Bucket)
+        raise AssertionError("the evidence backend must never delete")
+
+    def delete_objects(
+        self,
+        *,
+        Bucket: str,  # noqa: N803 - SDK spelling
+        Delete: Mapping[str, Any],  # noqa: N803 - SDK spelling
+    ) -> dict[str, Any]:
+        """Batch delete — the canary cleanup's call, never the backend's."""
+        keys = [str(item["Key"]) for item in Delete["Objects"]]
+        self._call("delete_objects", ",".join(keys), Bucket)
+        for key in keys:
+            self.objects.pop(key, None)
+        return {"Deleted": [{"Key": key} for key in keys]}
+
+    def get_paginator(self, operation_name: str) -> FakeS3Paginator:
+        """Only `list_objects_v2` is paged, as in the real client."""
+        assert operation_name == "list_objects_v2"
+        return FakeS3Paginator(self)
+
+
+class FakeS3Paginator:
+    """`list_objects_v2` pages over the fake's objects, sized and ordered by the test."""
+
+    def __init__(self, client: FakeS3Client) -> None:
+        self._client = client
+
+    def paginate(self, *, Bucket: str, Prefix: str) -> Iterator[dict[str, Any]]:  # noqa: N803 - SDK spelling
+        client = self._client
+        client._call("list_objects_v2", Prefix, Bucket)
+        keys = sorted(k for k in client.objects if k.startswith(Prefix))
+        if client.reverse_pages:
+            keys = list(reversed(keys))
+        if not keys:
+            yield {"KeyCount": 0, "IsTruncated": False}
+            return
+        for start in range(0, len(keys), client.page_size):
+            page = keys[start : start + client.page_size]
+            yield {
+                "Contents": [{"Key": k, "Size": len(client.objects[k][0])} for k in page],
+                "KeyCount": len(page),
+                "IsTruncated": start + client.page_size < len(keys),
+            }
+
+
+@pytest.fixture
+def fake_s3() -> type[FakeS3Client]:
+    """Return the in-memory S3 client used to test `B2EvidenceStorage` offline."""
+    return FakeS3Client
+
+
+def submissions_payload(cik: int, filings: list[tuple[str, str, str, str]]) -> bytes:
+    """A submissions catalogue in the SEC's column-wise shape.
+
+    `filings` are `(accession, form, filing date, primary document)`.
+    """
+    return json.dumps(
+        {
+            "cik": f"{cik:010d}",
+            "filings": {
+                "recent": {
+                    "accessionNumber": [f[0] for f in filings],
+                    "form": [f[1] for f in filings],
+                    "filingDate": [f[2] for f in filings],
+                    "reportDate": ["" for _ in filings],
+                    "primaryDocument": [f[3] for f in filings],
+                    "acceptanceDateTime": [f"{f[2]}T16:05:00.000Z" for f in filings],
+                }
+            },
+        }
+    ).encode()
+
+
+class FakeSec:
+    """A dict of URLs that answers like the SEC and records every fetch.
+
+    The rebuild's `DocumentSource`: `fetch` returns the canned bytes for a
+    URL with their digest, raises `ProviderRequestError` for an unknown one,
+    and honours two hooks — `fail_once` (a transient failure on the first
+    attempt) and `fail_always` (a refusal or a persistent fault). `calls`
+    records every URL asked for, so a test can show the ticker map was
+    fetched once, a refused request was the last one, or nothing at all was
+    asked on a resume.
+
+    Args:
+        ticker_map: The SEC ticker map the fake serves, in the SEC's shape.
+    """
+
+    def __init__(self, ticker_map: Mapping[str, Mapping[str, object]] | None = None) -> None:
+        self.responses: dict[str, bytes] = {
+            TICKER_MAP_URL: json.dumps(dict(ticker_map or {})).encode()
+        }
+        self.calls: list[str] = []
+        self.fail_once: dict[str, type[Exception]] = {}
+        self.fail_always: dict[str, type[Exception]] = {}
+
+    def add_filer(self, cik: int, docs: list[tuple[str, str, str, str]]) -> None:
+        """Serve a filer's catalogue and one document per filing."""
+        self.responses[f"https://data.sec.gov/submissions/CIK{cik:010d}.json"] = (
+            submissions_payload(cik, docs)
+        )
+        for accession, _, _, document in docs:
+            plain = accession.replace("-", "")
+            url = f"https://www.sec.gov/Archives/edgar/data/{cik}/{plain}/{document}"
+            self.responses[url] = f"<html><body>{cik} {accession} {document}</body></html>".encode()
+
+    def close(self) -> None:
+        """The CLI closes its client; the fake has nothing to release."""
+
+    def fetch(self, url: str) -> FetchedDocument:
+        """Answer one URL, or fail the way the test arranged."""
+        self.calls.append(url)
+        if url in self.fail_always:
+            raise self.fail_always[url]("sec refused")
+        if url in self.fail_once:
+            raise self.fail_once.pop(url)("transient")
+        body = self.responses.get(url)
+        if body is None:
+            raise ProviderRequestError(f"404 {url}")
+        return FetchedDocument(
+            url=url,
+            status=200,
+            body=body,
+            sha256=hashlib.sha256(body).hexdigest(),
+            content_type="application/json" if url.endswith(".json") else "text/html",
+            etag=None,
+            last_modified=None,
+            retrieved_at=datetime(2026, 9, 16, tzinfo=UTC),
+        )
+
+
+@pytest.fixture
+def fake_sec() -> type[FakeSec]:
+    """Return the canned SEC used to drive the rebuild offline."""
+    return FakeSec
+
+
+def identity_row(
+    position: int, bucket: str, symbol: str, cik: int | None = None, *, chunk: int | None = None
+) -> IdentityRow:
+    """One row of a V2 identity plan; `chunk` defaults to the production arithmetic."""
+    return IdentityRow(
+        position=position,
+        chunk=position // 250 if chunk is None else chunk,
+        bucket=bucket,
+        symbol=symbol,
+        name=symbol,
+        company_id=position if bucket == "LIVE" else None,
+        historical_security_id=None if bucket == "LIVE" else position,
+        cik=cik,
+        resolution="STORED" if cik is not None else "EDGAR_REQUIRED",
+        submissions_url=f"https://data.sec.gov/submissions/CIK{cik:010d}.json" if cik else None,
+    )
+
+
+@pytest.fixture
+def make_identity() -> Callable[..., IdentityRow]:
+    """Return the identity-row builder for V2 plans."""
+    return identity_row
 
 
 @pytest.fixture
@@ -416,3 +822,407 @@ def scored_company(session: Session, make: type, seed: type[Seed]) -> str:
     company_id = seed.company(session, make, "XYZ")
     seed.score(session, company_id, "XYZ")
     return "XYZ"
+
+
+# ---------------------------------------------------------------------------
+# Soak verification: evidence built from real operational records
+# ---------------------------------------------------------------------------
+
+
+def _protocol(
+    *,
+    required_sessions: int,
+    protocol_id: str = "P2_4_R3B_FIXTURE",
+    **overrides: Any,
+) -> Any:
+    """A complete protocol declaring the whole canonical gate set."""
+    from stock_screener.execution import fingerprint_of
+    from stock_screener.paper_operations import operations_policy
+    from stock_screener.soak_verification import (
+        REQUIRED_DRILL_TYPES,
+        GateBound,
+        PaperShadowSoakProtocol,
+        gate_registry,
+    )
+
+    thresholds: dict[str, int] = {}
+    for gate_id, definition in gate_registry().items():
+        if definition.bound is GateBound.AT_MOST:
+            thresholds[gate_id] = 0
+        elif gate_id == "qualifying_sessions_observed":
+            thresholds[gate_id] = required_sessions
+        elif gate_id == "required_drills_passed":
+            thresholds[gate_id] = len(REQUIRED_DRILL_TYPES)
+        else:
+            thresholds[gate_id] = 1
+    thresholds.update(overrides.pop("gate_thresholds", {}))
+    settings: dict[str, Any] = {
+        "protocol_version": "P2_4_R3B_FIXTURE_V1",
+        "protocol_id": protocol_id,
+        "qualifying_commit": "c" * 40,
+        "declared_gate_ids": tuple(sorted(gate_registry())),
+        "gate_thresholds": thresholds,
+        "required_sessions": required_sessions,
+        "required_drill_types": tuple(REQUIRED_DRILL_TYPES),
+        "observation_schema_version": "PAPER_SHADOW_SESSION_OBSERVATION_V3",
+        "runtime_binding_fingerprint": "r" * 64,
+        "paper_account_fingerprint": "a" * 64,
+        "strategy_id": "ALPHATRADER_COMPOUNDER_MONTHLY",
+        "strategy_version": "V1",
+        "strategy_fingerprint": "s" * 64,
+        "strategy_authorization_fingerprint": "g" * 64,
+        "risk_policy_fingerprint": "k" * 64,
+        "operations_policy_fingerprint": fingerprint_of(operations_policy()),
+        "calendar_version": "PAPER_OPERATIONS_CALENDAR_V1",
+        "calendar_fingerprint": "l" * 64,
+        "schedule_version": "ALPHATRADER_PAPER_V1_1",
+        "schedule_fingerprint": "h" * 64,
+        "score_availability_profile_fingerprint": "v" * 64,
+        "execution_timing_profile_fingerprint": "e" * 64,
+    }
+    settings.update(overrides)
+    return PaperShadowSoakProtocol(**settings)
+
+
+def _activation(protocol: Any, sessions: tuple[str, ...]) -> Any:
+    """The matching activation for a protocol."""
+    from stock_screener.soak_verification import PaperShadowSoakActivation
+
+    return PaperShadowSoakActivation(
+        activation_version=protocol.protocol_version,
+        protocol_version=protocol.protocol_version,
+        protocol_fingerprint=protocol.fingerprint(),
+        qualifying_commit=protocol.qualifying_commit,
+        activated_at="2026-10-31T12:00:00+00:00",
+        required_sessions=protocol.required_sessions,
+        window=sessions,
+        runtime_binding_fingerprint=protocol.runtime_binding_fingerprint,
+        paper_account_fingerprint=protocol.paper_account_fingerprint,
+        calendar_fingerprint=protocol.calendar_fingerprint,
+        schedule_fingerprint=protocol.schedule_fingerprint,
+        strategy_fingerprint=protocol.strategy_fingerprint,
+        risk_policy_fingerprint=protocol.risk_policy_fingerprint,
+        operations_policy_fingerprint=protocol.operations_policy_fingerprint,
+        score_availability_profile_fingerprint=(protocol.score_availability_profile_fingerprint),
+        execution_timing_profile_fingerprint=protocol.execution_timing_profile_fingerprint,
+    )
+
+
+class SoakBuilder:
+    """Builds a soak from real records and scores it."""
+
+    def __init__(self, root: Path) -> None:
+        self.root = root
+        self.calls = 0
+
+    def protocol(self, *, required_sessions: int = 20, **overrides: Any) -> Any:
+        """A complete protocol."""
+        return _protocol(required_sessions=required_sessions, **overrides)
+
+    def sessions_for(self, count: int) -> tuple[str, ...]:
+        """The session dates a fixture of this size writes."""
+        return tuple(f"2026-11-{index + 1:02d}" for index in range(count))
+
+    def build(
+        self,
+        *,
+        sessions: int = 20,
+        required_sessions: int | None = None,
+        breach: str | None = None,
+        breach_session: int = -1,
+        omit_drills: bool = False,
+        remove_source: str | None = None,
+        drop_drill: str | None = None,
+        failed_drill: str | None = None,
+        state: str | None = None,
+        protocol: Any = None,
+        **overrides: Any,
+    ) -> Any:
+        """Write a soak's records and return its fixture.
+
+        Args:
+            sessions: How many eligible sessions to write.
+            required_sessions: What the protocol demands. Defaults to
+                `sessions`, so a fixture is complete unless a test says
+                otherwise.
+            breach: One underlying condition to create, from `Breach`.
+            breach_session: Which session carries it.
+            omit_drills: Write no drill evidence at all.
+            remove_source: Delete this source's records after writing them.
+            drop_drill: Omit one required drill type.
+            failed_drill: Record one drill type as failed.
+            state: Halt the soak after writing it.
+            protocol: Use this protocol instead of building one.
+            **overrides: Passed to the protocol builder.
+
+        Returns:
+            The `SoakFixture`.
+        """
+        from stock_screener.soak_verification import build_soak_fixture
+
+        self.calls += 1
+        demand = sessions if required_sessions is None else required_sessions
+        bound = protocol or _protocol(required_sessions=demand, **overrides)
+        dates = self.sessions_for(sessions)
+        root = self.root / f"soak{self.calls}" / ".operations"
+        fixture = build_soak_fixture(
+            root,
+            protocol=bound,
+            activation=_activation(bound, dates),
+            sessions=sessions,
+            breach=breach,
+            breach_session=breach_session,
+            omit_drills=omit_drills,
+            remove_source=remove_source,
+        )
+        if drop_drill is not None or failed_drill is not None:
+            _adjust_drills(root, bound, drop=drop_drill, failed=failed_drill)
+        if state is not None:
+            fixture.store.halt(
+                reason=f"fixture halted as {state}",
+                classification="FIXTURE",
+                at="2026-11-30T12:00:00+00:00",
+            )
+        return fixture
+
+    def score(self, fixture: Any, *, protocol: Any = None) -> Any:
+        """Score a fixture against its protocol's frozen gates."""
+        from stock_screener.soak_verification import score_soak
+
+        bound = protocol or fixture.protocol
+        return score_soak(
+            fixture.evidence,
+            declared_gates=dict(bound.gate_thresholds),
+            required_sessions=bound.required_sessions,
+        )
+
+    def build_and_score(self, **kwargs: Any) -> Any:
+        """Build a soak and score it in one step."""
+        return self.score(self.build(**kwargs))
+
+
+def _adjust_drills(root: Path, protocol: Any, *, drop: str | None, failed: str | None) -> None:
+    """Rewrite the drill store to drop or fail one required type."""
+    import dataclasses
+
+    from stock_screener.soak_verification import DrillStoreV2
+    from stock_screener.soak_verification.synthetic import _drill_set
+
+    directory = root / "soak" / "drills"
+    for path in directory.glob("*.json"):
+        path.unlink()
+    store = DrillStoreV2(directory)
+    for record in _drill_set(protocol):
+        if drop is not None and str(record.drill_type) == drop:
+            continue
+        if failed is not None and str(record.drill_type) == failed:
+            record = dataclasses.replace(record, passed=False, observed="did not refuse")
+        store.record(record)
+
+
+@pytest.fixture
+def soak(tmp_path: Path) -> SoakBuilder:
+    """A builder for soaks made of real operational records.
+
+    Every soak test gets its evidence the way a real soak does: real
+    operational records written through the production stores, real derivations
+    over them, real V3 observations in a real store. Nothing sets a gate value.
+
+    That is a deliberate replacement. The earlier fixtures held a synthetic
+    observation with eighteen integer fields — `live_requests`,
+    `duplicate_remote_orders`, `kill_bypasses` — and a test proved a breach by
+    setting one to 1. It proved the comparison operator worked and nothing
+    about whether a breach could ever be *observed*, which was the real
+    question: fourteen of those gates were unmeasurable while every one of
+    those tests passed.
+    """
+    return SoakBuilder(tmp_path)
+
+
+# ---------------------------------------------------------------------------
+# Paper operations: a bootstrapped runtime root for composition tests
+# ---------------------------------------------------------------------------
+
+#: The identities a composition test may route to the venue.
+PAPER_SYMBOLS: dict[int, str] = {1: "AAA", 2: "BBB", 3: "CCC"}
+
+
+@dataclass
+class _OpsClock:
+    """An operational clock a test advances explicitly."""
+
+    moment: str
+
+    def iso(self) -> str:
+        """The current instant, ISO-8601."""
+        return self.moment
+
+    def now(self) -> Any:
+        """The current instant, as an aware datetime."""
+        from stock_screener.paper_operations.clock import parse_instant
+
+        return parse_instant(self.moment)
+
+    def set(self, moment: str) -> None:
+        """Move to an instant."""
+        self.moment = moment
+
+
+@dataclass
+class _BootstrapSnapshot:
+    """The venue's view of a clean account at bootstrap."""
+
+    account_binding_fingerprint: str
+    cash: Any = None
+    positions: tuple[Any, ...] = ()
+
+    def __post_init__(self) -> None:
+        """Default the opening cash."""
+        from decimal import Decimal
+
+        if self.cash is None:
+            self.cash = Decimal("100000.00")
+
+
+@dataclass
+class PaperRuntimeRoot:
+    """A bootstrapped, armed operations root with nothing composed over it.
+
+    Deliberately holds no adapter, environment or coordinator: a composition
+    test must get those from the production factory, or it is not testing the
+    production factory.
+    """
+
+    root: Any
+    binding: Any
+    schedule: Any
+    calendar: Any
+    clock: _OpsClock
+    account: str
+
+    def kill(self, reason: str = "OPERATOR_KILL") -> None:
+        """Move the control state to killed."""
+        from stock_screener.paper_operations import KillSwitchStore
+
+        KillSwitchStore(self.root).kill(
+            clock=self.clock,
+            reason_code=reason,
+            account_binding_fingerprint=self.account,
+        )
+
+
+@pytest.fixture
+def paper_runtime(tmp_path: Path) -> PaperRuntimeRoot:
+    """Bootstrap and arm a paper operations root.
+
+    Arming here is a *test* root's own control state, written through the real
+    `ArmingStore`. The repository's real control state is untouched and stays
+    fail closed; nothing in this fixture reaches it.
+    """
+    from stock_screener.execution import ExecutionCalendar
+    from stock_screener.execution.external import (
+        BrokerCapabilities,
+        BrokerEnvironment,
+        ExternalBrokerAccountBinding,
+        prove_paper_environment,
+    )
+    from stock_screener.paper_operations import (
+        ArmingStore,
+        KillSwitchStore,
+        OperationsMode,
+        PaperOperationsAuthorization,
+    )
+    from stock_screener.paper_operations.strategy_schedule import StrategyOperationsSchedule
+    from stock_screener.paper_runtime import RuntimeBindingStore, bootstrap_paper_book
+    from stock_screener.strategies import CompounderMonthlyStrategy
+
+    root = tmp_path / ".operations"
+    calendar = ExecutionCalendar(
+        sessions=("2026-10-28", "2026-10-29", "2026-10-30", "2026-11-02"), name="P2_3_1D"
+    )
+    schedule = StrategyOperationsSchedule(
+        schedule_id="ALPHATRADER_PAPER_V1_1", timezone="America/New_York", calendar=calendar
+    )
+    # Built as the production composition builds it: `from_settings`'s binding,
+    # widened to the capabilities the authored symbol mapping declares. The
+    # bootstrap records this binding's fingerprint and the composition has to
+    # reconstruct the identical one, so a fixture that bootstrapped against a
+    # different capability set would fail the environment proof for a reason no
+    # correctly bootstrapped deployment has.
+    external = ExternalBrokerAccountBinding.paper(
+        provider="ALPACA",
+        account_id="paper-account-1",
+        proof=prove_paper_environment(
+            environment=BrokerEnvironment.PAPER,
+            base_url="https://paper-api.alpaca.markets",
+            key_id="PKTESTKEY01",
+        ),
+        label="configured paper account",
+        capabilities=BrokerCapabilities(fractional_quantities=True),
+    )
+    account = external.binding_fingerprint()
+    strategy = CompounderMonthlyStrategy()
+    bootstrap_paper_book(
+        root=root,
+        runtime_id="alphatrader1",
+        account=_BootstrapSnapshot(account_binding_fingerprint=account),
+        account_evidence_fingerprint="ev-" + "f" * 61,
+        open_orders=0,
+        strategy_id=strategy.strategy_id,
+        strategy_version=strategy.strategy_version,
+        strategy_fingerprint=strategy.fingerprint(),
+        strategy_authorization_fingerprint="b" * 64,
+        operations_policy_fingerprint="pol",
+        calendar_fingerprint=calendar.fingerprint(),
+        schedule_fingerprint=schedule.fingerprint(),
+        code_commit="3e254a2",
+        now="2026-10-28T12:00:00+00:00",
+        confirmed=True,
+    )
+    clock = _OpsClock("2026-10-30T20:00:30+00:00")
+    arming = ArmingStore(root)
+    arming.arm(
+        PaperOperationsAuthorization(
+            authorization_id="grant-1",
+            provider="ALPACA",
+            account_binding_fingerprint=account,
+            operations_policy_fingerprint="pol",
+            code_commit="3e254a2",
+            created_at="2026-10-28T12:00:00+00:00",
+            allowed_mode=OperationsMode.EXTERNAL_PAPER,
+        )
+    )
+    KillSwitchStore(root).activate(clock=clock, account_binding_fingerprint=account)
+    return PaperRuntimeRoot(
+        root=root,
+        binding=RuntimeBindingStore(root).require(),
+        schedule=schedule,
+        calendar=calendar,
+        clock=clock,
+        account=account,
+    )
+
+
+def paper_input_bundle(session: str, count: int = 21) -> Any:
+    """A research cross-section for one decision session."""
+    from stock_screener.portfolio_risk import SecurityIdentity
+    from stock_screener.strategies import StrategyInputBundle, StrategyInputRecord
+
+    return StrategyInputBundle(
+        as_of=session,
+        score_version="COMPOUNDER_V1_2",
+        universe_fingerprint="universe-1",
+        records=tuple(
+            StrategyInputRecord(
+                identity=SecurityIdentity(kind="COMPANY", identity_id=index),
+                final_score=90.0 - index,
+                scoring_status="SCORED",
+                freshness="CURRENT",
+                score_date=session,
+                score_version="COMPOUNDER_V1_2",
+                calculated_at=f"{session}T07:40:00+00:00",
+                source_fingerprint=f"fp-{index}",
+            )
+            for index in range(1, count + 1)
+        ),
+    )

@@ -19,10 +19,17 @@ import httpx
 
 from api_clients._http import RateLimiter, RetryPolicy, request_json
 from api_clients.errors import ProviderDataError
-from domain import CompanyProfile, PriceBar, normalise_ticker
+from domain import (
+    CompanyProfile,
+    CorporateActionKind,
+    CorporateActionRecord,
+    DelistingRecord,
+    PriceBar,
+    normalise_ticker,
+)
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator, Sequence
+    from collections.abc import Iterator, Mapping, Sequence
 
 PROVIDER_NAME = "alpaca"
 
@@ -276,6 +283,111 @@ class AlpacaMarketData:
 
     # -- internals ---------------------------------------------------------
 
+    def get_corporate_actions(
+        self, symbols: Sequence[str], start: date, end: date
+    ) -> list[CorporateActionRecord]:
+        """Return the corporate actions announced for these symbols in a window.
+
+        The reason this exists: stored bars are `adjustment=all`, so the price
+        a trader saw on a past date is not in the database. Recovering it needs
+        the factor and the ex-date it pivots on, and neither can be inferred
+        from a price series without guessing.
+
+        Args:
+            symbols: Securities to look up. Batched like the bars endpoint.
+            start: Earliest ex-date to include.
+            end: Latest ex-date to include.
+
+        Returns:
+            One record per action, in no particular order. Kinds the reader does
+            not model are skipped rather than half-parsed.
+
+        Raises:
+            ProviderError: If a request failed or a payload was unusable.
+        """
+        found: list[CorporateActionRecord] = []
+        for batch in _chunked(list(symbols), self._batch_size):
+            page_token: str | None = None
+            while True:
+                params: dict[str, Any] = {
+                    "symbols": ",".join(batch),
+                    "start": start.isoformat(),
+                    "end": end.isoformat(),
+                    "limit": _CORPORATE_ACTION_PAGE,
+                }
+                if page_token:
+                    params["page_token"] = page_token
+                payload = request_json(
+                    self._data_client,
+                    "GET",
+                    "/v1/corporate-actions",
+                    provider=PROVIDER_NAME,
+                    params=params,
+                    limiter=self._limiter,
+                    retry=self._retry,
+                )
+                if not isinstance(payload, dict):
+                    raise ProviderDataError("alpaca returned an unexpected actions payload")
+                found.extend(_actions_from_payload(payload.get("corporate_actions", {})))
+                page_token = payload.get("next_page_token")
+                if not page_token:
+                    break
+        return found
+
+    def list_delistings(self, start: date, end: date) -> list[DelistingRecord]:
+        """Return every security that left the market in a window.
+
+        The corporate-actions endpoint answers without a symbol filter, and that
+        is the whole reason this method exists. Asking by symbol can only
+        confirm the fate of a security already known; asking by date range
+        *enumerates* them, which is what a survivorship-free universe needs and
+        what the asset list cannot supply — 18 of 20 well-known large-cap
+        delistings appear in neither the active nor the inactive asset list,
+        while the corporate-action record has them.
+
+        What it does not have: a receivership. SVB and First Republic ended in
+        FDIC receivership rather than a merger or a removal, and neither is
+        here under any type. That gap is real and is documented rather than
+        guessed at.
+
+        Args:
+            start: Earliest effective date to include.
+            end: Latest effective date to include.
+
+        Returns:
+            One record per delisting, in no particular order.
+
+        Raises:
+            ProviderError: If a request failed or a payload was unusable.
+        """
+        found: list[DelistingRecord] = []
+        page_token: str | None = None
+        while True:
+            params: dict[str, Any] = {
+                "start": start.isoformat(),
+                "end": end.isoformat(),
+                "types": ",".join(_DELISTING_TYPES),
+                "limit": _CORPORATE_ACTION_PAGE,
+            }
+            if page_token:
+                params["page_token"] = page_token
+            payload = request_json(
+                self._data_client,
+                "GET",
+                "/v1/corporate-actions",
+                provider=PROVIDER_NAME,
+                params=params,
+                limiter=self._limiter,
+                retry=self._retry,
+            )
+            if not isinstance(payload, dict):
+                raise ProviderDataError("alpaca returned an unexpected delisting payload")
+            found.extend(_delistings_from_payload(payload.get("corporate_actions", {})))
+            page_token = payload.get("next_page_token")
+            if not page_token:
+                break
+        return found
+
     def _collect_batch(
         self,
         batch: list[str],
@@ -382,3 +494,198 @@ def _chunked(items: list[str], size: int) -> Iterator[list[str]]:
     """Yield successive slices of `items` no longer than `size`."""
     for index in range(0, len(items), size):
         yield items[index : index + size]
+
+
+def _as_date(value: object) -> date | None:
+    """Parse an ISO date, or None when the field is absent or unparseable."""
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        return date.fromisoformat(value[:10])
+    except ValueError:
+        return None
+
+
+def _as_float(value: object) -> float | None:
+    """Return a float, or None when the field is absent or not numeric."""
+    if isinstance(value, bool) or value is None:
+        return None
+    try:
+        return float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+
+
+#: Actions per page. The endpoint caps a page and pages with `next_page_token`,
+#: exactly as the bars endpoint does.
+_CORPORATE_ACTION_PAGE = 1000
+
+#: How the vendor's section names map onto the kinds this project models.
+#: A section absent from here is skipped rather than half-parsed — a
+#: `worthless_removal` is a real event, but nothing yet reads one, and inventing
+#: a partial record would be worse than recording none.
+#: The endpoint's own names for the sections that end a security's life, and
+#: the `types` filter that asks for only those.
+_DELISTING_SECTIONS: dict[str, CorporateActionKind] = {
+    "cash_mergers": CorporateActionKind.CASH_MERGER,
+    "stock_mergers": CorporateActionKind.STOCK_MERGER,
+    "stock_and_cash_mergers": CorporateActionKind.STOCK_AND_CASH_MERGER,
+    "worthless_removals": CorporateActionKind.WORTHLESS_REMOVAL,
+}
+_DELISTING_TYPES: tuple[str, ...] = (
+    "cash_merger",
+    "stock_merger",
+    "stock_and_cash_merger",
+    "worthless_removal",
+)
+
+
+def _delistings_from_payload(sections: Mapping[str, Any]) -> list[DelistingRecord]:
+    """Return one record per delisting across every section the reader models."""
+    found: list[DelistingRecord] = []
+    for name, kind in _DELISTING_SECTIONS.items():
+        entries = sections.get(name)
+        if not isinstance(entries, list):
+            continue
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            record = _delisting_from_entry(entry, kind)
+            if record is not None:
+                found.append(record)
+    return found
+
+
+def _delisting_from_entry(
+    entry: Mapping[str, Any], kind: CorporateActionKind
+) -> DelistingRecord | None:
+    """Return one delisting record, or None without a subject or a date.
+
+    The subject is the **acquiree**: the security that ceased. `acquirer_symbol`
+    names one that carried on, and attributing the delisting to it would mark a
+    living company dead.
+    """
+    symbol = entry.get("acquiree_symbol") or entry.get("symbol")
+    if not isinstance(symbol, str) or not symbol:
+        return None
+
+    effective = _as_date(entry.get("effective_date")) or _as_date(entry.get("process_date"))
+    if effective is None:
+        return None
+
+    acquirer = entry.get("acquirer_symbol")
+    return DelistingRecord(
+        symbol=normalise_ticker(symbol),
+        kind=kind,
+        effective_date=effective,
+        cash_per_share=_as_float(entry.get("rate") or entry.get("cash_rate")),
+        acquirer_symbol=(
+            normalise_ticker(acquirer) if isinstance(acquirer, str) and acquirer else None
+        ),
+        acquirer_rate=_as_float(entry.get("acquirer_rate")),
+        acquiree_rate=_as_float(entry.get("acquiree_rate")),
+        source=PROVIDER_NAME,
+        source_id=str(entry["id"]) if entry.get("id") else None,
+    )
+
+
+_ACTION_SECTIONS: dict[str, CorporateActionKind] = {
+    "forward_splits": CorporateActionKind.FORWARD_SPLIT,
+    "reverse_splits": CorporateActionKind.REVERSE_SPLIT,
+    "cash_dividends": CorporateActionKind.CASH_DIVIDEND,
+    "stock_dividends": CorporateActionKind.STOCK_DIVIDEND,
+    "spin_offs": CorporateActionKind.SPIN_OFF,
+    "cash_mergers": CorporateActionKind.CASH_MERGER,
+    "stock_mergers": CorporateActionKind.STOCK_MERGER,
+    "name_changes": CorporateActionKind.NAME_CHANGE,
+}
+
+
+def _actions_from_payload(sections: Mapping[str, Any]) -> list[CorporateActionRecord]:
+    """Return one record per action across every section the reader models."""
+    found: list[CorporateActionRecord] = []
+    for name, kind in _ACTION_SECTIONS.items():
+        entries = sections.get(name)
+        if not isinstance(entries, list):
+            continue
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            record = _action_from_entry(entry, kind)
+            if record is not None:
+                found.append(record)
+    return found
+
+
+def _action_from_entry(
+    entry: Mapping[str, Any], kind: CorporateActionKind
+) -> CorporateActionRecord | None:
+    """Return one action record, or None when it lacks a symbol or a date.
+
+    Three sections name their subject differently, and the difference is not
+    cosmetic. A split or a dividend happens *to* a `symbol`. A name change
+    happens to an `old_symbol`. A merger happens to an `acquiree_symbol` — the
+    security that ceases to exist — while `acquirer_symbol` names the one that
+    carries on, which is a different company and must not be attributed the
+    event. The acquiree is what this record is about, because the acquiree is
+    the one whose price series stops.
+
+    The date follows the same pattern: an `ex_date` where the market trades
+    through the event, a `process_date` for a name change, and an
+    `effective_date` for a merger, which is the last day the acquiree existed.
+    """
+    symbol = entry.get("symbol") or entry.get("old_symbol") or entry.get("acquiree_symbol")
+    if not isinstance(symbol, str) or not symbol:
+        return None
+
+    pivot = (
+        _as_date(entry.get("ex_date"))
+        or _as_date(entry.get("effective_date"))
+        or (
+            _as_date(entry.get("process_date")) if kind is CorporateActionKind.NAME_CHANGE else None
+        )
+    )
+    if pivot is None:
+        return None
+
+    return CorporateActionRecord(
+        symbol=normalise_ticker(symbol),
+        kind=kind,
+        ex_date=pivot,
+        split_factor=_split_factor(entry),
+        cash_amount=_as_float(entry.get("rate")) if _is_cash(kind) else None,
+        currency=_USD_CURRENCY if _is_cash(kind) else None,
+        record_date=_as_date(entry.get("record_date")),
+        payable_date=_as_date(entry.get("payable_date")),
+        new_symbol=(
+            normalise_ticker(str(entry["new_symbol"]))
+            if isinstance(entry.get("new_symbol"), str) and entry["new_symbol"]
+            else None
+        ),
+        source=PROVIDER_NAME,
+        source_id=str(entry["id"]) if entry.get("id") else None,
+    )
+
+
+def _is_cash(kind: CorporateActionKind) -> bool:
+    """Whether this kind carries a cash amount rather than a ratio."""
+    return kind in {CorporateActionKind.CASH_DIVIDEND, CorporateActionKind.CASH_MERGER}
+
+
+def _split_factor(entry: Mapping[str, Any]) -> float | None:
+    """Return new shares per old share, or None when the entry states no ratio.
+
+    The vendor reports a ratio as `old_rate` -> `new_rate`: a 4-for-1 is
+    `old_rate 1, new_rate 4`, and a 1-for-8 reverse is `old_rate 8,
+    new_rate 1`. Dividing keeps both directions in one number, where above one
+    is a forward split and below one is a reverse.
+    """
+    new_rate = _as_float(entry.get("new_rate"))
+    old_rate = _as_float(entry.get("old_rate"))
+    if new_rate is None or old_rate is None or old_rate == 0:
+        return None
+    return new_rate / old_rate
+
+
+#: Alpaca reports distributions for U.S. listings in dollars.
+_USD_CURRENCY = "USD"

@@ -1,0 +1,234 @@
+{
+  "intents": [
+    {
+      "as_of": "2026-10-01T16:00:00-04:00",
+      "decision_id": "example-decision-1",
+      "identity": {
+        "identity_id": 1,
+        "kind": "COMPANY",
+        "symbol": "AAA"
+      },
+      "priority": 100.0,
+      "reason": "highest conviction; deliberately oversized to exercise the per-name cap",
+      "requested_weight": 0.25,
+      "source_fingerprint": "example-source-fingerprint",
+      "strategy_id": "EXAMPLE_STRATEGY",
+      "strategy_version": "0"
+    },
+    {
+      "as_of": "2026-10-01T16:00:00-04:00",
+      "decision_id": "example-decision-1",
+      "identity": {
+        "identity_id": 2,
+        "kind": "COMPANY",
+        "symbol": "T02"
+      },
+      "priority": 98.0,
+      "reason": "ranked entry at the per-name cap",
+      "requested_weight": 0.1,
+      "source_fingerprint": "example-source-fingerprint",
+      "strategy_id": "EXAMPLE_STRATEGY",
+      "strategy_version": "0"
+    },
+    {
+      "as_of": "2026-10-01T16:00:00-04:00",
+      "decision_id": "example-decision-1",
+      "identity": {
+        "identity_id": 3,
+        "kind": "COMPANY",
+        "symbol": "T03"
+      },
+      "priority": 97.0,
+      "reason": "ranked entry at the per-name cap",
+      "requested_weight": 0.1,
+      "source_fingerprint": "example-source-fingerprint",
+      "strategy_id": "EXAMPLE_STRATEGY",
+      "strategy_version": "0"
+    },
+    {
+      "as_of": "2026-10-01T16:00:00-04:00",
+      "decision_id": "example-decision-1",
+      "identity": {
+        "identity_id": 4,
+        "kind": "COMPANY",
+        "symbol": "T04"
+      },
+      "priority": 96.0,
+      "reason": "ranked entry at the per-name cap",
+      "requested_weight": 0.1,
+      "source_fingerprint": "example-source-fingerprint",
+      "strategy_id": "EXAMPLE_STRATEGY",
+      "strategy_version": "0"
+    },
+    {
+      "as_of": "2026-10-01T16:00:00-04:00",
+      "decision_id": "example-decision-1",
+      "identity": {
+        "identity_id": 5,
+        "kind": "COMPANY",
+        "symbol": "T05"
+      },
+      "priority": 95.0,
+      "reason": "ranked entry at the per-name cap",
+      "requested_weight": 0.1,
+      "source_fingerprint": "example-source-fingerprint",
+      "strategy_id": "EXAMPLE_STRATEGY",
+      "strategy_version": "0"
+    },
+    {
+      "as_of": "2026-10-01T16:00:00-04:00",
+      "decision_id": "example-decision-1",
+      "identity": {
+        "identity_id": 6,
+        "kind": "COMPANY",
+        "symbol": "T06"
+      },
+      "priority": 94.0,
+      "reason": "ranked entry at the per-name cap",
+      "requested_weight": 0.1,
+      "source_fingerprint": "example-source-fingerprint",
+      "strategy_id": "EXAMPLE_STRATEGY",
+      "strategy_version": "0"
+    },
+    {
+      "as_of": "2026-10-01T16:00:00-04:00",
+      "decision_id": "example-decision-1",
+      "identity": {
+        "identity_id": 7,
+        "kind": "COMPANY",
+        "symbol": "T07"
+      },
+      "priority": 93.0,
+      "reason": "ranked entry at the per-name cap",
+      "requested_weight": 0.1,
+      "source_fingerprint": "example-source-fingerprint",
+      "strategy_id": "EXAMPLE_STRATEGY",
+      "strategy_version": "0"
+    },
+    {
+      "as_of": "2026-10-01T16:00:00-04:00",
+      "decision_id": "example-decision-1",
+      "identity": {
+        "identity_id": 8,
+        "kind": "COMPANY",
+        "symbol": "T08"
+      },
+      "priority": 92.0,
+      "reason": "ranked entry at the per-name cap",
+      "requested_weight": 0.1,
+      "source_fingerprint": "example-source-fingerprint",
+      "strategy_id": "EXAMPLE_STRATEGY",
+      "strategy_version": "0"
+    },
+    {
+      "as_of": "2026-10-01T16:00:00-04:00",
+      "decision_id": "example-decision-1",
+      "identity": {
+        "identity_id": 9,
+        "kind": "COMPANY",
+        "symbol": "T09"
+      },
+      "priority": 91.0,
+      "reason": "ranked entry at the per-name cap",
+      "requested_weight": 0.1,
+      "source_fingerprint": "example-source-fingerprint",
+      "strategy_id": "EXAMPLE_STRATEGY",
+      "strategy_version": "0"
+    },
+    {
+      "as_of": "2026-10-01T16:00:00-04:00",
+      "decision_id": "example-decision-1",
+      "identity": {
+        "identity_id": 10,
+        "kind": "COMPANY",
+        "symbol": "T10"
+      },
+      "priority": 90.0,
+      "reason": "ranked entry at the per-name cap",
+      "requested_weight": 0.1,
+      "source_fingerprint": "example-source-fingerprint",
+      "strategy_id": "EXAMPLE_STRATEGY",
+      "strategy_version": "0"
+    },
+    {
+      "as_of": "2026-10-01T16:00:00-04:00",
+      "decision_id": "example-decision-1",
+      "identity": {
+        "identity_id": 11,
+        "kind": "COMPANY",
+        "symbol": "T11"
+      },
+      "priority": 89.0,
+      "reason": "lowest priority; exceeds max_positions",
+      "requested_weight": 0.1,
+      "source_fingerprint": "example-source-fingerprint",
+      "strategy_id": "EXAMPLE_STRATEGY",
+      "strategy_version": "0"
+    },
+    {
+      "as_of": "2026-10-01T16:00:00-04:00",
+      "decision_id": "example-decision-1",
+      "identity": {
+        "identity_id": 12,
+        "kind": "COMPANY",
+        "symbol": "T12"
+      },
+      "priority": 88.0,
+      "reason": "lowest priority; exceeds max_positions",
+      "requested_weight": 0.1,
+      "source_fingerprint": "example-source-fingerprint",
+      "strategy_id": "EXAMPLE_STRATEGY",
+      "strategy_version": "0"
+    }
+  ],
+  "note": "An example request for human review. EXAMPLE_POLICY_V1 is NOT_PRODUCTION_AUTHORIZED: its limits exist to make the engine's behaviour observable, and none of them has been established as correct for live capital.",
+  "policy": {
+    "construction_mode": "PRESERVE_ABSOLUTE_WEIGHTS",
+    "long_only": true,
+    "max_gross_exposure": 1.0,
+    "max_position_weight": 0.1,
+    "max_positions": 10,
+    "min_cash_weight": 0.05,
+    "mode": "NORMAL",
+    "policy_id": "EXAMPLE_POLICY_V1",
+    "policy_version": "1",
+    "production_authorized": false
+  },
+  "snapshot": {
+    "as_of": "2026-10-01T16:00:00-04:00",
+    "cash": 770000.0,
+    "positions": [
+      {
+        "identity": {
+          "identity_id": 1,
+          "kind": "COMPANY",
+          "symbol": "AAA"
+        },
+        "mark_price": 50.0,
+        "quantity": 1000.0,
+        "strategy_id": "EXAMPLE_STRATEGY"
+      },
+      {
+        "identity": {
+          "identity_id": 2,
+          "kind": "COMPANY",
+          "symbol": "BBB"
+        },
+        "mark_price": 100.0,
+        "quantity": 1200.0,
+        "strategy_id": "EXAMPLE_STRATEGY"
+      },
+      {
+        "identity": {
+          "identity_id": 99,
+          "kind": "COMPANY",
+          "symbol": "ZZZ"
+        },
+        "mark_price": 100.0,
+        "quantity": 600.0,
+        "strategy_id": "EXAMPLE_STRATEGY"
+      }
+    ],
+    "price_fingerprint": "example-price-fingerprint"
+  }
+}

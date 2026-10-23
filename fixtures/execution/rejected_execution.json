@@ -1,0 +1,129 @@
+{
+  "label": "PLAN-REJECTED",
+  "note": "The EXIT order is rejected by explicit deterministic policy input. Nothing trades, no accounting event is produced for it, and the plan is not reported as completed.",
+  "execution_plan_id": "PLAN-REJECTED",
+  "as_of": "2026-10-05T15:00:00-04:00",
+  "created_at": "2026-10-05T15:00:00-04:00",
+  "approved_portfolio_fingerprint": "apapapapapapapapapapapapapapapapapapapapapapapapapapapapapapapap",
+  "valued_snapshot_fingerprint": "vsvsvsvsvsvsvsvsvsvsvsvsvsvsvsvsvsvsvsvsvsvsvsvsvsvsvsvsvsvsvsvs",
+  "securities": [
+    {
+      "label": "EXIT_ME",
+      "kind": "COMPANY",
+      "identity_id": 9001,
+      "symbol": "EXT"
+    },
+    {
+      "label": "REDUCE_ME",
+      "kind": "COMPANY",
+      "identity_id": 9002,
+      "symbol": "RED"
+    },
+    {
+      "label": "ENTER_ME",
+      "kind": "COMPANY",
+      "identity_id": 9003,
+      "symbol": "ENT"
+    },
+    {
+      "label": "INCREASE_ME",
+      "kind": "COMPANY",
+      "identity_id": 9004,
+      "symbol": "INC"
+    },
+    {
+      "label": "HOLD_ME",
+      "kind": "COMPANY",
+      "identity_id": 9005,
+      "symbol": "HLD"
+    }
+  ],
+  "opening": {
+    "event_id": "PAPER-OB-1",
+    "effective_at": "2026-10-05T09:30:00-04:00",
+    "source_id": "PAPER_BOOK_IMPORT",
+    "source_fingerprint": "fp-paper-opening",
+    "cash": "5000.0000",
+    "positions": [
+      {
+        "identity": "EXIT_ME",
+        "quantity": "200.00000000",
+        "cost_basis_per_share": "38.00000000",
+        "attribution": [
+          {
+            "strategy_id": "ALPHA",
+            "quantity": "200.00000000"
+          }
+        ]
+      },
+      {
+        "identity": "REDUCE_ME",
+        "quantity": "400.00000000",
+        "cost_basis_per_share": "22.00000000",
+        "attribution": [
+          {
+            "strategy_id": "ALPHA",
+            "quantity": "250.00000000"
+          },
+          {
+            "strategy_id": "BETA",
+            "quantity": "150.00000000"
+          }
+        ]
+      },
+      {
+        "identity": "INCREASE_ME",
+        "quantity": "100.00000000",
+        "cost_basis_per_share": "15.00000000",
+        "attribution": [
+          {
+            "strategy_id": "BETA",
+            "quantity": "100.00000000"
+          }
+        ]
+      },
+      {
+        "identity": "HOLD_ME",
+        "quantity": "50.00000000",
+        "cost_basis_per_share": "60.00000000",
+        "attribution": [
+          {
+            "strategy_id": "ALPHA",
+            "quantity": "50.00000000"
+          }
+        ]
+      }
+    ]
+  },
+  "intents": [
+    {
+      "identity": "EXIT_ME",
+      "action": "EXIT",
+      "current_weight": 0.18,
+      "target_weight": 0.0,
+      "notional_delta": -8000.0,
+      "strategy_id": "ALPHA"
+    }
+  ],
+  "attribution": {},
+  "sizing": {
+    "as_of": "2026-10-05T15:00:00-04:00",
+    "nav": "44000.0000",
+    "cash": "5000.0000",
+    "source": "SESSION_CLOSE",
+    "prices": [
+      {
+        "identity": "EXIT_ME",
+        "price": "40.00000000"
+      }
+    ]
+  },
+  "steps": [
+    {
+      "order_id": "PLAN-REJECTED-COMPANY:9001-SELL",
+      "submitted_at": "2026-10-05T15:10:00-04:00",
+      "reject_at": "2026-10-05T15:11:00-04:00",
+      "reason": "PAPER_POLICY_REJECTED"
+    }
+  ]
+}

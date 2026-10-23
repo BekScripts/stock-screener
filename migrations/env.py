@@ -27,7 +27,31 @@ target_metadata = Base.metadata
 
 
 def _database_url() -> str:
-    """Return the URL to migrate, preferring an explicit -x url= override."""
+    """Return the URL to migrate, preferring an explicit `-x url=` override.
+
+    Raises:
+        RuntimeError: If `sqlalchemy.url` has been set in the Alembic config.
+            **This guard exists because the silent version of it caused real
+            harm.** A caller aiming a migration at a staging copy wrote
+
+                cfg = Config("alembic.ini")
+                cfg.set_main_option("sqlalchemy.url", staging_url)
+                command.upgrade(cfg, "head")
+
+            which reads naturally and is entirely ignored here — so four
+            revisions ran against the *production* database while the caller's
+            own queries went to staging. Nothing failed at the time; the
+            mismatch surfaced later as a missing table, pointing at the wrong
+            database. The only correct override is `-x url=`, and a config URL
+            is now a loud error rather than a no-op.
+    """
+    if config.get_main_option("sqlalchemy.url", None):
+        raise RuntimeError(
+            "sqlalchemy.url is set in the Alembic config and is ignored here: the URL "
+            "comes from application settings. Setting it silently migrates the "
+            "configured database instead of the one you named. Use `-x url=...` "
+            "(CLI) or `context.get_x_argument` (programmatic) to target another database."
+        )
     override = context.get_x_argument(as_dictionary=True).get("url")
     return override or get_settings().database_url
 

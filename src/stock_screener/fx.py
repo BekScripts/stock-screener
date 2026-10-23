@@ -73,7 +73,7 @@ class FxRateResolver:
         self._repository = FxRateRepository(session)
         self._provider = provider
         self._max_age_days = max_age_days
-        self._resolved: dict[tuple[str, str], FxConversion | None] = {}
+        self._resolved: dict[tuple[str, str, date], FxConversion | None] = {}
 
     def rate_for(self, base: str, quote: str, as_of: date) -> FxConversion | None:
         """Return the rate converting `base` into `quote` for a score date.
@@ -92,7 +92,13 @@ class FxRateResolver:
         if base == quote:
             return None
 
-        key = (base, quote)
+        # Keyed by the date as well as the pair. Without it a resolver reused
+        # across as-of dates answers every later date with the first date's
+        # rate, sailing past both the SQL bound and `_within_bounds` because
+        # neither is reached on a cache hit. Every current caller builds a fresh
+        # resolver per run and asks one date, so this changes no result today —
+        # it removes a look-ahead that a backtest loop would otherwise walk into.
+        key = (base, quote, as_of)
         if key not in self._resolved:
             self._resolved[key] = self._resolve(base, quote, as_of)
         return self._resolved[key]

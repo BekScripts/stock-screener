@@ -32,9 +32,11 @@ from api_clients import (
     MockResearch,
     ProviderConfigurationError,
     RateLimiter,
+    RequestMeter,
     ResearchProvider,
     RetryPolicy,
     SecEdgarFundamentals,
+    SecFailsToDeliver,
     TavilySearch,
     load_fixture_providers,
 )
@@ -61,6 +63,34 @@ def _retry_policy(settings: Settings) -> RetryPolicy:
         attempts=settings.provider_max_attempts,
         backoff_seconds=settings.provider_retry_backoff_seconds,
     )
+
+
+def build_historical_price_source(settings: Settings) -> AlpacaMarketData:
+    """Return the market adapter typed concretely for its corporate-action read.
+
+    `MarketDataProvider` covers a universe and daily bars, and nothing more. A
+    delisted security's price backfill also needs `get_corporate_actions`, which
+    only the Alpaca adapter offers — the same shape as `build_observation_source`,
+    where a by-CIK read only EDGAR serves forces a concrete type at the boundary.
+
+    Args:
+        settings: Application settings.
+
+    Returns:
+        The Alpaca adapter.
+
+    Raises:
+        ConfigurationError: If Alpaca is not the configured market provider, or
+            it is configured without credentials.
+    """
+    provider = build_market_data_provider(settings)
+    if not isinstance(provider, AlpacaMarketData):
+        message = (
+            "backfilling a delisted security's prices needs corporate actions, which "
+            "only the Alpaca adapter serves. Set MARKET_DATA_PROVIDER=alpaca."
+        )
+        raise ConfigurationError(message)
+    return provider
 
 
 def build_market_data_provider(settings: Settings) -> MarketDataProvider:
@@ -213,7 +243,67 @@ def build_research_provider(settings: Settings) -> ResearchProvider:
     return provider
 
 
+def build_observation_source(
+    settings: Settings, *, meter: RequestMeter | None = None
+) -> SecEdgarFundamentals:
+    """Return the EDGAR adapter, typed concretely for its by-CIK reads.
+
+    The configured fundamentals provider satisfies `FundamentalsProvider` and
+    nothing more, and every one of its lookups is keyed by ticker. A delisted
+    filer is precisely the case where a ticker resolves to nothing — or worse,
+    to whoever inherited the symbol — so the historical ingestion reads by CIK,
+    which only this adapter offers.
+
+    Args:
+        settings: Application settings.
+        meter: Counts and caps the adapter's actual HTTP attempts. An evidence
+            harvest passes its budget here so the ticker-map fetch this adapter
+            makes counts against the same ceiling as everything else it causes.
+
+    Returns:
+        The EDGAR adapter.
+
+    Raises:
+        ConfigurationError: If no contact string is configured.
+    """
+    return _build_edgar_adapter(settings, meter=meter)
+
+
+def build_ftd_source(settings: Settings) -> SecFailsToDeliver:
+    """Return the SEC fails-to-deliver adapter, the identity-evidence source.
+
+    Concretely typed rather than behind a protocol, because there is exactly one
+    publisher of this data and no second implementation to swap in. A protocol
+    here would be an abstraction over a set of one.
+
+    Args:
+        settings: Application settings.
+
+    Returns:
+        The adapter, caching archives under `ftd_cache_dir`.
+
+    Raises:
+        ConfigurationError: If no contact string is configured. The SEC blocks
+            requests that do not identify the caller.
+    """
+    if not settings.sec_user_agent.strip():
+        message = (
+            "SEC_USER_AGENT is required to read the fails-to-deliver record. "
+            "Set it to an application name and a real contact address."
+        )
+        raise ConfigurationError(message)
+    cache = Path(settings.ftd_cache_dir).expanduser()
+    return SecFailsToDeliver(user_agent=settings.sec_user_agent, cache_dir=cache)
+
+
 def _build_edgar(settings: Settings) -> FundamentalsProvider:
+    """Build the SEC EDGAR adapter behind the general provider protocol."""
+    return _build_edgar_adapter(settings)
+
+
+def _build_edgar_adapter(
+    settings: Settings, *, meter: RequestMeter | None = None
+) -> SecEdgarFundamentals:
     """Build the SEC EDGAR adapter.
 
     Raises:
@@ -233,6 +323,7 @@ def _build_edgar(settings: Settings) -> FundamentalsProvider:
         user_agent=settings.sec_user_agent,
         timeout_seconds=settings.provider_timeout_seconds,
         retry=_retry_policy(settings),
+        meter=meter,
     )
 
 

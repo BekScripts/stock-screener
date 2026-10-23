@@ -1,0 +1,303 @@
+"""The deployed paper-operations runtime.
+
+`paper_operations` is the control plane: it decides whether the system may act.
+`paper_runtime` is one *deployment* of it — which paper account, which approved
+strategy build, which accounting ledger, which execution journal, which
+calendar — and the orchestration that connects the authorities together.
+
+The split matters because the control plane is reusable and a deployment is
+not. A coordinator can gate any environment; a runtime is bound to one account
+and one book, and a run that opened the wrong book would reconcile valid
+records belonging to something else against the right venue.
+
+What this package may do: orchestrate. It calls the strategy, the portfolio and
+risk engine, the execution planner, the certified external-paper adapter, the
+accounting ledger and the reconciliation — and reimplements none of them.
+
+What it may not do: construct a broker order, submit one directly, write an
+accounting event outside the one-time bootstrap, repair a reconciliation, or
+reach a live venue. There is no code and no import for any of it.
+"""
+
+from __future__ import annotations
+
+from .binding import (
+    PAPER_OPERATIONS_RUNTIME_BINDING_VERSION,
+    RUNTIME_DIRECTORY,
+    PaperOperationsRuntimeBinding,
+    RuntimeBindingStore,
+)
+from .bootstrap import (
+    BOOTSTRAP_ARTEFACT_VERSION,
+    CASH_FIELD,
+    PaperBookBootstrapReport,
+    bootstrap_paper_book,
+    read_bootstrap,
+)
+from .composition import (
+    AUDIT_DIRECTORY,
+    PRODUCTION_COMPOSITION_VERSION,
+    OperationsComposition,
+    compose_operations,
+    composition_readiness,
+)
+from .decisions import (
+    DECISION_TRANSITIONS,
+    DECISIONS_DIRECTORY,
+    PERSISTED_DECISION_VERSION,
+    DecisionStatus,
+    PersistedStrategyDecision,
+    StrategyDecisionStore,
+)
+from .deployment import (
+    INSTRUMENT_MAPPING_VERSION,
+    NO_CAP,
+    OWNER_APPROVAL_REQUIRED,
+    OWNER_APPROVED_PAPER_LIMITS,
+    OWNER_APPROVED_PAPER_LIMITS_V2,
+    PAPER_RISK_POLICY_V2_ENGINE,
+    PAPER_RISK_POLICY_V2_VERSION,
+    PAPER_RISK_POLICY_VERSION,
+    REBIND_PLAN_VERSION,
+    RISK_POLICY_CANDIDATE_VERSION,
+    InstrumentMapping,
+    InstrumentRecord,
+    PaperRiskPolicy,
+    PolicyField,
+    RebindPlan,
+    RiskPolicyCandidate,
+    Routability,
+    mapping_from_evidence,
+    paper_risk_policy,
+    paper_risk_policy_v2,
+    policy_field_inventory,
+    rebind_plan,
+    risk_policy_candidate,
+)
+from .deployment_capability import (
+    DEPLOYMENT_CAPABILITY_VERSION,
+    FRACTIONAL_QUANTITIES,
+    DeploymentExecutionCapability,
+    deployment_capability,
+)
+from .environment import (
+    RUNTIME_ENVIRONMENT_VERSION,
+    AlphaTraderPaperOperationsEnvironment,
+)
+from .errors import Code, RuntimeBindingError
+from .missed import (
+    MISSED_SLOT_VERSION,
+    MissedSlotRecord,
+    expire_pending_executions,
+    missed_records,
+    record_missed_slot,
+)
+from .observability import (
+    OBSERVABILITY_VERSION,
+    EventStatus,
+    OperationalEventSpec,
+    event_vocabulary,
+    observability_contract,
+    observability_fingerprint,
+)
+from .operator_inputs import (
+    OPERATOR_INPUTS_VERSION,
+    RISK_POLICY_FILENAME,
+    SYMBOL_MAPPING_FILENAME,
+    OperatorInputStatus,
+    operator_input_status,
+    read_account_identity,
+    read_deployment_capability,
+    read_deployment_universe,
+    read_risk_policy,
+    read_strategy_authorization,
+    read_symbol_mapping,
+    stored_marks,
+    write_account_identity,
+    write_deployment_capability,
+    write_deployment_universe,
+    write_risk_policy,
+    write_strategy_authorization,
+    write_symbol_mapping,
+)
+from .orchestration import RuntimeOrchestrationOutcome, RuntimePlanner
+from .profiles import (
+    OPERATIONAL_EXECUTION_TIMING_VERSION,
+    OPERATIONAL_SCORE_AVAILABILITY_VERSION,
+    PERFORMANCE_ATTRIBUTION_BOUNDARY,
+    execution_timing_profile,
+    score_availability_profile,
+)
+from .rebind import (
+    BINDINGS_DIRECTORY,
+    IMMUTABLE_ACROSS_REBIND,
+    REBIND_CHAIN_VERSION,
+    RUNTIME_BINDING_V2_VERSION,
+    RUNTIME_BINDING_V3_VERSION,
+    RUNTIME_BINDING_V4_VERSION,
+    STRATEGY_REVISION_FIELDS,
+    STRATEGY_REVISION_VERSION,
+    V3_DEPLOYMENT_FIELDS,
+    V4_IDENTITY_FIELDS,
+    PaperOperationsRuntimeBindingV2,
+    PaperOperationsRuntimeBindingV3,
+    PaperOperationsRuntimeBindingV4,
+    RebindRecord,
+    RuntimeBindingHistory,
+    account_capability_from_mapping,
+    active_binding,
+    rebind_runtime,
+    revise_deployment,
+    revise_strategy,
+)
+from .resolver import (
+    DEPLOYABLE_STRATEGIES,
+    STRATEGY_RESOLVER_VERSION,
+    StrategySpec,
+    deployable_strategy_versions,
+    resolve_strategy,
+    strategy_spec,
+)
+from .risk_transformation import (
+    RISK_AUTHORITY_RULE,
+    RISK_TRANSFORMATION_VERSION,
+    RiskTransformation,
+    RiskTransformationRow,
+    transformation_for,
+)
+from .submission import SUBMISSION_AUTHORITY_VERSION, RuntimeSubmissionAuthority
+from .universe import (
+    DEPLOYMENT_UNIVERSE_VERSION,
+    DeploymentExclusion,
+    DeploymentUniverse,
+    UniverseExclusion,
+    fractionable_universe,
+)
+
+__all__ = [
+    "AUDIT_DIRECTORY",
+    "BINDINGS_DIRECTORY",
+    "BOOTSTRAP_ARTEFACT_VERSION",
+    "CASH_FIELD",
+    "DECISIONS_DIRECTORY",
+    "DECISION_TRANSITIONS",
+    "DEPLOYABLE_STRATEGIES",
+    "DEPLOYMENT_CAPABILITY_VERSION",
+    "DEPLOYMENT_UNIVERSE_VERSION",
+    "FRACTIONAL_QUANTITIES",
+    "IMMUTABLE_ACROSS_REBIND",
+    "INSTRUMENT_MAPPING_VERSION",
+    "MISSED_SLOT_VERSION",
+    "NO_CAP",
+    "OBSERVABILITY_VERSION",
+    "OPERATIONAL_EXECUTION_TIMING_VERSION",
+    "OPERATIONAL_SCORE_AVAILABILITY_VERSION",
+    "OPERATOR_INPUTS_VERSION",
+    "OWNER_APPROVAL_REQUIRED",
+    "OWNER_APPROVED_PAPER_LIMITS",
+    "OWNER_APPROVED_PAPER_LIMITS_V2",
+    "PAPER_OPERATIONS_RUNTIME_BINDING_VERSION",
+    "PAPER_RISK_POLICY_V2_ENGINE",
+    "PAPER_RISK_POLICY_V2_VERSION",
+    "PAPER_RISK_POLICY_VERSION",
+    "PERFORMANCE_ATTRIBUTION_BOUNDARY",
+    "PERSISTED_DECISION_VERSION",
+    "PRODUCTION_COMPOSITION_VERSION",
+    "REBIND_CHAIN_VERSION",
+    "REBIND_PLAN_VERSION",
+    "RISK_AUTHORITY_RULE",
+    "RISK_POLICY_CANDIDATE_VERSION",
+    "RISK_POLICY_FILENAME",
+    "RISK_TRANSFORMATION_VERSION",
+    "RUNTIME_BINDING_V2_VERSION",
+    "RUNTIME_BINDING_V3_VERSION",
+    "RUNTIME_BINDING_V4_VERSION",
+    "RUNTIME_DIRECTORY",
+    "RUNTIME_ENVIRONMENT_VERSION",
+    "STRATEGY_RESOLVER_VERSION",
+    "STRATEGY_REVISION_FIELDS",
+    "STRATEGY_REVISION_VERSION",
+    "SUBMISSION_AUTHORITY_VERSION",
+    "SYMBOL_MAPPING_FILENAME",
+    "V3_DEPLOYMENT_FIELDS",
+    "V4_IDENTITY_FIELDS",
+    "AlphaTraderPaperOperationsEnvironment",
+    "Code",
+    "DecisionStatus",
+    "DeploymentExclusion",
+    "DeploymentExecutionCapability",
+    "DeploymentUniverse",
+    "EventStatus",
+    "InstrumentMapping",
+    "InstrumentRecord",
+    "MissedSlotRecord",
+    "OperationalEventSpec",
+    "OperationsComposition",
+    "OperatorInputStatus",
+    "PaperBookBootstrapReport",
+    "PaperOperationsRuntimeBinding",
+    "PaperOperationsRuntimeBindingV2",
+    "PaperOperationsRuntimeBindingV3",
+    "PaperOperationsRuntimeBindingV4",
+    "PaperRiskPolicy",
+    "PersistedStrategyDecision",
+    "PolicyField",
+    "RebindPlan",
+    "RebindRecord",
+    "RiskPolicyCandidate",
+    "RiskTransformation",
+    "RiskTransformationRow",
+    "Routability",
+    "RuntimeBindingError",
+    "RuntimeBindingHistory",
+    "RuntimeBindingStore",
+    "RuntimeOrchestrationOutcome",
+    "RuntimePlanner",
+    "RuntimeSubmissionAuthority",
+    "StrategyDecisionStore",
+    "StrategySpec",
+    "UniverseExclusion",
+    "account_capability_from_mapping",
+    "active_binding",
+    "bootstrap_paper_book",
+    "compose_operations",
+    "composition_readiness",
+    "deployable_strategy_versions",
+    "deployment_capability",
+    "event_vocabulary",
+    "execution_timing_profile",
+    "expire_pending_executions",
+    "fractionable_universe",
+    "mapping_from_evidence",
+    "missed_records",
+    "observability_contract",
+    "observability_fingerprint",
+    "operator_input_status",
+    "paper_risk_policy",
+    "paper_risk_policy_v2",
+    "policy_field_inventory",
+    "read_account_identity",
+    "read_bootstrap",
+    "read_deployment_capability",
+    "read_deployment_universe",
+    "read_risk_policy",
+    "read_strategy_authorization",
+    "read_symbol_mapping",
+    "rebind_plan",
+    "rebind_runtime",
+    "record_missed_slot",
+    "resolve_strategy",
+    "revise_deployment",
+    "revise_strategy",
+    "risk_policy_candidate",
+    "score_availability_profile",
+    "stored_marks",
+    "strategy_spec",
+    "transformation_for",
+    "write_account_identity",
+    "write_deployment_capability",
+    "write_deployment_universe",
+    "write_risk_policy",
+    "write_strategy_authorization",
+    "write_symbol_mapping",
+]

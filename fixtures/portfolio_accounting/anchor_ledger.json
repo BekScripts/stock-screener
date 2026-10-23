@@ -1,0 +1,72 @@
+{
+  "label": "ANCHORED_LEDGER_V2",
+  "accounting_version": "PORTFOLIO_ACCOUNTING_V2",
+  "ledger_generation": "PORTFOLIO_LEDGER_GENERATION_1",
+  "note": "A short ledger committed through the anchored write path. Every event carries a head anchor, so the committed tail's length is witnessed rather than assumed. The golden records the final sequence, the ledger head, the state fingerprint and the anchor fingerprint: all four are path-independent, so a fresh process committing these events anywhere reproduces them exactly. Deleting the last record leaves a valid shorter chain and a ledger that no longer matches its anchor, which is the whole point of the anchor existing.",
+  "events": [
+    {
+      "event_id": "ANCH-OB",
+      "event_type": "OPENING_BALANCE",
+      "effective_at": "2026-10-01T09:30:00-04:00",
+      "source_id": "CUSTODIAN_IMPORT",
+      "source_fingerprint": "fp-anch-ob",
+      "payload": {
+        "cash": "250000.0000",
+        "positions": []
+      }
+    },
+    {
+      "event_id": "ANCH-F1",
+      "event_type": "FILL",
+      "effective_at": "2026-10-01T10:00:00-04:00",
+      "source_id": "EXECUTION_REFERENCE",
+      "source_fingerprint": "fp-anch-f1",
+      "payload": {
+        "identity": "COMPANY:7001",
+        "side": "BUY",
+        "quantity": "800.00000000",
+        "price": "12.50000000",
+        "fees": "4.0000",
+        "attribution": [
+          {
+            "strategy_id": "ALPHA_COMPOUNDER",
+            "quantity": "800.00000000"
+          }
+        ],
+        "execution_reference": "EXEC-ANCH-F1"
+      }
+    },
+    {
+      "event_id": "ANCH-D1",
+      "event_type": "EXTERNAL_CASH_FLOW",
+      "effective_at": "2026-10-01T11:00:00-04:00",
+      "source_id": "BANK_TRANSFER",
+      "source_fingerprint": "fp-anch-d1",
+      "payload": {
+        "direction": "DEPOSIT",
+        "amount": "15000.0000"
+      }
+    },
+    {
+      "event_id": "ANCH-F2",
+      "event_type": "FILL",
+      "effective_at": "2026-10-01T12:00:00-04:00",
+      "source_id": "EXECUTION_REFERENCE",
+      "source_fingerprint": "fp-anch-f2",
+      "payload": {
+        "identity": "COMPANY:7001",
+        "side": "SELL",
+        "quantity": "300.00000000",
+        "price": "13.75000000",
+        "fees": "2.0000",
+        "attribution": [
+          {
+            "strategy_id": "ALPHA_COMPOUNDER",
+            "quantity": "300.00000000"
+          }
+        ],
+        "execution_reference": "EXEC-ANCH-F2"
+      }
+    }
+  ]
+}

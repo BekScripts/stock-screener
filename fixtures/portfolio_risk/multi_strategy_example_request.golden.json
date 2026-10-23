@@ -1,0 +1,956 @@
+{
+  "_note": "Golden output for fixtures/portfolio_risk/multi_strategy_example_request.json under PORTFOLIO_RISK_ENGINE_V1_2. evaluated_at_utc is omitted: it is operational, not semantic. Any other difference is a behaviour change and should be explained, not re-recorded. Every budget, ceiling and threshold in the fixture exists to force a code path; none is a recommended setting and none was derived from historical performance.",
+  "approved_portfolio": {
+    "as_of": "2026-10-02T16:00:00-04:00",
+    "bindings": {
+      "aggregate_request_fingerprint": "649d6e57d7bdfe1738168c7d1479af9ae74425a0a4cd92d98cae336ae338e063",
+      "covariance_fingerprint": "7a6afb0ec95e07a7571e1a2da6870e169744c6a6ecfab9235c6c3ae9cf5e4a1c",
+      "effective_risk_policy_fingerprint": "315fa1b4605878aa536e5241c2142a93301a6d29de58eb83c40ec01cbfc1cd78",
+      "engine_version": "PORTFOLIO_RISK_ENGINE_V1_2",
+      "portfolio_snapshot_fingerprint": "05af8269258a8a72f821e1f8df1af3cfd1aee3a1bcfcdade7dc1e2255937e446",
+      "risk_policy_fingerprint": "763d1d715c6101129d10375a18134b73044ec31d004f6caf5454eb5eeb0b348a",
+      "risk_snapshot_fingerprint": "98691f8798d18bb78a972c820fbf3677fd2f2128a71748c5bd4baf8c118b45aa",
+      "strategy_allocation_policy_fingerprint": "bbca286abc417fddcc3b4d53701fe3050ee727a61a51ebe1af1413d25ef413df",
+      "strategy_attribution_fingerprint": "f9bfa00aca8496bf20ab362ddf8a35e0d9c02471f39b92491ed22ff5f45add53",
+      "strategy_intents_fingerprint": "1cb54d35da36a794f0e495e3b349eb2f7c0885133019eb1a9e9400e5421ac699"
+    },
+    "cash_target_weight": 0.398909191,
+    "constraint_model": "DETERMINISTIC_STAGED_CONSTRAINTS_V1",
+    "constructor_id": "BASELINE_TARGET_WEIGHT_CONSTRUCTOR_V1",
+    "decision_id": "multi-strategy-example-1",
+    "engine_version": "PORTFOLIO_RISK_ENGINE_V1_2",
+    "fingerprint": "91996aeef0bcc589b87411654fd9aeae815b77b6ead4cc790b084de955c46a30",
+    "gross_exposure": 0.601090809,
+    "net_exposure": 0.601090809,
+    "position_count": 9,
+    "risk_decisions": [
+      {
+        "approved_weight": 0.1148857016,
+        "decision": "RESIZED",
+        "identity": {
+          "identity_id": 1,
+          "kind": "COMPANY",
+          "symbol": "S01"
+        },
+        "policy_id": "EXAMPLE_MULTI_STRATEGY_RISK_POLICY_V1",
+        "policy_version": "1",
+        "reason_codes": [
+          "MAX_POSITION_WEIGHT",
+          "PORTFOLIO_VOLATILITY_LIMIT"
+        ],
+        "requested_weight": 0.16
+      },
+      {
+        "approved_weight": 0.0382952339,
+        "decision": "RESIZED",
+        "identity": {
+          "identity_id": 2,
+          "kind": "COMPANY",
+          "symbol": "S02"
+        },
+        "policy_id": "EXAMPLE_MULTI_STRATEGY_RISK_POLICY_V1",
+        "policy_version": "1",
+        "reason_codes": [
+          "POSITION_LIQUIDITY_LIMIT",
+          "TRADE_LIQUIDITY_LIMIT",
+          "PORTFOLIO_VOLATILITY_LIMIT"
+        ],
+        "requested_weight": 0.08
+      },
+      {
+        "approved_weight": 0.1148857016,
+        "decision": "RESIZED",
+        "identity": {
+          "identity_id": 3,
+          "kind": "COMPANY",
+          "symbol": "S03"
+        },
+        "policy_id": "EXAMPLE_MULTI_STRATEGY_RISK_POLICY_V1",
+        "policy_version": "1",
+        "reason_codes": [
+          "MAX_POSITION_WEIGHT",
+          "PORTFOLIO_VOLATILITY_LIMIT"
+        ],
+        "requested_weight": 0.18
+      },
+      {
+        "approved_weight": 0.0765904677,
+        "decision": "RESIZED",
+        "identity": {
+          "identity_id": 4,
+          "kind": "COMPANY",
+          "symbol": "S04"
+        },
+        "policy_id": "EXAMPLE_MULTI_STRATEGY_RISK_POLICY_V1",
+        "policy_version": "1",
+        "reason_codes": [
+          "PORTFOLIO_VOLATILITY_LIMIT"
+        ],
+        "requested_weight": 0.08
+      },
+      {
+        "approved_weight": 0.0957380846,
+        "decision": "RESIZED",
+        "identity": {
+          "identity_id": 5,
+          "kind": "COMPANY",
+          "symbol": "S05"
+        },
+        "policy_id": "EXAMPLE_MULTI_STRATEGY_RISK_POLICY_V1",
+        "policy_version": "1",
+        "reason_codes": [
+          "PORTFOLIO_VOLATILITY_LIMIT"
+        ],
+        "requested_weight": 0.1
+      },
+      {
+        "approved_weight": 0.0468394802,
+        "decision": "RESIZED",
+        "identity": {
+          "identity_id": 6,
+          "kind": "COMPANY",
+          "symbol": "S06"
+        },
+        "policy_id": "EXAMPLE_MULTI_STRATEGY_RISK_POLICY_V1",
+        "policy_version": "1",
+        "reason_codes": [
+          "PORTFOLIO_VOLATILITY_LIMIT"
+        ],
+        "requested_weight": 0.0489246055
+      },
+      {
+        "approved_weight": 0.0468394802,
+        "decision": "RESIZED",
+        "identity": {
+          "identity_id": 7,
+          "kind": "COMPANY",
+          "symbol": "S07"
+        },
+        "policy_id": "EXAMPLE_MULTI_STRATEGY_RISK_POLICY_V1",
+        "policy_version": "1",
+        "reason_codes": [
+          "PORTFOLIO_VOLATILITY_LIMIT"
+        ],
+        "requested_weight": 0.0489246055
+      },
+      {
+        "approved_weight": 0.0335083296,
+        "decision": "RESIZED",
+        "identity": {
+          "identity_id": 8,
+          "kind": "COMPANY",
+          "symbol": "S08"
+        },
+        "policy_id": "EXAMPLE_MULTI_STRATEGY_RISK_POLICY_V1",
+        "policy_version": "1",
+        "reason_codes": [
+          "CORRELATION_CONCENTRATION_LIMIT",
+          "PORTFOLIO_VOLATILITY_LIMIT"
+        ],
+        "requested_weight": 0.0489246055
+      },
+      {
+        "approved_weight": 0.0335083296,
+        "decision": "RESIZED",
+        "identity": {
+          "identity_id": 9,
+          "kind": "COMPANY",
+          "symbol": "S09"
+        },
+        "policy_id": "EXAMPLE_MULTI_STRATEGY_RISK_POLICY_V1",
+        "policy_version": "1",
+        "reason_codes": [
+          "CORRELATION_CONCENTRATION_LIMIT",
+          "PORTFOLIO_VOLATILITY_LIMIT"
+        ],
+        "requested_weight": 0.0489246055
+      },
+      {
+        "approved_weight": 0.0,
+        "decision": "REJECTED",
+        "identity": {
+          "identity_id": 99,
+          "kind": "COMPANY",
+          "symbol": "S99"
+        },
+        "policy_id": "EXAMPLE_MULTI_STRATEGY_RISK_POLICY_V1",
+        "policy_version": "1",
+        "reason_codes": [
+          "NOT_REQUESTED"
+        ],
+        "requested_weight": 0.0
+      }
+    ],
+    "targets": {
+      "COMPANY:1": 0.1148857016,
+      "COMPANY:2": 0.0382952339,
+      "COMPANY:3": 0.1148857016,
+      "COMPANY:4": 0.0765904677,
+      "COMPANY:5": 0.0957380846,
+      "COMPANY:6": 0.0468394802,
+      "COMPANY:7": 0.0468394802,
+      "COMPANY:8": 0.0335083296,
+      "COMPANY:9": 0.0335083296
+    }
+  },
+  "delta_summary": {
+    "is_realised_execution_turnover": false,
+    "positions_entered": 8,
+    "positions_exited": 1,
+    "positions_held": 0,
+    "positions_increased": 1,
+    "positions_reduced": 0,
+    "turnover_caveat": "a target-weight estimate only. It models no spread, no impact, no partial fill and no commission, so it is not comparable with a realised execution turnover or with the research layer's one-way rebalance turnover.",
+    "turnover_definition": "PORTFOLIO_WEIGHT_TURNOVER_ESTIMATE_V1",
+    "turnover_formula": "0.5 * sum(abs(target_weight - current_weight))",
+    "weight_turnover_estimate": 0.3105454045
+  },
+  "execution_intents": [
+    {
+      "action": "ENTER",
+      "broker_fields": null,
+      "current_weight": 0.0,
+      "identity": {
+        "identity_id": 1,
+        "kind": "COMPANY",
+        "symbol": "S01"
+      },
+      "is_an_order": false,
+      "notional_delta": 114885.7016,
+      "reason_codes": [
+        "MAX_POSITION_WEIGHT",
+        "PORTFOLIO_VOLATILITY_LIMIT"
+      ],
+      "strategy_id": null,
+      "target_weight": 0.1148857016,
+      "weight_delta": 0.1148857016
+    },
+    {
+      "action": "INCREASE",
+      "broker_fields": null,
+      "current_weight": 0.02,
+      "identity": {
+        "identity_id": 2,
+        "kind": "COMPANY",
+        "symbol": "S02"
+      },
+      "is_an_order": false,
+      "notional_delta": 18295.2339,
+      "reason_codes": [
+        "POSITION_LIQUIDITY_LIMIT",
+        "TRADE_LIQUIDITY_LIMIT",
+        "PORTFOLIO_VOLATILITY_LIMIT"
+      ],
+      "strategy_id": null,
+      "target_weight": 0.0382952339,
+      "weight_delta": 0.0182952339
+    },
+    {
+      "action": "ENTER",
+      "broker_fields": null,
+      "current_weight": 0.0,
+      "identity": {
+        "identity_id": 3,
+        "kind": "COMPANY",
+        "symbol": "S03"
+      },
+      "is_an_order": false,
+      "notional_delta": 114885.7016,
+      "reason_codes": [
+        "MAX_POSITION_WEIGHT",
+        "PORTFOLIO_VOLATILITY_LIMIT"
+      ],
+      "strategy_id": null,
+      "target_weight": 0.1148857016,
+      "weight_delta": 0.1148857016
+    },
+    {
+      "action": "ENTER",
+      "broker_fields": null,
+      "current_weight": 0.0,
+      "identity": {
+        "identity_id": 4,
+        "kind": "COMPANY",
+        "symbol": "S04"
+      },
+      "is_an_order": false,
+      "notional_delta": 76590.4677,
+      "reason_codes": [
+        "PORTFOLIO_VOLATILITY_LIMIT"
+      ],
+      "strategy_id": null,
+      "target_weight": 0.0765904677,
+      "weight_delta": 0.0765904677
+    },
+    {
+      "action": "ENTER",
+      "broker_fields": null,
+      "current_weight": 0.0,
+      "identity": {
+        "identity_id": 5,
+        "kind": "COMPANY",
+        "symbol": "S05"
+      },
+      "is_an_order": false,
+      "notional_delta": 95738.0846,
+      "reason_codes": [
+        "PORTFOLIO_VOLATILITY_LIMIT"
+      ],
+      "strategy_id": null,
+      "target_weight": 0.0957380846,
+      "weight_delta": 0.0957380846
+    },
+    {
+      "action": "ENTER",
+      "broker_fields": null,
+      "current_weight": 0.0,
+      "identity": {
+        "identity_id": 6,
+        "kind": "COMPANY",
+        "symbol": "S06"
+      },
+      "is_an_order": false,
+      "notional_delta": 46839.4802,
+      "reason_codes": [
+        "PORTFOLIO_VOLATILITY_LIMIT"
+      ],
+      "strategy_id": null,
+      "target_weight": 0.0468394802,
+      "weight_delta": 0.0468394802
+    },
+    {
+      "action": "ENTER",
+      "broker_fields": null,
+      "current_weight": 0.0,
+      "identity": {
+        "identity_id": 7,
+        "kind": "COMPANY",
+        "symbol": "S07"
+      },
+      "is_an_order": false,
+      "notional_delta": 46839.4802,
+      "reason_codes": [
+        "PORTFOLIO_VOLATILITY_LIMIT"
+      ],
+      "strategy_id": null,
+      "target_weight": 0.0468394802,
+      "weight_delta": 0.0468394802
+    },
+    {
+      "action": "ENTER",
+      "broker_fields": null,
+      "current_weight": 0.0,
+      "identity": {
+        "identity_id": 8,
+        "kind": "COMPANY",
+        "symbol": "S08"
+      },
+      "is_an_order": false,
+      "notional_delta": 33508.3296,
+      "reason_codes": [
+        "CORRELATION_CONCENTRATION_LIMIT",
+        "PORTFOLIO_VOLATILITY_LIMIT"
+      ],
+      "strategy_id": null,
+      "target_weight": 0.0335083296,
+      "weight_delta": 0.0335083296
+    },
+    {
+      "action": "ENTER",
+      "broker_fields": null,
+      "current_weight": 0.0,
+      "identity": {
+        "identity_id": 9,
+        "kind": "COMPANY",
+        "symbol": "S09"
+      },
+      "is_an_order": false,
+      "notional_delta": 33508.3296,
+      "reason_codes": [
+        "CORRELATION_CONCENTRATION_LIMIT",
+        "PORTFOLIO_VOLATILITY_LIMIT"
+      ],
+      "strategy_id": null,
+      "target_weight": 0.0335083296,
+      "weight_delta": 0.0335083296
+    },
+    {
+      "action": "EXIT",
+      "broker_fields": null,
+      "current_weight": 0.04,
+      "identity": {
+        "identity_id": 99,
+        "kind": "COMPANY",
+        "symbol": "S99"
+      },
+      "is_an_order": false,
+      "notional_delta": -40000.0,
+      "reason_codes": [
+        "NOT_REQUESTED"
+      ],
+      "strategy_id": null,
+      "target_weight": 0.0,
+      "weight_delta": -0.04
+    }
+  ],
+  "execution_intents_fingerprint": "d7766ddd9cb3a7e949235e29ae95669107c84472103493ee77c8cafb07c4648e",
+  "manifest": {
+    "advanced_risk_stage_order": [
+      "validate_inputs_and_risk_timing",
+      "allocate_strategy_sleeves",
+      "aggregate_economic_exposure_by_identity",
+      "seed_ceilings_at_pre_risk_weights",
+      "derive_effective_policy_from_drawdown",
+      "position_count_cap",
+      "per_name_weight_cap",
+      "position_liquidity_capacity",
+      "trade_liquidity_capacity",
+      "missing_risk_metric_ceilings",
+      "effective_gross_and_cash_budget",
+      "correlation_concentration",
+      "portfolio_volatility_ceiling",
+      "dust_floor",
+      "trade_notional_cap",
+      "effective_operating_mode",
+      "forced_exits",
+      "reconcile_strategy_attribution",
+      "invariants"
+    ],
+    "aggregate_request_fingerprint": "649d6e57d7bdfe1738168c7d1479af9ae74425a0a4cd92d98cae336ae338e063",
+    "allocator_id": "FIXED_SLEEVE_ALLOCATOR_V1",
+    "approved_portfolio_fingerprint": "91996aeef0bcc589b87411654fd9aeae815b77b6ead4cc790b084de955c46a30",
+    "as_of": "2026-10-02T16:00:00-04:00",
+    "broker_requests": 0,
+    "code_commit": null,
+    "constructed_portfolio_fingerprint": "c46d349bb45afa17be9663fff383f203ca0b2c847bb8866fb1b03e555b469235",
+    "covariance_fingerprint": "7a6afb0ec95e07a7571e1a2da6870e169744c6a6ecfab9235c6c3ae9cf5e4a1c",
+    "decision_id": "multi-strategy-example-1",
+    "effective_risk_policy_fingerprint": "315fa1b4605878aa536e5241c2142a93301a6d29de58eb83c40ec01cbfc1cd78",
+    "engine_version": "PORTFOLIO_RISK_ENGINE_V1_1",
+    "execution_intents_fingerprint": "d7766ddd9cb3a7e949235e29ae95669107c84472103493ee77c8cafb07c4648e",
+    "manifest_id": "PORTFOLIO_DECISION_MANIFEST_V1_2",
+    "orders_submitted": 0,
+    "policy_production_authorized": false,
+    "portfolio_snapshot_fingerprint": "05af8269258a8a72f821e1f8df1af3cfd1aee3a1bcfcdade7dc1e2255937e446",
+    "risk_decisions_fingerprint": "11b305cb3e62a48b3a8261bf743b1887b3d6586e253787a2dd0b60c3a51309d7",
+    "risk_policy_fingerprint": "763d1d715c6101129d10375a18134b73044ec31d004f6caf5454eb5eeb0b348a",
+    "risk_report_fingerprint": "14fbc4f20fd4be30a5e166893a43cb577389767f36ecb88a4d25ac36b62cea06",
+    "risk_snapshot_fingerprint": "98691f8798d18bb78a972c820fbf3677fd2f2128a71748c5bd4baf8c118b45aa",
+    "risk_timing": {
+      "decision_as_of": "2026-10-02T16:00:00-04:00",
+      "freshness_enforced": false,
+      "max_age_seconds": null,
+      "metrics_checked": 10,
+      "risk_snapshot_as_of": "2026-10-02T16:00:00-04:00"
+    },
+    "strategy_allocation_policy_fingerprint": "bbca286abc417fddcc3b4d53701fe3050ee727a61a51ebe1af1413d25ef413df",
+    "strategy_allocation_policy_production_authorized": false,
+    "strategy_attribution_fingerprint": "f9bfa00aca8496bf20ab362ddf8a35e0d9c02471f39b92491ed22ff5f45add53",
+    "strategy_intent_fingerprints": {
+      "COMPOUNDER_EXAMPLE": "a92049fa3ba3c753b05c2f1cf81dca859604240ce545ddbca75ad233c1d742cb",
+      "EARNINGS_EXAMPLE": "877cad65ee8dfa0abd39f634311935f0ff99a14a4ac7c0bdef85e453b25b92a5",
+      "MOMENTUM_EXAMPLE": "b0aa651dbb6846fdfa35665c0dc3120ce231e70cfde6ced8d1af30d9a79465d6",
+      "RESEARCH_EXAMPLE": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+    },
+    "strategy_intents_fingerprint": "1cb54d35da36a794f0e495e3b349eb2f7c0885133019eb1a9e9400e5421ac699",
+    "strategy_sleeve_fingerprints": {
+      "COMPOUNDER_EXAMPLE": "baf5b9a39915a8d3c65d6dfcc1f7907d19b47ec22283cdd758230f8f2ca9ff47",
+      "EARNINGS_EXAMPLE": "9e86cda6ef46f21d6828d4fcbac8436151baab7a3e0188edd0566e6075e26e7d",
+      "MOMENTUM_EXAMPLE": "4bbd869152763de62ce2e981985119fdf13d8b07ead485b131d0507e60936ada",
+      "RESEARCH_EXAMPLE": "8d5cfb6ec7a3ed3a0fe5ceddf130e14fa9b4dedb8aab1b80141eb1758a4675be"
+    },
+    "timestamp_excluded_from_semantic_hashes": true
+  },
+  "risk_report": {
+    "base_policy": {
+      "advanced_risk_controls": {
+        "correlation_concentration": {
+          "correlation_threshold": 0.8,
+          "max_correlated_pair_exposure": 0.07,
+          "missing_correlation_policy": "REJECT_INCREASE",
+          "positive_correlation_only": true
+        },
+        "drawdown_bands": [
+          {
+            "label": "caution",
+            "max_gross_multiplier": 0.85,
+            "mode": "NORMAL",
+            "threshold": -0.1
+          },
+          {
+            "label": "reduce-only",
+            "max_gross_multiplier": 0.5,
+            "mode": "REDUCE_ONLY",
+            "threshold": -0.2
+          }
+        ],
+        "max_portfolio_volatility": 0.16,
+        "max_position_adv_fraction": 0.05,
+        "max_risk_metric_age_seconds": null,
+        "max_trade_adv_fraction": 0.02,
+        "missing_liquidity_policy": "REJECT_INCREASE",
+        "missing_volatility_policy": "REJECT_INCREASE"
+      },
+      "arithmetic": {
+        "exposure_tolerance": 1e-07,
+        "hold_tolerance": 0.0001,
+        "hold_tolerance_is_a_policy_choice": "it states what drift is not worth trading, not what the arithmetic can resolve, which is why it is four orders coarser",
+        "policy_id": "PORTFOLIO_ARITHMETIC_V1",
+        "representation": "float64, quantised before hashing or serialisation",
+        "reproducibility": "identical inputs produce weights agreeing to weight_decimals by construction, so the fingerprint agrees exactly rather than nearly",
+        "weight_decimals": 10,
+        "weight_tolerance": 1e-09,
+        "why_not_decimal": "every input model already carries floats, so holding Decimal here would add a conversion seam at both boundaries without the exactness guarantee surviving either of them"
+      },
+      "construction_mode": "PRESERVE_ABSOLUTE_WEIGHTS",
+      "fingerprint": "763d1d715c6101129d10375a18134b73044ec31d004f6caf5454eb5eeb0b348a",
+      "investable_budget": 0.95,
+      "long_only": true,
+      "max_gross_exposure": 1.0,
+      "max_net_exposure": null,
+      "max_position_weight": 0.12,
+      "max_positions": 10,
+      "max_trade_notional_weight": null,
+      "min_cash_weight": 0.05,
+      "min_position_weight": null,
+      "mode": "NORMAL",
+      "policy_id": "EXAMPLE_MULTI_STRATEGY_RISK_POLICY_V1",
+      "policy_version": "1",
+      "production_authorized": false
+    },
+    "correlation_concentration": {
+      "after": {
+        "defined_pairs": 36,
+        "largest_correlated_pair_exposure": 0.07,
+        "largest_positive_correlation": 0.95,
+        "pairs_above_threshold": 1,
+        "pairs_violating_exposure_limit": 0,
+        "undefined_pairs": 0
+      },
+      "algorithm": "SIMULTANEOUS_PAIRWISE_CEILING_FIXED_POINT_V1",
+      "applied": true,
+      "before": {
+        "defined_pairs": 36,
+        "largest_correlated_pair_exposure": 0.097849211,
+        "largest_positive_correlation": 0.95,
+        "pairs_above_threshold": 1,
+        "pairs_violating_exposure_limit": 1,
+        "undefined_pairs": 0
+      },
+      "counterparts": {
+        "COMPANY:8": [
+          "COMPANY:9"
+        ],
+        "COMPANY:9": [
+          "COMPANY:8"
+        ]
+      },
+      "freed_exposure_becomes_cash": true,
+      "is_not_a_factor_model": true,
+      "is_not_diversification_alpha": true,
+      "max_correlated_pair_exposure": 0.07,
+      "positive_correlation_only": true,
+      "rounds": 1,
+      "threshold": 0.8,
+      "uses_absolute_correlation": false
+    },
+    "counts": {
+      "approved_positions": 9,
+      "constructed_positions": 9,
+      "requested_positions": 10
+    },
+    "covariance_diagnostics": {
+      "average_pairwise_correlation": 0.3666666667,
+      "component_variance": {
+        "COMPANY:1": 0.0052398447,
+        "COMPANY:2": 0.0014415777,
+        "COMPANY:3": 0.0052398447,
+        "COMPANY:4": 0.0031881926,
+        "COMPANY:5": 0.004175889,
+        "COMPANY:6": 0.0018048372,
+        "COMPANY:7": 0.0018048372,
+        "COMPANY:8": 0.0013524884,
+        "COMPANY:9": 0.0013524884
+      },
+      "component_variance_sums_to_portfolio_variance": true,
+      "diagnostics_only": "no correlation or risk-budget rule is enforced in P1.1",
+      "maximum_pairwise_correlation": 0.95,
+      "pairs": 36.0,
+      "portfolio_variance": 0.0256,
+      "undefined_pairs": 0.0
+    },
+    "covariance_fingerprint": "7a6afb0ec95e07a7571e1a2da6870e169744c6a6ecfab9235c6c3ae9cf5e4a1c",
+    "drawdown": -0.12,
+    "effective_policy": {
+      "active_band": {
+        "label": "caution",
+        "max_gross_multiplier": 0.85,
+        "mode": "NORMAL",
+        "threshold": -0.1
+      },
+      "base_max_gross_exposure": 1.0,
+      "base_mode": "NORMAL",
+      "base_policy_fingerprint": "763d1d715c6101129d10375a18134b73044ec31d004f6caf5454eb5eeb0b348a",
+      "drawdown": -0.12,
+      "fingerprint": "315fa1b4605878aa536e5241c2142a93301a6d29de58eb83c40ec01cbfc1cd78",
+      "investable_budget": 0.85,
+      "max_gross_exposure": 0.85,
+      "min_cash_weight": 0.05,
+      "mode": "NORMAL",
+      "overlay_may_only_tighten": true,
+      "risk_snapshot_fingerprint": "98691f8798d18bb78a972c820fbf3677fd2f2128a71748c5bd4baf8c118b45aa",
+      "tightened": true
+    },
+    "estimates_no_market_impact": true,
+    "exposure": {
+      "approved_gross": 0.601090809,
+      "approved_net": 0.601090809,
+      "cash_after": 0.398909191,
+      "cash_before": 0.94,
+      "constructed_gross": 0.795698422,
+      "requested_gross": 3.0
+    },
+    "fingerprint": "14fbc4f20fd4be30a5e166893a43cb577389767f36ecb88a4d25ac36b62cea06",
+    "liquidity_constrained_positions": [
+      "COMPANY:2"
+    ],
+    "liquidity_unknown": [],
+    "makes_no_performance_claim": true,
+    "missing_risk_metric": [],
+    "per_position": [
+      {
+        "annualized_volatility": 0.4,
+        "approved_weight": 0.1148857016,
+        "constructed_weight": 0.16,
+        "identity": "COMPANY:1",
+        "weight_times_volatility": 0.0459542806
+      },
+      {
+        "annualized_volatility": 0.4,
+        "approved_weight": 0.0382952339,
+        "constructed_weight": 0.08,
+        "identity": "COMPANY:2",
+        "weight_times_volatility": 0.0153180936
+      },
+      {
+        "annualized_volatility": 0.4,
+        "approved_weight": 0.1148857016,
+        "constructed_weight": 0.18,
+        "identity": "COMPANY:3",
+        "weight_times_volatility": 0.0459542806
+      },
+      {
+        "annualized_volatility": 0.4,
+        "approved_weight": 0.0765904677,
+        "constructed_weight": 0.08,
+        "identity": "COMPANY:4",
+        "weight_times_volatility": 0.0306361871
+      },
+      {
+        "annualized_volatility": 0.4,
+        "approved_weight": 0.0957380846,
+        "constructed_weight": 0.1,
+        "identity": "COMPANY:5",
+        "weight_times_volatility": 0.0382952338
+      },
+      {
+        "annualized_volatility": 0.4,
+        "approved_weight": 0.0468394802,
+        "constructed_weight": 0.0489246055,
+        "identity": "COMPANY:6",
+        "weight_times_volatility": 0.0187357921
+      },
+      {
+        "annualized_volatility": 0.4,
+        "approved_weight": 0.0468394802,
+        "constructed_weight": 0.0489246055,
+        "identity": "COMPANY:7",
+        "weight_times_volatility": 0.0187357921
+      },
+      {
+        "annualized_volatility": 0.4,
+        "approved_weight": 0.0335083296,
+        "constructed_weight": 0.0489246055,
+        "identity": "COMPANY:8",
+        "weight_times_volatility": 0.0134033318
+      },
+      {
+        "annualized_volatility": 0.4,
+        "approved_weight": 0.0335083296,
+        "constructed_weight": 0.0489246055,
+        "identity": "COMPANY:9",
+        "weight_times_volatility": 0.0134033318
+      }
+    ],
+    "portfolio_volatility_after_risk": 0.16,
+    "portfolio_volatility_before_risk": 0.1671226248,
+    "position_capacity_limited": [
+      "COMPANY:2"
+    ],
+    "reason_summary": {
+      "CORRELATION_CONCENTRATION_LIMIT": 2,
+      "MAX_POSITION_WEIGHT": 2,
+      "NOT_REQUESTED": 1,
+      "PORTFOLIO_VOLATILITY_LIMIT": 9,
+      "POSITION_LIQUIDITY_LIMIT": 1,
+      "TRADE_LIQUIDITY_LIMIT": 1
+    },
+    "report_id": "PORTFOLIO_RISK_REPORT_V1_1",
+    "risk_snapshot_fingerprint": "98691f8798d18bb78a972c820fbf3677fd2f2128a71748c5bd4baf8c118b45aa",
+    "trade_capacity_limited": [
+      "COMPANY:2"
+    ],
+    "volatility_scale": 0.9573808465,
+    "volatility_scaling_applied": true
+  },
+  "risk_summary": {
+    "approved_count": 9,
+    "approved_gross_exposure": 0.601090809,
+    "approved_net_exposure": 0.601090809,
+    "approved_unchanged_count": 0,
+    "cash_target_weight": 0.398909191,
+    "constraint_model": "DETERMINISTIC_STAGED_CONSTRAINTS_V1",
+    "constructed_gross_exposure": 0.795698422,
+    "drawdown": -0.12,
+    "drawdown_resizes": 1,
+    "effective_mode": "NORMAL",
+    "forced_exit_count": 1,
+    "liquidity_resizes": 1,
+    "missing_risk_metrics": 0,
+    "post_risk_portfolio_volatility": 0.16,
+    "pre_risk_portfolio_volatility": 0.1671226248,
+    "rejected_count": 0,
+    "requested_count": 9,
+    "requested_gross_exposure": 3.0,
+    "requested_position_count": 10,
+    "resized_count": 9
+  },
+  "strategy_report": {
+    "aggregate_approved_gross": 0.601090809,
+    "aggregate_requested_gross": 0.795698422,
+    "allocation_policy": {
+      "allocation_policy_id": "EXAMPLE_MULTI_STRATEGY_POLICY_V1",
+      "allocation_policy_version": "1",
+      "budgets": [
+        {
+          "max_capital_weight": 0.4,
+          "max_strategy_gross": null,
+          "max_strategy_volatility": null,
+          "priority": 0.0,
+          "strategy_id": "COMPOUNDER_EXAMPLE"
+        },
+        {
+          "max_capital_weight": 0.25,
+          "max_strategy_gross": null,
+          "max_strategy_volatility": 0.06,
+          "priority": 0.0,
+          "strategy_id": "EARNINGS_EXAMPLE"
+        },
+        {
+          "max_capital_weight": 0.3,
+          "max_strategy_gross": 0.2,
+          "max_strategy_volatility": null,
+          "priority": 0.0,
+          "strategy_id": "MOMENTUM_EXAMPLE"
+        },
+        {
+          "max_capital_weight": 0.05,
+          "max_strategy_gross": null,
+          "max_strategy_volatility": null,
+          "priority": 0.0,
+          "strategy_id": "RESEARCH_EXAMPLE"
+        }
+      ],
+      "fingerprint": "bbca286abc417fddcc3b4d53701fe3050ee727a61a51ebe1af1413d25ef413df",
+      "performance_weighted": false,
+      "production_authorized": false,
+      "semantics": "CEILING_UNUSED_BECOMES_CASH",
+      "total_capital_ceiling": 1.0,
+      "unused_sleeve_capacity": "becomes cash; never redistributed"
+    },
+    "allocator_id": "FIXED_SLEEVE_ALLOCATOR_V1",
+    "attribution_matrix": [
+      {
+        "COMPOUNDER_EXAMPLE": 0.1148857016,
+        "EARNINGS_EXAMPLE": 0.0,
+        "MOMENTUM_EXAMPLE": 0.0,
+        "RESEARCH_EXAMPLE": 0.0,
+        "approved_weight": 0.1148857016,
+        "identity": "COMPANY:1"
+      },
+      {
+        "COMPOUNDER_EXAMPLE": 0.0382952339,
+        "EARNINGS_EXAMPLE": 0.0,
+        "MOMENTUM_EXAMPLE": 0.0,
+        "RESEARCH_EXAMPLE": 0.0,
+        "approved_weight": 0.0382952339,
+        "identity": "COMPANY:2"
+      },
+      {
+        "COMPOUNDER_EXAMPLE": 0.0510603118,
+        "EARNINGS_EXAMPLE": 0.0,
+        "MOMENTUM_EXAMPLE": 0.0638253898,
+        "RESEARCH_EXAMPLE": 0.0,
+        "approved_weight": 0.1148857016,
+        "identity": "COMPANY:3"
+      },
+      {
+        "COMPOUNDER_EXAMPLE": 0.0765904677,
+        "EARNINGS_EXAMPLE": 0.0,
+        "MOMENTUM_EXAMPLE": 0.0,
+        "RESEARCH_EXAMPLE": 0.0,
+        "approved_weight": 0.0765904677,
+        "identity": "COMPANY:4"
+      },
+      {
+        "COMPOUNDER_EXAMPLE": 0.0,
+        "EARNINGS_EXAMPLE": 0.0,
+        "MOMENTUM_EXAMPLE": 0.0957380846,
+        "RESEARCH_EXAMPLE": 0.0,
+        "approved_weight": 0.0957380846,
+        "identity": "COMPANY:5"
+      },
+      {
+        "COMPOUNDER_EXAMPLE": 0.0,
+        "EARNINGS_EXAMPLE": 0.0468394802,
+        "MOMENTUM_EXAMPLE": 0.0,
+        "RESEARCH_EXAMPLE": 0.0,
+        "approved_weight": 0.0468394802,
+        "identity": "COMPANY:6"
+      },
+      {
+        "COMPOUNDER_EXAMPLE": 0.0,
+        "EARNINGS_EXAMPLE": 0.0468394802,
+        "MOMENTUM_EXAMPLE": 0.0,
+        "RESEARCH_EXAMPLE": 0.0,
+        "approved_weight": 0.0468394802,
+        "identity": "COMPANY:7"
+      },
+      {
+        "COMPOUNDER_EXAMPLE": 0.0,
+        "EARNINGS_EXAMPLE": 0.0335083296,
+        "MOMENTUM_EXAMPLE": 0.0,
+        "RESEARCH_EXAMPLE": 0.0,
+        "approved_weight": 0.0335083296,
+        "identity": "COMPANY:8"
+      },
+      {
+        "COMPOUNDER_EXAMPLE": 0.0,
+        "EARNINGS_EXAMPLE": 0.0335083296,
+        "MOMENTUM_EXAMPLE": 0.0,
+        "RESEARCH_EXAMPLE": 0.0,
+        "approved_weight": 0.0335083296,
+        "identity": "COMPANY:9"
+      }
+    ],
+    "attribution_reconciles": true,
+    "fingerprint": "01ba4b649808bd0866d609f22bba13d1c026ec5f700f843a217089ec859a2bc5",
+    "matrix_columns": "strategies, in strategy-id order",
+    "matrix_rows": "identities, in durable identity order",
+    "performance_weighted_allocation": false,
+    "production_authorized": false,
+    "report_id": "STRATEGY_ALLOCATION_REPORT_V1_2",
+    "shared_identity_count": 1,
+    "sleeves": [
+      {
+        "allocated_pre_risk_gross": 0.4,
+        "approved_identity_count": 4,
+        "approved_post_risk_gross": 0.280831715,
+        "budget": {
+          "max_capital_weight": 0.4,
+          "max_strategy_gross": null,
+          "max_strategy_volatility": null,
+          "priority": 0.0,
+          "strategy_id": "COMPOUNDER_EXAMPLE"
+        },
+        "intents_fingerprint": "a92049fa3ba3c753b05c2f1cf81dca859604240ce545ddbca75ad233c1d742cb",
+        "reason_codes": [],
+        "requested_gross": 0.4,
+        "risk_reduction": 0.119168285,
+        "sleeve_fingerprint": "baf5b9a39915a8d3c65d6dfcc1f7907d19b47ec22283cdd758230f8f2ca9ff47",
+        "standalone_volatility": 0.1167013282,
+        "strategy_id": "COMPOUNDER_EXAMPLE",
+        "unused_budget": 0.0
+      },
+      {
+        "allocated_pre_risk_gross": 0.195698422,
+        "approved_identity_count": 4,
+        "approved_post_risk_gross": 0.1606956196,
+        "budget": {
+          "max_capital_weight": 0.25,
+          "max_strategy_gross": null,
+          "max_strategy_volatility": 0.06,
+          "priority": 0.0,
+          "strategy_id": "EARNINGS_EXAMPLE"
+        },
+        "intents_fingerprint": "877cad65ee8dfa0abd39f634311935f0ff99a14a4ac7c0bdef85e453b25b92a5",
+        "reason_codes": [
+          "STRATEGY_VOLATILITY_LIMIT"
+        ],
+        "requested_gross": 0.25,
+        "risk_reduction": 0.0350028024,
+        "sleeve_fingerprint": "9e86cda6ef46f21d6828d4fcbac8436151baab7a3e0188edd0566e6075e26e7d",
+        "standalone_volatility": 0.06,
+        "strategy_id": "EARNINGS_EXAMPLE",
+        "unused_budget": 0.054301578
+      },
+      {
+        "allocated_pre_risk_gross": 0.2,
+        "approved_identity_count": 2,
+        "approved_post_risk_gross": 0.1595634744,
+        "budget": {
+          "max_capital_weight": 0.3,
+          "max_strategy_gross": 0.2,
+          "max_strategy_volatility": null,
+          "priority": 0.0,
+          "strategy_id": "MOMENTUM_EXAMPLE"
+        },
+        "intents_fingerprint": "b0aa651dbb6846fdfa35665c0dc3120ce231e70cfde6ced8d1af30d9a79465d6",
+        "reason_codes": [
+          "STRATEGY_GROSS_LIMIT"
+        ],
+        "requested_gross": 0.3,
+        "risk_reduction": 0.0404365256,
+        "sleeve_fingerprint": "4bbd869152763de62ce2e981985119fdf13d8b07ead485b131d0507e60936ada",
+        "standalone_volatility": 0.0657267069,
+        "strategy_id": "MOMENTUM_EXAMPLE",
+        "unused_budget": 0.1
+      },
+      {
+        "allocated_pre_risk_gross": 0.0,
+        "approved_identity_count": 0,
+        "approved_post_risk_gross": 0.0,
+        "budget": {
+          "max_capital_weight": 0.05,
+          "max_strategy_gross": null,
+          "max_strategy_volatility": null,
+          "priority": 0.0,
+          "strategy_id": "RESEARCH_EXAMPLE"
+        },
+        "intents_fingerprint": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+        "reason_codes": [
+          "STRATEGY_IDLE"
+        ],
+        "requested_gross": 0.0,
+        "risk_reduction": 0.0,
+        "sleeve_fingerprint": "8d5cfb6ec7a3ed3a0fe5ceddf130e14fa9b4dedb8aab1b80141eb1758a4675be",
+        "standalone_volatility": null,
+        "strategy_id": "RESEARCH_EXAMPLE",
+        "unused_budget": 0.05
+      }
+    ],
+    "strategy_overlaps": [
+      {
+        "shared_identities": [
+          "COMPANY:3"
+        ],
+        "strategies": [
+          "COMPOUNDER_EXAMPLE",
+          "MOMENTUM_EXAMPLE"
+        ]
+      }
+    ],
+    "total_attributed_approved_exposure": 0.601090809,
+    "unused_sleeve_capacity_becomes_cash": true
+  }
+}

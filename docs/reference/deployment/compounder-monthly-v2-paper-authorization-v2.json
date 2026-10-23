@@ -1,0 +1,25 @@
+{
+  "approved_by": "repository owner \u2014 P2.3.1I2",
+  "authorises": "deployment of this exact policy, over this exact deployment universe, to a paper venue",
+  "authorization_fingerprint": "2e009948019e6541a26c373940742034300f1034dec6a84662e43ec7616bd8c9",
+  "authorization_id": "ALPHATRADER_PAPER_COMPOUNDER_MONTHLY_V2_PAPER_GRANT_002",
+  "authorization_state": "IN_FORCE",
+  "code_commit": "00f9fce31756f61be07538f771d90e380733d767",
+  "contract": "STRATEGY_DEPLOYMENT_AUTHORIZATION_V2",
+  "created_at": "2026-10-18T00:00:00+00:00",
+  "deployment_universe_fingerprint": "b5e4e946b3716c1d4c1e5cf79029eca81e6de9156de690d3585a5eb7a2b883ec",
+  "deployment_universe_version": "ALPHATRADER_PAPER_FRACTIONABLE_UNIVERSE_V1",
+  "does_not_authorise": [
+    "any order, quantity or security",
+    "any sizing decision \u2014 the risk engine remains the only sizing authority",
+    "a different deployment universe, however similar",
+    "live trading, which is NOT_IMPLEMENTED and NOT_AUTHORIZED"
+  ],
+  "environment": "EXTERNAL_PAPER",
+  "live_trading": "NOT_IMPLEMENTED_NOT_AUTHORIZED",
+  "notes": "Approves ALPHATRADER_COMPOUNDER_MONTHLY_V2 for EXTERNAL_PAPER over exactly ALPHATRADER_PAPER_FRACTIONABLE_UNIVERSE_V1. Supersedes grant 001, which bound the strategy and the environment but not the universe. The owner judged that too weak: V2 ranks the intersection of research eligibility and the deployment universe, so a different universe changes which companies are eligible and can change the resulting portfolio \u2014 an outcome the earlier grant would have covered without review. A changed universe fingerprint now means this grant does not apply and a new one must be issued. Approving this authorises no rebind, no re-arm, no order and no live trading.",
+  "strategy_fingerprint": "a15887f81fa6dca1c5cd032ffbcbe70c32df0d3755c1d4b7911609ec4bd1d840",
+  "strategy_id": "ALPHATRADER_COMPOUNDER_MONTHLY",
+  "strategy_version": "ALPHATRADER_COMPOUNDER_MONTHLY_V2",
+  "supersedes": "ff008ecad69b7c03a9781cd49eb926a19d38c1166576b09ff9c2c6d10f3d98b6"
+}

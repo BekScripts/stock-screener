@@ -1,0 +1,155 @@
+{
+  "label": "PLAN-PARTIAL",
+  "note": "The EXIT order for 200 shares meets 40 shares of availability, then 30 more, then is cancelled. Accounting receives 70 shares and never 200; the unfilled 130 affects nothing. Each fill is a separate execution, so the per-fill fee is charged twice.",
+  "execution_plan_id": "PLAN-PARTIAL",
+  "as_of": "2026-10-05T15:00:00-04:00",
+  "created_at": "2026-10-05T15:00:00-04:00",
+  "approved_portfolio_fingerprint": "apapapapapapapapapapapapapapapapapapapapapapapapapapapapapapapap",
+  "valued_snapshot_fingerprint": "vsvsvsvsvsvsvsvsvsvsvsvsvsvsvsvsvsvsvsvsvsvsvsvsvsvsvsvsvsvsvsvs",
+  "securities": [
+    {
+      "label": "EXIT_ME",
+      "kind": "COMPANY",
+      "identity_id": 9001,
+      "symbol": "EXT"
+    },
+    {
+      "label": "REDUCE_ME",
+      "kind": "COMPANY",
+      "identity_id": 9002,
+      "symbol": "RED"
+    },
+    {
+      "label": "ENTER_ME",
+      "kind": "COMPANY",
+      "identity_id": 9003,
+      "symbol": "ENT"
+    },
+    {
+      "label": "INCREASE_ME",
+      "kind": "COMPANY",
+      "identity_id": 9004,
+      "symbol": "INC"
+    },
+    {
+      "label": "HOLD_ME",
+      "kind": "COMPANY",
+      "identity_id": 9005,
+      "symbol": "HLD"
+    }
+  ],
+  "opening": {
+    "event_id": "PAPER-OB-1",
+    "effective_at": "2026-10-05T09:30:00-04:00",
+    "source_id": "PAPER_BOOK_IMPORT",
+    "source_fingerprint": "fp-paper-opening",
+    "cash": "5000.0000",
+    "positions": [
+      {
+        "identity": "EXIT_ME",
+        "quantity": "200.00000000",
+        "cost_basis_per_share": "38.00000000",
+        "attribution": [
+          {
+            "strategy_id": "ALPHA",
+            "quantity": "200.00000000"
+          }
+        ]
+      },
+      {
+        "identity": "REDUCE_ME",
+        "quantity": "400.00000000",
+        "cost_basis_per_share": "22.00000000",
+        "attribution": [
+          {
+            "strategy_id": "ALPHA",
+            "quantity": "250.00000000"
+          },
+          {
+            "strategy_id": "BETA",
+            "quantity": "150.00000000"
+          }
+        ]
+      },
+      {
+        "identity": "INCREASE_ME",
+        "quantity": "100.00000000",
+        "cost_basis_per_share": "15.00000000",
+        "attribution": [
+          {
+            "strategy_id": "BETA",
+            "quantity": "100.00000000"
+          }
+        ]
+      },
+      {
+        "identity": "HOLD_ME",
+        "quantity": "50.00000000",
+        "cost_basis_per_share": "60.00000000",
+        "attribution": [
+          {
+            "strategy_id": "ALPHA",
+            "quantity": "50.00000000"
+          }
+        ]
+      }
+    ]
+  },
+  "intents": [
+    {
+      "identity": "EXIT_ME",
+      "action": "EXIT",
+      "current_weight": 0.18,
+      "target_weight": 0.0,
+      "notional_delta": -8000.0,
+      "strategy_id": "ALPHA"
+    }
+  ],
+  "attribution": {},
+  "sizing": {
+    "as_of": "2026-10-05T15:00:00-04:00",
+    "nav": "44000.0000",
+    "cash": "5000.0000",
+    "source": "SESSION_CLOSE",
+    "prices": [
+      {
+        "identity": "EXIT_ME",
+        "price": "40.00000000"
+      }
+    ]
+  },
+  "steps": [
+    {
+      "order_id": "PLAN-PARTIAL-COMPANY:9001-SELL",
+      "submitted_at": "2026-10-05T15:10:00-04:00",
+      "fills": [
+        {
+          "as_of": "2026-10-05T15:12:00-04:00",
+          "source": "PAPER",
+          "prices": [
+            {
+              "identity": "EXIT_ME",
+              "price": "40.50000000",
+              "fee": "1.0000",
+              "available_quantity": "40.00000000"
+            }
+          ]
+        },
+        {
+          "as_of": "2026-10-05T15:18:00-04:00",
+          "source": "PAPER",
+          "prices": [
+            {
+              "identity": "EXIT_ME",
+              "price": "39.25000000",
+              "fee": "1.0000",
+              "available_quantity": "30.00000000"
+            }
+          ]
+        }
+      ],
+      "cancel_at": "2026-10-05T15:30:00-04:00",
+      "reason": "OPERATOR_CANCELLED"
+    }
+  ]
+}

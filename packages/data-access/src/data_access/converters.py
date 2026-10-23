@@ -15,8 +15,18 @@ from typing import TYPE_CHECKING
 
 from domain import (
     CompanyProfile,
+    CorporateActionKind,
+    CorporateActionRecord,
     Filing,
+    FilingObservation,
     FinancialPeriod,
+    IdentifierInterval,
+    IdentityConfidence,
+    LineageKind,
+    MembershipConfidence,
+    MembershipInterval,
+    MembershipReason,
+    MembershipState,
     PeriodCadence,
     PriceBar,
     StatementProfile,
@@ -26,9 +36,16 @@ if TYPE_CHECKING:
     from data_access.models import (
         BenchmarkPrice,
         Company,
+        CorporateAction,
         FilingRecord,
         FinancialSnapshot,
+        FundamentalObservation,
+        HistoricalCorporateAction,
+        HistoricalObservation,
+        HistoricalPrice,
         PriceHistory,
+        SecurityIdentifier,
+        UniverseMembershipRecord,
     )
 
 
@@ -91,15 +108,54 @@ def to_financial_period(snapshot: FinancialSnapshot) -> FinancialPeriod:
     )
 
 
-def to_price_bar(row: PriceHistory | BenchmarkPrice) -> PriceBar:
-    """Convert a stored price row into a domain bar.
+def to_filing_observation(
+    row: FundamentalObservation | HistoricalObservation,
+) -> FilingObservation:
+    """Convert a stored observation row into its domain form.
 
-    Accepts a benchmark row as well as a company one. The two tables are
-    separate because a benchmark is not a company, but a bar is a bar and the
-    return calculations must not be duplicated for one.
+    Accepts a historical security's observation as well as a company's: the two
+    tables are separate because a delisted security is not a company, but an
+    observation is an observation and its normalisation must not be duplicated
+    for one. The append-only record stores exactly what one filing said about
+    one concept, so the conversion is a field-for-field copy. Nothing is
+    resolved here: two rows for the same period stay two observations, because
+    deciding between them belongs to whatever normalises them.
 
     Args:
-        row: The stored row, from `price_history` or `benchmark_prices`.
+        row: The stored row, from `fundamental_observations` or
+            `historical_observations`.
+
+    Returns:
+        The equivalent `FilingObservation`.
+    """
+    return FilingObservation(
+        taxonomy=row.taxonomy,
+        concept=row.concept,
+        value=row.value,
+        unit=row.unit,
+        period_end=row.period_end,
+        period_start=row.period_start,
+        filed_date=row.filed_date,
+        accession=row.accession,
+        form=row.form,
+        fiscal_year=row.fiscal_year,
+        fiscal_period=row.fiscal_period,
+        frame=row.frame,
+        source=row.source,
+    )
+
+
+def to_price_bar(row: PriceHistory | BenchmarkPrice | HistoricalPrice) -> PriceBar:
+    """Convert a stored price row into a domain bar.
+
+    Accepts a benchmark row and a historical security's row as well as a
+    company's. The tables are separate because a benchmark is not a company and
+    a delisted security is not either, but a bar is a bar and the return
+    calculations must not be duplicated for one.
+
+    Args:
+        row: The stored row, from `price_history`, `benchmark_prices` or
+            `historical_prices`.
 
     Returns:
         The equivalent `PriceBar`.
@@ -132,4 +188,88 @@ def to_filing(record: FilingRecord) -> Filing:
         primary_document=record.primary_document,
         url=record.url,
         source=record.source,
+    )
+
+
+def to_corporate_action(
+    action: CorporateAction | HistoricalCorporateAction,
+) -> CorporateActionRecord:
+    """Convert a stored corporate action into its domain record.
+
+    Accepts a historical security's action as well as a company's, so the same
+    split factors that make a past company price readable make a past historical
+    price readable too.
+
+    Args:
+        action: The stored row, from `corporate_actions` or
+            `historical_corporate_actions`.
+
+    Returns:
+        The equivalent `CorporateActionRecord`.
+    """
+    return CorporateActionRecord(
+        symbol=action.ticker,
+        kind=CorporateActionKind(action.action_type),
+        ex_date=action.ex_date,
+        split_factor=action.split_factor,
+        cash_amount=action.cash_amount,
+        currency=action.currency,
+        record_date=action.record_date,
+        payable_date=action.payable_date,
+        source=action.source,
+        source_id=action.source_id,
+    )
+
+
+def to_identifier_interval(row: SecurityIdentifier) -> IdentifierInterval:
+    """Convert a stored identifier interval into its domain shape.
+
+    The projection that lets `domain.resolve_by_ticker` and its siblings be run
+    over stored rows without the domain knowing what a table is. It matters that
+    the resolution rules have exactly one implementation: a second one written
+    over SQL would be free to drift, and the thing it would drift on is which
+    company a symbol names.
+
+    Args:
+        row: A `security_identifiers` row.
+
+    Returns:
+        The equivalent `IdentifierInterval`.
+    """
+    return IdentifierInterval(
+        security_id=row.historical_security_id,
+        cusip=row.cusip,
+        ticker=row.ticker,
+        venue=row.venue,
+        valid_from=row.valid_from,
+        valid_to=row.valid_to,
+        source=row.source,
+        confidence=IdentityConfidence(row.confidence),
+        lineage=LineageKind(row.lineage),
+    )
+
+
+def to_membership_interval(row: UniverseMembershipRecord) -> MembershipInterval:
+    """Convert a stored membership row into its domain shape.
+
+    The projection that lets `domain.membership_as_of` run over stored rows
+    without the domain knowing what a table is. As with identity intervals, it
+    matters that the membership rules have exactly one implementation: a second
+    one written in SQL would be free to drift, and the thing it would drift on is
+    which securities a backtest is allowed to see.
+
+    Args:
+        row: A `universe_membership` row.
+
+    Returns:
+        The equivalent `MembershipInterval`.
+    """
+    return MembershipInterval(
+        state=MembershipState(row.state),
+        confidence=MembershipConfidence(row.confidence),
+        reason=MembershipReason(row.reason),
+        valid_from=row.valid_from,
+        valid_to=row.valid_to,
+        inferred_inputs=tuple(row.inferred_inputs.split(",")) if row.inferred_inputs else (),
+        detail=row.detail or "",
     )

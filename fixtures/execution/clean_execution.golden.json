@@ -1,0 +1,1687 @@
+{
+  "final_book": {
+    "accounting_version": "PORTFOLIO_ACCOUNTING_V2",
+    "attribution_cost_pools": [
+      {
+        "average_cost": "22.00000000",
+        "closed_quantity": "125.00000000",
+        "dividends_received": "0",
+        "fees_paid": "0.6250",
+        "identity": "COMPANY:9002",
+        "is_open": true,
+        "is_unattributed": false,
+        "owner": "ALPHA",
+        "quantity": "125.00000000",
+        "realised_trading_pnl_gross": "-31.2500",
+        "total_cost_basis": "2750.0000"
+      },
+      {
+        "average_cost": "22.00000000",
+        "closed_quantity": "75.00000000",
+        "dividends_received": "0",
+        "fees_paid": "0.3750",
+        "identity": "COMPANY:9002",
+        "is_open": true,
+        "is_unattributed": false,
+        "owner": "BETA",
+        "quantity": "75.00000000",
+        "realised_trading_pnl_gross": "-18.7500",
+        "total_cost_basis": "1650.0000"
+      },
+      {
+        "average_cost": "46.00000000",
+        "closed_quantity": "0",
+        "dividends_received": "0",
+        "fees_paid": "2.0000",
+        "identity": "COMPANY:9003",
+        "is_open": true,
+        "is_unattributed": false,
+        "owner": "ALPHA",
+        "quantity": "200.00000000",
+        "realised_trading_pnl_gross": "0",
+        "total_cost_basis": "9200.0000"
+      },
+      {
+        "average_cost": "15.75000000",
+        "closed_quantity": "0",
+        "dividends_received": "0",
+        "fees_paid": "1.0000",
+        "identity": "COMPANY:9004",
+        "is_open": true,
+        "is_unattributed": false,
+        "owner": "BETA",
+        "quantity": "250.00000000",
+        "realised_trading_pnl_gross": "0",
+        "total_cost_basis": "3937.5000"
+      },
+      {
+        "average_cost": "60.00000000",
+        "closed_quantity": "0",
+        "dividends_received": "0",
+        "fees_paid": "0",
+        "identity": "COMPANY:9005",
+        "is_open": true,
+        "is_unattributed": false,
+        "owner": "ALPHA",
+        "quantity": "50.00000000",
+        "realised_trading_pnl_gross": "0",
+        "total_cost_basis": "3000.0000"
+      },
+      {
+        "average_cost": "0",
+        "closed_quantity": "200.00000000",
+        "dividends_received": "0",
+        "fees_paid": "1.0000",
+        "identity": "COMPANY:9001",
+        "is_open": false,
+        "is_unattributed": false,
+        "owner": "ALPHA",
+        "quantity": "0",
+        "realised_trading_pnl_gross": "500.0000",
+        "total_cost_basis": "0"
+      }
+    ],
+    "attribution_owners": [
+      "ALPHA",
+      "BETA"
+    ],
+    "cash": "5807.5000",
+    "cash_summary": {
+      "balance": "5807.5000",
+      "deposits": "0",
+      "dividends": "0",
+      "external_flow_net": "0",
+      "fees": "5.0000",
+      "opening": "5000.0000",
+      "purchases": "11637.5000",
+      "sales": "12450.0000",
+      "withdrawals": "0"
+    },
+    "closed_positions": [
+      {
+        "attribution": [],
+        "average_cost": "0",
+        "cost_basis_policy": "PER_ATTRIBUTION_WEIGHTED_AVERAGE_COST_V1",
+        "dividends_received": "0",
+        "fees_paid": "1.0000",
+        "identity": {
+          "identity_id": 9001,
+          "kind": "COMPANY",
+          "symbol": "EXT"
+        },
+        "label": "COMPANY:9001",
+        "pools": [
+          {
+            "average_cost": "0",
+            "closed_quantity": "200.00000000",
+            "dividends_received": "0",
+            "fees_paid": "1.0000",
+            "identity": "COMPANY:9001",
+            "is_open": false,
+            "is_unattributed": false,
+            "owner": "ALPHA",
+            "quantity": "0",
+            "realised_trading_pnl_gross": "500.0000",
+            "total_cost_basis": "0"
+          }
+        ],
+        "quantity": "0",
+        "realised_pnl": "500.0000",
+        "total_cost": "0"
+      }
+    ],
+    "cost_basis_policy": "PER_ATTRIBUTION_WEIGHTED_AVERAGE_COST_V1",
+    "dividend_income": "0",
+    "fees_paid": "5.0000",
+    "inception_nav_at_cost": "25900.0000",
+    "last_effective_at": "2026-10-05T15:26:00-04:00",
+    "ledger_head_hash": "8bb067b88cbe72ede0a9133db17ed56e7601a2898c14090c293399d915f225f9",
+    "ledger_sequence": 5,
+    "open_position_count": 4,
+    "opening_cost_basis": "20900.0000",
+    "pool_cost_basis_total": "20537.5000",
+    "pool_realised_total": "450.0000",
+    "positions": [
+      {
+        "attribution": [
+          {
+            "quantity": "125.00000000",
+            "strategy_id": "ALPHA"
+          },
+          {
+            "quantity": "75.00000000",
+            "strategy_id": "BETA"
+          }
+        ],
+        "average_cost": "22.00000000",
+        "cost_basis_policy": "PER_ATTRIBUTION_WEIGHTED_AVERAGE_COST_V1",
+        "dividends_received": "0",
+        "fees_paid": "1.0000",
+        "identity": {
+          "identity_id": 9002,
+          "kind": "COMPANY",
+          "symbol": "RED"
+        },
+        "label": "COMPANY:9002",
+        "pools": [
+          {
+            "average_cost": "22.00000000",
+            "closed_quantity": "125.00000000",
+            "dividends_received": "0",
+            "fees_paid": "0.6250",
+            "identity": "COMPANY:9002",
+            "is_open": true,
+            "is_unattributed": false,
+            "owner": "ALPHA",
+            "quantity": "125.00000000",
+            "realised_trading_pnl_gross": "-31.2500",
+            "total_cost_basis": "2750.0000"
+          },
+          {
+            "average_cost": "22.00000000",
+            "closed_quantity": "75.00000000",
+            "dividends_received": "0",
+            "fees_paid": "0.3750",
+            "identity": "COMPANY:9002",
+            "is_open": true,
+            "is_unattributed": false,
+            "owner": "BETA",
+            "quantity": "75.00000000",
+            "realised_trading_pnl_gross": "-18.7500",
+            "total_cost_basis": "1650.0000"
+          }
+        ],
+        "quantity": "200.00000000",
+        "realised_pnl": "-50.0000",
+        "total_cost": "4400.0000"
+      },
+      {
+        "attribution": [
+          {
+            "quantity": "200.00000000",
+            "strategy_id": "ALPHA"
+          }
+        ],
+        "average_cost": "46.00000000",
+        "cost_basis_policy": "PER_ATTRIBUTION_WEIGHTED_AVERAGE_COST_V1",
+        "dividends_received": "0",
+        "fees_paid": "2.0000",
+        "identity": {
+          "identity_id": 9003,
+          "kind": "COMPANY",
+          "symbol": "ENT"
+        },
+        "label": "COMPANY:9003",
+        "pools": [
+          {
+            "average_cost": "46.00000000",
+            "closed_quantity": "0",
+            "dividends_received": "0",
+            "fees_paid": "2.0000",
+            "identity": "COMPANY:9003",
+            "is_open": true,
+            "is_unattributed": false,
+            "owner": "ALPHA",
+            "quantity": "200.00000000",
+            "realised_trading_pnl_gross": "0",
+            "total_cost_basis": "9200.0000"
+          }
+        ],
+        "quantity": "200.00000000",
+        "realised_pnl": "0",
+        "total_cost": "9200.0000"
+      },
+      {
+        "attribution": [
+          {
+            "quantity": "250.00000000",
+            "strategy_id": "BETA"
+          }
+        ],
+        "average_cost": "15.75000000",
+        "cost_basis_policy": "PER_ATTRIBUTION_WEIGHTED_AVERAGE_COST_V1",
+        "dividends_received": "0",
+        "fees_paid": "1.0000",
+        "identity": {
+          "identity_id": 9004,
+          "kind": "COMPANY",
+          "symbol": "INC"
+        },
+        "label": "COMPANY:9004",
+        "pools": [
+          {
+            "average_cost": "15.75000000",
+            "closed_quantity": "0",
+            "dividends_received": "0",
+            "fees_paid": "1.0000",
+            "identity": "COMPANY:9004",
+            "is_open": true,
+            "is_unattributed": false,
+            "owner": "BETA",
+            "quantity": "250.00000000",
+            "realised_trading_pnl_gross": "0",
+            "total_cost_basis": "3937.5000"
+          }
+        ],
+        "quantity": "250.00000000",
+        "realised_pnl": "0",
+        "total_cost": "3937.5000"
+      },
+      {
+        "attribution": [
+          {
+            "quantity": "50.00000000",
+            "strategy_id": "ALPHA"
+          }
+        ],
+        "average_cost": "60.00000000",
+        "cost_basis_policy": "PER_ATTRIBUTION_WEIGHTED_AVERAGE_COST_V1",
+        "dividends_received": "0",
+        "fees_paid": "0",
+        "identity": {
+          "identity_id": 9005,
+          "kind": "COMPANY",
+          "symbol": "HLD"
+        },
+        "label": "COMPANY:9005",
+        "pools": [
+          {
+            "average_cost": "60.00000000",
+            "closed_quantity": "0",
+            "dividends_received": "0",
+            "fees_paid": "0",
+            "identity": "COMPANY:9005",
+            "is_open": true,
+            "is_unattributed": false,
+            "owner": "ALPHA",
+            "quantity": "50.00000000",
+            "realised_trading_pnl_gross": "0",
+            "total_cost_basis": "3000.0000"
+          }
+        ],
+        "quantity": "50.00000000",
+        "realised_pnl": "0",
+        "total_cost": "3000.0000"
+      }
+    ],
+    "realised_pnl": "450.0000",
+    "total_cost_basis": "20537.5000",
+    "unattributed_quantity": "0",
+    "unsupported_actions": []
+  },
+  "journal": {
+    "chain_version": "EXECUTION_JOURNAL_HASH_CHAIN_V1",
+    "head_hash": "cad7082409c76d7c9260216770a605c4b2ba64fc542a494eb66ca71b4b2986c8",
+    "record_count": 20,
+    "records": [
+      {
+        "chain_version": "EXECUTION_JOURNAL_HASH_CHAIN_V1",
+        "event": {
+          "engine_version": "EXECUTION_ENGINE_V1",
+          "event_id": "PLAN-CLEAN-COMPANY:9001-SELL:CREATED",
+          "event_type": "ORDER_CREATED",
+          "execution_plan_id": "PLAN-CLEAN",
+          "fingerprint": "4443a139741bdcfa22f0baf7dfe351a569cacee01f10d270d16334e3602eeabc",
+          "occurred_at": "2026-10-05T15:10:00-04:00",
+          "order_id": "PLAN-CLEAN-COMPANY:9001-SELL",
+          "payload": {
+            "order": {
+              "attribution": [
+                {
+                  "quantity": "200.00000000",
+                  "strategy_id": "ALPHA"
+                }
+              ],
+              "authorization_fingerprint": "60ef62c84d1f81015c0cd1328f2e04037e0df949bc330ef12944a12172251ad9",
+              "engine_version": "EXECUTION_ENGINE_V1",
+              "execution_plan_id": "PLAN-CLEAN",
+              "identity": "COMPANY:9001",
+              "order_id": "PLAN-CLEAN-COMPANY:9001-SELL",
+              "order_type": "MARKET",
+              "quantity": "200.00000000",
+              "sequence_group": "RELEASE_CASH",
+              "side": "SELL",
+              "sizing_price": "40.00000000",
+              "time_in_force": "DAY"
+            }
+          },
+          "recorded_at": null
+        },
+        "event_fingerprint": "4443a139741bdcfa22f0baf7dfe351a569cacee01f10d270d16334e3602eeabc",
+        "previous_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+        "record_hash": "9d40b461b0ff20b9d86dd184a213a9263527f82295672d1dc835c4e3d5b28dd1",
+        "sequence": 1
+      },
+      {
+        "chain_version": "EXECUTION_JOURNAL_HASH_CHAIN_V1",
+        "event": {
+          "engine_version": "EXECUTION_ENGINE_V1",
+          "event_id": "PLAN-CLEAN-COMPANY:9001-SELL:SUBMITTED",
+          "event_type": "ORDER_SUBMITTED",
+          "execution_plan_id": "PLAN-CLEAN",
+          "fingerprint": "3a7c2bb5b144b0cb6928f4276249e54f2ff67fa3836e5700b56e859146071bc9",
+          "occurred_at": "2026-10-05T15:10:00-04:00",
+          "order_id": "PLAN-CLEAN-COMPANY:9001-SELL",
+          "payload": {
+            "venue": "DETERMINISTIC_PAPER_BROKER"
+          },
+          "recorded_at": null
+        },
+        "event_fingerprint": "3a7c2bb5b144b0cb6928f4276249e54f2ff67fa3836e5700b56e859146071bc9",
+        "previous_hash": "9d40b461b0ff20b9d86dd184a213a9263527f82295672d1dc835c4e3d5b28dd1",
+        "record_hash": "f6cadaba3aa42bc9dc24a5291f6a2ed039e22675d926e5f61052f00b8b954e7d",
+        "sequence": 2
+      },
+      {
+        "chain_version": "EXECUTION_JOURNAL_HASH_CHAIN_V1",
+        "event": {
+          "engine_version": "EXECUTION_ENGINE_V1",
+          "event_id": "PLAN-CLEAN-COMPANY:9001-SELL:ACKNOWLEDGED",
+          "event_type": "ORDER_ACKNOWLEDGED",
+          "execution_plan_id": "PLAN-CLEAN",
+          "fingerprint": "69b56482b8847be4cf501905c91f17ce487acc42edd32b7429a95f280f6db214",
+          "occurred_at": "2026-10-05T15:10:00-04:00",
+          "order_id": "PLAN-CLEAN-COMPANY:9001-SELL",
+          "payload": {
+            "venue": "DETERMINISTIC_PAPER_BROKER"
+          },
+          "recorded_at": null
+        },
+        "event_fingerprint": "69b56482b8847be4cf501905c91f17ce487acc42edd32b7429a95f280f6db214",
+        "previous_hash": "f6cadaba3aa42bc9dc24a5291f6a2ed039e22675d926e5f61052f00b8b954e7d",
+        "record_hash": "da9ad10480a4aec6d0e4b0757f96a4b71d7cf8642e46b856bfb809cf594fce8a",
+        "sequence": 3
+      },
+      {
+        "chain_version": "EXECUTION_JOURNAL_HASH_CHAIN_V1",
+        "event": {
+          "engine_version": "EXECUTION_ENGINE_V1",
+          "event_id": "PLAN-CLEAN-COMPANY:9001-SELL:FILL:1",
+          "event_type": "ORDER_FILLED",
+          "execution_plan_id": "PLAN-CLEAN",
+          "fingerprint": "7f1fa088a5d39ccc6ecfa4756b41af66422358427377370b5774d720f7b4c0af",
+          "occurred_at": "2026-10-05T15:12:00-04:00",
+          "order_id": "PLAN-CLEAN-COMPANY:9001-SELL",
+          "payload": {
+            "fill": {
+              "attribution": [
+                {
+                  "quantity": "200.00000000",
+                  "strategy_id": "ALPHA"
+                }
+              ],
+              "effective_at": "2026-10-05T15:12:00-04:00",
+              "fee": "1.00000000",
+              "fill_id": "PLAN-CLEAN-COMPANY:9001-SELL#1",
+              "identity": "COMPANY:9001",
+              "order_id": "PLAN-CLEAN-COMPANY:9001-SELL",
+              "price": "40.50000000",
+              "quantity": "200.00000000",
+              "side": "SELL",
+              "source_fingerprint": "2181005fd21106fd4f058b965477add3963562e561951b1cce8a372e8c268a3e",
+              "venue": "DETERMINISTIC_PAPER_BROKER"
+            }
+          },
+          "recorded_at": null
+        },
+        "event_fingerprint": "7f1fa088a5d39ccc6ecfa4756b41af66422358427377370b5774d720f7b4c0af",
+        "previous_hash": "da9ad10480a4aec6d0e4b0757f96a4b71d7cf8642e46b856bfb809cf594fce8a",
+        "record_hash": "a5e310c5be493f67787ecaa468cc7f0ce30b63ddbbf9bc2e1e984a3283fc86ed",
+        "sequence": 4
+      },
+      {
+        "chain_version": "EXECUTION_JOURNAL_HASH_CHAIN_V1",
+        "event": {
+          "engine_version": "EXECUTION_ENGINE_V1",
+          "event_id": "PLAN-CLEAN-COMPANY:9001-SELL#1:APPLIED",
+          "event_type": "FILL_APPLIED",
+          "execution_plan_id": "PLAN-CLEAN",
+          "fingerprint": "2d5186bd2c3f3d52008d88fe603c2e5d471a5d639bc244aec500db7dadf8e27b",
+          "occurred_at": "2026-10-05T15:12:00-04:00",
+          "order_id": "PLAN-CLEAN-COMPANY:9001-SELL",
+          "payload": {
+            "accounting_event_id": "EXEC_FILL:PLAN-CLEAN-COMPANY:9001-SELL#1",
+            "accounting_sequence": 2,
+            "accounting_state_fingerprint": "ef470dc44f11512534ce9fdb63c2d581badb6357e8944c869d649216e394882c",
+            "fill_id": "PLAN-CLEAN-COMPANY:9001-SELL#1"
+          },
+          "recorded_at": null
+        },
+        "event_fingerprint": "2d5186bd2c3f3d52008d88fe603c2e5d471a5d639bc244aec500db7dadf8e27b",
+        "previous_hash": "a5e310c5be493f67787ecaa468cc7f0ce30b63ddbbf9bc2e1e984a3283fc86ed",
+        "record_hash": "160e9e55a76e04900d281b0c1d7c8dbb4866fc171401bf8f900029f4f9ce3ea9",
+        "sequence": 5
+      },
+      {
+        "chain_version": "EXECUTION_JOURNAL_HASH_CHAIN_V1",
+        "event": {
+          "engine_version": "EXECUTION_ENGINE_V1",
+          "event_id": "PLAN-CLEAN-COMPANY:9002-SELL:CREATED",
+          "event_type": "ORDER_CREATED",
+          "execution_plan_id": "PLAN-CLEAN",
+          "fingerprint": "3cbb963a59a30b4d958800e99167dd118d8c7f2721204a2ba0eccf903f49e30c",
+          "occurred_at": "2026-10-05T15:14:00-04:00",
+          "order_id": "PLAN-CLEAN-COMPANY:9002-SELL",
+          "payload": {
+            "order": {
+              "attribution": [
+                {
+                  "quantity": "125.00000000",
+                  "strategy_id": "ALPHA"
+                },
+                {
+                  "quantity": "75.00000000",
+                  "strategy_id": "BETA"
+                }
+              ],
+              "authorization_fingerprint": "60ef62c84d1f81015c0cd1328f2e04037e0df949bc330ef12944a12172251ad9",
+              "engine_version": "EXECUTION_ENGINE_V1",
+              "execution_plan_id": "PLAN-CLEAN",
+              "identity": "COMPANY:9002",
+              "order_id": "PLAN-CLEAN-COMPANY:9002-SELL",
+              "order_type": "MARKET",
+              "quantity": "200.00000000",
+              "sequence_group": "RELEASE_CASH",
+              "side": "SELL",
+              "sizing_price": "22.00000000",
+              "time_in_force": "DAY"
+            }
+          },
+          "recorded_at": null
+        },
+        "event_fingerprint": "3cbb963a59a30b4d958800e99167dd118d8c7f2721204a2ba0eccf903f49e30c",
+        "previous_hash": "160e9e55a76e04900d281b0c1d7c8dbb4866fc171401bf8f900029f4f9ce3ea9",
+        "record_hash": "fc58957ccdda70c414b35537bcc6d93dafdcc22cc567ecf0a9b11abea1896df5",
+        "sequence": 6
+      },
+      {
+        "chain_version": "EXECUTION_JOURNAL_HASH_CHAIN_V1",
+        "event": {
+          "engine_version": "EXECUTION_ENGINE_V1",
+          "event_id": "PLAN-CLEAN-COMPANY:9002-SELL:SUBMITTED",
+          "event_type": "ORDER_SUBMITTED",
+          "execution_plan_id": "PLAN-CLEAN",
+          "fingerprint": "f37f1ef4a41b9e43a4ead2714f94b3175e7496cba0a197a5ea7172a43accaa70",
+          "occurred_at": "2026-10-05T15:14:00-04:00",
+          "order_id": "PLAN-CLEAN-COMPANY:9002-SELL",
+          "payload": {
+            "venue": "DETERMINISTIC_PAPER_BROKER"
+          },
+          "recorded_at": null
+        },
+        "event_fingerprint": "f37f1ef4a41b9e43a4ead2714f94b3175e7496cba0a197a5ea7172a43accaa70",
+        "previous_hash": "fc58957ccdda70c414b35537bcc6d93dafdcc22cc567ecf0a9b11abea1896df5",
+        "record_hash": "4d71458625ac0f938a9e9505f855e49936904397c7a249d5fdb7f1c354a17b53",
+        "sequence": 7
+      },
+      {
+        "chain_version": "EXECUTION_JOURNAL_HASH_CHAIN_V1",
+        "event": {
+          "engine_version": "EXECUTION_ENGINE_V1",
+          "event_id": "PLAN-CLEAN-COMPANY:9002-SELL:ACKNOWLEDGED",
+          "event_type": "ORDER_ACKNOWLEDGED",
+          "execution_plan_id": "PLAN-CLEAN",
+          "fingerprint": "74ec951cc0c59d82e92b57c2c806e052c2db5c5da1a23f565753e0ed78ce2804",
+          "occurred_at": "2026-10-05T15:14:00-04:00",
+          "order_id": "PLAN-CLEAN-COMPANY:9002-SELL",
+          "payload": {
+            "venue": "DETERMINISTIC_PAPER_BROKER"
+          },
+          "recorded_at": null
+        },
+        "event_fingerprint": "74ec951cc0c59d82e92b57c2c806e052c2db5c5da1a23f565753e0ed78ce2804",
+        "previous_hash": "4d71458625ac0f938a9e9505f855e49936904397c7a249d5fdb7f1c354a17b53",
+        "record_hash": "90c653e0dd5b960ea27866578d92a8b33df45706c95c7e2d79801b45c1237f6a",
+        "sequence": 8
+      },
+      {
+        "chain_version": "EXECUTION_JOURNAL_HASH_CHAIN_V1",
+        "event": {
+          "engine_version": "EXECUTION_ENGINE_V1",
+          "event_id": "PLAN-CLEAN-COMPANY:9002-SELL:FILL:1",
+          "event_type": "ORDER_FILLED",
+          "execution_plan_id": "PLAN-CLEAN",
+          "fingerprint": "30a16965db1556aad9caa7c43febace7c801607d32a2748c8b361f7d22121566",
+          "occurred_at": "2026-10-05T15:16:00-04:00",
+          "order_id": "PLAN-CLEAN-COMPANY:9002-SELL",
+          "payload": {
+            "fill": {
+              "attribution": [
+                {
+                  "quantity": "125.00000000",
+                  "strategy_id": "ALPHA"
+                },
+                {
+                  "quantity": "75.00000000",
+                  "strategy_id": "BETA"
+                }
+              ],
+              "effective_at": "2026-10-05T15:16:00-04:00",
+              "fee": "1.00000000",
+              "fill_id": "PLAN-CLEAN-COMPANY:9002-SELL#1",
+              "identity": "COMPANY:9002",
+              "order_id": "PLAN-CLEAN-COMPANY:9002-SELL",
+              "price": "21.75000000",
+              "quantity": "200.00000000",
+              "side": "SELL",
+              "source_fingerprint": "93df86fb41cb046d07b634030d861bc58141b9372cba268407c670cd2dfd5b9f",
+              "venue": "DETERMINISTIC_PAPER_BROKER"
+            }
+          },
+          "recorded_at": null
+        },
+        "event_fingerprint": "30a16965db1556aad9caa7c43febace7c801607d32a2748c8b361f7d22121566",
+        "previous_hash": "90c653e0dd5b960ea27866578d92a8b33df45706c95c7e2d79801b45c1237f6a",
+        "record_hash": "ab341a398932ace62592c88fd731a984cb672390f59a50b56523113484d24c5b",
+        "sequence": 9
+      },
+      {
+        "chain_version": "EXECUTION_JOURNAL_HASH_CHAIN_V1",
+        "event": {
+          "engine_version": "EXECUTION_ENGINE_V1",
+          "event_id": "PLAN-CLEAN-COMPANY:9002-SELL#1:APPLIED",
+          "event_type": "FILL_APPLIED",
+          "execution_plan_id": "PLAN-CLEAN",
+          "fingerprint": "bd7d04ab43748ea86df6e14e5a45359854bbdf553ad223ac3d2924a9f3037b84",
+          "occurred_at": "2026-10-05T15:16:00-04:00",
+          "order_id": "PLAN-CLEAN-COMPANY:9002-SELL",
+          "payload": {
+            "accounting_event_id": "EXEC_FILL:PLAN-CLEAN-COMPANY:9002-SELL#1",
+            "accounting_sequence": 3,
+            "accounting_state_fingerprint": "bcc7e62da3987bb310e979af4971e55b039f92b215e8d44b94c99d34e9724e8b",
+            "fill_id": "PLAN-CLEAN-COMPANY:9002-SELL#1"
+          },
+          "recorded_at": null
+        },
+        "event_fingerprint": "bd7d04ab43748ea86df6e14e5a45359854bbdf553ad223ac3d2924a9f3037b84",
+        "previous_hash": "ab341a398932ace62592c88fd731a984cb672390f59a50b56523113484d24c5b",
+        "record_hash": "b08eb9f0f675d8e835177e86b362dd437eec05533decf2ab71507f441eeed19c",
+        "sequence": 10
+      },
+      {
+        "chain_version": "EXECUTION_JOURNAL_HASH_CHAIN_V1",
+        "event": {
+          "engine_version": "EXECUTION_ENGINE_V1",
+          "event_id": "PLAN-CLEAN-COMPANY:9003-BUY:CREATED",
+          "event_type": "ORDER_CREATED",
+          "execution_plan_id": "PLAN-CLEAN",
+          "fingerprint": "96ce739bfb721ceda89af63eb56bab14b7c3a95258f6aafac0217b6a0276856e",
+          "occurred_at": "2026-10-05T15:20:00-04:00",
+          "order_id": "PLAN-CLEAN-COMPANY:9003-BUY",
+          "payload": {
+            "order": {
+              "attribution": [
+                {
+                  "quantity": "200.00000000",
+                  "strategy_id": "ALPHA"
+                }
+              ],
+              "authorization_fingerprint": "60ef62c84d1f81015c0cd1328f2e04037e0df949bc330ef12944a12172251ad9",
+              "engine_version": "EXECUTION_ENGINE_V1",
+              "execution_plan_id": "PLAN-CLEAN",
+              "identity": "COMPANY:9003",
+              "order_id": "PLAN-CLEAN-COMPANY:9003-BUY",
+              "order_type": "MARKET",
+              "quantity": "200.00000000",
+              "sequence_group": "CONSUME_CASH",
+              "side": "BUY",
+              "sizing_price": "45.00000000",
+              "time_in_force": "DAY"
+            }
+          },
+          "recorded_at": null
+        },
+        "event_fingerprint": "96ce739bfb721ceda89af63eb56bab14b7c3a95258f6aafac0217b6a0276856e",
+        "previous_hash": "b08eb9f0f675d8e835177e86b362dd437eec05533decf2ab71507f441eeed19c",
+        "record_hash": "dd6a49d1fb28326eb181023b9eac281680a9e19b95dba66d11e0b06983096fb5",
+        "sequence": 11
+      },
+      {
+        "chain_version": "EXECUTION_JOURNAL_HASH_CHAIN_V1",
+        "event": {
+          "engine_version": "EXECUTION_ENGINE_V1",
+          "event_id": "PLAN-CLEAN-COMPANY:9003-BUY:SUBMITTED",
+          "event_type": "ORDER_SUBMITTED",
+          "execution_plan_id": "PLAN-CLEAN",
+          "fingerprint": "e902579ef4aefa983757b0fd96d00729cd61a092af6b46a3020331999aaa202a",
+          "occurred_at": "2026-10-05T15:20:00-04:00",
+          "order_id": "PLAN-CLEAN-COMPANY:9003-BUY",
+          "payload": {
+            "venue": "DETERMINISTIC_PAPER_BROKER"
+          },
+          "recorded_at": null
+        },
+        "event_fingerprint": "e902579ef4aefa983757b0fd96d00729cd61a092af6b46a3020331999aaa202a",
+        "previous_hash": "dd6a49d1fb28326eb181023b9eac281680a9e19b95dba66d11e0b06983096fb5",
+        "record_hash": "2bbff66fc9d6140249ac016ed849c35d6e61f3fbc418396f9334fa482b53d954",
+        "sequence": 12
+      },
+      {
+        "chain_version": "EXECUTION_JOURNAL_HASH_CHAIN_V1",
+        "event": {
+          "engine_version": "EXECUTION_ENGINE_V1",
+          "event_id": "PLAN-CLEAN-COMPANY:9003-BUY:ACKNOWLEDGED",
+          "event_type": "ORDER_ACKNOWLEDGED",
+          "execution_plan_id": "PLAN-CLEAN",
+          "fingerprint": "6f2486ec8f8b19cab903155b36e7c0c98e910f354575214f2238dd3f020c946f",
+          "occurred_at": "2026-10-05T15:20:00-04:00",
+          "order_id": "PLAN-CLEAN-COMPANY:9003-BUY",
+          "payload": {
+            "venue": "DETERMINISTIC_PAPER_BROKER"
+          },
+          "recorded_at": null
+        },
+        "event_fingerprint": "6f2486ec8f8b19cab903155b36e7c0c98e910f354575214f2238dd3f020c946f",
+        "previous_hash": "2bbff66fc9d6140249ac016ed849c35d6e61f3fbc418396f9334fa482b53d954",
+        "record_hash": "496c4be0431975e225ebc31ba1c38f4ed63f117a6586d84f6957f1639afacdbc",
+        "sequence": 13
+      },
+      {
+        "chain_version": "EXECUTION_JOURNAL_HASH_CHAIN_V1",
+        "event": {
+          "engine_version": "EXECUTION_ENGINE_V1",
+          "event_id": "PLAN-CLEAN-COMPANY:9003-BUY:FILL:1",
+          "event_type": "ORDER_FILLED",
+          "execution_plan_id": "PLAN-CLEAN",
+          "fingerprint": "e11d4c7d8af125ba9997cb499649c6a8b43d895452314e1f01af4fb5e4f8e4b7",
+          "occurred_at": "2026-10-05T15:22:00-04:00",
+          "order_id": "PLAN-CLEAN-COMPANY:9003-BUY",
+          "payload": {
+            "fill": {
+              "attribution": [
+                {
+                  "quantity": "200.00000000",
+                  "strategy_id": "ALPHA"
+                }
+              ],
+              "effective_at": "2026-10-05T15:22:00-04:00",
+              "fee": "2.00000000",
+              "fill_id": "PLAN-CLEAN-COMPANY:9003-BUY#1",
+              "identity": "COMPANY:9003",
+              "order_id": "PLAN-CLEAN-COMPANY:9003-BUY",
+              "price": "46.00000000",
+              "quantity": "200.00000000",
+              "side": "BUY",
+              "source_fingerprint": "625712ee2b2e6e5742fec45f0f082d34731f41b14bc22a8da54917dc03142d2c",
+              "venue": "DETERMINISTIC_PAPER_BROKER"
+            }
+          },
+          "recorded_at": null
+        },
+        "event_fingerprint": "e11d4c7d8af125ba9997cb499649c6a8b43d895452314e1f01af4fb5e4f8e4b7",
+        "previous_hash": "496c4be0431975e225ebc31ba1c38f4ed63f117a6586d84f6957f1639afacdbc",
+        "record_hash": "ffdd591b42e31c66ee80665a6c738d1f9d8e7cf529bec2a2e9b8332ebfc15991",
+        "sequence": 14
+      },
+      {
+        "chain_version": "EXECUTION_JOURNAL_HASH_CHAIN_V1",
+        "event": {
+          "engine_version": "EXECUTION_ENGINE_V1",
+          "event_id": "PLAN-CLEAN-COMPANY:9003-BUY#1:APPLIED",
+          "event_type": "FILL_APPLIED",
+          "execution_plan_id": "PLAN-CLEAN",
+          "fingerprint": "39623912d059daba20f95f8cc12e6ee19ddf4a66cacff916747866df13da59f2",
+          "occurred_at": "2026-10-05T15:22:00-04:00",
+          "order_id": "PLAN-CLEAN-COMPANY:9003-BUY",
+          "payload": {
+            "accounting_event_id": "EXEC_FILL:PLAN-CLEAN-COMPANY:9003-BUY#1",
+            "accounting_sequence": 4,
+            "accounting_state_fingerprint": "c9a5491d07b787a53de0f6edb980e5e249aa4016b7155f64e85fc507c3bfd978",
+            "fill_id": "PLAN-CLEAN-COMPANY:9003-BUY#1"
+          },
+          "recorded_at": null
+        },
+        "event_fingerprint": "39623912d059daba20f95f8cc12e6ee19ddf4a66cacff916747866df13da59f2",
+        "previous_hash": "ffdd591b42e31c66ee80665a6c738d1f9d8e7cf529bec2a2e9b8332ebfc15991",
+        "record_hash": "82bed72742c4d956b44ba7e71099b28e343d3f46ea70acd46cb0004ef16b97cc",
+        "sequence": 15
+      },
+      {
+        "chain_version": "EXECUTION_JOURNAL_HASH_CHAIN_V1",
+        "event": {
+          "engine_version": "EXECUTION_ENGINE_V1",
+          "event_id": "PLAN-CLEAN-COMPANY:9004-BUY:CREATED",
+          "event_type": "ORDER_CREATED",
+          "execution_plan_id": "PLAN-CLEAN",
+          "fingerprint": "a01208c11e6ffc716a08f812abf863b4267d252d9b7e74ff5aea8bb749b33681",
+          "occurred_at": "2026-10-05T15:24:00-04:00",
+          "order_id": "PLAN-CLEAN-COMPANY:9004-BUY",
+          "payload": {
+            "order": {
+              "attribution": [
+                {
+                  "quantity": "150.00000000",
+                  "strategy_id": "BETA"
+                }
+              ],
+              "authorization_fingerprint": "60ef62c84d1f81015c0cd1328f2e04037e0df949bc330ef12944a12172251ad9",
+              "engine_version": "EXECUTION_ENGINE_V1",
+              "execution_plan_id": "PLAN-CLEAN",
+              "identity": "COMPANY:9004",
+              "order_id": "PLAN-CLEAN-COMPANY:9004-BUY",
+              "order_type": "MARKET",
+              "quantity": "150.00000000",
+              "sequence_group": "CONSUME_CASH",
+              "side": "BUY",
+              "sizing_price": "16.00000000",
+              "time_in_force": "DAY"
+            }
+          },
+          "recorded_at": null
+        },
+        "event_fingerprint": "a01208c11e6ffc716a08f812abf863b4267d252d9b7e74ff5aea8bb749b33681",
+        "previous_hash": "82bed72742c4d956b44ba7e71099b28e343d3f46ea70acd46cb0004ef16b97cc",
+        "record_hash": "7b4cd1ac62dbcdcc058269a72b31866777084d8a485294dc31bb4d10815bce2c",
+        "sequence": 16
+      },
+      {
+        "chain_version": "EXECUTION_JOURNAL_HASH_CHAIN_V1",
+        "event": {
+          "engine_version": "EXECUTION_ENGINE_V1",
+          "event_id": "PLAN-CLEAN-COMPANY:9004-BUY:SUBMITTED",
+          "event_type": "ORDER_SUBMITTED",
+          "execution_plan_id": "PLAN-CLEAN",
+          "fingerprint": "65a7b6c53120f37adf1e2e3ba2a921433bec3dcebdc3f6f26c95a530fadd6637",
+          "occurred_at": "2026-10-05T15:24:00-04:00",
+          "order_id": "PLAN-CLEAN-COMPANY:9004-BUY",
+          "payload": {
+            "venue": "DETERMINISTIC_PAPER_BROKER"
+          },
+          "recorded_at": null
+        },
+        "event_fingerprint": "65a7b6c53120f37adf1e2e3ba2a921433bec3dcebdc3f6f26c95a530fadd6637",
+        "previous_hash": "7b4cd1ac62dbcdcc058269a72b31866777084d8a485294dc31bb4d10815bce2c",
+        "record_hash": "4e8e315e56f18f0b6175205d61d03b190099a67c7e2ac6e6f567141be71c6571",
+        "sequence": 17
+      },
+      {
+        "chain_version": "EXECUTION_JOURNAL_HASH_CHAIN_V1",
+        "event": {
+          "engine_version": "EXECUTION_ENGINE_V1",
+          "event_id": "PLAN-CLEAN-COMPANY:9004-BUY:ACKNOWLEDGED",
+          "event_type": "ORDER_ACKNOWLEDGED",
+          "execution_plan_id": "PLAN-CLEAN",
+          "fingerprint": "1f9abdc968e4c2ccde4df798045744acd172d8dbd82b3aee7dff3f4ef7af201f",
+          "occurred_at": "2026-10-05T15:24:00-04:00",
+          "order_id": "PLAN-CLEAN-COMPANY:9004-BUY",
+          "payload": {
+            "venue": "DETERMINISTIC_PAPER_BROKER"
+          },
+          "recorded_at": null
+        },
+        "event_fingerprint": "1f9abdc968e4c2ccde4df798045744acd172d8dbd82b3aee7dff3f4ef7af201f",
+        "previous_hash": "4e8e315e56f18f0b6175205d61d03b190099a67c7e2ac6e6f567141be71c6571",
+        "record_hash": "12c410a097fdeec9bd9bdefdfe39645ecc833b6714433d8917daccdbd83eb4ec",
+        "sequence": 18
+      },
+      {
+        "chain_version": "EXECUTION_JOURNAL_HASH_CHAIN_V1",
+        "event": {
+          "engine_version": "EXECUTION_ENGINE_V1",
+          "event_id": "PLAN-CLEAN-COMPANY:9004-BUY:FILL:1",
+          "event_type": "ORDER_FILLED",
+          "execution_plan_id": "PLAN-CLEAN",
+          "fingerprint": "b02fddb001779bd56044979b2b2e318173d7e97d649600b609a92cb3369f2f01",
+          "occurred_at": "2026-10-05T15:26:00-04:00",
+          "order_id": "PLAN-CLEAN-COMPANY:9004-BUY",
+          "payload": {
+            "fill": {
+              "attribution": [
+                {
+                  "quantity": "150.00000000",
+                  "strategy_id": "BETA"
+                }
+              ],
+              "effective_at": "2026-10-05T15:26:00-04:00",
+              "fee": "1.00000000",
+              "fill_id": "PLAN-CLEAN-COMPANY:9004-BUY#1",
+              "identity": "COMPANY:9004",
+              "order_id": "PLAN-CLEAN-COMPANY:9004-BUY",
+              "price": "16.25000000",
+              "quantity": "150.00000000",
+              "side": "BUY",
+              "source_fingerprint": "284c29c33f90d9d4483baae0c5dff7e2412ea649ae7baf569948a2b3ac966f4f",
+              "venue": "DETERMINISTIC_PAPER_BROKER"
+            }
+          },
+          "recorded_at": null
+        },
+        "event_fingerprint": "b02fddb001779bd56044979b2b2e318173d7e97d649600b609a92cb3369f2f01",
+        "previous_hash": "12c410a097fdeec9bd9bdefdfe39645ecc833b6714433d8917daccdbd83eb4ec",
+        "record_hash": "bd09bcbca301d51a112f47fc94fac40f9cf6d46c776ade812b798f290c816fc2",
+        "sequence": 19
+      },
+      {
+        "chain_version": "EXECUTION_JOURNAL_HASH_CHAIN_V1",
+        "event": {
+          "engine_version": "EXECUTION_ENGINE_V1",
+          "event_id": "PLAN-CLEAN-COMPANY:9004-BUY#1:APPLIED",
+          "event_type": "FILL_APPLIED",
+          "execution_plan_id": "PLAN-CLEAN",
+          "fingerprint": "5da03badef05d4a1ea9d6731d7a7116b073cda8c7d5e6e3005f6a3617f4663d1",
+          "occurred_at": "2026-10-05T15:26:00-04:00",
+          "order_id": "PLAN-CLEAN-COMPANY:9004-BUY",
+          "payload": {
+            "accounting_event_id": "EXEC_FILL:PLAN-CLEAN-COMPANY:9004-BUY#1",
+            "accounting_sequence": 5,
+            "accounting_state_fingerprint": "a5a0aea1917a72610c12b26adaf96301f79d42e195669f3846f3d90fd2819909",
+            "fill_id": "PLAN-CLEAN-COMPANY:9004-BUY#1"
+          },
+          "recorded_at": null
+        },
+        "event_fingerprint": "5da03badef05d4a1ea9d6731d7a7116b073cda8c7d5e6e3005f6a3617f4663d1",
+        "previous_hash": "bd09bcbca301d51a112f47fc94fac40f9cf6d46c776ade812b798f290c816fc2",
+        "record_hash": "cad7082409c76d7c9260216770a605c4b2ba64fc542a494eb66ca71b4b2986c8",
+        "sequence": 20
+      }
+    ]
+  },
+  "manifest": {
+    "bindings": {
+      "accounting_generation": "PORTFOLIO_LEDGER_GENERATION_1",
+      "accounting_version": "PORTFOLIO_ACCOUNTING_V2",
+      "code_commit": null,
+      "execution_plan_fingerprint": "60ef62c84d1f81015c0cd1328f2e04037e0df949bc330ef12944a12172251ad9",
+      "final_accounting_state": "a5a0aea1917a72610c12b26adaf96301f79d42e195669f3846f3d90fd2819909",
+      "initial_accounting_state": "9db394cf3b8b73eaa1d12f0f0ddb29b9f962777c799eadcb1262c5cd6d5e5f25",
+      "journal_anchor_fingerprint": "ce7b38115d983dba1c45453d7c404037f4c7d81f0efff8d37e58e435d8eb14a1",
+      "journal_generation": "EXECUTION_JOURNAL_GENERATION_1",
+      "journal_head": "cad7082409c76d7c9260216770a605c4b2ba64fc542a494eb66ca71b4b2986c8",
+      "journal_sequence": 20,
+      "paper_snapshot_fingerprints": [
+        "2181005fd21106fd4f058b965477add3963562e561951b1cce8a372e8c268a3e",
+        "93df86fb41cb046d07b634030d861bc58141b9372cba268407c670cd2dfd5b9f",
+        "625712ee2b2e6e5742fec45f0f082d34731f41b14bc22a8da54917dc03142d2c",
+        "284c29c33f90d9d4483baae0c5dff7e2412ea649ae7baf569948a2b3ac966f4f"
+      ],
+      "plan_report_fingerprint": "85f4a7a3a5e1d6d0f93d20b404f991f027da6219d2fa9ca668e7d78bfa6c4f92"
+    },
+    "engine": {
+      "engine_version": "EXECUTION_ENGINE_V1",
+      "fill_attribution": "PROPORTIONAL_FILL_ATTRIBUTION_V1",
+      "journal_chain": "EXECUTION_JOURNAL_HASH_CHAIN_V1",
+      "never_does": [
+        "contact a broker, paper or live",
+        "hold a broker credential",
+        "place a live order",
+        "place a remote paper order",
+        "introduce randomness into a fill",
+        "estimate market impact",
+        "optimise an execution parameter",
+        "maintain cash, positions or P&L of its own",
+        "change the book without an admitted accounting FillEvent"
+      ],
+      "order_contracts": {
+        "durable_identity": "(kind, identity_id); a ticker is metadata",
+        "fractional_quantities": "SUPPORTED \u2014 positive Decimal, 8 places",
+        "order_types": [
+          "MARKET"
+        ],
+        "short_selling": "NOT_SUPPORTED",
+        "sides": [
+          "BUY",
+          "SELL"
+        ],
+        "time_in_force": [
+          "DAY"
+        ]
+      },
+      "paper_fill_model": "PAPER_REFERENCE_PRICE_FILL_V1",
+      "paper_fill_policy": "PAPER_FULL_FILL_V1",
+      "required_accounting_version": "PORTFOLIO_ACCOUNTING_V2",
+      "sequencing": "SELLS_BEFORE_BUYS_V1",
+      "what_this_is": "a deterministic correctness simulator. Given the same inputs it produces the same orders, the same fills and the same book, every time, which is what makes an execution bug findable.",
+      "what_this_is_not": "This is not a realistic fill simulator. It models no spread, no slippage, no market impact, no volume participation, no latency and no queue position. A backtest run through it will be optimistic by exactly the costs it does not model, and that gap is not small."
+    },
+    "error_codes": [
+      "ACCOUNTING_ADMISSION_FAILED",
+      "EXECUTION_ANCHOR_FINGERPRINT_MISMATCH",
+      "EXECUTION_ANCHOR_INVALID",
+      "EXECUTION_ANCHOR_MISSING",
+      "EXECUTION_AUTHORIZATION_MISMATCH",
+      "EXECUTION_BOOK_MISMATCH",
+      "EXECUTION_EVENT_ID_CONFLICT",
+      "EXECUTION_EVENT_INVALID",
+      "EXECUTION_GENERATION_MISMATCH",
+      "EXECUTION_JOURNAL_HASH_CHAIN_MISMATCH",
+      "EXECUTION_JOURNAL_HEAD_ANCHOR_MISMATCH",
+      "EXECUTION_JOURNAL_SEQUENCE_GAP",
+      "EXECUTION_JOURNAL_TRUNCATION_DETECTED",
+      "EXECUTION_PARTIAL_RECORD",
+      "EXECUTION_PERSISTENCE_VERIFY_FAILED",
+      "EXECUTION_RECOVERY_REQUIRED",
+      "EXECUTION_STATE_DRIFT",
+      "FILL_ATTRIBUTION_DOES_NOT_SUM",
+      "FILL_ATTRIBUTION_UNAUTHORIZED",
+      "FILL_ID_CONFLICT",
+      "FILL_INVALID",
+      "FORBIDDEN_EXECUTION_NAMESPACE",
+      "INVALID_EXECUTION_PRICE",
+      "INVALID_ORDER_STATE_TRANSITION",
+      "ORDER_ALREADY_TERMINAL",
+      "ORDER_INVALID",
+      "ORDER_NOT_FOUND",
+      "ORDER_OVERFILL",
+      "PAPER_EXECUTION_PRICE_MISSING",
+      "PAPER_POLICY_REJECTED",
+      "PAPER_SNAPSHOT_BEFORE_ACKNOWLEDGEMENT",
+      "PLAN_ALREADY_TERMINAL",
+      "PLAN_INVALID",
+      "SIZING_SNAPSHOT_INCOMPLETE",
+      "STALE_EXECUTION_INTENT",
+      "UNAUTHORIZED_ORDER",
+      "UNSUPPORTED_EXECUTION_ACCOUNTING_VERSION",
+      "UNSUPPORTED_ORDER_SIDE",
+      "UNSUPPORTED_ORDER_TYPE",
+      "UNSUPPORTED_TIME_IN_FORCE"
+    ],
+    "external_paper_broker": "NOT_IMPLEMENTED",
+    "invariants": [
+      "an order changes no holding, no cash and no NAV",
+      "only an admitted accounting FillEvent changes the book",
+      "an approved portfolio creates no order by itself",
+      "an execution intent creates no order by itself",
+      "every order originates from an authorised execution plan",
+      "cumulative filled quantity never exceeds the ordered quantity",
+      "a fill maps to exactly one accounting event, derived from its id",
+      "fill attribution sums exactly to the filled quantity",
+      "the broker holds no cash, no positions and no P&L"
+    ],
+    "live_broker": "NOT_IMPLEMENTED",
+    "live_trading": "NOT_AUTHORIZED",
+    "manifest_fingerprint": "48a657c7a90248172203c8c99d17e48fd1feb95a4aa4bf74e2d4cdc70929f4af",
+    "manifest_version": "EXECUTION_MANIFEST_V1",
+    "not_guaranteed": [
+      "COORDINATED_LOCAL_ROLLBACK_DETECTION: a journal and its local anchor rolled back together to a mutually consistent earlier state cannot be detected from local files alone. The same limit applies to the accounting ledger, and closing either needs an independently trusted external anchor.",
+      "EXECUTION REALISM: no spread, slippage, market impact, volume participation, latency or queue position is modelled. A strategy run through this engine will look better than it would trade."
+    ],
+    "order_lifecycle": {
+      "note": "the lifecycle is walked even when the broker is in-process. Collapsing states because a local simulation could would leave the first remote adapter exercising transitions nothing had tested.",
+      "states": [
+        "CREATED",
+        "SUBMITTED",
+        "ACKNOWLEDGED",
+        "PARTIALLY_FILLED",
+        "FILLED",
+        "CANCELLED",
+        "REJECTED"
+      ],
+      "terminal": [
+        "CANCELLED",
+        "FILLED",
+        "REJECTED"
+      ],
+      "transitions": {
+        "ACKNOWLEDGED": [
+          "CANCELLED",
+          "FILLED",
+          "PARTIALLY_FILLED",
+          "REJECTED"
+        ],
+        "CANCELLED": [],
+        "CREATED": [
+          "SUBMITTED"
+        ],
+        "FILLED": [],
+        "PARTIALLY_FILLED": [
+          "CANCELLED",
+          "FILLED",
+          "PARTIALLY_FILLED"
+        ],
+        "REJECTED": [],
+        "SUBMITTED": [
+          "ACKNOWLEDGED",
+          "CANCELLED",
+          "REJECTED"
+        ]
+      }
+    },
+    "paper_market": {
+      "availability": "explicit; absent means fill the remainder. Never a random fraction.",
+      "consequence": "a strategy run through this engine will look better than it would trade, by roughly the costs listed above. The engine exists to prove the order lifecycle and the accounting handoff are correct, not to estimate a return.",
+      "fees": "explicit per security; default zero. No commission is invented.",
+      "fill_policy": "PAPER_FULL_FILL_V1",
+      "model": "PAPER_REFERENCE_PRICE_FILL_V1",
+      "not_modelled": [
+        "bid-ask spread",
+        "slippage",
+        "market impact",
+        "volume participation",
+        "latency",
+        "queue position",
+        "partial-day price paths",
+        "order expiry across sessions"
+      ],
+      "price_source": "the explicit execution snapshot, and nothing else",
+      "sizing_price_fallback": "NONE \u2014 a missing execution price leaves the order working rather than filling at the price that sized it, which would make every rebalance execute at exactly its planned level"
+    },
+    "policies": {
+      "engine": "EXECUTION_ENGINE_V1",
+      "fill_attribution": "PROPORTIONAL_FILL_ATTRIBUTION_V1",
+      "journal_anchor": "EXECUTION_JOURNAL_HEAD_ANCHOR_V1",
+      "journal_chain": "EXECUTION_JOURNAL_HASH_CHAIN_V1",
+      "order_sequencing": "SELLS_BEFORE_BUYS_V1",
+      "paper_fill_model": "PAPER_REFERENCE_PRICE_FILL_V1",
+      "required_accounting_version": "PORTFOLIO_ACCOUNTING_V2",
+      "store": "EXECUTION_STORE_V1"
+    },
+    "refusals": [
+      "an order type or time in force outside the frozen baseline",
+      "an order the active plan does not authorise",
+      "an execution intent stale against the current book",
+      "a book of the wrong ledger generation or accounting version",
+      "a new execution book under PORTFOLIO_ACCOUNTING_V1",
+      "a state transition outside the frozen table",
+      "a fill that would overfill its order",
+      "a fill id reused with different content",
+      "a market order with no execution price",
+      "an execution snapshot predating the order's acknowledgement",
+      "a buy the book's cash cannot fund",
+      "a journal shorter than its anchor witnesses"
+    ],
+    "venue": "DETERMINISTIC_PAPER_BROKER"
+  },
+  "order_state": {
+    "applications": {
+      "PLAN-CLEAN-COMPANY:9001-SELL#1": "APPLIED",
+      "PLAN-CLEAN-COMPANY:9002-SELL#1": "APPLIED",
+      "PLAN-CLEAN-COMPANY:9003-BUY#1": "APPLIED",
+      "PLAN-CLEAN-COMPANY:9004-BUY#1": "APPLIED"
+    },
+    "fills": [
+      {
+        "accounting_event_id": "EXEC_FILL:PLAN-CLEAN-COMPANY:9001-SELL#1",
+        "attribution": [
+          {
+            "quantity": "200.00000000",
+            "strategy_id": "ALPHA"
+          }
+        ],
+        "effective_at": "2026-10-05T15:12:00-04:00",
+        "fee": "1.00000000",
+        "fill_fingerprint": "ce728d4e6276744b903164e60e5478e448a37c4c3882a831d4e3771697d32e40",
+        "fill_id": "PLAN-CLEAN-COMPANY:9001-SELL#1",
+        "identity": "COMPANY:9001",
+        "notional": "8100.00000000",
+        "order_id": "PLAN-CLEAN-COMPANY:9001-SELL",
+        "price": "40.50000000",
+        "quantity": "200.00000000",
+        "side": "SELL",
+        "source_fingerprint": "2181005fd21106fd4f058b965477add3963562e561951b1cce8a372e8c268a3e",
+        "venue": "DETERMINISTIC_PAPER_BROKER"
+      },
+      {
+        "accounting_event_id": "EXEC_FILL:PLAN-CLEAN-COMPANY:9002-SELL#1",
+        "attribution": [
+          {
+            "quantity": "125.00000000",
+            "strategy_id": "ALPHA"
+          },
+          {
+            "quantity": "75.00000000",
+            "strategy_id": "BETA"
+          }
+        ],
+        "effective_at": "2026-10-05T15:16:00-04:00",
+        "fee": "1.00000000",
+        "fill_fingerprint": "4d551c6b5d60795beae93df8cd6cc1d37890c919da137d41f3320028e4e43c6f",
+        "fill_id": "PLAN-CLEAN-COMPANY:9002-SELL#1",
+        "identity": "COMPANY:9002",
+        "notional": "4350.00000000",
+        "order_id": "PLAN-CLEAN-COMPANY:9002-SELL",
+        "price": "21.75000000",
+        "quantity": "200.00000000",
+        "side": "SELL",
+        "source_fingerprint": "93df86fb41cb046d07b634030d861bc58141b9372cba268407c670cd2dfd5b9f",
+        "venue": "DETERMINISTIC_PAPER_BROKER"
+      },
+      {
+        "accounting_event_id": "EXEC_FILL:PLAN-CLEAN-COMPANY:9003-BUY#1",
+        "attribution": [
+          {
+            "quantity": "200.00000000",
+            "strategy_id": "ALPHA"
+          }
+        ],
+        "effective_at": "2026-10-05T15:22:00-04:00",
+        "fee": "2.00000000",
+        "fill_fingerprint": "622809fc657012c6e812649a5e3020060a4ce016464a364da1c6a4eb4db7f504",
+        "fill_id": "PLAN-CLEAN-COMPANY:9003-BUY#1",
+        "identity": "COMPANY:9003",
+        "notional": "9200.00000000",
+        "order_id": "PLAN-CLEAN-COMPANY:9003-BUY",
+        "price": "46.00000000",
+        "quantity": "200.00000000",
+        "side": "BUY",
+        "source_fingerprint": "625712ee2b2e6e5742fec45f0f082d34731f41b14bc22a8da54917dc03142d2c",
+        "venue": "DETERMINISTIC_PAPER_BROKER"
+      },
+      {
+        "accounting_event_id": "EXEC_FILL:PLAN-CLEAN-COMPANY:9004-BUY#1",
+        "attribution": [
+          {
+            "quantity": "150.00000000",
+            "strategy_id": "BETA"
+          }
+        ],
+        "effective_at": "2026-10-05T15:26:00-04:00",
+        "fee": "1.00000000",
+        "fill_fingerprint": "8d45c465e6494c23c1e747c8b666bba5d731b0e6ba952b527f72291f94d1de85",
+        "fill_id": "PLAN-CLEAN-COMPANY:9004-BUY#1",
+        "identity": "COMPANY:9004",
+        "notional": "2437.50000000",
+        "order_id": "PLAN-CLEAN-COMPANY:9004-BUY",
+        "price": "16.25000000",
+        "quantity": "150.00000000",
+        "side": "BUY",
+        "source_fingerprint": "284c29c33f90d9d4483baae0c5dff7e2412ea649ae7baf569948a2b3ac966f4f",
+        "venue": "DETERMINISTIC_PAPER_BROKER"
+      }
+    ],
+    "journal_head": "cad7082409c76d7c9260216770a605c4b2ba64fc542a494eb66ca71b4b2986c8",
+    "journal_sequence": 20,
+    "orders": [
+      {
+        "cumulative_fee": "1.00000000",
+        "cumulative_filled_quantity": "200.00000000",
+        "fill_count": 1,
+        "identity": "COMPANY:9001",
+        "is_terminal": true,
+        "order_id": "PLAN-CLEAN-COMPANY:9001-SELL",
+        "ordered_quantity": "200.00000000",
+        "reason": null,
+        "remaining_quantity": "0",
+        "side": "SELL",
+        "state": "FILLED",
+        "vwap_fill_price": "40.50000000"
+      },
+      {
+        "cumulative_fee": "1.00000000",
+        "cumulative_filled_quantity": "200.00000000",
+        "fill_count": 1,
+        "identity": "COMPANY:9002",
+        "is_terminal": true,
+        "order_id": "PLAN-CLEAN-COMPANY:9002-SELL",
+        "ordered_quantity": "200.00000000",
+        "reason": null,
+        "remaining_quantity": "0",
+        "side": "SELL",
+        "state": "FILLED",
+        "vwap_fill_price": "21.75000000"
+      },
+      {
+        "cumulative_fee": "2.00000000",
+        "cumulative_filled_quantity": "200.00000000",
+        "fill_count": 1,
+        "identity": "COMPANY:9003",
+        "is_terminal": true,
+        "order_id": "PLAN-CLEAN-COMPANY:9003-BUY",
+        "ordered_quantity": "200.00000000",
+        "reason": null,
+        "remaining_quantity": "0",
+        "side": "BUY",
+        "state": "FILLED",
+        "vwap_fill_price": "46.00000000"
+      },
+      {
+        "cumulative_fee": "1.00000000",
+        "cumulative_filled_quantity": "150.00000000",
+        "fill_count": 1,
+        "identity": "COMPANY:9004",
+        "is_terminal": true,
+        "order_id": "PLAN-CLEAN-COMPANY:9004-BUY",
+        "ordered_quantity": "150.00000000",
+        "reason": null,
+        "remaining_quantity": "0",
+        "side": "BUY",
+        "state": "FILLED",
+        "vwap_fill_price": "16.25000000"
+      }
+    ],
+    "pending_fill_ids": []
+  },
+  "plan": {
+    "as_of": "2026-10-05T15:00:00-04:00",
+    "attribution_rule": "PROPORTIONAL_FILL_ATTRIBUTION_V1",
+    "bindings": {
+      "approved_portfolio": "apapapapapapapapapapapapapapapapapapapapapapapapapapapapapapapap",
+      "book": {
+        "accounting_engine_version": "PORTFOLIO_ACCOUNTING_V2",
+        "accounting_state_fingerprint": "9db394cf3b8b73eaa1d12f0f0ddb29b9f962777c799eadcb1262c5cd6d5e5f25",
+        "ledger_generation": "PORTFOLIO_LEDGER_GENERATION_1",
+        "ledger_head": "36045461646a45604e8002304161e55fe03dcc4a9c135b068211c18641d0c08b",
+        "ledger_sequence": 1
+      },
+      "execution_intents": "53a01e8907c7e6da2995c80b939986f1159089f66fbcd7dda4317ab3601f01ad",
+      "sizing_snapshot": "523268f4a5b50518134e4d1ace27cb68cb3c8993d02b24ff533c2c98193245c7",
+      "valued_snapshot": "vsvsvsvsvsvsvsvsvsvsvsvsvsvsvsvsvsvsvsvsvsvsvsvsvsvsvsvsvsvsvsvs"
+    },
+    "created_at": "2026-10-05T15:00:00-04:00",
+    "engine_version": "EXECUTION_ENGINE_V1",
+    "execution_plan_id": "PLAN-CLEAN",
+    "note": "a plan authorises orders; it does not create or submit them. Submitting is an explicit, separate call.",
+    "order_count": 4,
+    "orders": [
+      {
+        "attribution": [
+          {
+            "quantity": "200.00000000",
+            "strategy_id": "ALPHA"
+          }
+        ],
+        "engine_version": "EXECUTION_ENGINE_V1",
+        "execution_plan_id": "PLAN-CLEAN",
+        "identity": "COMPANY:9001",
+        "order_id": "PLAN-CLEAN-COMPANY:9001-SELL",
+        "order_type": "MARKET",
+        "quantity": "200.00000000",
+        "sequence_group": "RELEASE_CASH",
+        "side": "SELL",
+        "sizing_price": "40.00000000",
+        "time_in_force": "DAY"
+      },
+      {
+        "attribution": [
+          {
+            "quantity": "125.00000000",
+            "strategy_id": "ALPHA"
+          },
+          {
+            "quantity": "75.00000000",
+            "strategy_id": "BETA"
+          }
+        ],
+        "engine_version": "EXECUTION_ENGINE_V1",
+        "execution_plan_id": "PLAN-CLEAN",
+        "identity": "COMPANY:9002",
+        "order_id": "PLAN-CLEAN-COMPANY:9002-SELL",
+        "order_type": "MARKET",
+        "quantity": "200.00000000",
+        "sequence_group": "RELEASE_CASH",
+        "side": "SELL",
+        "sizing_price": "22.00000000",
+        "time_in_force": "DAY"
+      },
+      {
+        "attribution": [
+          {
+            "quantity": "200.00000000",
+            "strategy_id": "ALPHA"
+          }
+        ],
+        "engine_version": "EXECUTION_ENGINE_V1",
+        "execution_plan_id": "PLAN-CLEAN",
+        "identity": "COMPANY:9003",
+        "order_id": "PLAN-CLEAN-COMPANY:9003-BUY",
+        "order_type": "MARKET",
+        "quantity": "200.00000000",
+        "sequence_group": "CONSUME_CASH",
+        "side": "BUY",
+        "sizing_price": "45.00000000",
+        "time_in_force": "DAY"
+      },
+      {
+        "attribution": [
+          {
+            "quantity": "150.00000000",
+            "strategy_id": "BETA"
+          }
+        ],
+        "engine_version": "EXECUTION_ENGINE_V1",
+        "execution_plan_id": "PLAN-CLEAN",
+        "identity": "COMPANY:9004",
+        "order_id": "PLAN-CLEAN-COMPANY:9004-BUY",
+        "order_type": "MARKET",
+        "quantity": "150.00000000",
+        "sequence_group": "CONSUME_CASH",
+        "side": "BUY",
+        "sizing_price": "16.00000000",
+        "time_in_force": "DAY"
+      }
+    ],
+    "orders_detail": [
+      {
+        "attribution": [
+          {
+            "quantity": "200.00000000",
+            "strategy_id": "ALPHA"
+          }
+        ],
+        "authorization_fingerprint": "60ef62c84d1f81015c0cd1328f2e04037e0df949bc330ef12944a12172251ad9",
+        "changes_cash": false,
+        "changes_holdings": false,
+        "created_at": "2026-10-05T15:00:00-04:00",
+        "engine_version": "EXECUTION_ENGINE_V1",
+        "execution_plan_id": "PLAN-CLEAN",
+        "identity": "COMPANY:9001",
+        "note": "an order is inert. Only an admitted accounting FillEvent changes holdings, cash or NAV.",
+        "notional": "8000.00000000",
+        "order_fingerprint": "942f35f6d91e7c8614aaddc8417a955afbe1b52258526838df317b9f4709b931",
+        "order_id": "PLAN-CLEAN-COMPANY:9001-SELL",
+        "order_type": "MARKET",
+        "quantity": "200.00000000",
+        "sequence_group": "RELEASE_CASH",
+        "side": "SELL",
+        "sizing_price": "40.00000000",
+        "symbol": "EXT",
+        "time_in_force": "DAY"
+      },
+      {
+        "attribution": [
+          {
+            "quantity": "125.00000000",
+            "strategy_id": "ALPHA"
+          },
+          {
+            "quantity": "75.00000000",
+            "strategy_id": "BETA"
+          }
+        ],
+        "authorization_fingerprint": "60ef62c84d1f81015c0cd1328f2e04037e0df949bc330ef12944a12172251ad9",
+        "changes_cash": false,
+        "changes_holdings": false,
+        "created_at": "2026-10-05T15:00:00-04:00",
+        "engine_version": "EXECUTION_ENGINE_V1",
+        "execution_plan_id": "PLAN-CLEAN",
+        "identity": "COMPANY:9002",
+        "note": "an order is inert. Only an admitted accounting FillEvent changes holdings, cash or NAV.",
+        "notional": "4400.00000000",
+        "order_fingerprint": "841c5b7e244689bca20324912e5b2cc40f8025f3d46ba77a72b21b81a0ec9dbc",
+        "order_id": "PLAN-CLEAN-COMPANY:9002-SELL",
+        "order_type": "MARKET",
+        "quantity": "200.00000000",
+        "sequence_group": "RELEASE_CASH",
+        "side": "SELL",
+        "sizing_price": "22.00000000",
+        "symbol": "RED",
+        "time_in_force": "DAY"
+      },
+      {
+        "attribution": [
+          {
+            "quantity": "200.00000000",
+            "strategy_id": "ALPHA"
+          }
+        ],
+        "authorization_fingerprint": "60ef62c84d1f81015c0cd1328f2e04037e0df949bc330ef12944a12172251ad9",
+        "changes_cash": false,
+        "changes_holdings": false,
+        "created_at": "2026-10-05T15:00:00-04:00",
+        "engine_version": "EXECUTION_ENGINE_V1",
+        "execution_plan_id": "PLAN-CLEAN",
+        "identity": "COMPANY:9003",
+        "note": "an order is inert. Only an admitted accounting FillEvent changes holdings, cash or NAV.",
+        "notional": "9000.00000000",
+        "order_fingerprint": "27d0ad982fe5af4781afdb513750eef8e40648f4ccd635391bc5522bbba49bc8",
+        "order_id": "PLAN-CLEAN-COMPANY:9003-BUY",
+        "order_type": "MARKET",
+        "quantity": "200.00000000",
+        "sequence_group": "CONSUME_CASH",
+        "side": "BUY",
+        "sizing_price": "45.00000000",
+        "symbol": "ENT",
+        "time_in_force": "DAY"
+      },
+      {
+        "attribution": [
+          {
+            "quantity": "150.00000000",
+            "strategy_id": "BETA"
+          }
+        ],
+        "authorization_fingerprint": "60ef62c84d1f81015c0cd1328f2e04037e0df949bc330ef12944a12172251ad9",
+        "changes_cash": false,
+        "changes_holdings": false,
+        "created_at": "2026-10-05T15:00:00-04:00",
+        "engine_version": "EXECUTION_ENGINE_V1",
+        "execution_plan_id": "PLAN-CLEAN",
+        "identity": "COMPANY:9004",
+        "note": "an order is inert. Only an admitted accounting FillEvent changes holdings, cash or NAV.",
+        "notional": "2400.00000000",
+        "order_fingerprint": "10ac5c4f6cc6dd5c1195b0315aa4c070f704cbc350ce9a0fc933dc4434d2298b",
+        "order_id": "PLAN-CLEAN-COMPANY:9004-BUY",
+        "order_type": "MARKET",
+        "quantity": "150.00000000",
+        "sequence_group": "CONSUME_CASH",
+        "side": "BUY",
+        "sizing_price": "16.00000000",
+        "symbol": "INC",
+        "time_in_force": "DAY"
+      }
+    ],
+    "plan_fingerprint": "60ef62c84d1f81015c0cd1328f2e04037e0df949bc330ef12944a12172251ad9",
+    "sequencing_rule": "SELLS_BEFORE_BUYS_V1"
+  },
+  "plan_report": {
+    "accounting": {
+      "authority": "holdings, cash, NAV and P&L are accounting's alone. This report names the book's state before and after so the two can be reconciled, and duplicates none of its figures.",
+      "engine_version": "PORTFOLIO_ACCOUNTING_V2",
+      "final_state_fingerprint": "a5a0aea1917a72610c12b26adaf96301f79d42e195669f3846f3d90fd2819909",
+      "initial_state_fingerprint": "9db394cf3b8b73eaa1d12f0f0ddb29b9f962777c799eadcb1262c5cd6d5e5f25",
+      "ledger_generation": "PORTFOLIO_LEDGER_GENERATION_1"
+    },
+    "attribution_rule": "PROPORTIONAL_FILL_ATTRIBUTION_V1",
+    "drift_detected": false,
+    "engine_version": "EXECUTION_ENGINE_V1",
+    "execution_plan_id": "PLAN-CLEAN",
+    "execution_snapshot_fingerprints": [
+      "2181005fd21106fd4f058b965477add3963562e561951b1cce8a372e8c268a3e",
+      "93df86fb41cb046d07b634030d861bc58141b9372cba268407c670cd2dfd5b9f",
+      "625712ee2b2e6e5742fec45f0f082d34731f41b14bc22a8da54917dc03142d2c",
+      "284c29c33f90d9d4483baae0c5dff7e2412ea649ae7baf569948a2b3ac966f4f"
+    ],
+    "filled_notional": "24087.50000000",
+    "filled_quantity_total": "750.00000000",
+    "journal": {
+      "head": "cad7082409c76d7c9260216770a605c4b2ba64fc542a494eb66ca71b4b2986c8",
+      "pending_fill_ids": [],
+      "sequence": 20
+    },
+    "order_count": 4,
+    "orders": [
+      {
+        "fill_count": 1,
+        "filled_notional": "8100.00000000",
+        "filled_quantity": "200.00000000",
+        "identity": "COMPANY:9001",
+        "is_terminal": true,
+        "lifecycle": [
+          {
+            "accounting_event_id": "EXEC_FILL:PLAN-CLEAN-COMPANY:9001-SELL#1",
+            "application": "APPLIED",
+            "attribution": [
+              {
+                "quantity": "200.00000000",
+                "strategy_id": "ALPHA"
+              }
+            ],
+            "effective_at": "2026-10-05T15:12:00-04:00",
+            "fee": "1.00000000",
+            "fill_id": "PLAN-CLEAN-COMPANY:9001-SELL#1",
+            "price": "40.50000000",
+            "quantity": "200.00000000"
+          }
+        ],
+        "note": "fill prices are volume-weighted. No P&L appears here: realised and unrealised P&L and NAV are accounting's figures, and a second copy would eventually disagree with the first.",
+        "order_id": "PLAN-CLEAN-COMPANY:9001-SELL",
+        "order_type": "MARKET",
+        "ordered_quantity": "200.00000000",
+        "planned_notional": "8000.00000000",
+        "reason": null,
+        "remaining_quantity": "0",
+        "report_fingerprint": "5f58a7d416e084132b4f80e2c92b144ed277b46e0ccd8dcd4bbc0c926f8c5587",
+        "sequence_group": "RELEASE_CASH",
+        "side": "SELL",
+        "sizing_price": "40.00000000",
+        "terminal_state": "FILLED",
+        "time_in_force": "DAY",
+        "total_fees": "1.00000000",
+        "vwap_fill_price": "40.50000000"
+      },
+      {
+        "fill_count": 1,
+        "filled_notional": "4350.00000000",
+        "filled_quantity": "200.00000000",
+        "identity": "COMPANY:9002",
+        "is_terminal": true,
+        "lifecycle": [
+          {
+            "accounting_event_id": "EXEC_FILL:PLAN-CLEAN-COMPANY:9002-SELL#1",
+            "application": "APPLIED",
+            "attribution": [
+              {
+                "quantity": "125.00000000",
+                "strategy_id": "ALPHA"
+              },
+              {
+                "quantity": "75.00000000",
+                "strategy_id": "BETA"
+              }
+            ],
+            "effective_at": "2026-10-05T15:16:00-04:00",
+            "fee": "1.00000000",
+            "fill_id": "PLAN-CLEAN-COMPANY:9002-SELL#1",
+            "price": "21.75000000",
+            "quantity": "200.00000000"
+          }
+        ],
+        "note": "fill prices are volume-weighted. No P&L appears here: realised and unrealised P&L and NAV are accounting's figures, and a second copy would eventually disagree with the first.",
+        "order_id": "PLAN-CLEAN-COMPANY:9002-SELL",
+        "order_type": "MARKET",
+        "ordered_quantity": "200.00000000",
+        "planned_notional": "4400.00000000",
+        "reason": null,
+        "remaining_quantity": "0",
+        "report_fingerprint": "b1272c3e78b2bb69622ef008397ad2940f7da80a2df19b6382355c8757a089fc",
+        "sequence_group": "RELEASE_CASH",
+        "side": "SELL",
+        "sizing_price": "22.00000000",
+        "terminal_state": "FILLED",
+        "time_in_force": "DAY",
+        "total_fees": "1.00000000",
+        "vwap_fill_price": "21.75000000"
+      },
+      {
+        "fill_count": 1,
+        "filled_notional": "9200.00000000",
+        "filled_quantity": "200.00000000",
+        "identity": "COMPANY:9003",
+        "is_terminal": true,
+        "lifecycle": [
+          {
+            "accounting_event_id": "EXEC_FILL:PLAN-CLEAN-COMPANY:9003-BUY#1",
+            "application": "APPLIED",
+            "attribution": [
+              {
+                "quantity": "200.00000000",
+                "strategy_id": "ALPHA"
+              }
+            ],
+            "effective_at": "2026-10-05T15:22:00-04:00",
+            "fee": "2.00000000",
+            "fill_id": "PLAN-CLEAN-COMPANY:9003-BUY#1",
+            "price": "46.00000000",
+            "quantity": "200.00000000"
+          }
+        ],
+        "note": "fill prices are volume-weighted. No P&L appears here: realised and unrealised P&L and NAV are accounting's figures, and a second copy would eventually disagree with the first.",
+        "order_id": "PLAN-CLEAN-COMPANY:9003-BUY",
+        "order_type": "MARKET",
+        "ordered_quantity": "200.00000000",
+        "planned_notional": "9000.00000000",
+        "reason": null,
+        "remaining_quantity": "0",
+        "report_fingerprint": "b176a7189ce6c59c4a3e77f4ea7a743177d8d3d777e0b858cbfba9b9c8aa66c6",
+        "sequence_group": "CONSUME_CASH",
+        "side": "BUY",
+        "sizing_price": "45.00000000",
+        "terminal_state": "FILLED",
+        "time_in_force": "DAY",
+        "total_fees": "2.00000000",
+        "vwap_fill_price": "46.00000000"
+      },
+      {
+        "fill_count": 1,
+        "filled_notional": "2437.50000000",
+        "filled_quantity": "150.00000000",
+        "identity": "COMPANY:9004",
+        "is_terminal": true,
+        "lifecycle": [
+          {
+            "accounting_event_id": "EXEC_FILL:PLAN-CLEAN-COMPANY:9004-BUY#1",
+            "application": "APPLIED",
+            "attribution": [
+              {
+                "quantity": "150.00000000",
+                "strategy_id": "BETA"
+              }
+            ],
+            "effective_at": "2026-10-05T15:26:00-04:00",
+            "fee": "1.00000000",
+            "fill_id": "PLAN-CLEAN-COMPANY:9004-BUY#1",
+            "price": "16.25000000",
+            "quantity": "150.00000000"
+          }
+        ],
+        "note": "fill prices are volume-weighted. No P&L appears here: realised and unrealised P&L and NAV are accounting's figures, and a second copy would eventually disagree with the first.",
+        "order_id": "PLAN-CLEAN-COMPANY:9004-BUY",
+        "order_type": "MARKET",
+        "ordered_quantity": "150.00000000",
+        "planned_notional": "2400.00000000",
+        "reason": null,
+        "remaining_quantity": "0",
+        "report_fingerprint": "bdf1b6fe07434dd50d9cc9edfa90918997c55dfa25f5f7d8ea808928ca477e4f",
+        "sequence_group": "CONSUME_CASH",
+        "side": "BUY",
+        "sizing_price": "16.00000000",
+        "terminal_state": "FILLED",
+        "time_in_force": "DAY",
+        "total_fees": "1.00000000",
+        "vwap_fill_price": "16.25000000"
+      }
+    ],
+    "orders_cancelled": 0,
+    "orders_filled": 4,
+    "orders_open": 0,
+    "orders_partially_filled": 0,
+    "orders_rejected": 0,
+    "performance_claim": "NONE",
+    "plan_fingerprint": "60ef62c84d1f81015c0cd1328f2e04037e0df949bc330ef12944a12172251ad9",
+    "plan_status": "COMPLETED",
+    "planned_notional": "23800.00000000",
+    "report_fingerprint": "85f4a7a3a5e1d6d0f93d20b404f991f027da6219d2fa9ca668e7d78bfa6c4f92",
+    "sequencing_rule": "SELLS_BEFORE_BUYS_V1",
+    "total_fees": "5.00000000"
+  },
+  "refusal": null,
+  "store": {
+    "anchor": {
+      "anchor_fingerprint": "ce7b38115d983dba1c45453d7c404037f4c7d81f0efff8d37e58e435d8eb14a1",
+      "anchor_head": "cad7082409c76d7c9260216770a605c4b2ba64fc542a494eb66ca71b4b2986c8",
+      "anchor_sequence": 20,
+      "anchor_version": "EXECUTION_JOURNAL_HEAD_ANCHOR_V1",
+      "consistent": true,
+      "coordinated_rollback_detection": "NOT_GUARANTEED_WITHOUT_EXTERNAL_ANCHOR",
+      "detail": null,
+      "journal_head": "cad7082409c76d7c9260216770a605c4b2ba64fc542a494eb66ca71b4b2986c8",
+      "journal_sequence": 20,
+      "recoverable": true,
+      "status": "CONSISTENT"
+    },
+    "chain": {
+      "chain_version": "EXECUTION_JOURNAL_HASH_CHAIN_V1",
+      "failure": null,
+      "head_hash": "cad7082409c76d7c9260216770a605c4b2ba64fc542a494eb66ca71b4b2986c8",
+      "record_count": 20,
+      "verified": true
+    },
+    "coordinated_rollback_detection": "NOT_GUARANTEED_WITHOUT_EXTERNAL_ANCHOR",
+    "engine_version": "EXECUTION_ENGINE_V1",
+    "generation": "EXECUTION_JOURNAL_GENERATION_1",
+    "record_count": 20,
+    "store_version": "EXECUTION_STORE_V1",
+    "tail_completeness_established": true,
+    "truncation_detected": false,
+    "verified": true
+  }
+}

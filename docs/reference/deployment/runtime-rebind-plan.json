@@ -1,0 +1,60 @@
+{
+  "version": "PAPER_OPERATIONS_RUNTIME_REBIND_PLAN_V1",
+  "outcome": "REBIND_REQUIRES_NEW_GENERATIONS",
+  "reason": "not because of the policy or the mapping \u2014 neither is bound \u2014 and not because of accounting semantics. The binding's account_binding_fingerprint digests ExternalBrokerAccountBinding.capabilities, the environment proof compares the adapter's binding against it, and the only contract-supported way to change a bound field is to bootstrap a new root. bootstrap_paper_book opens a fresh ledger in that root, so taking the supported path would start a new accounting history. No in-place rebind exists to preserve it",
+  "current_binding_fingerprint": "57852f2def4976fd35c5e80ff4bcae110abf35d3b5b37743543cf7a4d8d10894",
+  "policy_fingerprint": "6804fbb289cf7fb9629b622df1ab1a8198931b052f0649ea09bcd1014c0faa93",
+  "mapping_fingerprint": "4ae99e6120446bb1e58990c6b9c4b34cdf7956a224f48b8070513c8440ecbec3",
+  "accounting_generation": "alphatrader-paper-alphatrader1",
+  "execution_generation": "alphatrader-paper-alphatrader1",
+  "operations_generation": "0000000000000000000000000000000000000000000000000000000000000000",
+  "bootstrap_epoch": "2026-10-10T04:53:28.177716+00:00",
+  "resulting_binding_fields": [
+    [
+      "account_binding_fingerprint",
+      "the digest of the venue binding with fractional_quantities=True"
+    ],
+    [
+      "bootstrap_epoch",
+      "a new epoch, because a bootstrap sets one"
+    ],
+    [
+      "bootstrap_evidence_fingerprint",
+      "the new account snapshot's digest"
+    ],
+    [
+      "code_commit",
+      "the build performing the rebind"
+    ],
+    [
+      "created_at",
+      "when it was performed"
+    ],
+    [
+      "accounting_generation",
+      "unchanged if the runtime_id is kept \u2014 the generation is derived from it and is capability-independent"
+    ],
+    [
+      "execution_journal_generation",
+      "unchanged for the same reason"
+    ]
+  ],
+  "required_operator_actions": [
+    "author runtime/risk_policy.json \u2014 requires owner approval of the unresolved fields the policy candidate names; no rebind is involved",
+    "author runtime/symbol_mapping.json from the verified instrument mapping; no rebind is involved",
+    "decide whether the runtime should be able to send fractional quantities. If yes, the recorded account_binding_fingerprint must become the digest of the venue binding whose capabilities declare fractional_quantities=True; if no, execution of this strategy will be refused at the adapter with BROKER_FRACTIONAL_NOT_SUPPORTED, which is the adapter working",
+    "if fractional capability is wanted: a new runtime binding is required, because RuntimeBindingStore.write refuses to repoint a bound root in place (RUNTIME_ALREADY_BOUND) and bootstrap_paper_book refuses a root that already holds a book (BOOTSTRAP_ALREADY_DONE). This is a contract refusal about the *binding*, not about the ledger",
+    "the accounting and execution generations are f\"alphatrader-paper-{runtime_id}\" and are capability-independent, so a rebind that keeps the same runtime_id names the same lineages. Preserving the existing ledger therefore requires rebinding in place rather than bootstrapping a fresh root \u2014 which the current contract does not support and which this phase does not add"
+  ],
+  "prohibited": [
+    "This plan is not an authorisation. It describes operator actions and performs none of them.",
+    "No accounting reset for convenience. A new policy or mapping is not a reason to replace accumulated internal history with current broker cash.",
+    "No paper re-arm. The control state is the operator's to change.",
+    "No live authority. EXTERNAL_PAPER only."
+  ],
+  "plan_fingerprint": "b07abd3e2bb77bb4b1086ac7aad696ac12064b2d8642c01192620e60269870fa",
+  "executed": false,
+  "generated_at": "2026-10-12T18:57:41.292951+00:00",
+  "superseded_by": "PAPER_OPERATIONS_RUNTIME_BINDING_V2 implements this",
+  "outcome_note": "P2.3.1F implemented a lineage-preserving rebind, so the REBIND_REQUIRES_NEW_GENERATIONS reasoning below describes the contract as it stood before that operation existed"
+}

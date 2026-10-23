@@ -1,0 +1,213 @@
+{
+  "label": "FULL_STRATEGY_EXIT_V2",
+  "accounting_version": "PORTFOLIO_ACCOUNTING_V2",
+  "ledger_generation": "PORTFOLIO_LEDGER_GENERATION_1",
+  "note": "ALPHA_COMPOUNDER closes its entire position in both securities. Its pools go to zero quantity and zero basis while keeping the realised P&L they earned, still named ALPHA_COMPOUNDER. It is never relabelled UNATTRIBUTED_EXISTING: the strategy realised that result and no longer holding the shares does not change who did.",
+  "events": [
+    {
+      "event_id": "OB-1",
+      "event_type": "OPENING_BALANCE",
+      "effective_at": "2026-10-01T09:30:00-04:00",
+      "source_id": "CUSTODIAN_IMPORT",
+      "source_fingerprint": "fp-ob-1",
+      "payload": {
+        "cash": "500000.0000",
+        "positions": []
+      }
+    },
+    {
+      "event_id": "A-BUY-1",
+      "event_type": "FILL",
+      "effective_at": "2026-10-01T10:00:00-04:00",
+      "source_id": "EXECUTION_REFERENCE",
+      "source_fingerprint": "fp-a-buy-1",
+      "payload": {
+        "identity": "COMPANY:7001",
+        "side": "BUY",
+        "quantity": "1000.00000000",
+        "price": "10.00000000",
+        "fees": "4.9500",
+        "attribution": [
+          {
+            "strategy_id": "ALPHA_COMPOUNDER",
+            "quantity": "1000.00000000"
+          }
+        ],
+        "execution_reference": "EXEC-A-BUY-1"
+      }
+    },
+    {
+      "event_id": "B-BUY-1",
+      "event_type": "FILL",
+      "effective_at": "2026-10-01T10:05:00-04:00",
+      "source_id": "EXECUTION_REFERENCE",
+      "source_fingerprint": "fp-b-buy-1",
+      "payload": {
+        "identity": "COMPANY:7001",
+        "side": "BUY",
+        "quantity": "1000.00000000",
+        "price": "20.00000000",
+        "fees": "6.2500",
+        "attribution": [
+          {
+            "strategy_id": "BETA_MEANREV",
+            "quantity": "1000.00000000"
+          }
+        ],
+        "execution_reference": "EXEC-B-BUY-1"
+      }
+    },
+    {
+      "event_id": "A-SELL-1",
+      "event_type": "FILL",
+      "effective_at": "2026-10-02T10:30:00-04:00",
+      "source_id": "EXECUTION_REFERENCE",
+      "source_fingerprint": "fp-a-sell-1",
+      "payload": {
+        "identity": "COMPANY:7001",
+        "side": "SELL",
+        "quantity": "400.00000000",
+        "price": "30.00000000",
+        "fees": "3.1000",
+        "attribution": [
+          {
+            "strategy_id": "ALPHA_COMPOUNDER",
+            "quantity": "400.00000000"
+          }
+        ],
+        "execution_reference": "EXEC-A-SELL-1"
+      }
+    },
+    {
+      "event_id": "B-SELL-1",
+      "event_type": "FILL",
+      "effective_at": "2026-10-02T11:00:00-04:00",
+      "source_id": "EXECUTION_REFERENCE",
+      "source_fingerprint": "fp-b-sell-1",
+      "payload": {
+        "identity": "COMPANY:7001",
+        "side": "SELL",
+        "quantity": "250.00000000",
+        "price": "5.00000000",
+        "fees": "2.4000",
+        "attribution": [
+          {
+            "strategy_id": "BETA_MEANREV",
+            "quantity": "250.00000000"
+          }
+        ],
+        "execution_reference": "EXEC-B-SELL-1"
+      }
+    },
+    {
+      "event_id": "A-BUY-2",
+      "event_type": "FILL",
+      "effective_at": "2026-10-02T14:00:00-04:00",
+      "source_id": "EXECUTION_REFERENCE",
+      "source_fingerprint": "fp-a-buy-2",
+      "payload": {
+        "identity": "COMPANY:7001",
+        "side": "BUY",
+        "quantity": "500.00000000",
+        "price": "24.00000000",
+        "fees": "5.0000",
+        "attribution": [
+          {
+            "strategy_id": "ALPHA_COMPOUNDER",
+            "quantity": "500.00000000"
+          }
+        ],
+        "execution_reference": "EXEC-A-BUY-2"
+      }
+    },
+    {
+      "event_id": "AB-BUY-1",
+      "event_type": "FILL",
+      "effective_at": "2026-10-02T15:00:00-04:00",
+      "source_id": "EXECUTION_REFERENCE",
+      "source_fingerprint": "fp-ab-buy-1",
+      "payload": {
+        "identity": "COMPANY:7002",
+        "side": "BUY",
+        "quantity": "300.00000000",
+        "price": "48.00000000",
+        "fees": "3.0000",
+        "attribution": [
+          {
+            "strategy_id": "ALPHA_COMPOUNDER",
+            "quantity": "100.00000000"
+          },
+          {
+            "strategy_id": "BETA_MEANREV",
+            "quantity": "200.00000000"
+          }
+        ],
+        "execution_reference": "EXEC-AB-BUY-1"
+      }
+    },
+    {
+      "event_id": "A-EXIT-X",
+      "event_type": "FILL",
+      "effective_at": "2026-10-02T15:30:00-04:00",
+      "source_id": "EXECUTION_REFERENCE",
+      "source_fingerprint": "fp-a-exit-x",
+      "payload": {
+        "identity": "COMPANY:7001",
+        "side": "SELL",
+        "quantity": "1100.00000000",
+        "price": "26.00000000",
+        "fees": "8.0000",
+        "attribution": [
+          {
+            "strategy_id": "ALPHA_COMPOUNDER",
+            "quantity": "1100.00000000"
+          }
+        ],
+        "execution_reference": "EXEC-A-EXIT-X"
+      }
+    },
+    {
+      "event_id": "A-EXIT-Y",
+      "event_type": "FILL",
+      "effective_at": "2026-10-02T15:40:00-04:00",
+      "source_id": "EXECUTION_REFERENCE",
+      "source_fingerprint": "fp-a-exit-y",
+      "payload": {
+        "identity": "COMPANY:7002",
+        "side": "SELL",
+        "quantity": "100.00000000",
+        "price": "47.00000000",
+        "fees": "1.5000",
+        "attribution": [
+          {
+            "strategy_id": "ALPHA_COMPOUNDER",
+            "quantity": "100.00000000"
+          }
+        ],
+        "execution_reference": "EXEC-A-EXIT-Y"
+      }
+    }
+  ],
+  "valuation": {
+    "valuation_time": "2026-10-02T16:00:00-04:00",
+    "staleness_limit_hours": 96,
+    "marks": [
+      {
+        "kind": "COMPANY",
+        "identity_id": 7001,
+        "symbol": "MSX",
+        "price": "26.00000000",
+        "as_of": "2026-10-02T16:00:00-04:00",
+        "source": "SESSION_CLOSE"
+      },
+      {
+        "kind": "COMPANY",
+        "identity_id": 7002,
+        "symbol": "MSY",
+        "price": "47.50000000",
+        "as_of": "2026-10-02T16:00:00-04:00",
+        "source": "SESSION_CLOSE"
+      }
+    ]
+  }
+}

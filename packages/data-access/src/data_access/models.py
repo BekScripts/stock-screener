@@ -31,6 +31,7 @@ from datetime import UTC, date, datetime
 from sqlalchemy import (
     JSON,
     Boolean,
+    CheckConstraint,
     Date,
     DateTime,
     Float,
@@ -41,6 +42,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     func,
+    text,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
@@ -133,6 +135,27 @@ class Company(Base):
     )
     deep_research_reports: Mapped[list[StoredDeepResearchReport]] = relationship(
         back_populates="company", cascade="all, delete-orphan"
+    )
+    pit_scores: Mapped[list[PitScoreSnapshot]] = relationship(
+        back_populates="company", cascade="all, delete-orphan", passive_deletes=True
+    )
+    pit_features: Mapped[list[PitFeatureSnapshot]] = relationship(
+        back_populates="company", cascade="all, delete-orphan", passive_deletes=True
+    )
+    pit_signals: Mapped[list[PitSignalSnapshot]] = relationship(
+        back_populates="company", cascade="all, delete-orphan", passive_deletes=True
+    )
+    fundamental_observations: Mapped[list[FundamentalObservation]] = relationship(
+        back_populates="company", cascade="all, delete-orphan", passive_deletes=True
+    )
+    universe_events: Mapped[list[UniverseEvent]] = relationship(
+        back_populates="company", cascade="all, delete-orphan", passive_deletes=True
+    )
+    corporate_actions: Mapped[list[CorporateAction]] = relationship(
+        back_populates="company", cascade="all, delete-orphan", passive_deletes=True
+    )
+    forward_returns: Mapped[list[ForwardReturnRecord]] = relationship(
+        back_populates="company", cascade="all, delete-orphan", passive_deletes=True
     )
 
 
@@ -719,3 +742,1469 @@ class StoredDeepResearchReport(Base):
     collected_external_json: Mapped[list[object] | None] = mapped_column(JSON)
 
     company: Mapped[Company] = relationship(back_populates="deep_research_reports")
+
+
+class PitCaptureRun(Base):
+    """One attempt to record what the system knew on one day.
+
+    Phase 8B's snapshot tables answer "what did we know then". This table
+    answers "and was that record complete", which is the question that decides
+    whether the day may be used at all. A run reaching `COMPLETE` is a promise
+    that every company the capture examined was written; a run that failed
+    leaves a `FAILED` row and **no** snapshot rows, because the snapshots are
+    written in the same transaction that marks the run complete.
+
+    There is deliberately no unique constraint on `snapshot_date`. Attempts are
+    history — a failed run followed by a successful one is two rows, and hiding
+    the first would hide exactly the operational fact this table exists to
+    record. Uniqueness that matters lives on the snapshot tables, one row per
+    company per date per version.
+    """
+
+    __tablename__ = "pit_capture_runs"
+    __table_args__ = (Index("ix_pit_capture_runs_date_status", "snapshot_date", "status"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    # The trading day the capture describes. UTC calendar date, matching
+    # `score_snapshots.score_date`; see the module docstring in
+    # `stock_screener.pit` for why the two must agree.
+    snapshot_date: Mapped[date] = mapped_column(Date, nullable=False)
+    # When the process ran. Distinct from `snapshot_date` on purpose: a capture
+    # for Friday started at 00:05 on Saturday describes Friday, and conflating
+    # the two is how a dataset silently acquires look-ahead.
+    started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow, server_default=func.now()
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # RUNNING, COMPLETE or FAILED. Only COMPLETE may be read as a day's record.
+    status: Mapped[str] = mapped_column(String(20), nullable=False)
+    score_version: Mapped[str] = mapped_column(String(40), nullable=False)
+    feature_version: Mapped[str] = mapped_column(String(40), nullable=False)
+    scores_captured: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    features_captured: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    universe_events_recorded: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # Why a run failed, when it did. Free text for an operator, never parsed.
+    detail: Mapped[str | None] = mapped_column(Text)
+
+    scores: Mapped[list[PitScoreSnapshot]] = relationship(
+        back_populates="run", cascade="all, delete-orphan", passive_deletes=True
+    )
+    features: Mapped[list[PitFeatureSnapshot]] = relationship(
+        back_populates="run", cascade="all, delete-orphan", passive_deletes=True
+    )
+    signals: Mapped[list[PitSignalSnapshot]] = relationship(
+        back_populates="run", cascade="all, delete-orphan", passive_deletes=True
+    )
+
+
+class PitScoreSnapshot(Base):
+    """What the scoring system believed about one company on one day.
+
+    A copy, not a view. `score_snapshots` is the operational table and it
+    upserts: re-running the score command replaces the day's rows with better
+    information, which is right for a screener and fatal for a backtest. This
+    table is written once and never updated, so a strategy calibrated six months
+    from now reads the number that was actually on the screen, not the number
+    today's data would produce for that date.
+
+    `source_score_date` records which operational row was copied. It is normally
+    equal to `snapshot_date`, and when it is not, the capture read an older
+    score because the day's scoring had not run — a fact a reader must be able
+    to see rather than infer.
+    """
+
+    __tablename__ = "pit_score_snapshots"
+    __table_args__ = (
+        UniqueConstraint(
+            "company_id", "snapshot_date", "score_version", name="uq_pit_score_snapshot"
+        ),
+        Index("ix_pit_score_snapshots_date_version", "snapshot_date", "score_version"),
+        Index("ix_pit_score_snapshots_company_date", "company_id", "snapshot_date"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    run_id: Mapped[int] = mapped_column(
+        ForeignKey("pit_capture_runs.id", ondelete="CASCADE"), nullable=False
+    )
+    company_id: Mapped[int] = mapped_column(
+        ForeignKey("companies.id", ondelete="CASCADE"), nullable=False
+    )
+    # The symbol as it stood on the capture date. Denormalised deliberately: a
+    # ticker is reassigned when a company delists, and a join through
+    # `companies` months later would report today's owner of the symbol.
+    ticker: Mapped[str] = mapped_column(String(20), nullable=False)
+    snapshot_date: Mapped[date] = mapped_column(Date, nullable=False)
+    captured_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow, server_default=func.now()
+    )
+    source_score_date: Mapped[date] = mapped_column(Date, nullable=False)
+    score_version: Mapped[str] = mapped_column(String(40), nullable=False)
+
+    scoring_status: Mapped[str] = mapped_column(String(30), nullable=False)
+    final_score: Mapped[float | None] = mapped_column(Float)
+    raw_score: Mapped[float | None] = mapped_column(Float)
+    growth_score: Mapped[float | None] = mapped_column(Float)
+    quality_score: Mapped[float | None] = mapped_column(Float)
+    valuation_score: Mapped[float | None] = mapped_column(Float)
+    momentum_score: Mapped[float | None] = mapped_column(Float)
+    risk_penalty: Mapped[float | None] = mapped_column(Float)
+    risk_level: Mapped[str | None] = mapped_column(String(20))
+    score_category: Mapped[str | None] = mapped_column(String(40))
+    valuation_basis: Mapped[str | None] = mapped_column(String(20))
+    data_coverage: Mapped[float | None] = mapped_column(Float)
+    risk_coverage: Mapped[float | None] = mapped_column(Float)
+    market_cap: Mapped[float | None] = mapped_column(Float)
+    market_cap_source: Mapped[str | None] = mapped_column(String(20))
+    volume_basis: Mapped[str | None] = mapped_column(String(20))
+    revenue_growth_yoy: Mapped[float | None] = mapped_column(Float)
+    revenue_growth_acceleration: Mapped[float | None] = mapped_column(Float)
+    enterprise_value: Mapped[float | None] = mapped_column(Float)
+    freshness: Mapped[str | None] = mapped_column(String(10))
+    coverage: Mapped[str] = mapped_column(String(10), nullable=False)
+    ranking_state: Mapped[str | None] = mapped_column(String(20))
+    exclusion_reasons: Mapped[str | None] = mapped_column(String(200))
+    # Whether this row was admissible to a *current* ranking on the day, under
+    # the rules of its own score version. Recorded rather than derived, because
+    # the rule is versioned and a later reader would apply a later rule.
+    rank_eligible: Mapped[bool] = mapped_column(Boolean, nullable=False)
+
+    run: Mapped[PitCaptureRun] = relationship(back_populates="scores")
+    company: Mapped[Company] = relationship(back_populates="pit_scores")
+
+
+class PitFeatureSnapshot(Base):
+    """The market state observed for one company on one day.
+
+    Structured features, never a score and never a ranking. Phase 8A established
+    that fundamental attractiveness and tradability are close to orthogonal, and
+    that averaging anti-correlated dimensions into one number produces something
+    meaningless; so this table stores the dimensions and leaves the judgement to
+    whatever later phase earns the right to make it.
+
+    Windows are strict — a field named for 60 sessions used exactly 60 or is
+    NULL — so two rows of this table are comparable. `bars_available` and
+    `feature_as_of` record what the computation actually had: `feature_as_of` is
+    the date of the newest bar used, which is earlier than `snapshot_date` for a
+    security that has stopped trading.
+    """
+
+    __tablename__ = "pit_feature_snapshots"
+    __table_args__ = (
+        # Exactly one identity, the same rule `forward_returns` and
+        # `universe_membership` hold. A delisted security has no `companies` row,
+        # so a features table keyed only by `company_id` cannot describe the
+        # securities a survivorship-aware study most needs — and a strategy that
+        # filters on a signal would drop every one of them silently.
+        CheckConstraint(
+            "(company_id IS NULL) <> (historical_security_id IS NULL)",
+            name="ck_pit_feature_one_identity",
+        ),
+        Index(
+            "uq_pit_feature_snapshot_company",
+            "company_id",
+            "snapshot_date",
+            "feature_version",
+            unique=True,
+            sqlite_where=text("company_id IS NOT NULL"),
+            postgresql_where=text("company_id IS NOT NULL"),
+        ),
+        Index(
+            "uq_pit_feature_snapshot_historical",
+            "historical_security_id",
+            "snapshot_date",
+            "feature_version",
+            unique=True,
+            sqlite_where=text("historical_security_id IS NOT NULL"),
+            postgresql_where=text("historical_security_id IS NOT NULL"),
+        ),
+        Index("ix_pit_feature_snapshots_date_version", "snapshot_date", "feature_version"),
+        Index("ix_pit_feature_snapshots_company_date", "company_id", "snapshot_date"),
+        Index(
+            "ix_pit_feature_snapshots_historical_date",
+            "historical_security_id",
+            "snapshot_date",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    run_id: Mapped[int] = mapped_column(
+        ForeignKey("pit_capture_runs.id", ondelete="CASCADE"), nullable=False
+    )
+    # Exactly one of these two is set; see the check constraint above.
+    company_id: Mapped[int | None] = mapped_column(ForeignKey("companies.id", ondelete="CASCADE"))
+    historical_security_id: Mapped[int | None] = mapped_column(
+        ForeignKey("historical_securities.id", ondelete="CASCADE")
+    )
+    # The symbol this row describes, from whichever identity owns it —
+    # `companies.ticker` or `historical_securities.primary_ticker`. A label,
+    # never the identity.
+    ticker: Mapped[str] = mapped_column(String(20), nullable=False)
+    snapshot_date: Mapped[date] = mapped_column(Date, nullable=False)
+    captured_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow, server_default=func.now()
+    )
+    feature_version: Mapped[str] = mapped_column(String(40), nullable=False)
+    # Date of the newest bar the features were computed from — the data
+    # watermark. Equal to `snapshot_date` for an actively trading security.
+    feature_as_of: Mapped[date] = mapped_column(Date, nullable=False)
+    bars_available: Mapped[int] = mapped_column(Integer, nullable=False)
+    benchmark_symbol: Mapped[str | None] = mapped_column(String(20))
+
+    last_close: Mapped[float | None] = mapped_column(Float)
+    atr_pct_14: Mapped[float | None] = mapped_column(Float)
+    atr_pct_20: Mapped[float | None] = mapped_column(Float)
+    atr_pct_60: Mapped[float | None] = mapped_column(Float)
+    rvol_5_pct: Mapped[float | None] = mapped_column(Float)
+    rvol_20_pct: Mapped[float | None] = mapped_column(Float)
+    rvol_60_pct: Mapped[float | None] = mapped_column(Float)
+    rvol_252_pct: Mapped[float | None] = mapped_column(Float)
+    vol_expansion_ratio: Mapped[float | None] = mapped_column(Float)
+    avg_abs_ret_20_pct: Mapped[float | None] = mapped_column(Float)
+    avg_abs_ret_60_pct: Mapped[float | None] = mapped_column(Float)
+    avg_abs_ret_252_pct: Mapped[float | None] = mapped_column(Float)
+    median_abs_ret_252_pct: Mapped[float | None] = mapped_column(Float)
+    max_abs_ret_60_pct: Mapped[float | None] = mapped_column(Float)
+    max_abs_ret_252_pct: Mapped[float | None] = mapped_column(Float)
+    days_over_1pct_share: Mapped[float | None] = mapped_column(Float)
+    days_over_2pct_share: Mapped[float | None] = mapped_column(Float)
+    days_over_3pct_share: Mapped[float | None] = mapped_column(Float)
+    median_range_pct: Mapped[float | None] = mapped_column(Float)
+    range_over_1pct_share: Mapped[float | None] = mapped_column(Float)
+    range_over_2pct_share: Mapped[float | None] = mapped_column(Float)
+    # The two markers Phase 8A found actually identify an untradable security.
+    # Neither is a volatility measure: a name can carry a high average true
+    # range from overnight gaps while printing an unchanged bar most sessions.
+    flat_bar_share: Mapped[float | None] = mapped_column(Float)
+    zero_move_share: Mapped[float | None] = mapped_column(Float)
+    closing_band_pct: Mapped[float | None] = mapped_column(Float)
+    ret_5d_pct: Mapped[float | None] = mapped_column(Float)
+    ret_20d_pct: Mapped[float | None] = mapped_column(Float)
+    ret_60d_pct: Mapped[float | None] = mapped_column(Float)
+    ret_252d_pct: Mapped[float | None] = mapped_column(Float)
+    trend_r2: Mapped[float | None] = mapped_column(Float)
+    trend_slope: Mapped[float | None] = mapped_column(Float)
+    above_sma20_share: Mapped[float | None] = mapped_column(Float)
+    high_52w: Mapped[float | None] = mapped_column(Float)
+    low_52w: Mapped[float | None] = mapped_column(Float)
+    distance_from_52w_high: Mapped[float | None] = mapped_column(Float)
+    gap_over_1pct_share: Mapped[float | None] = mapped_column(Float)
+    gap_over_2pct_share: Mapped[float | None] = mapped_column(Float)
+    mean_abs_gap_pct: Mapped[float | None] = mapped_column(Float)
+    max_abs_gap_pct: Mapped[float | None] = mapped_column(Float)
+    # Named for the venue, not for liquidity. Stored bars come from a single
+    # exchange and are a small, highly variable fraction of the consolidated
+    # tape, so these are a floor on real turnover and never an estimate of it.
+    venue_dollar_volume_median: Mapped[float | None] = mapped_column(Float)
+    venue_dollar_volume_mean: Mapped[float | None] = mapped_column(Float)
+    venue_volume_stability: Mapped[float | None] = mapped_column(Float)
+    venue_volume_ratio: Mapped[float | None] = mapped_column(Float)
+    beta_60: Mapped[float | None] = mapped_column(Float)
+    correlation_60: Mapped[float | None] = mapped_column(Float)
+    rel_strength_20_pct: Mapped[float | None] = mapped_column(Float)
+    rel_strength_60_pct: Mapped[float | None] = mapped_column(Float)
+    # A 40%+ single session. An integrity flag for a reader, **not** a corporate
+    # action: this project never infers a split from a price movement.
+    has_extreme_move: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+
+    run: Mapped[PitCaptureRun] = relationship(back_populates="features")
+    company: Mapped[Company] = relationship(back_populates="pit_features")
+
+
+class FundamentalObservation(Base):
+    """One reported figure, as one filing stated it, kept forever.
+
+    `financial_snapshots` holds the current normalised view and overwrites on
+    `(company_id, period_end)`: a restatement replaces the original and the
+    original is gone. That is correct for scoring — the newest figure is the
+    best estimate of the truth — and it destroys the only thing a backtest
+    needs, which is the figure that was on the wire at the time.
+
+    So this table appends. A revision of the same period arrives as a second row
+    with a later `filed_date`, and both survive. Selection is by
+    `filed_date <= as_of`, never by `period_end`: a quarter ending in December
+    that was filed in February was not knowable in January, and treating the
+    period end as the availability date is the single most common way a
+    backtest quietly reads the future.
+
+    `observation_fingerprint` is what makes re-ingestion idempotent. It hashes
+    the identity of the observation — period, concept, filing, value — so
+    re-reading the same filing writes nothing, while a genuine revision hashes
+    differently and appends. A unique constraint over the raw columns could not
+    do this: `filed_date` and `accession` are nullable for sources that do not
+    supply them, and SQL treats two NULLs as distinct, so repeated ingestion
+    would accumulate duplicates.
+    """
+
+    __tablename__ = "fundamental_observations"
+    __table_args__ = (
+        UniqueConstraint(
+            "company_id", "observation_fingerprint", name="uq_fundamental_observation"
+        ),
+        Index("ix_fundamental_observations_pit", "company_id", "concept", "filed_date"),
+        Index("ix_fundamental_observations_period", "company_id", "period_end", "filed_date"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    company_id: Mapped[int] = mapped_column(
+        ForeignKey("companies.id", ondelete="CASCADE"), nullable=False
+    )
+    # Hex SHA-256 over the observation's identity. See the class docstring.
+    observation_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    # The XBRL namespace the concept was tagged in — `us-gaap`, `ifrs-full`,
+    # `dei`. Kept because the same economic quantity has different names in each
+    # and a reader must be able to tell which table produced a figure.
+    taxonomy: Mapped[str] = mapped_column(String(40), nullable=False)
+    concept: Mapped[str] = mapped_column(String(120), nullable=False)
+    value: Mapped[float] = mapped_column(Float, nullable=False)
+    # The unit key the filer tagged, verbatim — `USD`, `TWD`, `shares`. The
+    # filing's unit is authoritative; a vendor's assumption is not.
+    unit: Mapped[str] = mapped_column(String(20), nullable=False)
+    period_start: Mapped[date | None] = mapped_column(Date)
+    period_end: Mapped[date] = mapped_column(Date, nullable=False)
+    # NULL only where the source genuinely does not supply one. A NULL here is
+    # not a licence to fall back on `period_end` — it means the observation
+    # cannot participate in point-in-time selection at all.
+    filed_date: Mapped[date | None] = mapped_column(Date)
+    accession: Mapped[str | None] = mapped_column(String(30))
+    form: Mapped[str | None] = mapped_column(String(20))
+    fiscal_year: Mapped[int | None] = mapped_column(Integer)
+    fiscal_period: Mapped[str | None] = mapped_column(String(10))
+    frame: Mapped[str | None] = mapped_column(String(40))
+    source: Mapped[str] = mapped_column(String(50), nullable=False)
+    observed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow, server_default=func.now()
+    )
+
+    company: Mapped[Company] = relationship(back_populates="fundamental_observations")
+
+
+class UniverseEvent(Base):
+    """An observed change in whether a security is part of the investable set.
+
+    Append-only, and forward-looking only. Phase 8A found the universe was
+    created in a single day with no membership history, so any historical study
+    over it is survivorship-biased. This table starts fixing that from the day
+    it is first written — it does not, and must not, invent what happened
+    before.
+
+    `observation_kind` is the field that keeps this honest. `BASELINE` is the
+    state as first seen, carrying the capture date and asserting nothing about
+    when it became true. `OBSERVED` is a transition the system actually watched
+    happen, and only those rows may be read as events with meaningful dates. A
+    delisting inferred from a guessed date would be indistinguishable from one
+    that was witnessed, which is why the distinction is a column rather than a
+    convention.
+    """
+
+    __tablename__ = "universe_events"
+    __table_args__ = (
+        UniqueConstraint("company_id", "event_fingerprint", name="uq_universe_event"),
+        Index("ix_universe_events_company_date", "company_id", "effective_date"),
+        Index("ix_universe_events_date", "effective_date"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    company_id: Mapped[int] = mapped_column(
+        ForeignKey("companies.id", ondelete="CASCADE"), nullable=False
+    )
+    event_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    ticker: Mapped[str] = mapped_column(String(20), nullable=False)
+    # ADDED, ACTIVE, DELISTED or REACTIVATED.
+    event_type: Mapped[str] = mapped_column(String(20), nullable=False)
+    # BASELINE for state as first seen, OBSERVED for a witnessed transition.
+    observation_kind: Mapped[str] = mapped_column(String(10), nullable=False)
+    # For an OBSERVED row, the date the change was seen. For a BASELINE row, the
+    # date the state was first recorded — never a guess at when it began.
+    effective_date: Mapped[date] = mapped_column(Date, nullable=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    exchange: Mapped[str | None] = mapped_column(String(50))
+    source: Mapped[str] = mapped_column(String(50), nullable=False)
+    observed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow, server_default=func.now()
+    )
+
+    company: Mapped[Company] = relationship(back_populates="universe_events")
+
+
+class CorporateAction(Base):
+    """A split or a distribution, as a source reported it.
+
+    Stored prices are adjusted retroactively — the close recorded for a session
+    last year is a function of every corporate action since — so the series as
+    it appeared on the day cannot be rebuilt without the factors. This table is
+    where they belong.
+
+    It is deliberately empty until a source is wired to it. Phase 8A established
+    that a split cannot be inferred from a price movement: an unadjusted 2-for-1
+    and a genuine halving are the same bar, and a project that guessed would
+    manufacture exactly the fake history this phase exists to prevent. An empty
+    table that says "no source yet" is worth more than a populated one that says
+    something untrue.
+    """
+
+    __tablename__ = "corporate_actions"
+    __table_args__ = (
+        UniqueConstraint("company_id", "action_fingerprint", name="uq_corporate_action"),
+        Index("ix_corporate_actions_company_date", "company_id", "ex_date"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    company_id: Mapped[int] = mapped_column(
+        ForeignKey("companies.id", ondelete="CASCADE"), nullable=False
+    )
+    action_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    ticker: Mapped[str] = mapped_column(String(20), nullable=False)
+    # SPLIT, REVERSE_SPLIT, CASH_DIVIDEND, STOCK_DIVIDEND or SPINOFF.
+    action_type: Mapped[str] = mapped_column(String(30), nullable=False)
+    # The date the action takes effect in the price — the first session trading
+    # without it. Never derived from where a price happens to jump.
+    ex_date: Mapped[date] = mapped_column(Date, nullable=False)
+    # New shares per old share: 2.0 for a 2-for-1, 0.1 for a 1-for-10 reverse.
+    # NULL for a cash distribution.
+    split_factor: Mapped[float | None] = mapped_column(Float)
+    # Cash per share, in `currency`. NULL for a split.
+    cash_amount: Mapped[float | None] = mapped_column(Float)
+    currency: Mapped[str | None] = mapped_column(String(3))
+    record_date: Mapped[date | None] = mapped_column(Date)
+    payable_date: Mapped[date | None] = mapped_column(Date)
+    source: Mapped[str] = mapped_column(String(50), nullable=False)
+    # The identifier the source itself uses, so a row can be traced back.
+    source_id: Mapped[str | None] = mapped_column(String(80))
+    observed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow, server_default=func.now()
+    )
+
+    company: Mapped[Company] = relationship(back_populates="corporate_actions")
+
+
+class Delisting(Base):
+    """A security's last day, and what a holder was left with.
+
+    Keyed by ticker and **not** by `company_id`, which is the whole point of the
+    table. Nearly every row here is a security the `companies` table has never
+    contained: it holds what is investable now, so a study run over it cannot
+    see a single company that was acquired or wound up, and measured over 4,599
+    companies across 120 sessions of 2024 it saw exactly zero. That is not a
+    quiet distortion, it is the survivorship bias in its pure form.
+
+    Giving these rows company records instead would fix the join and break
+    everything else — thousands of untradeable tickers would enter the table the
+    scanner, the rankings and the dashboard all read as the investable set.
+
+    Append-only, identified by the source's own id.
+    """
+
+    __tablename__ = "delistings"
+    __table_args__ = (
+        UniqueConstraint("source", "source_id", name="uq_delisting_source"),
+        Index("ix_delistings_ticker", "ticker"),
+        Index("ix_delistings_date", "effective_date"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    # The acquiree — the security that ceased. Never the acquirer, which
+    # carries on and must not be recorded as having ended.
+    ticker: Mapped[str] = mapped_column(String(20), nullable=False)
+    # CASH_MERGER, STOCK_MERGER, STOCK_AND_CASH_MERGER or WORTHLESS_REMOVAL.
+    kind: Mapped[str] = mapped_column(String(30), nullable=False)
+    effective_date: Mapped[date] = mapped_column(Date, nullable=False)
+    # Cash received per share. NULL for a pure stock merger, and NULL rather
+    # than 0.0 for a worthless removal, which reports its nothing through
+    # `kind` — a stored zero would be indistinguishable from an unknown.
+    cash_per_share: Mapped[float | None] = mapped_column(Float)
+    acquirer_ticker: Mapped[str | None] = mapped_column(String(20))
+    acquirer_rate: Mapped[float | None] = mapped_column(Float)
+    acquiree_rate: Mapped[float | None] = mapped_column(Float)
+    source: Mapped[str] = mapped_column(String(50), nullable=False)
+    source_id: Mapped[str | None] = mapped_column(String(80))
+    observed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow, server_default=func.now()
+    )
+
+
+class ForwardReturnRecord(Base):
+    """What a security did after a point-in-time observation date.
+
+    The other half of a research question. A snapshot says what was knowable;
+    this says what happened next, and the two together are what any study of
+    whether the score predicts anything has to join.
+
+    Append-only and versionless, because it is a measurement rather than a
+    policy: `1, 5, 20, 60, 120` sessions from an observation date is the same
+    fact whoever computes it, and a re-run of a realised horizon reproduces the
+    number exactly. The unique constraint is what enforces that — a horizon
+    already measured for a date is refused, never replaced.
+
+    **A row with no return is the point of the table, not a defect in it.**
+    `status` distinguishes a horizon that has not elapsed from a security that
+    stopped trading inside it, and dropping either kind would rebuild the
+    survivorship bias the point-in-time record exists to remove.
+
+    **A row belongs to exactly one identity, of two kinds.** A live company has a
+    `companies` row; a security that left the market has a `historical_securities`
+    row and never a company one, because `companies` is the investable set. Both
+    can be measured, so both need somewhere to be measured *to*, and a check
+    constraint requires precisely one of the two — never both, which would be two
+    claims about one measurement, and never neither, which would be an orphan.
+
+    The uniqueness rule is enforced per identity kind, by two partial indexes
+    rather than one constraint over both columns. A single constraint spanning a
+    nullable pair would let `(NULL, 5, 2024-06-28, 20)` sit beside itself
+    indefinitely, since SQL treats NULLs as distinct — the duplicate measurements
+    this table refuses would arrive through exactly that gap.
+    """
+
+    __tablename__ = "forward_returns"
+    __table_args__ = (
+        # Exactly one identity. Written as an inequality over two NULL tests so it
+        # holds on SQLite and PostgreSQL alike; boolean arithmetic does not.
+        CheckConstraint(
+            "(company_id IS NULL) <> (historical_security_id IS NULL)",
+            name="ck_forward_return_one_identity",
+        ),
+        Index(
+            "uq_forward_return_company",
+            "company_id",
+            "observation_date",
+            "horizon_sessions",
+            unique=True,
+            sqlite_where=text("company_id IS NOT NULL"),
+            postgresql_where=text("company_id IS NOT NULL"),
+        ),
+        Index(
+            "uq_forward_return_historical",
+            "historical_security_id",
+            "observation_date",
+            "horizon_sessions",
+            unique=True,
+            sqlite_where=text("historical_security_id IS NOT NULL"),
+            postgresql_where=text("historical_security_id IS NOT NULL"),
+        ),
+        Index("ix_forward_returns_date", "observation_date", "horizon_sessions"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    # Exactly one of these two is set; see the check constraint above.
+    company_id: Mapped[int | None] = mapped_column(ForeignKey("companies.id", ondelete="CASCADE"))
+    historical_security_id: Mapped[int | None] = mapped_column(
+        ForeignKey("historical_securities.id", ondelete="CASCADE")
+    )
+    # The date the snapshot describes. The entry is the session *after* it.
+    observation_date: Mapped[date] = mapped_column(Date, nullable=False)
+    horizon_sessions: Mapped[int] = mapped_column(Integer, nullable=False)
+    # REALISED, TRUNCATED, INTERRUPTED or NO_ENTRY.
+    status: Mapped[str] = mapped_column(String(20), nullable=False)
+    entry_date: Mapped[date | None] = mapped_column(Date)
+    entry_price: Mapped[float | None] = mapped_column(Float)
+    exit_date: Mapped[date | None] = mapped_column(Date)
+    exit_price: Mapped[float | None] = mapped_column(Float)
+    # `exit / entry - 1` on the adjusted basis, so distributions and splits are
+    # already in it. NULL unless `status` is REALISED — never zero, which would
+    # claim the security went nowhere.
+    total_return: Mapped[float | None] = mapped_column(Float)
+    # Where an interrupted security was last priced. Evidence about what
+    # happened, not a substitute for the exit that never came.
+    last_seen_date: Mapped[date | None] = mapped_column(Date)
+    last_seen_price: Mapped[float | None] = mapped_column(Float)
+    measured_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow, server_default=func.now()
+    )
+
+    company: Mapped[Company | None] = relationship(back_populates="forward_returns")
+
+
+class PitSignalSnapshot(Base):
+    """One security's market state on one date, under one set of signal rules.
+
+    Derived from `pit_feature_snapshots` and stored rather than recomputed on
+    read. The features are immutable, so a signal could in principle be
+    rebuilt from them at any time — but only by running the code that built it,
+    and that code changes. Storing the result decouples the record from the
+    repository's history, exactly as `score_snapshots` is stored rather than
+    recomputed from `financial_snapshots`. See ADR-0011.
+
+    Immutable and unique on `(company_id, snapshot_date, signal_version)`. A
+    later version of the rules run over the same day appends a second row
+    beside the first; neither overwrites the other, so a change in definitions
+    can never silently restate what the system said at the time.
+
+    `run_id` points at the capture run whose features were read. It is the
+    provenance link that makes a signal reproducible: the exact feature rows are
+    identified, not merely the date.
+
+    This table holds no ranking and no composite. Phase 8A established that the
+    dimensions here are anti-correlated and that averaging them produces a
+    number which looks meaningful and is not.
+    """
+
+    __tablename__ = "pit_signal_snapshots"
+    __table_args__ = (
+        CheckConstraint(
+            "(company_id IS NULL) <> (historical_security_id IS NULL)",
+            name="ck_pit_signal_one_identity",
+        ),
+        Index(
+            "uq_pit_signal_snapshot_company",
+            "company_id",
+            "snapshot_date",
+            "signal_version",
+            unique=True,
+            sqlite_where=text("company_id IS NOT NULL"),
+            postgresql_where=text("company_id IS NOT NULL"),
+        ),
+        Index(
+            "uq_pit_signal_snapshot_historical",
+            "historical_security_id",
+            "snapshot_date",
+            "signal_version",
+            unique=True,
+            sqlite_where=text("historical_security_id IS NOT NULL"),
+            postgresql_where=text("historical_security_id IS NOT NULL"),
+        ),
+        Index("ix_pit_signal_snapshots_date_version", "snapshot_date", "signal_version"),
+        Index("ix_pit_signal_snapshots_company_date", "company_id", "snapshot_date"),
+        Index(
+            "ix_pit_signal_snapshots_historical_date",
+            "historical_security_id",
+            "snapshot_date",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    run_id: Mapped[int] = mapped_column(
+        ForeignKey("pit_capture_runs.id", ondelete="CASCADE"), nullable=False
+    )
+    # Exactly one of these two is set; see the check constraint above.
+    company_id: Mapped[int | None] = mapped_column(ForeignKey("companies.id", ondelete="CASCADE"))
+    historical_security_id: Mapped[int | None] = mapped_column(
+        ForeignKey("historical_securities.id", ondelete="CASCADE")
+    )
+    # The symbol this row describes, from whichever identity owns it —
+    # `companies.ticker` or `historical_securities.primary_ticker`. A label,
+    # never the identity.
+    ticker: Mapped[str] = mapped_column(String(20), nullable=False)
+    snapshot_date: Mapped[date] = mapped_column(Date, nullable=False)
+    captured_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow, server_default=func.now()
+    )
+    signal_version: Mapped[str] = mapped_column(String(40), nullable=False)
+    # The feature definitions the signals were derived from. Two versions travel
+    # together because a signal is only meaningful against the features it read.
+    feature_version: Mapped[str] = mapped_column(String(40), nullable=False)
+    feature_as_of: Mapped[date] = mapped_column(Date, nullable=False)
+    bars_available: Mapped[int] = mapped_column(Integer, nullable=False)
+    # How many companies the cross-sectional percentiles were measured against.
+    # Stored because a percentile is meaningless without its population.
+    peer_population: Mapped[int] = mapped_column(Integer, nullable=False)
+
+    compression_ratio: Mapped[float | None] = mapped_column(Float)
+    volatility_expansion_ratio: Mapped[float | None] = mapped_column(Float)
+    distance_from_52w_high: Mapped[float | None] = mapped_column(Float)
+    distance_from_52w_low: Mapped[float | None] = mapped_column(Float)
+    stretch_20d: Mapped[float | None] = mapped_column(Float)
+    trend_direction: Mapped[str] = mapped_column(String(10), nullable=False)
+    trend_r2: Mapped[float | None] = mapped_column(Float)
+
+    # Percentile per ranked feature. JSON because the key set belongs to the
+    # signal version rather than to the schema, and a new version may rank a
+    # different set without a migration.
+    percentiles_json: Mapped[dict[str, object] | None] = mapped_column(JSON)
+
+    # Pipe-separated, as `exclusion_reasons` is: the set is small, closed and
+    # ordered, and a reader can filter on it with LIKE without parsing JSON.
+    # Multi-label — a security can compress while trending.
+    setups: Mapped[str] = mapped_column(String(120), nullable=False)
+    setup_evidence_json: Mapped[list[object] | None] = mapped_column(JSON)
+
+    # TRADABLE, UNTRADABLE or UNVERIFIED. Three states, never a boolean: the
+    # honest answer for much of this universe is that nobody can tell, and
+    # collapsing that into either neighbour invents a certainty.
+    tradability: Mapped[str] = mapped_column(String(20), nullable=False)
+    tradability_reasons_json: Mapped[list[object] | None] = mapped_column(JSON)
+    # Whether stored venue volume established a *minimum* consolidated turnover.
+    # False means unproven, never illiquid.
+    liquidity_floor_proven: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+
+    run: Mapped[PitCaptureRun] = relationship(back_populates="signals")
+    company: Mapped[Company] = relationship(back_populates="pit_signals")
+
+
+class HistoricalSecurity(Base):
+    """A security that has left the market, kept addressable after delisting.
+
+    Deliberately **not** a `companies` row. `companies` is the current investable
+    universe — what the scanner, rankings and dashboard read — and a delisted
+    security must never enter it. This table is the parallel record for names
+    that no longer trade, so the two sets cannot contaminate one another: there
+    is no foreign key between them and no shared identity.
+
+    Identity is **`id`** — an opaque internal number that names the security and
+    nothing else. That is a Phase 9A change, and the reason for it is that every
+    external handle turned out to be a label rather than an identity. The CIK is
+    the best of them and is still stored and still unique where it exists, but it
+    is no longer *required*: the free record establishes a CIK for about an eighth
+    of delisted symbols, so a NOT NULL CIK made this table unable to hold the very
+    names it exists to hold. A CUSIP is a dated identifier of an *issue*, remade by
+    a reverse split over unchanged economics. A ticker is a lease.
+
+    So the identifiers hang off the identity instead, as dated intervals in
+    `security_identifiers` — this CUSIP, this symbol, this venue, valid over these
+    dates. `primary_ticker` remains here as the symbol prices are fetched under,
+    and `cik` as the filer handle where one is known; both are attributes of the
+    security, and neither is what makes it itself. See `domain.identity`.
+
+    Every field the free sources cannot establish is left NULL rather than
+    guessed. `terminal_value_per_share` is set only when a source states it (a
+    cash merger); a receivership whose equity value no authoritative source
+    gives keeps it NULL, which a reader must read as UNKNOWN and never as zero.
+    """
+
+    __tablename__ = "historical_securities"
+    __table_args__ = (
+        UniqueConstraint("cik", name="uq_historical_security_cik"),
+        Index("ix_historical_securities_ticker", "primary_ticker"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    # The SEC filer identifier, where the record establishes one. Unique when
+    # present — two rows may not claim one filer — and NULL where the free record
+    # gives no CIK, which is the majority of delisted symbols. NULL is "not
+    # established", never a placeholder, and a unique constraint permits any
+    # number of them.
+    cik: Mapped[int | None] = mapped_column(Integer)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    # The last-known trading symbol, used to fetch prices from a ticker-keyed
+    # feed. An attribute, not the identity — a ticker change updates it.
+    primary_ticker: Mapped[str] = mapped_column(String(20), nullable=False)
+    # The venue the security last traded on, for the eligibility screen. NULL
+    # where no free source establishes it, which the screen reads as an
+    # unsupported venue rather than assuming a good one.
+    exchange: Mapped[str | None] = mapped_column(String(50))
+    # Why the security left: a `DelistingReason` value — ACQUIRED, DELISTED,
+    # BANKRUPT, RECEIVERSHIP or UNKNOWN. UNKNOWN is the honest default.
+    status: Mapped[str] = mapped_column(String(30), nullable=False, default="UNKNOWN")
+    # Classification, for the frozen scoring gates. `statement_profile` is read
+    # from the filing concepts at ingestion, so a delisted bank is declined the
+    # score exactly as a live one is; sector and industry are NULL where no free
+    # source establishes them, which the label gate treats as "not unsupported".
+    sector: Mapped[str | None] = mapped_column(String(120))
+    industry: Mapped[str | None] = mapped_column(String(160))
+    statement_profile: Mapped[str | None] = mapped_column(String(30))
+    first_filing_date: Mapped[date | None] = mapped_column(Date)
+    last_filing_date: Mapped[date | None] = mapped_column(Date)
+    # The security's final stored trading session, when one is known.
+    last_trading_date: Mapped[date | None] = mapped_column(Date)
+    # Cash a holder received per share, when a source states it — a cash merger.
+    # NULL is UNKNOWN, never a guessed 0.0: a receivership with no authoritative
+    # value keeps it NULL, and reporting zero would libel a name whose equity a
+    # source simply never priced.
+    terminal_value_per_share: Mapped[float | None] = mapped_column(Float)
+    terminal_value_source: Mapped[str | None] = mapped_column(String(50))
+    # The currency the *statements* are filed in, and the currency the *shares*
+    # traded in. Kept apart for the reason `companies` keeps them apart: one
+    # field held both and the two sources disagreed about its meaning.
+    reporting_currency: Mapped[str | None] = mapped_column(String(3))
+    quote_currency: Mapped[str | None] = mapped_column(String(3))
+    notes: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=_utcnow,
+        onupdate=_utcnow,
+        server_default=func.now(),
+    )
+
+    observations: Mapped[list[HistoricalObservation]] = relationship(
+        back_populates="security", cascade="all, delete-orphan", passive_deletes=True
+    )
+    prices: Mapped[list[HistoricalPrice]] = relationship(
+        back_populates="security", cascade="all, delete-orphan", passive_deletes=True
+    )
+    corporate_actions: Mapped[list[HistoricalCorporateAction]] = relationship(
+        back_populates="security", cascade="all, delete-orphan", passive_deletes=True
+    )
+    identifiers: Mapped[list[SecurityIdentifier]] = relationship(
+        back_populates="security", cascade="all, delete-orphan", passive_deletes=True
+    )
+
+
+class HistoricalObservation(Base):
+    """One reported figure as one filing stated it, for a historical security.
+
+    The exact mirror of `fundamental_observations`, keyed to a
+    `historical_security` instead of a company. It is append-only and selected
+    on `filed_date`, so a reconstruction of a past decision sees only what had
+    actually been filed by then and a restatement is invisible until its own
+    filing date — the same point-in-time guarantee the company record makes,
+    for a security the company record cannot hold.
+    """
+
+    __tablename__ = "historical_observations"
+    __table_args__ = (
+        UniqueConstraint(
+            "historical_security_id",
+            "observation_fingerprint",
+            name="uq_historical_observation",
+        ),
+        Index(
+            "ix_historical_observations_pit",
+            "historical_security_id",
+            "concept",
+            "filed_date",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    historical_security_id: Mapped[int] = mapped_column(
+        ForeignKey("historical_securities.id", ondelete="CASCADE"), nullable=False
+    )
+    observation_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    taxonomy: Mapped[str] = mapped_column(String(40), nullable=False)
+    concept: Mapped[str] = mapped_column(String(120), nullable=False)
+    value: Mapped[float] = mapped_column(Float, nullable=False)
+    unit: Mapped[str] = mapped_column(String(20), nullable=False)
+    period_start: Mapped[date | None] = mapped_column(Date)
+    period_end: Mapped[date] = mapped_column(Date, nullable=False)
+    # NULL only where the source gives no filing date, and then the observation
+    # cannot take part in point-in-time selection at all — `period_end` is never
+    # a proxy for it.
+    filed_date: Mapped[date | None] = mapped_column(Date)
+    accession: Mapped[str | None] = mapped_column(String(30))
+    form: Mapped[str | None] = mapped_column(String(20))
+    fiscal_year: Mapped[int | None] = mapped_column(Integer)
+    fiscal_period: Mapped[str | None] = mapped_column(String(10))
+    frame: Mapped[str | None] = mapped_column(String(40))
+    source: Mapped[str] = mapped_column(String(50), nullable=False)
+    observed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow, server_default=func.now()
+    )
+
+    security: Mapped[HistoricalSecurity] = relationship(back_populates="observations")
+
+
+class HistoricalPrice(Base):
+    """One daily bar for a historical security, through its last session.
+
+    Mirrors `price_history`, keyed to a `historical_security`. Free market data
+    serves a delisted name's bars up to its final trading day, and this is where
+    they live so a point-in-time market capitalisation and a forward outcome can
+    be computed for a security that no longer exists.
+    """
+
+    __tablename__ = "historical_prices"
+    __table_args__ = (
+        UniqueConstraint("historical_security_id", "date", name="uq_historical_price"),
+        Index("ix_historical_prices_security_date", "historical_security_id", "date"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    historical_security_id: Mapped[int] = mapped_column(
+        ForeignKey("historical_securities.id", ondelete="CASCADE"), nullable=False
+    )
+    date: Mapped[date] = mapped_column(Date, nullable=False)
+    open: Mapped[float] = mapped_column(Float, nullable=False)
+    high: Mapped[float] = mapped_column(Float, nullable=False)
+    low: Mapped[float] = mapped_column(Float, nullable=False)
+    close: Mapped[float] = mapped_column(Float, nullable=False)
+    volume: Mapped[float] = mapped_column(Float, nullable=False)
+
+    security: Mapped[HistoricalSecurity] = relationship(back_populates="prices")
+
+
+class HistoricalCorporateAction(Base):
+    """A split or distribution for a historical security, as a source reported it.
+
+    Mirrors `corporate_actions`, keyed to a `historical_security`. Stored bars
+    are adjusted retroactively, so recovering the price a holder actually saw on
+    a past date needs the factor and the ex-date it applied on; a split before a
+    delisting is exactly such a factor, and it lives here rather than being
+    inferred from where a price happens to jump.
+    """
+
+    __tablename__ = "historical_corporate_actions"
+    __table_args__ = (
+        UniqueConstraint(
+            "historical_security_id", "action_fingerprint", name="uq_historical_corporate_action"
+        ),
+        Index(
+            "ix_historical_corporate_actions_security_date",
+            "historical_security_id",
+            "ex_date",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    historical_security_id: Mapped[int] = mapped_column(
+        ForeignKey("historical_securities.id", ondelete="CASCADE"), nullable=False
+    )
+    action_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    ticker: Mapped[str] = mapped_column(String(20), nullable=False)
+    action_type: Mapped[str] = mapped_column(String(30), nullable=False)
+    ex_date: Mapped[date] = mapped_column(Date, nullable=False)
+    split_factor: Mapped[float | None] = mapped_column(Float)
+    cash_amount: Mapped[float | None] = mapped_column(Float)
+    currency: Mapped[str | None] = mapped_column(String(3))
+    record_date: Mapped[date | None] = mapped_column(Date)
+    payable_date: Mapped[date | None] = mapped_column(Date)
+    source: Mapped[str] = mapped_column(String(50), nullable=False)
+    source_id: Mapped[str | None] = mapped_column(String(80))
+    observed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow, server_default=func.now()
+    )
+
+    security: Mapped[HistoricalSecurity] = relationship(back_populates="corporate_actions")
+
+
+class FilingAcceptance(Base):
+    """When the SEC actually accepted one filing, to the second.
+
+    `companyfacts` publishes a filing *date* and nothing finer, which is not
+    enough to decide availability. Measured across 2,546 XBRL-bearing filings,
+    45.7% of those accepted on their stated filing date were accepted **after**
+    the 16:00 ET close — so treating the date as availability shows a
+    close-of-day decision roughly half of that day's filings before they were
+    public. Treating it as unavailable until the next day is wrong the other
+    way, hiding the 54.3% that genuinely were.
+
+    The submissions endpoint publishes `acceptanceDateTime` per accession, and
+    every observation carries an accession, so the two join exactly.
+
+    Keyed by accession alone rather than by company: an accession is unique
+    across all filers, and one row then serves every observation that cites it —
+    a filing carrying two hundred facts is stored once.
+
+    Append-only, like the observation record it qualifies. A re-fetch of the
+    same accession writes nothing; the SEC does not revise an acceptance time,
+    and if it ever did, the first observation is the one a past decision used.
+    """
+
+    __tablename__ = "filing_acceptance"
+    __table_args__ = (
+        UniqueConstraint("accession", name="uq_filing_acceptance"),
+        Index("ix_filing_acceptance_accepted", "accepted_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    accession: Mapped[str] = mapped_column(String(30), nullable=False)
+    # Aware UTC. The SEC publishes this as an ISO instant with a `Z` suffix;
+    # verified against known filings — a 10-Q accepted at 20:00Z corresponds to
+    # 16:00 New York, so the offset is real and not an Eastern time mislabelled.
+    accepted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    # What the submissions index calls `filingDate`, kept so the date-level and
+    # instant-level views can be reconciled and disagreements found.
+    filed_date: Mapped[date | None] = mapped_column(Date)
+    form: Mapped[str | None] = mapped_column(String(20))
+    source: Mapped[str] = mapped_column(String(50), nullable=False)
+    observed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow, server_default=func.now()
+    )
+
+
+class SecurityIdentifier(Base):
+    """One identifier's dated claim on one security — the identity layer itself.
+
+    The table that makes `historical_securities.id` mean something. A security is
+    a stable internal number; what it was *called* is a set of rows here, each
+    saying: this CUSIP, this symbol, on this venue, from this date to that one,
+    on this source's word, at this confidence.
+
+    Three properties follow from that shape, and they are the whole reason the
+    layer exists rather than a `cusip` column on the parent:
+
+    - **A ticker change preserves the security.** The old row's `valid_to` closes
+      and a new row opens with the same `historical_security_id`.
+    - **A ticker reused by another issuer is a different security**, with its own
+      parent row and its own intervals. Nothing joins the two.
+    - **A reverse split preserves the security.** It mints a new CUSIP, which is
+      a new interval — not a new identity. Making the CUSIP the key would split
+      one company's history in half here.
+
+    Ranges are inclusive at both ends and must not overlap for one identifier: an
+    identifier names at most one security on any date, and
+    `domain.overlapping_intervals` is what checks it. `valid_to` NULL means the
+    interval is still open, which is a claim — never a stand-in for "unknown".
+
+    Append-mostly. An interval is closed by setting `valid_to`; it is never
+    deleted, because the record of what a symbol meant last year is the point.
+    """
+
+    __tablename__ = "security_identifiers"
+    __table_args__ = (
+        UniqueConstraint(
+            "historical_security_id",
+            "cusip",
+            "ticker",
+            "venue",
+            "valid_from",
+            name="uq_security_identifier",
+        ),
+        # An interval naming neither a CUSIP nor a ticker names nothing at all.
+        CheckConstraint(
+            "cusip IS NOT NULL OR ticker IS NOT NULL",
+            name="ck_security_identifier_has_an_identifier",
+        ),
+        # A closed interval must cover at least its own first day.
+        CheckConstraint(
+            "valid_to IS NULL OR valid_to >= valid_from",
+            name="ck_security_identifier_range",
+        ),
+        Index("ix_security_identifiers_cusip", "cusip", "valid_from"),
+        Index("ix_security_identifiers_ticker", "ticker", "valid_from"),
+        Index("ix_security_identifiers_security", "historical_security_id", "valid_from"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    historical_security_id: Mapped[int] = mapped_column(
+        ForeignKey("historical_securities.id", ondelete="CASCADE"), nullable=False
+    )
+    # The issue identifier over this range. NULL where a source establishes a
+    # symbol and no CUSIP — never a fabricated one.
+    cusip: Mapped[str | None] = mapped_column(String(9))
+    ticker: Mapped[str | None] = mapped_column(String(20))
+    # The exchange over this range. NULL where no source establishes one, which a
+    # venue screen must read as unestablished rather than as a good listing.
+    venue: Mapped[str | None] = mapped_column(String(50))
+    valid_from: Mapped[date] = mapped_column(Date, nullable=False)
+    # Inclusive last day. NULL means still open.
+    valid_to: Mapped[date | None] = mapped_column(Date)
+    source: Mapped[str] = mapped_column(String(50), nullable=False)
+    # OBSERVED, INFERRED or ASSERTED — a `domain.IdentityConfidence`. Stored
+    # because the three are not interchangeable: a study wanting only intervals a
+    # file actually printed has to be able to ask for them.
+    confidence: Mapped[str] = mapped_column(String(20), nullable=False)
+    # Why this interval opened — a `domain.LineageKind`. This is where lineage
+    # lives; a separate lineage table could only disagree with the intervals it
+    # described.
+    lineage: Mapped[str] = mapped_column(String(30), nullable=False, default="INITIAL")
+    # The issuer name the evidence printed, kept for the audit trail. Not an
+    # identity: names are abbreviated, and companies rename without changing.
+    issuer_name: Mapped[str | None] = mapped_column(String(255))
+    # How many source rows stand behind the interval, and a digest of the
+    # evidence triple that produced it, so a stored interval can be matched back
+    # to the rows it came from.
+    observation_count: Mapped[int | None] = mapped_column(Integer)
+    evidence_hash: Mapped[str | None] = mapped_column(String(64))
+    source_file: Mapped[str | None] = mapped_column(String(120))
+    observed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow, server_default=func.now()
+    )
+
+    security: Mapped[HistoricalSecurity] = relationship(back_populates="identifiers")
+
+
+class FtdSourceFile(Base):
+    """One SEC fails-to-deliver archive, recorded as having been read.
+
+    The provenance floor under the identity layer. Every identifier interval
+    derived from the fails record traces to rows in one of these files, and this
+    says which files were read, what they hashed to, and how many rows each held
+    — so a later run can prove it read the same bytes, and a re-run can skip what
+    is already in without reading 600 MB again.
+
+    `row_count` is the file's own, not a filtered figure. A file that parsed to
+    fewer identity rows than it holds is a file whose shape changed, and the two
+    numbers side by side are what makes that visible.
+    """
+
+    __tablename__ = "ftd_source_files"
+    __table_args__ = (
+        UniqueConstraint("file_name", name="uq_ftd_source_file"),
+        Index("ix_ftd_source_files_dates", "first_settlement_date", "last_settlement_date"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    file_name: Mapped[str] = mapped_column(String(120), nullable=False)
+    url: Mapped[str] = mapped_column(String(400), nullable=False)
+    # SHA-256 of the archive as fetched. The claim that a re-read read the same
+    # file rests entirely on this.
+    sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    byte_size: Mapped[int] = mapped_column(Integer, nullable=False)
+    row_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    skipped_lines: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    first_settlement_date: Mapped[date | None] = mapped_column(Date)
+    last_settlement_date: Mapped[date | None] = mapped_column(Date)
+    processed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow, server_default=func.now()
+    )
+
+
+class FtdIdentityObservation(Base):
+    """One distinct identity triple the fails-to-deliver record carries.
+
+    Evidence, kept separate from the conclusions drawn from it. The published
+    files print one line per security per settlement date — tens of millions of
+    them — and the *identity* content of all that is one row per distinct
+    `(cusip, symbol, issuer_name)`, with the window it was seen over and the
+    count behind it. Storing the aggregate rather than every line keeps the table
+    at the scale of the question being asked, and `ftd_source_files` holds the
+    digests that make the underlying lines recoverable.
+
+    It is a separate table from `security_identifiers` for a reason that matters:
+    evidence exists for symbols that could **not** be resolved to a security, and
+    those are exactly the rows an audit of what is missing needs. An interval
+    presupposes an identity; this presupposes nothing.
+
+    Read the absence of a row here as nothing at all. A security appears in the
+    SEC's file only when a delivery in it failed, and before 2008-09-16 only when
+    the failing balance also cleared a reporting threshold. `domain.identity`
+    holds the rule; there is no verdict in this system that turns silence here
+    into a claim that a security did not exist.
+    """
+
+    __tablename__ = "ftd_identity_observations"
+    __table_args__ = (
+        UniqueConstraint("cusip", "symbol", "issuer_name", name="uq_ftd_identity"),
+        Index("ix_ftd_identity_symbol", "symbol"),
+        Index("ix_ftd_identity_cusip", "cusip"),
+        Index("ix_ftd_identity_issuer_base", "issuer_base"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    cusip: Mapped[str] = mapped_column(String(9), nullable=False)
+    # The first six characters of the CUSIP, which the standard reserves for the
+    # issuer. Stored rather than derived on read because grouping a symbol's
+    # evidence by issuer is the single most-run query over this table, and
+    # because it is what keeps two occupants of one ticker apart.
+    issuer_base: Mapped[str] = mapped_column(String(6), nullable=False)
+    symbol: Mapped[str] = mapped_column(String(20), nullable=False)
+    issuer_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    first_settlement_date: Mapped[date] = mapped_column(Date, nullable=False)
+    last_settlement_date: Mapped[date] = mapped_column(Date, nullable=False)
+    observation_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    # Whether the CUSIP agrees with its own check digit. Recorded, never
+    # corrected: a malformed identifier is a fact about the file, and a repaired
+    # one would be an identifier this project invented.
+    cusip_valid: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    first_source_file: Mapped[str] = mapped_column(String(120), nullable=False)
+    last_source_file: Mapped[str] = mapped_column(String(120), nullable=False)
+    # SHA-256 over the triple, so an identifier interval can name the evidence
+    # behind it without duplicating it.
+    evidence_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    observed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow, server_default=func.now()
+    )
+
+
+class UniverseMembershipRecord(Base):
+    """One security's membership state over one dated interval — Phase 9C.
+
+    Deliberately **not** an extension of `universe_events`, and the distinction
+    is the point. `universe_events` is an observation log: what the daily capture
+    saw about a `companies` row on the day it looked. This is a *derived,
+    effective-dated verdict* about whether a security was in the research
+    universe over a span, built from dated evidence and carrying how it was
+    reached. Folding the second into the first would let an inference be stored
+    in a table whose whole contract is that its rows were witnessed.
+
+    Identity is dual, exactly as `forward_returns` is: `company_id` **or**
+    `historical_security_id`, never both and never neither. That is what lets a
+    delisted security hold membership at all, and what makes the universe query
+    return it without a caller asking for it. A membership layer keyed only by
+    `company_id` could not represent the securities it exists to represent — the
+    ones that are no longer in `companies`.
+
+    Ranges are inclusive at both ends and must not overlap for one security, so
+    exactly one row answers for any date it covers. **A date covered by no row is
+    `UNKNOWN`**, and that is a deliberate absence rather than a gap: the
+    reconstruction does not extrapolate past its evidence, and a caller that
+    finds nothing must read it as "the record cannot place this security", never
+    as "not a member".
+
+    `confidence` is load-bearing. `OBSERVED` means every input behind the verdict
+    carries a date the record establishes; `INFERRED` means a documented rule was
+    applied to an attribute the record does not date — the exchange and security
+    type, in practice — and `inferred_inputs` names exactly which. A study that
+    will only trust dated evidence can filter on it, and the reconstruction can
+    never quietly promote an inference by writing `OBSERVED`.
+    """
+
+    __tablename__ = "universe_membership"
+    __table_args__ = (
+        # Exactly one identity, as an inequality over two NULL tests so it holds
+        # on SQLite and PostgreSQL alike.
+        CheckConstraint(
+            "(company_id IS NULL) <> (historical_security_id IS NULL)",
+            name="ck_universe_membership_one_identity",
+        ),
+        CheckConstraint(
+            "valid_to IS NULL OR valid_to >= valid_from",
+            name="ck_universe_membership_range",
+        ),
+        # Unique per identity kind, by the interval's start. Two partial indexes
+        # rather than one constraint over the nullable pair, for the reason
+        # `forward_returns` needs the same shape: SQL holds every NULL distinct
+        # from every other, so one constraint spanning both would enforce nothing.
+        Index(
+            "uq_universe_membership_company",
+            "company_id",
+            "valid_from",
+            unique=True,
+            sqlite_where=text("company_id IS NOT NULL"),
+            postgresql_where=text("company_id IS NOT NULL"),
+        ),
+        Index(
+            "uq_universe_membership_historical",
+            "historical_security_id",
+            "valid_from",
+            unique=True,
+            sqlite_where=text("historical_security_id IS NOT NULL"),
+            postgresql_where=text("historical_security_id IS NOT NULL"),
+        ),
+        Index("ix_universe_membership_window", "valid_from", "valid_to"),
+        Index("ix_universe_membership_state", "state", "valid_from"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    company_id: Mapped[int | None] = mapped_column(ForeignKey("companies.id", ondelete="CASCADE"))
+    historical_security_id: Mapped[int | None] = mapped_column(
+        ForeignKey("historical_securities.id", ondelete="CASCADE")
+    )
+    # MEMBER, NON_MEMBER or UNKNOWN — a `domain.MembershipState`.
+    state: Mapped[str] = mapped_column(String(20), nullable=False)
+    # OBSERVED, INFERRED or ASSERTED — a `domain.MembershipConfidence`.
+    confidence: Mapped[str] = mapped_column(String(20), nullable=False)
+    # Which rule produced the verdict — a `domain.MembershipReason`.
+    reason: Mapped[str] = mapped_column(String(40), nullable=False)
+    valid_from: Mapped[date] = mapped_column(Date, nullable=False)
+    # Inclusive last day. NULL means still open.
+    valid_to: Mapped[date | None] = mapped_column(Date)
+    # The undated attributes carried back to reach the verdict, comma-separated.
+    # Empty for an observed verdict, and what makes an inference auditable rather
+    # than something a reader has to take on trust.
+    inferred_inputs: Mapped[str | None] = mapped_column(String(120))
+    source: Mapped[str] = mapped_column(String(50), nullable=False)
+    detail: Mapped[str | None] = mapped_column(Text)
+    observed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow, server_default=func.now()
+    )
+
+
+class ListingSourceFile(Base):
+    """One monthly market-share file, recorded as having been read or refused.
+
+    The provenance floor under the listing layer, and the same shape
+    `ftd_source_files` gives the identity layer: what was read, what it hashed
+    to, how many rows it held, and — the field that matters most here — which
+    tape its contents actually turned out to carry.
+
+    `tape` is stored because the published family name is not reliable. The
+    `Listed*` files carry **Tape B** (NYSE Arca, NYSE American, regional) through
+    2021-12 and **Tape A** (NYSE) from 2022-01, and one month inside the earlier
+    era is Tape A anyway. So the importer predicts a tape from the month, reads
+    one out of the file's own contents, and stores both; a disagreement is a
+    `QUARANTINED` row with the reason on it rather than an import. Without that,
+    a family rename upstream would silently relabel Arca ETFs as NYSE listings.
+
+    `status` therefore has two settled values: `IMPORTED` for a file whose
+    contents matched its predicted tape, `QUARANTINED` for one that did not.
+    A quarantined file keeps its row — the record of what was refused, and why,
+    is the point.
+    """
+
+    __tablename__ = "listing_source_files"
+    __table_args__ = (
+        UniqueConstraint("file_name", name="uq_listing_source_file"),
+        Index("ix_listing_source_files_month", "observation_month", "venue"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    file_name: Mapped[str] = mapped_column(String(120), nullable=False)
+    url: Mapped[str] = mapped_column(String(400), nullable=False)
+    # NASDAQ or LISTED — a `domain.SourceFamily`, the published family name.
+    source_family: Mapped[str] = mapped_column(String(20), nullable=False)
+    # The tape the month predicts, and the tape the contents proved. Equal for
+    # every imported file, and deliberately kept apart so the check is auditable
+    # rather than merely asserted at import time.
+    expected_tape: Mapped[str] = mapped_column(String(10), nullable=False)
+    observed_tape: Mapped[str] = mapped_column(String(10), nullable=False)
+    # NASDAQ or NYSE where the tape establishes one, NULL for Tape B — which
+    # names no venue this project can use and is never imported.
+    venue: Mapped[str | None] = mapped_column(String(20))
+    observation_month: Mapped[date] = mapped_column(Date, nullable=False)
+    # SHA-256 of the bytes as fetched. The claim that a re-read read the same
+    # file rests entirely on this.
+    sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    byte_size: Mapped[int] = mapped_column(Integer, nullable=False)
+    row_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    skipped_rows: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # IMPORTED or QUARANTINED.
+    status: Mapped[str] = mapped_column(String(20), nullable=False)
+    reason: Mapped[str | None] = mapped_column(Text)
+    retrieved_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow, server_default=func.now()
+    )
+
+    observations: Mapped[list[ListingObservation]] = relationship(
+        back_populates="source_file", cascade="all, delete-orphan", passive_deletes=True
+    )
+
+
+class ListingObservation(Base):
+    """One symbol seen in one month's market-share file for one venue.
+
+    **Evidence, not membership.** The row says the published file for that venue
+    and month named this symbol, and nothing more: not that the security was
+    listed on any particular day, and not — by its absence elsewhere — that it
+    was not listed. `evidence_state` is `MARKET_SHARE_OBSERVED` on every stored
+    row for exactly that reason; `UNKNOWN` is what a caller reads from the
+    *absence* of a row, and there is no `NOT_LISTED` value anywhere in the layer.
+
+    Identity is deliberately **not** a foreign key requirement. The source gives
+    a ticker and nothing else, and a ticker is a lease — so the row is keyed by
+    `(symbol, venue, observation_month)`, which is what the file actually
+    establishes, and identity is a *resolved attribution* carried beside it.
+    `company_id` and `historical_security_id` are both nullable and both may be
+    NULL together, which is why this table does not use the Option C check
+    constraint: an unattributed observation is a real and common state, not a
+    violation. `identity_state` says which it is.
+
+    That separation is what stops the layer inventing identity. A symbol two
+    issuers held stays one row per month with `identity_state = REUSED` until a
+    date-aware resolution attributes it, and it is never merged into whichever
+    security happens to sort first.
+    """
+
+    __tablename__ = "listing_observations"
+    __table_args__ = (
+        UniqueConstraint("symbol", "venue", "observation_month", name="uq_listing_observation"),
+        CheckConstraint(
+            "company_id IS NULL OR historical_security_id IS NULL",
+            name="ck_listing_observation_one_identity",
+        ),
+        Index("ix_listing_observations_month", "observation_month", "venue"),
+        Index("ix_listing_observations_symbol", "symbol", "observation_month"),
+        Index("ix_listing_observations_company", "company_id", "observation_month"),
+        Index("ix_listing_observations_historical", "historical_security_id", "observation_month"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    symbol: Mapped[str] = mapped_column(String(20), nullable=False)
+    # NASDAQ or NYSE. Never NULL: a Tape B file establishes no venue and is
+    # quarantined rather than imported, so no observation can exist without one.
+    venue: Mapped[str] = mapped_column(String(20), nullable=False)
+    observation_month: Mapped[date] = mapped_column(Date, nullable=False)
+    # Always MARKET_SHARE_OBSERVED for a stored row. Stored rather than implied
+    # so a later source can add rows in other states without the reader having
+    # to know which table it is looking at.
+    evidence_state: Mapped[str] = mapped_column(String(30), nullable=False)
+    # The month's consolidated volume. Zero is meaningful — the file carries a
+    # few securities it listed but that did not trade — and NULL means the cell
+    # could not be read, never that volume was zero.
+    consolidated_volume: Mapped[float | None] = mapped_column(Float)
+    # The attribution, where a date-aware resolution reached one. Both NULL is
+    # ordinary and means unattributed.
+    company_id: Mapped[int | None] = mapped_column(ForeignKey("companies.id", ondelete="CASCADE"))
+    historical_security_id: Mapped[int | None] = mapped_column(
+        ForeignKey("historical_securities.id", ondelete="CASCADE")
+    )
+    # RESOLVED_COMPANY, RESOLVED_HISTORICAL, REUSED, AMBIGUOUS or UNRESOLVED.
+    identity_state: Mapped[str] = mapped_column(String(30), nullable=False, default="UNRESOLVED")
+    source_file_id: Mapped[int] = mapped_column(
+        ForeignKey("listing_source_files.id", ondelete="CASCADE"), nullable=False
+    )
+    observed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow, server_default=func.now()
+    )
+
+    source_file: Mapped[ListingSourceFile] = relationship(back_populates="observations")
+
+
+class ResearchUniverseMonth(Base):
+    """One security's standing in the research universe for one month — Phase 9K.7.
+
+    Deliberately **not** rows in `universe_membership`, and the reasons are
+    concrete rather than stylistic. That table is Phase 9C's *interval*
+    reconstruction of listing attributes, read by `members_as_of` and consumed by
+    the signal and chain layers; its unique index is `(identity, valid_from)` and
+    498 of its rows already start on a month boundary, so monthly rows would
+    collide with it. It also carries no security class and no class-evidence
+    provenance. Writing a second producer's output into it, under a third set of
+    semantics, would corrupt the meaning of every existing reader.
+
+    So this is a separate, additive record with one row per security per month,
+    and it answers exactly one question: **may this security be researched in
+    this month, and if not, why not.**
+
+    Identity is dual and **required** — unlike `listing_observations`, which is
+    keyed by symbol because that is all its source gives. A row here presupposes
+    that the observation was attributed to a security, so the Option C check
+    applies in full: exactly one of `company_id` and `historical_security_id`.
+
+    Three properties the schema enforces rather than trusts:
+
+    - **A month is a month.** There is no day column and no interval. An
+      `ELIGIBLE` row licenses a monthly claim and nothing finer.
+    - **Absence is not a row.** A month with no observation is `UNKNOWN` and is
+      still written, because an accounting that silently omits the unresolved is
+      indistinguishable from one that excluded them.
+    - **Carried class evidence is labelled.** `class_evidence_mode` separates a
+      filing accepted inside the month from one carried forward within the
+      bound, so a study may demand the stronger form.
+    """
+
+    __tablename__ = "research_universe_months"
+    __table_args__ = (
+        CheckConstraint(
+            "(company_id IS NULL) <> (historical_security_id IS NULL)",
+            name="ck_research_universe_one_identity",
+        ),
+        Index(
+            "uq_research_universe_company",
+            "company_id",
+            "observation_month",
+            unique=True,
+            sqlite_where=text("company_id IS NOT NULL"),
+            postgresql_where=text("company_id IS NOT NULL"),
+        ),
+        Index(
+            "uq_research_universe_historical",
+            "historical_security_id",
+            "observation_month",
+            unique=True,
+            sqlite_where=text("historical_security_id IS NOT NULL"),
+            postgresql_where=text("historical_security_id IS NOT NULL"),
+        ),
+        Index("ix_research_universe_month_state", "observation_month", "state"),
+        Index("ix_research_universe_symbol", "symbol", "observation_month"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    company_id: Mapped[int | None] = mapped_column(ForeignKey("companies.id", ondelete="CASCADE"))
+    historical_security_id: Mapped[int | None] = mapped_column(
+        ForeignKey("historical_securities.id", ondelete="CASCADE")
+    )
+    # The symbol the security carried that month, from the observation itself —
+    # never today's ticker carried backwards.
+    symbol: Mapped[str] = mapped_column(String(20), nullable=False)
+    observation_month: Mapped[date] = mapped_column(Date, nullable=False)
+    # NASDAQ or NYSE where the month was observed on one; NULL otherwise. A NULL
+    # here is not "no venue" — it is "this source established none".
+    venue: Mapped[str | None] = mapped_column(String(20))
+    # A `domain.UniverseState`.
+    state: Mapped[str] = mapped_column(String(40), nullable=False)
+    # A `domain.SecurityClass`, and how it was reached — a
+    # `domain.ClassEvidenceMode`. `class_age_days` is the gap between the
+    # filing's acceptance and this month, so a reader can re-apply a stricter
+    # bound than the one the build used without rebuilding.
+    security_class: Mapped[str] = mapped_column(String(30), nullable=False)
+    class_evidence_mode: Mapped[str] = mapped_column(String(20), nullable=False)
+    class_age_days: Mapped[int | None] = mapped_column(Integer)
+    # Provenance for the class: which filing said so, and when it became public.
+    # `class_evidence_as_of` is an SEC **acceptance** date, never a period end.
+    class_source_accession: Mapped[str | None] = mapped_column(String(30))
+    class_evidence_as_of: Mapped[date | None] = mapped_column(Date)
+    # The monthly file behind the listing half of the verdict.
+    listing_source_file_id: Mapped[int | None] = mapped_column(
+        ForeignKey("listing_source_files.id", ondelete="SET NULL")
+    )
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    # Whether the security also cleared price, size and liquidity that month.
+    # NULL means the screen was not run, which is distinct from failing it.
+    eligible: Mapped[bool | None] = mapped_column(Boolean)
+    eligibility_reasons: Mapped[str | None] = mapped_column(String(200))
+    observed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow, server_default=func.now()
+    )

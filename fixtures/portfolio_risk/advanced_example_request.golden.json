@@ -1,0 +1,545 @@
+{
+  "_note": "Golden output for fixtures/portfolio_risk/advanced_example_request.json under PORTFOLIO_RISK_ENGINE_V1_1. evaluated_at_utc is omitted: it is operational, not semantic. Any other difference is a behaviour change and should be explained, not re-recorded. EXAMPLE_ADVANCED_RISK_POLICY_V1 is NOT_PRODUCTION_AUTHORIZED.",
+  "approved_portfolio": {
+    "as_of": "2026-10-02T16:00:00-04:00",
+    "bindings": {
+      "covariance_fingerprint": "58218f39d180f99add1d73853937f4c1fe4eb8b79fe46d1cdbeb377186714e29",
+      "effective_risk_policy_fingerprint": "bd1e2e7411e58637a6c27ca2d943d56cddf66c40fa9ee54c1f7700323786da76",
+      "engine_version": "PORTFOLIO_RISK_ENGINE_V1_1",
+      "portfolio_snapshot_fingerprint": "a588c8f9771c926703ec08d64a21a93e3dc6e53e10baa946c6533e3132cab4ea",
+      "risk_policy_fingerprint": "ac871f4d6a51b37bbd61e7390d73b2054a63ef99f76c9057a0f2b7388532fb04",
+      "risk_snapshot_fingerprint": "5e5537f821c9269d1c623c572ae5da6a89c15ce93ebb132404f804b294409e07",
+      "strategy_intents_fingerprint": "5872c1b5edd740a94dbe23dcc67e9c91949d5a147e81f11e0c2198ae26ba3d45"
+    },
+    "cash_target_weight": 0.6419034332,
+    "constraint_model": "DETERMINISTIC_STAGED_CONSTRAINTS_V1",
+    "constructor_id": "BASELINE_TARGET_WEIGHT_CONSTRUCTOR_V1",
+    "decision_id": "advanced-example-1",
+    "engine_version": "PORTFOLIO_RISK_ENGINE_V1_1",
+    "fingerprint": "db0dd5b1ccd962bc9f6ea291ac13bd694987368c8bbf2358de66ccb8e44573b7",
+    "gross_exposure": 0.3580965668,
+    "net_exposure": 0.3580965668,
+    "position_count": 6,
+    "risk_decisions": [
+      {
+        "approved_weight": 0.0813855834,
+        "decision": "RESIZED",
+        "identity": {
+          "identity_id": 1,
+          "kind": "COMPANY",
+          "symbol": "AAA"
+        },
+        "policy_id": "EXAMPLE_ADVANCED_RISK_POLICY_V1",
+        "policy_version": "1",
+        "reason_codes": [
+          "MAX_POSITION_WEIGHT",
+          "PORTFOLIO_VOLATILITY_LIMIT"
+        ],
+        "requested_weight": 0.3
+      },
+      {
+        "approved_weight": 0.0325542333,
+        "decision": "RESIZED",
+        "identity": {
+          "identity_id": 2,
+          "kind": "COMPANY",
+          "symbol": "BBB"
+        },
+        "policy_id": "EXAMPLE_ADVANCED_RISK_POLICY_V1",
+        "policy_version": "1",
+        "reason_codes": [
+          "MAX_POSITION_WEIGHT",
+          "POSITION_LIQUIDITY_LIMIT",
+          "PORTFOLIO_VOLATILITY_LIMIT"
+        ],
+        "requested_weight": 0.2
+      },
+      {
+        "approved_weight": 0.0325542333,
+        "decision": "RESIZED",
+        "identity": {
+          "identity_id": 3,
+          "kind": "COMPANY",
+          "symbol": "CCC"
+        },
+        "policy_id": "EXAMPLE_ADVANCED_RISK_POLICY_V1",
+        "policy_version": "1",
+        "reason_codes": [
+          "MAX_POSITION_WEIGHT",
+          "TRADE_LIQUIDITY_LIMIT",
+          "PORTFOLIO_VOLATILITY_LIMIT"
+        ],
+        "requested_weight": 0.15
+      },
+      {
+        "approved_weight": 0.0813855834,
+        "decision": "RESIZED",
+        "identity": {
+          "identity_id": 4,
+          "kind": "COMPANY",
+          "symbol": "DDD"
+        },
+        "policy_id": "EXAMPLE_ADVANCED_RISK_POLICY_V1",
+        "policy_version": "1",
+        "reason_codes": [
+          "MAX_POSITION_WEIGHT",
+          "PORTFOLIO_VOLATILITY_LIMIT"
+        ],
+        "requested_weight": 0.15
+      },
+      {
+        "approved_weight": 0.04883135,
+        "decision": "RESIZED",
+        "identity": {
+          "identity_id": 5,
+          "kind": "COMPANY",
+          "symbol": "EEE"
+        },
+        "policy_id": "EXAMPLE_ADVANCED_RISK_POLICY_V1",
+        "policy_version": "1",
+        "reason_codes": [
+          "PORTFOLIO_VOLATILITY_LIMIT"
+        ],
+        "requested_weight": 0.06
+      },
+      {
+        "approved_weight": 0.0813855834,
+        "decision": "RESIZED",
+        "identity": {
+          "identity_id": 6,
+          "kind": "COMPANY",
+          "symbol": "FFF"
+        },
+        "policy_id": "EXAMPLE_ADVANCED_RISK_POLICY_V1",
+        "policy_version": "1",
+        "reason_codes": [
+          "MAX_POSITION_WEIGHT",
+          "PORTFOLIO_VOLATILITY_LIMIT"
+        ],
+        "requested_weight": 0.15
+      },
+      {
+        "approved_weight": 0.0,
+        "decision": "REJECTED",
+        "identity": {
+          "identity_id": 99,
+          "kind": "COMPANY",
+          "symbol": "ZZZ"
+        },
+        "policy_id": "EXAMPLE_ADVANCED_RISK_POLICY_V1",
+        "policy_version": "1",
+        "reason_codes": [
+          "NOT_REQUESTED"
+        ],
+        "requested_weight": 0.0
+      }
+    ],
+    "targets": {
+      "COMPANY:1": 0.0813855834,
+      "COMPANY:2": 0.0325542333,
+      "COMPANY:3": 0.0325542333,
+      "COMPANY:4": 0.0813855834,
+      "COMPANY:5": 0.04883135,
+      "COMPANY:6": 0.0813855834
+    }
+  },
+  "delta_summary": {
+    "is_realised_execution_turnover": false,
+    "positions_entered": 3,
+    "positions_exited": 1,
+    "positions_held": 0,
+    "positions_increased": 1,
+    "positions_reduced": 2,
+    "turnover_caveat": "a target-weight estimate only. It models no spread, no impact, no partial fill and no commission, so it is not comparable with a realised execution turnover or with the research layer's one-way rebalance turnover.",
+    "turnover_definition": "PORTFOLIO_WEIGHT_TURNOVER_ESTIMATE_V1",
+    "turnover_formula": "0.5 * sum(abs(target_weight - current_weight))",
+    "weight_turnover_estimate": 0.1576627001
+  },
+  "execution_intents": [
+    {
+      "action": "INCREASE",
+      "broker_fields": null,
+      "current_weight": 0.03,
+      "identity": {
+        "identity_id": 1,
+        "kind": "COMPANY",
+        "symbol": "AAA"
+      },
+      "is_an_order": false,
+      "notional_delta": 51385.5834,
+      "reason_codes": [
+        "MAX_POSITION_WEIGHT",
+        "PORTFOLIO_VOLATILITY_LIMIT"
+      ],
+      "strategy_id": null,
+      "target_weight": 0.0813855834,
+      "weight_delta": 0.0513855834
+    },
+    {
+      "action": "REDUCE",
+      "broker_fields": null,
+      "current_weight": 0.04,
+      "identity": {
+        "identity_id": 2,
+        "kind": "COMPANY",
+        "symbol": "BBB"
+      },
+      "is_an_order": false,
+      "notional_delta": -7445.7667,
+      "reason_codes": [
+        "MAX_POSITION_WEIGHT",
+        "POSITION_LIQUIDITY_LIMIT",
+        "PORTFOLIO_VOLATILITY_LIMIT"
+      ],
+      "strategy_id": null,
+      "target_weight": 0.0325542333,
+      "weight_delta": -0.0074457667
+    },
+    {
+      "action": "ENTER",
+      "broker_fields": null,
+      "current_weight": 0.0,
+      "identity": {
+        "identity_id": 3,
+        "kind": "COMPANY",
+        "symbol": "CCC"
+      },
+      "is_an_order": false,
+      "notional_delta": 32554.2333,
+      "reason_codes": [
+        "MAX_POSITION_WEIGHT",
+        "TRADE_LIQUIDITY_LIMIT",
+        "PORTFOLIO_VOLATILITY_LIMIT"
+      ],
+      "strategy_id": null,
+      "target_weight": 0.0325542333,
+      "weight_delta": 0.0325542333
+    },
+    {
+      "action": "ENTER",
+      "broker_fields": null,
+      "current_weight": 0.0,
+      "identity": {
+        "identity_id": 4,
+        "kind": "COMPANY",
+        "symbol": "DDD"
+      },
+      "is_an_order": false,
+      "notional_delta": 81385.5834,
+      "reason_codes": [
+        "MAX_POSITION_WEIGHT",
+        "PORTFOLIO_VOLATILITY_LIMIT"
+      ],
+      "strategy_id": null,
+      "target_weight": 0.0813855834,
+      "weight_delta": 0.0813855834
+    },
+    {
+      "action": "REDUCE",
+      "broker_fields": null,
+      "current_weight": 0.06,
+      "identity": {
+        "identity_id": 5,
+        "kind": "COMPANY",
+        "symbol": "EEE"
+      },
+      "is_an_order": false,
+      "notional_delta": -11168.65,
+      "reason_codes": [
+        "PORTFOLIO_VOLATILITY_LIMIT"
+      ],
+      "strategy_id": null,
+      "target_weight": 0.04883135,
+      "weight_delta": -0.01116865
+    },
+    {
+      "action": "ENTER",
+      "broker_fields": null,
+      "current_weight": 0.0,
+      "identity": {
+        "identity_id": 6,
+        "kind": "COMPANY",
+        "symbol": "FFF"
+      },
+      "is_an_order": false,
+      "notional_delta": 81385.5834,
+      "reason_codes": [
+        "MAX_POSITION_WEIGHT",
+        "PORTFOLIO_VOLATILITY_LIMIT"
+      ],
+      "strategy_id": null,
+      "target_weight": 0.0813855834,
+      "weight_delta": 0.0813855834
+    },
+    {
+      "action": "EXIT",
+      "broker_fields": null,
+      "current_weight": 0.05,
+      "identity": {
+        "identity_id": 99,
+        "kind": "COMPANY",
+        "symbol": "ZZZ"
+      },
+      "is_an_order": false,
+      "notional_delta": -50000.0,
+      "reason_codes": [
+        "NOT_REQUESTED"
+      ],
+      "strategy_id": null,
+      "target_weight": 0.0,
+      "weight_delta": -0.05
+    }
+  ],
+  "execution_intents_fingerprint": "6f14f4575dffcaedb2f73b3ac6d148fff30160e720510667f385da80c795c54c",
+  "manifest": {
+    "advanced_risk_stage_order": [
+      "validate_inputs_and_risk_timing",
+      "seed_ceilings_at_pre_risk_weights",
+      "derive_effective_policy_from_drawdown",
+      "position_count_cap",
+      "per_name_weight_cap",
+      "position_liquidity_capacity",
+      "trade_liquidity_capacity",
+      "missing_risk_metric_ceilings",
+      "effective_gross_and_cash_budget",
+      "portfolio_volatility_ceiling",
+      "dust_floor",
+      "trade_notional_cap",
+      "effective_operating_mode",
+      "forced_exits",
+      "invariants"
+    ],
+    "approved_portfolio_fingerprint": "db0dd5b1ccd962bc9f6ea291ac13bd694987368c8bbf2358de66ccb8e44573b7",
+    "as_of": "2026-10-02T16:00:00-04:00",
+    "broker_requests": 0,
+    "code_commit": null,
+    "constructed_portfolio_fingerprint": "158cf24d2bf4105f46b3fc322a2b2478b8a71dbaab1d1089b61c1a41780bc987",
+    "covariance_fingerprint": "58218f39d180f99add1d73853937f4c1fe4eb8b79fe46d1cdbeb377186714e29",
+    "decision_id": "advanced-example-1",
+    "effective_risk_policy_fingerprint": "bd1e2e7411e58637a6c27ca2d943d56cddf66c40fa9ee54c1f7700323786da76",
+    "engine_version": "PORTFOLIO_RISK_ENGINE_V1_1",
+    "execution_intents_fingerprint": "6f14f4575dffcaedb2f73b3ac6d148fff30160e720510667f385da80c795c54c",
+    "manifest_id": "PORTFOLIO_DECISION_MANIFEST_V1_1",
+    "orders_submitted": 0,
+    "policy_production_authorized": false,
+    "portfolio_snapshot_fingerprint": "a588c8f9771c926703ec08d64a21a93e3dc6e53e10baa946c6533e3132cab4ea",
+    "risk_decisions_fingerprint": "4b17a4e9435bae0748d10d950d3c9dca8dc2967b61022a3d22384f41f30cbedd",
+    "risk_policy_fingerprint": "ac871f4d6a51b37bbd61e7390d73b2054a63ef99f76c9057a0f2b7388532fb04",
+    "risk_report_fingerprint": "541ff986696a8879850cbe178fc930c64312bda445c68b5d98ce472ebe5806cb",
+    "risk_snapshot_fingerprint": "5e5537f821c9269d1c623c572ae5da6a89c15ce93ebb132404f804b294409e07",
+    "risk_timing": {
+      "decision_as_of": "2026-10-02T16:00:00-04:00",
+      "freshness_enforced": false,
+      "max_age_seconds": null,
+      "metrics_checked": 7,
+      "risk_snapshot_as_of": "2026-10-02T16:00:00-04:00"
+    },
+    "strategy_intents_fingerprint": "5872c1b5edd740a94dbe23dcc67e9c91949d5a147e81f11e0c2198ae26ba3d45",
+    "timestamp_excluded_from_semantic_hashes": true
+  },
+  "risk_report": {
+    "base_policy": {
+      "advanced_risk_controls": {
+        "drawdown_bands": [
+          {
+            "label": "caution",
+            "max_gross_multiplier": 0.8,
+            "mode": "NORMAL",
+            "threshold": -0.1
+          },
+          {
+            "label": "reduce-only",
+            "max_gross_multiplier": 0.5,
+            "mode": "REDUCE_ONLY",
+            "threshold": -0.2
+          },
+          {
+            "label": "halted",
+            "max_gross_multiplier": 0.5,
+            "mode": "HALTED",
+            "threshold": -0.3
+          }
+        ],
+        "max_portfolio_volatility": 0.12,
+        "max_position_adv_fraction": 0.05,
+        "max_risk_metric_age_seconds": null,
+        "max_trade_adv_fraction": 0.02,
+        "missing_liquidity_policy": "REJECT_INCREASE",
+        "missing_volatility_policy": "REJECT_INCREASE"
+      },
+      "arithmetic": {
+        "exposure_tolerance": 1e-07,
+        "hold_tolerance": 0.0001,
+        "hold_tolerance_is_a_policy_choice": "it states what drift is not worth trading, not what the arithmetic can resolve, which is why it is four orders coarser",
+        "policy_id": "PORTFOLIO_ARITHMETIC_V1",
+        "representation": "float64, quantised before hashing or serialisation",
+        "reproducibility": "identical inputs produce weights agreeing to weight_decimals by construction, so the fingerprint agrees exactly rather than nearly",
+        "weight_decimals": 10,
+        "weight_tolerance": 1e-09,
+        "why_not_decimal": "every input model already carries floats, so holding Decimal here would add a conversion seam at both boundaries without the exactness guarantee surviving either of them"
+      },
+      "construction_mode": "PRESERVE_ABSOLUTE_WEIGHTS",
+      "fingerprint": "ac871f4d6a51b37bbd61e7390d73b2054a63ef99f76c9057a0f2b7388532fb04",
+      "investable_budget": 0.95,
+      "long_only": true,
+      "max_gross_exposure": 1.0,
+      "max_net_exposure": null,
+      "max_position_weight": 0.1,
+      "max_positions": 10,
+      "max_trade_notional_weight": null,
+      "min_cash_weight": 0.05,
+      "min_position_weight": null,
+      "mode": "NORMAL",
+      "policy_id": "EXAMPLE_ADVANCED_RISK_POLICY_V1",
+      "policy_version": "1",
+      "production_authorized": false
+    },
+    "counts": {
+      "approved_positions": 6,
+      "constructed_positions": 6,
+      "requested_positions": 6
+    },
+    "covariance_diagnostics": {
+      "average_pairwise_correlation": 0.45,
+      "component_variance": {
+        "COMPANY:1": 0.0033934426,
+        "COMPANY:2": 0.0011803279,
+        "COMPANY:3": 0.0011803279,
+        "COMPANY:4": 0.0033934426,
+        "COMPANY:5": 0.0018590164,
+        "COMPANY:6": 0.0033934426
+      },
+      "component_variance_sums_to_portfolio_variance": true,
+      "diagnostics_only": "no correlation or risk-budget rule is enforced in P1.1",
+      "maximum_pairwise_correlation": 0.45,
+      "pairs": 15.0,
+      "portfolio_variance": 0.0144,
+      "undefined_pairs": 0.0
+    },
+    "covariance_fingerprint": "58218f39d180f99add1d73853937f4c1fe4eb8b79fe46d1cdbeb377186714e29",
+    "drawdown": -0.15,
+    "effective_policy": {
+      "active_band": {
+        "label": "caution",
+        "max_gross_multiplier": 0.8,
+        "mode": "NORMAL",
+        "threshold": -0.1
+      },
+      "base_max_gross_exposure": 1.0,
+      "base_mode": "NORMAL",
+      "base_policy_fingerprint": "ac871f4d6a51b37bbd61e7390d73b2054a63ef99f76c9057a0f2b7388532fb04",
+      "drawdown": -0.15,
+      "fingerprint": "bd1e2e7411e58637a6c27ca2d943d56cddf66c40fa9ee54c1f7700323786da76",
+      "investable_budget": 0.8,
+      "max_gross_exposure": 0.8,
+      "min_cash_weight": 0.05,
+      "mode": "NORMAL",
+      "overlay_may_only_tighten": true,
+      "risk_snapshot_fingerprint": "5e5537f821c9269d1c623c572ae5da6a89c15ce93ebb132404f804b294409e07",
+      "tightened": true
+    },
+    "estimates_no_market_impact": true,
+    "exposure": {
+      "approved_gross": 0.3580965668,
+      "approved_net": 0.3580965668,
+      "cash_after": 0.6419034332,
+      "cash_before": 0.82,
+      "constructed_gross": 1.01,
+      "requested_gross": 1.01
+    },
+    "fingerprint": "541ff986696a8879850cbe178fc930c64312bda445c68b5d98ce472ebe5806cb",
+    "liquidity_constrained_positions": [
+      "COMPANY:2",
+      "COMPANY:3"
+    ],
+    "liquidity_unknown": [],
+    "makes_no_performance_claim": true,
+    "missing_risk_metric": [],
+    "per_position": [
+      {
+        "annualized_volatility": 0.45,
+        "approved_weight": 0.0813855834,
+        "constructed_weight": 0.3,
+        "identity": "COMPANY:1",
+        "weight_times_volatility": 0.0366235125
+      },
+      {
+        "annualized_volatility": 0.45,
+        "approved_weight": 0.0325542333,
+        "constructed_weight": 0.2,
+        "identity": "COMPANY:2",
+        "weight_times_volatility": 0.014649405
+      },
+      {
+        "annualized_volatility": 0.45,
+        "approved_weight": 0.0325542333,
+        "constructed_weight": 0.15,
+        "identity": "COMPANY:3",
+        "weight_times_volatility": 0.014649405
+      },
+      {
+        "annualized_volatility": 0.45,
+        "approved_weight": 0.0813855834,
+        "constructed_weight": 0.15,
+        "identity": "COMPANY:4",
+        "weight_times_volatility": 0.0366235125
+      },
+      {
+        "annualized_volatility": 0.45,
+        "approved_weight": 0.04883135,
+        "constructed_weight": 0.06,
+        "identity": "COMPANY:5",
+        "weight_times_volatility": 0.0219741075
+      },
+      {
+        "annualized_volatility": 0.45,
+        "approved_weight": 0.0813855834,
+        "constructed_weight": 0.15,
+        "identity": "COMPANY:6",
+        "weight_times_volatility": 0.0366235125
+      }
+    ],
+    "portfolio_volatility_after_risk": 0.12,
+    "portfolio_volatility_before_risk": 0.1474462614,
+    "position_capacity_limited": [
+      "COMPANY:2"
+    ],
+    "reason_summary": {
+      "MAX_POSITION_WEIGHT": 5,
+      "NOT_REQUESTED": 1,
+      "PORTFOLIO_VOLATILITY_LIMIT": 6,
+      "POSITION_LIQUIDITY_LIMIT": 1,
+      "TRADE_LIQUIDITY_LIMIT": 1
+    },
+    "report_id": "PORTFOLIO_RISK_REPORT_V1_1",
+    "risk_snapshot_fingerprint": "5e5537f821c9269d1c623c572ae5da6a89c15ce93ebb132404f804b294409e07",
+    "trade_capacity_limited": [
+      "COMPANY:2",
+      "COMPANY:3"
+    ],
+    "volatility_scale": 0.8138558337,
+    "volatility_scaling_applied": true
+  },
+  "risk_summary": {
+    "approved_count": 6,
+    "approved_gross_exposure": 0.3580965668,
+    "approved_net_exposure": 0.3580965668,
+    "approved_unchanged_count": 0,
+    "cash_target_weight": 0.6419034332,
+    "constraint_model": "DETERMINISTIC_STAGED_CONSTRAINTS_V1",
+    "constructed_gross_exposure": 1.01,
+    "drawdown": -0.15,
+    "drawdown_resizes": 1,
+    "effective_mode": "NORMAL",
+    "forced_exit_count": 1,
+    "liquidity_resizes": 2,
+    "missing_risk_metrics": 0,
+    "post_risk_portfolio_volatility": 0.12,
+    "pre_risk_portfolio_volatility": 0.1474462614,
+    "rejected_count": 0,
+    "requested_count": 6,
+    "requested_gross_exposure": 1.01,
+    "requested_position_count": 6,
+    "resized_count": 6
+  }
+}
