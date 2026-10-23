@@ -426,9 +426,10 @@ finished when it is not. If you skipped part of a task, say which part and why.
 
 ## Pull request review contract
 
-GitHub pull requests are the shared handoff between implementation and independent
-review. Claude may implement changes; Codex is the independent automated reviewer.
-Both follow `.ai/REVIEW_CONTRACT.md`.
+GitHub pull requests are the shared handoff between implementation, CI, and
+independent review. Claude may implement changes. Paid automated semantic review
+is currently disabled; independent Codex/ChatGPT review is manual/on-demand.
+Reviewers follow `.ai/REVIEW_CONTRACT.md`.
 
 When reviewing a PR:
 
@@ -443,7 +444,7 @@ When reviewing a PR:
 - Never resolve an architecture decision, operator authorization, production
   state transition, broker mutation, credential change, or live-trading boundary
   by silently choosing on the user's behalf. Escalate it.
-- Automated review may request code changes, but it never merges a PR.
+- Any future automated review may request code changes, but it never merges a PR.
 
 For portfolio, execution, paper-trading, or soak code when those subsystems are
 present, also protect these boundaries:
@@ -459,7 +460,8 @@ present, also protect these boundaries:
 
 ## Code Review Rules
 
-These rules are consumed by managed Codex Code Review on GitHub.
+These rules are retained for manual/on-demand and future independent Codex
+reviews. Automated paid semantic review is currently disabled in GitHub Actions.
 
 - Read `.ai/REVIEW_CONTRACT.md` before judging a pull request. Its safety,
   authority, and human-only boundaries remain controlling review policy.
@@ -473,9 +475,8 @@ These rules are consumed by managed Codex Code Review on GitHub.
 - Report material semantic findings only. Formatting, import ordering, typing,
   and ordinary deterministic test failures belong to CI unless the check itself
   is incorrect.
-- A finding that can be fixed entirely in code may be reported normally; the
-  review bridge treats an ordinary published Codex finding as
-  `CHANGES_REQUESTED`.
+- A finding that can be fixed entirely in code should be reported as
+  `CHANGES_REQUESTED` when using the repository review vocabulary.
 - If a finding requires explicit owner/operator approval or a privileged action
   listed in `.ai/REVIEW_CONTRACT.md`, include the literal token
   `HUMAN_REQUIRED` in the finding title or body. Do not propose an automatic

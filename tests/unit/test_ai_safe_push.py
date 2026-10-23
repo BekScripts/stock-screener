@@ -261,25 +261,22 @@ def test_safe_push_ignores_generated_task_context(tmp_path: Path) -> None:
     assert task_file.returncode != 0
 
 
-def test_workflow_supplies_pr_task_context_to_reviewer_and_fixer() -> None:
+def test_ai_review_workflow_disables_paid_models_and_keeps_status_gate() -> None:
     workflow = (ROOT / ".github" / "workflows" / "ai-pr-loop.yml").read_text(encoding="utf-8")
-    push_script = PUSH_SCRIPT.read_text(encoding="utf-8")
 
-    assert "Capture PR task context" in workflow
-    assert "jq -r '.pull_request.title // \"\"'" in workflow
-    assert "jq -r '.pull_request.body // \"\"'" in workflow
-    assert ".ai/current-task.md" in workflow
-    assert "do not approve merely" in workflow
-    assert ".ai/current-task.md" in push_script
+    assert "name: AI Review Gate" in workflow
+    assert "Automated semantic review disabled" in workflow
+    assert "openai/codex-action" not in workflow
+    assert "OPENAI_API_KEY" not in workflow
+    assert "anthropics/claude-code-action" not in workflow
+    assert "CLAUDE_CODE_OAUTH_TOKEN" not in workflow
+    assert "pull-requests: write" not in workflow
+    assert "issues: write" not in workflow
 
 
-def test_workflow_uses_wrapper_instead_of_direct_commit_permissions() -> None:
-    workflow = (ROOT / ".github" / "workflows" / "ai-pr-loop.yml").read_text(encoding="utf-8")
+def test_safe_push_wrapper_remains_available_for_future_review_automation() -> None:
     settings = json.loads((ROOT / ".claude" / "settings.json").read_text(encoding="utf-8"))
 
-    assert "Bash(./scripts/ai-safe-push.sh)" in workflow
-    assert "Bash(git commit" not in workflow
-    assert "Bash(git push" not in workflow
-
+    assert PUSH_SCRIPT.is_file()
     restricted = settings["permissions"]["ask"] + settings["permissions"]["deny"]
     assert all("ai-safe-push.sh" not in rule for rule in restricted)
