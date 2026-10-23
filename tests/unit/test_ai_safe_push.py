@@ -261,7 +261,7 @@ def test_safe_push_ignores_generated_task_context(tmp_path: Path) -> None:
     assert task_file.returncode != 0
 
 
-def test_workflow_supplies_pr_task_context_to_reviewer_and_fixer() -> None:
+def test_workflow_uses_managed_codex_and_preserves_task_context_for_fixes() -> None:
     workflow = (ROOT / ".github" / "workflows" / "ai-pr-loop.yml").read_text(encoding="utf-8")
     push_script = PUSH_SCRIPT.read_text(encoding="utf-8")
 
@@ -269,7 +269,11 @@ def test_workflow_supplies_pr_task_context_to_reviewer_and_fixer() -> None:
     assert "jq -r '.pull_request.title // \"\"'" in workflow
     assert "jq -r '.pull_request.body // \"\"'" in workflow
     assert ".ai/current-task.md" in workflow
-    assert "do not approve merely" in workflow
+    assert "Wait for managed Codex review" in workflow
+    assert "scripts/ai_managed_review.py" in workflow
+    assert "refs/remotes/origin/${BASE_REF}:scripts/ai_managed_review.py" in workflow
+    assert "openai/codex-action" not in workflow
+    assert "OPENAI_API_KEY" not in workflow
     assert ".ai/current-task.md" in push_script
 
 
