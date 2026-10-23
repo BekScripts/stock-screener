@@ -7,11 +7,13 @@ import json
 import re
 import shutil
 import subprocess
-from collections.abc import Callable, Sequence
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import cast
+from typing import TYPE_CHECKING, cast
+
+if TYPE_CHECKING:
+    from collections.abc import Callable, Sequence
 
 STATE_VERSION = 1
 ISSUE_URL_RE = re.compile(r"/issues/(?P<number>[1-9][0-9]*)/?$")
