@@ -147,12 +147,8 @@ def test_safe_push_preserves_action_restored_config_paths(tmp_path: Path) -> Non
 
 
 def test_workflow_uses_wrapper_instead_of_direct_commit_permissions() -> None:
-    workflow = (ROOT / ".github" / "workflows" / "ai-pr-loop.yml").read_text(
-        encoding="utf-8"
-    )
-    settings = json.loads(
-        (ROOT / ".claude" / "settings.json").read_text(encoding="utf-8")
-    )
+    workflow = (ROOT / ".github" / "workflows" / "ai-pr-loop.yml").read_text(encoding="utf-8")
+    settings = json.loads((ROOT / ".claude" / "settings.json").read_text(encoding="utf-8"))
 
     assert "Bash(./scripts/ai-safe-push.sh)" in workflow
     assert "Bash(git commit" not in workflow
