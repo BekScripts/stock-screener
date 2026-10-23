@@ -36,6 +36,7 @@ site/
 
 # Agent local state — shared config IS committed, personal overrides are not
 .claude/settings.local.json
+.claude/tmp/
 CLAUDE.local.md
 .codex/config.local.toml
 
