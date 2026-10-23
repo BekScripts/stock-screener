@@ -45,6 +45,7 @@ jobs:
         with:
           openai-api-key: ${{ secrets.OPENAI_API_KEY }}
           permission-profile: ":read-only"
+          allow-bots: true
           output-schema-file: .ai/review-output-schema.json
           output-file: ${{ runner.temp }}/codex-review-1.json
           prompt: |
@@ -63,10 +64,21 @@ jobs:
           cp "${RUNNER_TEMP}/codex-review-1.json" .ai/current-review.json
           echo '.ai/current-review.json' >> .git/info/exclude
 
+      - name: Set up uv for fix rounds
+        if: steps.review1.outputs.verdict == 'CHANGES_REQUESTED'
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: Install project dependencies for fix rounds
+        if: steps.review1.outputs.verdict == 'CHANGES_REQUESTED'
+        run: uv sync --all-packages --all-groups
+
       - name: Claude fixes — round 1
         id: claude1
         if: steps.review1.outputs.verdict == 'CHANGES_REQUESTED'
-        uses: anthropics/claude-code-action@ae68417a745a5df4b2124873632bd73a2255e6f6 # v1.0.259
+        uses: anthropics/claude-code-action/base-action@ae68417a745a5df4b2124873632bd73a2255e6f6 # v1.0.259
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           prompt: |
@@ -87,6 +99,7 @@ jobs:
         with:
           openai-api-key: ${{ secrets.OPENAI_API_KEY }}
           permission-profile: ":read-only"
+          allow-bots: true
           output-schema-file: .ai/review-output-schema.json
           output-file: ${{ runner.temp }}/codex-review-2.json
           prompt: |
@@ -108,7 +121,7 @@ jobs:
       - name: Claude fixes — round 2
         id: claude2
         if: steps.review2.outputs.verdict == 'CHANGES_REQUESTED'
-        uses: anthropics/claude-code-action@ae68417a745a5df4b2124873632bd73a2255e6f6 # v1.0.259
+        uses: anthropics/claude-code-action/base-action@ae68417a745a5df4b2124873632bd73a2255e6f6 # v1.0.259
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           prompt: |
@@ -128,6 +141,7 @@ jobs:
         with:
           openai-api-key: ${{ secrets.OPENAI_API_KEY }}
           permission-profile: ":read-only"
+          allow-bots: true
           output-schema-file: .ai/review-output-schema.json
           output-file: ${{ runner.temp }}/codex-review-3.json
           prompt: |
@@ -155,6 +169,7 @@ jobs:
         run: rm -f .ai/current-review.json
 
       - name: Commit Claude fixes to the PR branch
+        if: steps.final.outputs.verdict == 'APPROVE'
         run: |
           if git diff --quiet && [ -z "$(git ls-files --others --exclude-standard)" ]; then
             echo 'No Claude fixes to commit.'
