@@ -152,7 +152,6 @@ def test_safe_push_preserves_action_restored_config_paths(tmp_path: Path) -> Non
     assert remote_config == "pr config\n"
 
 
-
 def test_safe_push_rejects_main_without_changing_local_or_remote_head(tmp_path: Path) -> None:
     remote, reviewed_head = _seed_remote(tmp_path, branch="main")
     claude = tmp_path / "claude"
@@ -190,13 +189,16 @@ def test_safe_push_ignores_restored_root_symlink_replacement(tmp_path: Path) -> 
 
     assert result.returncode == 0, result.stderr
     published_head = _remote_head(tmp_path, remote)
-    assert _git(
-        tmp_path,
-        "--git-dir",
-        str(remote),
-        "show",
-        f"{published_head}:.claude",
-    ).stdout.strip() == "claude-config"
+    assert (
+        _git(
+            tmp_path,
+            "--git-dir",
+            str(remote),
+            "show",
+            f"{published_head}:.claude",
+        ).stdout.strip()
+        == "claude-config"
+    )
 
 
 def test_safe_push_allows_env_example_but_rejects_real_env_file(tmp_path: Path) -> None:
@@ -209,13 +211,16 @@ def test_safe_push_allows_env_example_but_rejects_real_env_file(tmp_path: Path) 
 
     assert allowed.returncode == 0, allowed.stderr
     published_head = _remote_head(tmp_path, remote)
-    assert _git(
-        tmp_path,
-        "--git-dir",
-        str(remote),
-        "show",
-        f"{published_head}:.env.example",
-    ).stdout == "API_KEY=placeholder\n"
+    assert (
+        _git(
+            tmp_path,
+            "--git-dir",
+            str(remote),
+            "show",
+            f"{published_head}:.env.example",
+        ).stdout
+        == "API_KEY=placeholder\n"
+    )
 
     second = tmp_path / "second"
     _clone(remote, second)
@@ -227,6 +232,7 @@ def test_safe_push_allows_env_example_but_rejects_real_env_file(tmp_path: Path) 
     assert "forbidden automated change '.env.local'" in blocked.stderr
     assert _git(second, "rev-parse", "HEAD").stdout.strip() == published_head
     assert _remote_head(tmp_path, remote) == published_head
+
 
 def test_safe_push_ignores_generated_task_context(tmp_path: Path) -> None:
     remote, reviewed_head = _seed_remote(tmp_path)
@@ -256,9 +262,7 @@ def test_safe_push_ignores_generated_task_context(tmp_path: Path) -> None:
 
 
 def test_workflow_supplies_pr_task_context_to_reviewer_and_fixer() -> None:
-    workflow = (ROOT / ".github" / "workflows" / "ai-pr-loop.yml").read_text(
-        encoding="utf-8"
-    )
+    workflow = (ROOT / ".github" / "workflows" / "ai-pr-loop.yml").read_text(encoding="utf-8")
     push_script = PUSH_SCRIPT.read_text(encoding="utf-8")
 
     assert "Capture PR task context" in workflow
