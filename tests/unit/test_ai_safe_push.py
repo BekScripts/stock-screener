@@ -58,7 +58,7 @@ def _run_safe_push(repo: Path, reviewed_head: str) -> subprocess.CompletedProces
     env["HEAD_REF"] = "feature"
     env["EVENT_HEAD_SHA"] = reviewed_head
     return subprocess.run(
-        ["bash", str(PUSH_SCRIPT)],
+        [str(PUSH_SCRIPT)],
         cwd=repo,
         env=env,
         check=False,
