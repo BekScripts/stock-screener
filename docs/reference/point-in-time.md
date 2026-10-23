@@ -121,7 +121,7 @@ same normalisation. Only the source and its temporal bound differ.
 
 There is therefore **no separate metric version**. A version records that a
 calculation changed; nothing here changed one. See
-[ADR-0012](../adr/0012-point-in-time-metrics-reuse-the-provider-normalisation.md).
+[ADR-0013](../adr/0013-point-in-time-metrics-reuse-the-provider-normalisation.md).
 
 A point-in-time metric for a past date will often differ from what the
 operational path reports for that date today. That is the point: one is built

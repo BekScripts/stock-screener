@@ -144,7 +144,7 @@ against the features it read.
 Changing a threshold, a rule, the peer policy or the percentile method means a
 **new version**, never an edit. Re-deriving a day under new rules appends beside
 the old row; neither restates the other. See
-[ADR-0011](../adr/0011-market-signals-are-stored-not-recomputed.md).
+[ADR-0012](../adr/0012-market-signals-are-stored-not-recomputed.md).
 
 ## Point-in-time guarantees
 

@@ -24,5 +24,6 @@ See the `adr` skill for when to write one and the format to use.
 | [0008](0008-broad-scan-on-free-data-metered-enrichment-last.md) | Scan on free data; spend metered requests on candidates only | Accepted |
 | [0009](0009-the-research-contract-is-its-own-package.md) | The AI research contract is its own package, and holds no model client | Accepted |
 | [0010](0010-deep-research-is-its-own-package.md) | Deep research is its own package, and appends its reports rather than replacing them | Accepted |
-| [0011](0011-market-signals-are-stored-not-recomputed.md) | Market signals are stored, not recomputed on read | Accepted |
-| [0012](0012-point-in-time-metrics-reuse-the-provider-normalisation.md) | Point-in-time metrics reuse the provider's normalisation, and need no new metric version | Accepted |
+| [0011](0011-use-github-as-the-ai-review-bus.md) | Use GitHub pull requests as the AI implementation/review bus | Accepted |
+| [0012](0012-market-signals-are-stored-not-recomputed.md) | Market signals are stored, not recomputed on read | Accepted |
+| [0013](0013-point-in-time-metrics-reuse-the-provider-normalisation.md) | Point-in-time metrics reuse the provider's normalisation, and need no new metric version | Accepted |

@@ -1,0 +1,202 @@
+name: AI PR review loop
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, ready_for_review]
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+  actions: read
+  id-token: write
+
+concurrency:
+  group: ai-pr-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  review:
+    name: AI Review Gate
+    if: >-
+      vars.AI_PR_LOOP_ENABLED == 'true' &&
+      github.event.pull_request.draft == false &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+      BASE_REF: ${{ github.event.pull_request.base.ref }}
+      HEAD_REF: ${{ github.event.pull_request.head.ref }}
+      EVENT_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+
+    steps:
+      - name: Check out PR branch
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+          fetch-depth: 0
+
+      - name: Fetch base branch
+        run: git fetch --no-tags origin "${BASE_REF}:refs/remotes/origin/${BASE_REF}"
+
+      - name: Read automatic-fix state
+        id: state
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -o pipefail
+          state=$(gh api --paginate \
+            "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments?per_page=100" \
+            | jq -sr 'add | map(select(.body | contains("<!-- ai-pr-loop-state -->"))) | last | .body // ""')
+          rounds=$(printf '%s\n' "$state" \
+            | grep -o '<!-- ai-fix-rounds:[0-9][0-9]* -->' \
+            | tail -1 \
+            | grep -o '[0-9][0-9]*' || true)
+          [ -n "$rounds" ] || rounds=0
+          echo "fix_rounds=${rounds}" >> "$GITHUB_OUTPUT"
+
+      - name: Independent Codex review
+        id: codex
+        uses: openai/codex-action@bdf19a4a223ec2549a3e2274a0cf61556bc07675 # v1
+        with:
+          openai-api-key: ${{ secrets.OPENAI_API_KEY }}
+          permission-profile: ":read-only"
+          output-schema-file: .ai/review-output-schema.json
+          output-file: ${{ runner.temp }}/codex-review.json
+          effort: high
+          allow-bot-users: "claude"
+          prompt: |
+            Read AGENTS.md, .ai/REVIEW_CONTRACT.md, and
+            .ai/CODEX_REVIEW_PROMPT.md.
+
+            Review PR #${{ github.event.pull_request.number }} in
+            ${{ github.repository }}. The base is
+            origin/${{ github.event.pull_request.base.ref }} and the current
+            head is ${{ github.event.pull_request.head.sha }}.
+
+            Inspect the real diff plus relevant surrounding production code,
+            persistence, tests, readers/writers, and call sites. Do not edit
+            files. Return only the JSON object required by
+            .ai/review-output-schema.json.
+
+      - name: Parse Codex verdict
+        id: verdict
+        env:
+          CURRENT_ROUNDS: ${{ steps.state.outputs.fix_rounds }}
+        run: |
+          review="${RUNNER_TEMP}/codex-review.json"
+          verdict=$(jq -r '.verdict' "$review")
+          jq -e '.summary and (.findings | type == "array")' "$review" >/dev/null
+          can_fix=false
+          next_rounds="$CURRENT_ROUNDS"
+          if [ "$verdict" = "CHANGES_REQUESTED" ] && [ "$CURRENT_ROUNDS" -lt 2 ]; then
+            can_fix=true
+            next_rounds=$((CURRENT_ROUNDS + 1))
+            cp "$review" .ai/current-review.json
+            echo '.ai/current-review.json' >> .git/info/exclude
+          fi
+          echo "verdict=$verdict" >> "$GITHUB_OUTPUT"
+          echo "can_fix=$can_fix" >> "$GITHUB_OUTPUT"
+          echo "next_rounds=$next_rounds" >> "$GITHUB_OUTPUT"
+
+      - name: Publish sticky review
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REVIEW_FILE: ${{ runner.temp }}/codex-review.json
+          VERDICT: ${{ steps.verdict.outputs.verdict }}
+          CAN_FIX: ${{ steps.verdict.outputs.can_fix }}
+          NEXT_ROUNDS: ${{ steps.verdict.outputs.next_rounds }}
+        run: |
+          set -o pipefail
+          body="${RUNNER_TEMP}/ai-review.md"
+          {
+            echo '<!-- ai-pr-loop-state -->'
+            echo "<!-- ai-fix-rounds:${NEXT_ROUNDS} -->"
+            echo '## Independent Codex review'
+            echo
+            printf '**Verdict:** `%s`\n\n' "$VERDICT"
+            jq -r '.summary' "$REVIEW_FILE"
+            echo
+            jq -r '.findings[]? | (.file // "repository") as $file | (if .line == null then "-" else (.line | tostring) end) as $line | "- **\(.severity)** `\($file):\($line)` — **\(.title)**\n  - Rule: `\(.rule)`\n  - \(.details)\n  - Required fix: \(.required_fix)"' "$REVIEW_FILE"
+            echo
+            if [ "$CAN_FIX" = true ]; then
+              echo "Claude automatic fix attempt ${NEXT_ROUNDS}/2 is queued."
+            elif [ "$VERDICT" != APPROVE ]; then
+              echo 'Automation stopped; human review/decision is required.'
+            fi
+          } > "$body"
+
+          comment_id=$(gh api --paginate \
+            "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments?per_page=100" \
+            | jq -sr 'add | map(select(.body | contains("<!-- ai-pr-loop-state -->"))) | last | .id // ""')
+          if [ -n "$comment_id" ]; then
+            gh api --method PATCH \
+              "repos/${GITHUB_REPOSITORY}/issues/comments/${comment_id}" \
+              -f body="$(cat "$body")" >/dev/null
+          else
+            gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body-file "$body"
+          fi
+
+      - name: Set up uv for fix verification
+        if: steps.verdict.outputs.can_fix == 'true'
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: Sync Python workspace
+        if: steps.verdict.outputs.can_fix == 'true'
+        run: uv sync --all-packages --all-groups
+
+      - name: Claude fixes Codex findings
+        if: steps.verdict.outputs.can_fix == 'true'
+        uses: anthropics/claude-code-action@ae68417a745a5df4b2124873632bd73a2255e6f6 # v1.0.259
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          allowed_bots: "claude[bot]"
+          track_progress: false
+          display_report: false
+          prompt: |
+            You are the implementation agent for PR
+            #${{ github.event.pull_request.number }}.
+
+            Read AGENTS.md, CLAUDE.md, .ai/REVIEW_CONTRACT.md, and
+            .ai/current-review.json. Fix only the actionable findings from the
+            CHANGES_REQUESTED verdict. Do not broaden scope.
+
+            This workflow is explicit owner authorization for the Claude GitHub
+            Action to create and push an ordinary fix commit to this PR branch
+            only. Do not merge, rebase, force-push, modify another branch,
+            change .github/workflows, make owner/architecture decisions, touch
+            runtime or broker state, change secrets, or enable LIVE behavior.
+
+            Run make check after the fixes. If frontend files changed, run
+            make check-web when dependencies are available.
+          claude_args: >-
+            --permission-mode dontAsk
+            --tools "Read,Write,Edit,Bash"
+            --allowedTools "Read,Write,Edit,Bash(make:*),Bash(git status:*),Bash(git diff:*),Bash(rg:*),Bash(uv run:*),Bash(uv sync:*),Bash(npm:*)"
+            --disallowedTools "mcp__*"
+
+      - name: Verify Claude produced a new PR head
+        if: steps.verdict.outputs.can_fix == 'true'
+        run: |
+          git fetch --no-tags origin "${HEAD_REF}:refs/remotes/origin/${HEAD_REF}"
+          new_head=$(git rev-parse "refs/remotes/origin/${HEAD_REF}")
+          if [ "$new_head" = "$EVENT_HEAD_SHA" ]; then
+            echo 'Claude did not push a fix commit; stopping for human review.'
+            exit 1
+          fi
+          echo "Claude pushed ${new_head}; the queued synchronize run will re-review it."
+          exit 1
+
+      - name: Enforce final verdict
+        if: steps.verdict.outputs.can_fix != 'true' && steps.verdict.outputs.verdict != 'APPROVE'
+        run: |
+          echo "AI Review Gate stopped with ${{ steps.verdict.outputs.verdict }}."
+          exit 1
+
+      - name: Approved
+        if: steps.verdict.outputs.verdict == 'APPROVE'
+        run: echo 'Independent Codex review approved this PR head.'

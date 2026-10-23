@@ -105,5 +105,6 @@ nav:
       - 0008 Broad scan free, enrichment last: adr/0008-broad-scan-on-free-data-metered-enrichment-last.md
       - 0009 The research contract is its own package: adr/0009-the-research-contract-is-its-own-package.md
       - 0010 Deep research is its own package: adr/0010-deep-research-is-its-own-package.md
-      - 0011 Market signals are stored: adr/0011-market-signals-are-stored-not-recomputed.md
-      - 0012 Point-in-time metrics reuse normalisation: adr/0012-point-in-time-metrics-reuse-the-provider-normalisation.md
+      - 0011 Use GitHub as the AI review bus: adr/0011-use-github-as-the-ai-review-bus.md
+      - 0012 Market signals are stored: adr/0012-market-signals-are-stored-not-recomputed.md
+      - 0013 Point-in-time metrics reuse normalisation: adr/0013-point-in-time-metrics-reuse-the-provider-normalisation.md

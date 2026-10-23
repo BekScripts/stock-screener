@@ -1,4 +1,4 @@
-# 0011. Market signals are stored, not recomputed on read
+# 0012. Market signals are stored, not recomputed on read
 
 - Status: Accepted
 - Date: 2026-08-29

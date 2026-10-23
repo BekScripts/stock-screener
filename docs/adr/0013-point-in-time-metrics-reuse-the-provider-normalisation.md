@@ -1,4 +1,4 @@
-# 0012. Point-in-time metrics reuse the provider's normalisation, and need no new metric version
+# 0013. Point-in-time metrics reuse the provider's normalisation, and need no new metric version
 
 - Status: Accepted
 - Date: 2026-08-29
