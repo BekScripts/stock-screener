@@ -14,31 +14,17 @@ dist/
 .venv/
 venv/
 .env
-
-# Operational control state. Carries account binding fingerprints, kill state,
-# incidents and soak evidence — all specific to one operator's paper account,
-# and none of it repository content. A committed kill switch would also be a
-# kill switch somebody else's checkout inherits.
-.operations/
 .env.*
 !.env.example
-
-# Tooling caches
-.cache/
-
-# A local SEC evidence control plane (SEC_CONTROL_DIR=.evidence): runtime
-# manifests, checkpoints, plans and the derived index. Never committed.
-.evidence/
-
-# P1.3 portfolio ledgers, checkpoints and reconciliation reports: operational
-# trading records, never repository content.
-.portfolio/
 
 # Credential files. The project takes secrets from the environment only, so
 # none of these should exist; the guard is for the day one is made by hand.
 credentials.json
 *.credentials.json
 *.pem
+
+# Tooling caches
+.cache/
 .pytest_cache/
 .ruff_cache/
 .mypy_cache/
@@ -57,6 +43,7 @@ site/
 
 # Agent local state — shared config IS committed, personal overrides are not
 .claude/settings.local.json
+.claude/tmp/
 CLAUDE.local.md
 .codex/config.local.toml
 
@@ -74,3 +61,17 @@ CLAUDE.local.md
 
 # Output of commands the dashboard started. One file per job.
 .jobs/
+
+# Operational control state. Carries account binding fingerprints, kill state,
+# incidents and soak evidence — all specific to one operator's paper account,
+# and none of it repository content. A committed kill switch would also be a
+# kill switch somebody else's checkout inherits.
+.operations/
+
+# A local SEC evidence control plane (SEC_CONTROL_DIR=.evidence): runtime
+# manifests, checkpoints, plans and the derived index. Never committed.
+.evidence/
+
+# Portfolio ledgers, checkpoints and reconciliation reports: operational
+# trading records, never repository content.
+.portfolio/

@@ -56,6 +56,8 @@ into `.claude/skills/` for Claude Code. Invoke one directly with `/<name>` (or
 | `adr` | making a decision that is expensive to reverse |
 | `scripts` | adding a one-off or maintenance script |
 | `git-workflow` | branching, committing, or opening a PR |
+| `task` | explicitly starting, updating, inspecting, or clearing a development task |
+| `ship` | validating and opening the one PR for the active explicit task |
 
 These are the skills that apply to any Python project. Domain-specific
 procedures — a database layer, an HTTP client convention, a queue protocol —
