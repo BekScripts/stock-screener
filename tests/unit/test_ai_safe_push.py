@@ -8,9 +8,10 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 PUSH_SCRIPT = ROOT / "scripts" / "ai-safe-push.sh"
-GIT = shutil.which("git")
-if GIT is None:
+_GIT = shutil.which("git")
+if _GIT is None:
     raise RuntimeError("git is required for AI publication tests")
+GIT: str = _GIT
 
 
 def _run(
