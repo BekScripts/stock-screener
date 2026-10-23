@@ -228,6 +228,47 @@ def test_safe_push_allows_env_example_but_rejects_real_env_file(tmp_path: Path) 
     assert _git(second, "rev-parse", "HEAD").stdout.strip() == published_head
     assert _remote_head(tmp_path, remote) == published_head
 
+def test_safe_push_ignores_generated_task_context(tmp_path: Path) -> None:
+    remote, reviewed_head = _seed_remote(tmp_path)
+    claude = tmp_path / "claude"
+    _clone(remote, claude)
+    (claude / ".ai").mkdir()
+    (claude / ".ai" / "current-task.md").write_text(
+        "temporary PR task context\n",
+        encoding="utf-8",
+    )
+    (claude / "value.txt").write_text("fixed\n", encoding="utf-8")
+
+    result = _run_safe_push(claude, reviewed_head)
+
+    assert result.returncode == 0, result.stderr
+    published_head = _remote_head(tmp_path, remote)
+    task_file = _git(
+        tmp_path,
+        "--git-dir",
+        str(remote),
+        "cat-file",
+        "-e",
+        f"{published_head}:.ai/current-task.md",
+        check=False,
+    )
+    assert task_file.returncode != 0
+
+
+def test_workflow_supplies_pr_task_context_to_reviewer_and_fixer() -> None:
+    workflow = (ROOT / ".github" / "workflows" / "ai-pr-loop.yml").read_text(
+        encoding="utf-8"
+    )
+    push_script = PUSH_SCRIPT.read_text(encoding="utf-8")
+
+    assert "Capture PR task context" in workflow
+    assert "jq -r '.pull_request.title // \"\"'" in workflow
+    assert "jq -r '.pull_request.body // \"\"'" in workflow
+    assert ".ai/current-task.md" in workflow
+    assert "do not approve merely" in workflow
+    assert ".ai/current-task.md" in push_script
+
+
 def test_workflow_uses_wrapper_instead_of_direct_commit_permissions() -> None:
     workflow = (ROOT / ".github" / "workflows" / "ai-pr-loop.yml").read_text(encoding="utf-8")
     settings = json.loads((ROOT / ".claude" / "settings.json").read_text(encoding="utf-8"))
