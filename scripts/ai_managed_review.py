@@ -30,9 +30,7 @@ BOT_LOGIN = "chatgpt-codex-connector[bot]"
 CLEAN_PREFIX = "Codex Review: Didn't find any major issues."
 SUMMARY_MARKER = "<!-- codex-pull-request-review-summary -->"
 SUMMARY_COMPLETED = "✅ **Completed**"
-REVIEWED_SHA_RE = re.compile(
-    r"\*\*Reviewed commit:\*\*\s*`(?P<sha>[0-9a-fA-F]{7,40})`"
-)
+REVIEWED_SHA_RE = re.compile(r"\*\*Reviewed commit:\*\*\s*`(?P<sha>[0-9a-fA-F]{7,40})`")
 SUMMARY_SHA_RE = re.compile(r"\|\s*`(?P<sha>[0-9a-fA-F]{7,40})`\s*\|")
 BADGE_RE = re.compile(r"!\[P[0-3] Badge\]\([^)]+\)")
 HTML_RE = re.compile(r"<[^>]+>")
@@ -164,8 +162,7 @@ def _finding(comment: dict[str, object]) -> dict[str, object]:
     elif verdict == "ARCHITECTURE_BLOCKED":
         rule = ".ai/REVIEW_CONTRACT.md architecture boundary"
         required_fix = (
-            "Stop for an explicit architecture/authority decision; "
-            "do not auto-fix this finding."
+            "Stop for an explicit architecture/authority decision; do not auto-fix this finding."
         )
     else:
         rule = "Managed Codex Code Review finding"
