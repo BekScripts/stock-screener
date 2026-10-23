@@ -159,7 +159,6 @@ jobs:
           allowed_bots: "claude[bot]"
           track_progress: false
           display_report: false
-          use_commit_signing: true
           prompt: |
             You are the implementation agent for PR
             #${{ github.event.pull_request.number }}.
@@ -177,14 +176,20 @@ jobs:
             Run make check after the fixes. If frontend files changed, run
             make check-web when dependencies are available.
 
-            After verification succeeds, use
-            mcp__github_file_ops__commit_files to publish the modified files as
-            one ordinary fix commit to the current PR branch. Do not create a
-            different branch, merge, rebase, or change workflow files.
+            After verification succeeds, publish exactly one ordinary fix
+            commit from the reviewed checkout:
+            1. git add -A
+            2. git commit -m "fix: address Codex review findings"
+            3. ./scripts/ai-safe-push.sh
+
+            The safe-push wrapper requires the fix commit to be a direct child
+            of EVENT_HEAD_SHA and refuses the update if the remote PR branch has
+            advanced. Do not create another branch, merge, rebase, force-push,
+            or change workflow files.
           claude_args: >-
             --permission-mode dontAsk
             --tools "Read,Write,Edit,Bash"
-            --allowedTools "Read,Write,Edit,Bash(make:*),Bash(git status:*),Bash(git diff:*),Bash(rg:*),Bash(uv run:*),Bash(uv sync:*),Bash(npm:*),mcp__github_file_ops__commit_files"
+            --allowedTools "Read,Write,Edit,Bash(make:*),Bash(git status:*),Bash(git diff:*),Bash(git add -A),Bash(git commit -m:*),Bash(./scripts/ai-safe-push.sh),Bash(rg:*),Bash(uv run:*),Bash(uv sync:*),Bash(npm:*)"
 
       - name: Diagnose Claude execution failure
         if: steps.verdict.outputs.can_fix == 'true' && steps.claude_fix.outcome == 'failure'
