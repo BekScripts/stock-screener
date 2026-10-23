@@ -45,9 +45,10 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          state=$(gh api --paginate --slurp \
+          set -o pipefail
+          state=$(gh api --paginate \
             "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments?per_page=100" \
-            --jq '[.[][] | select(.body | contains("<!-- ai-pr-loop-state -->"))][-1].body // ""')
+            | jq -sr 'add | map(select(.body | contains("<!-- ai-pr-loop-state -->"))) | last | .body // ""')
           rounds=$(printf '%s\n' "$state" \
             | grep -o '<!-- ai-fix-rounds:[0-9][0-9]* -->' \
             | tail -1 \
@@ -107,6 +108,7 @@ jobs:
           CAN_FIX: ${{ steps.verdict.outputs.can_fix }}
           NEXT_ROUNDS: ${{ steps.verdict.outputs.next_rounds }}
         run: |
+          set -o pipefail
           body="${RUNNER_TEMP}/ai-review.md"
           {
             echo '<!-- ai-pr-loop-state -->'
@@ -116,7 +118,7 @@ jobs:
             printf '**Verdict:** `%s`\n\n' "$VERDICT"
             jq -r '.summary' "$REVIEW_FILE"
             echo
-            jq -r '.findings[]? | "- **\(.severity)** `\(.file // \"repository\"):\(.line // \"-\")` — **\(.title)**\n  - Rule: `\(.rule)`\n  - \(.details)\n  - Required fix: \(.required_fix)"' "$REVIEW_FILE"
+            jq -r '.findings[]? | (.file // "repository") as $file | (if .line == null then "-" else (.line | tostring) end) as $line | "- **\(.severity)** `\($file):\($line)` — **\(.title)**\n  - Rule: `\(.rule)`\n  - \(.details)\n  - Required fix: \(.required_fix)"' "$REVIEW_FILE"
             echo
             if [ "$CAN_FIX" = true ]; then
               echo "Claude automatic fix attempt ${NEXT_ROUNDS}/2 is queued."
@@ -125,9 +127,9 @@ jobs:
             fi
           } > "$body"
 
-          comment_id=$(gh api --paginate --slurp \
+          comment_id=$(gh api --paginate \
             "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments?per_page=100" \
-            --jq '[.[][] | select(.body | contains("<!-- ai-pr-loop-state -->"))][-1].id // ""')
+            | jq -sr 'add | map(select(.body | contains("<!-- ai-pr-loop-state -->"))) | last | .id // ""')
           if [ -n "$comment_id" ]; then
             gh api --method PATCH \
               "repos/${GITHUB_REPOSITORY}/issues/comments/${comment_id}" \
