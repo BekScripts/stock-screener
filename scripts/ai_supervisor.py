@@ -6,8 +6,8 @@ import argparse
 import json
 import shutil
 import subprocess
-from pathlib import Path
 from collections.abc import Callable
+from pathlib import Path
 from typing import cast
 
 STATE_RELATIVE_PATH = Path(".ai/supervisor-state.json")
@@ -190,9 +190,10 @@ def _cmd_render(args: argparse.Namespace) -> int:
         .replace("{{PROJECT_STATE_PATH}}", project_state_raw)
         .replace("{{PLANNING_SOURCES}}", planning_text)
     )
-    args.output.parent.mkdir(parents=True, exist_ok=True)
-    args.output.write_text(rendered.rstrip() + "\n", encoding="utf-8")
-    print(args.output)
+    output = cast(Path, args.output)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(rendered.rstrip() + "\n", encoding="utf-8")
+    print(output)
     return 0
 
 
