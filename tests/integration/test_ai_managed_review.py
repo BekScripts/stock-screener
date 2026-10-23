@@ -101,8 +101,7 @@ def test_clean_codex_comment_approves_exact_reviewed_head(tmp_path: Path) -> Non
         "created_at": "2026-10-23T19:01:00Z",
         "user": _bot(),
         "body": (
-            "Codex Review: Didn't find any major issues. 👍\n\n"
-            f"**Reviewed commit:** `{HEAD[:10]}`"
+            f"Codex Review: Didn't find any major issues. 👍\n\n**Reviewed commit:** `{HEAD[:10]}`"
         ),
     }
 
@@ -117,10 +116,7 @@ def test_stale_clean_comment_does_not_approve_current_head(tmp_path: Path) -> No
         "id": 1,
         "created_at": "2026-10-23T19:01:00Z",
         "user": _bot(),
-        "body": (
-            "Codex Review: Didn't find any major issues. 👍\n\n"
-            "**Reviewed commit:** `1234567890`"
-        ),
+        "body": "Codex Review: Didn't find any major issues. 👍\n\n**Reviewed commit:** `1234567890`",
     }
 
     result = _classify(tmp_path, issue_comments=[comment])
@@ -158,7 +154,9 @@ def test_stop_tokens_prevent_automatic_fix(
     expected: str,
 ) -> None:
     finding = _finding(
-        "**[" + token + "] owner decision required**"
+        "**["
+        + token
+        + "] owner decision required**"
         + "\n\nDo not choose this authority automatically."
     )
 
@@ -193,8 +191,7 @@ def test_newer_clean_comment_overrides_older_finding_on_same_head(tmp_path: Path
         "created_at": "2026-10-23T19:05:00Z",
         "user": _bot(),
         "body": (
-            "Codex Review: Didn't find any major issues. 👍\n\n"
-            f"**Reviewed commit:** `{HEAD[:12]}`"
+            f"Codex Review: Didn't find any major issues. 👍\n\n**Reviewed commit:** `{HEAD[:12]}`"
         ),
     }
 
