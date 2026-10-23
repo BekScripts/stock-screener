@@ -89,8 +89,10 @@ jobs:
             Do not commit or push; the workflow owns the commit.
             Run make check after fixes, and make check-web if frontend/ changed.
           claude_args: >-
-            --permission-mode auto
+            --permission-mode dontAsk
+            --tools "Read,Write,Edit,Bash"
             --allowedTools "Read,Write,Edit,Bash(make:*),Bash(git diff:*),Bash(git status:*),Bash(rg:*),Bash(uv run:*)"
+            --disallowedTools "mcp__*"
 
       - name: Codex review — round 2
         id: codex2
@@ -131,8 +133,10 @@ jobs:
             Do not broaden scope, make owner/architecture decisions, commit, or push.
             Run make check after fixes, and make check-web if frontend/ changed.
           claude_args: >-
-            --permission-mode auto
+            --permission-mode dontAsk
+            --tools "Read,Write,Edit,Bash"
             --allowedTools "Read,Write,Edit,Bash(make:*),Bash(git diff:*),Bash(git status:*),Bash(rg:*),Bash(uv run:*)"
+            --disallowedTools "mcp__*"
 
       - name: Codex final review — round 3
         id: codex3
