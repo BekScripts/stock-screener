@@ -19,6 +19,11 @@ if [[ "$current_branch" != "$HEAD_REF" ]]; then
   exit 1
 fi
 
+if [[ "$HEAD_REF" == "main" ]]; then
+  echo "refusing publication: automated fixes may not publish to main" >&2
+  exit 1
+fi
+
 if [[ "$(git rev-parse HEAD)" != "$EVENT_HEAD_SHA" ]]; then
   echo "refusing publication: checkout no longer matches reviewed head" >&2
   exit 1
@@ -40,7 +45,7 @@ is_ignored_restoration() {
     CLAUDE.md|CLAUDE.local.md|.mcp.json|.claude.json|.gitmodules|.ripgreprc|.ai/current-review.json)
       return 0
       ;;
-    .claude/*|.claude-pr/*|.husky/*)
+    .claude|.claude/*|.claude-pr|.claude-pr/*|.husky|.husky/*)
       return 0
       ;;
     *)
@@ -51,6 +56,9 @@ is_ignored_restoration() {
 
 is_forbidden_change() {
   case "$1" in
+    .env.example)
+      return 1
+      ;;
     .github/workflows/*|.env|.env.*)
       return 0
       ;;
