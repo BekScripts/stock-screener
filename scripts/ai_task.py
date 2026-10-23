@@ -113,8 +113,7 @@ def _read_state(root: Path) -> TaskState | None:
     )
     if state.version != STATE_VERSION:
         raise TaskStateError(
-            f"unsupported AI task state version {state.version}; "
-            f"expected {STATE_VERSION}"
+            f"unsupported AI task state version {state.version}; expected {STATE_VERSION}"
         )
     return state
 
@@ -139,10 +138,7 @@ def _write_state(root: Path, state: TaskState) -> None:
 def _parse_issue_number(issue_url: str) -> int:
     match = ISSUE_URL_RE.search(issue_url)
     if match is None:
-        raise TaskStateError(
-            "issue URL must end with /issues/<number>, "
-            f"got {issue_url!r}"
-        )
+        raise TaskStateError(f"issue URL must end with /issues/<number>, got {issue_url!r}")
     return int(match.group("number"))
 
 
