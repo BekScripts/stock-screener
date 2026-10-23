@@ -150,10 +150,12 @@ jobs:
         run: uv sync --all-packages --all-groups
 
       - name: Claude fixes Codex findings
+        id: claude_fix
         if: steps.verdict.outputs.can_fix == 'true'
+        continue-on-error: true
         uses: anthropics/claude-code-action@ae68417a745a5df4b2124873632bd73a2255e6f6 # v1.0.259
         with:
-          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           allowed_bots: "claude[bot]"
           track_progress: false
           display_report: false
@@ -179,8 +181,38 @@ jobs:
             --allowedTools "Read,Write,Edit,Bash(make:*),Bash(git status:*),Bash(git diff:*),Bash(rg:*),Bash(uv run:*),Bash(uv sync:*),Bash(npm:*)"
             --disallowedTools "mcp__*"
 
+      - name: Diagnose Claude execution failure
+        if: steps.verdict.outputs.can_fix == 'true' && steps.claude_fix.outcome == 'failure'
+        env:
+          EXECUTION_FILE: ${{ steps.claude_fix.outputs.execution_file }}
+        run: |
+          if [ -z "$EXECUTION_FILE" ] || [ ! -f "$EXECUTION_FILE" ]; then
+            echo "Claude failed before producing an execution file."
+            exit 0
+          fi
+          echo "Claude execution failure summary:"
+          jq -c '
+            [.[] | select(.type == "result")][-1]
+            | {
+                subtype,
+                is_error,
+                num_turns,
+                total_cost_usd,
+                api_error_status: (.api_error_status // null),
+                terminal_reason: (.terminal_reason // null),
+                errors: (.errors // null),
+                result: (.result // null)
+              }
+          ' "$EXECUTION_FILE"
+
+      - name: Stop after Claude execution failure
+        if: steps.verdict.outputs.can_fix == 'true' && steps.claude_fix.outcome == 'failure'
+        run: |
+          echo "Claude Code failed before producing a fix commit."
+          exit 1
+
       - name: Verify Claude produced a new PR head
-        if: steps.verdict.outputs.can_fix == 'true'
+        if: steps.verdict.outputs.can_fix == 'true' && steps.claude_fix.outcome == 'success'
         run: |
           git fetch --no-tags origin "${HEAD_REF}:refs/remotes/origin/${HEAD_REF}"
           new_head=$(git rev-parse "refs/remotes/origin/${HEAD_REF}")
