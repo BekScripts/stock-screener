@@ -50,8 +50,12 @@ agent in the GitHub AI review loop.
   not permission to invent a policy or workaround.
 - Do not modify `.github/workflows/**` automatically in response to an ordinary
   product-code review finding.
-- Run `make check` after fixes. If frontend code changed, run `make check-web`
-  too.
-- Do not commit, push, merge, re-arm a runtime, touch broker state, or perform a
-  deployment/state transition. The workflow owns the review-fix commit; humans
-  own privileged state changes.
+- Run `make check` after fixes. If frontend code changed, run
+  `make check-web` when the runner has the required Node dependencies.
+- The repository owner pre-authorizes the Claude GitHub Action, when invoked by
+  `AI PR review loop`, to create and push ordinary fix commits to the current
+  PR branch only. That is the explicit commit/push approval required by the
+  git-workflow skill for this mode.
+- That authorization does not permit merge, rebase, force-push, writes to
+  `main`, runtime re-arm, broker mutation, deployment/state transition, secret
+  changes, or LIVE trading.

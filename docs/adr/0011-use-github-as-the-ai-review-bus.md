@@ -29,7 +29,9 @@ Claude is the implementation/fix agent. Codex is the independent reviewer.
 Codex runs read-only and returns a structured verdict. Only
 `CHANGES_REQUESTED` may invoke Claude automatically.
 
-The loop permits at most two automatic fix rounds. `HUMAN_REQUIRED` and
+The loop permits at most two automatic fix attempts per PR. Each Claude fix is
+pushed by the Claude GitHub App to the current PR branch, producing a new PR
+head that receives fresh CI and Codex review. `HUMAN_REQUIRED` and
 `ARCHITECTURE_BLOCKED` stop automation. A final non-approval fails the
 `AI Review Gate` check.
 
@@ -70,9 +72,10 @@ approval remains intentional.
 Review/fix cycles no longer require copying reports and prompts between tools.
 Findings stay attached to the exact PR and code revision.
 
-The repository now depends on two API credentials for the automated loop and
-incurs API usage costs. If either service is unavailable, the review gate fails
-closed rather than merging without review.
+The repository now depends on OpenAI API access, Anthropic API access, and the
+Claude GitHub App for the automated loop, and incurs API usage costs. If either
+service is unavailable, the review gate fails closed rather than merging
+without review.
 
 Agent prompts and review contracts become production-like workflow
 configuration and need the same care as other CI changes.

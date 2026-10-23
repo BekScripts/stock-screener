@@ -2,57 +2,70 @@
 
 GitHub is the handoff bus between Claude (implementation) and Codex
 (independent review). The automation is intentionally limited to repository
-code. It has no AlphaTrader runtime, brokerage, deployment, or live-trading
+code. It has no AlphaTrader runtime, brokerage, deployment, or LIVE-trading
 authority.
 
 ## One-time repository setup
 
 Add repository Actions secrets:
 
-- `OPENAI_API_KEY` — used only by the read-only Codex review action.
-- `ANTHROPIC_API_KEY` — used only by Claude Code when a review is fixable.
+- `OPENAI_API_KEY` — used by the read-only Codex reviewer.
+- `ANTHROPIC_API_KEY` — used by Claude when a review is fixable.
 
-Then add the repository Actions variable:
+Add the repository Actions variable:
 
 - `AI_PR_LOOP_ENABLED=true`
 
-In **Settings → Actions → General → Workflow permissions**, allow GitHub Actions
-to use a read/write repository token; the workflow needs `contents: write` only
-to commit an independently approved Claude fix back to the PR branch.
+Install/authorize the official Claude GitHub App for this repository. The App
+matters because Claude's fix commit must trigger a fresh
+`pull_request/synchronize` workflow on the new PR head. GitHub deliberately
+prevents the default `GITHUB_TOKEN` from recursively triggering workflows.
 
-Do not put Alpaca credentials or runtime secrets in GitHub Actions.
+Do not put Alpaca credentials, deployment credentials, or runtime secrets in
+GitHub Actions.
 
-After the first successful run, protect `main` and require:
+After one successful canary PR, protect `main` and require:
 
 - `CI`
 - `AI Review Gate`
 - at least one human approval
 
-The workflow ignores draft PRs and PRs from forks. It allows at most two Claude
-fix rounds. `HUMAN_REQUIRED` and `ARCHITECTURE_BLOCKED` never invoke Claude.
+The repository currently has no branch protection, so this is an important
+final setup step.
 
 ## Flow
 
-1. Claude or a human opens a non-draft PR.
-2. Codex reviews the current PR workspace read-only using the structured review
-   contract.
-3. `APPROVE` passes the gate.
-4. `CHANGES_REQUESTED` gives the exact structured findings to Claude.
-5. Claude edits the checkout and runs `make check` (plus `make check-web`
-   when frontend files changed).
-6. Codex reviews the modified workspace again.
-7. At most two fix rounds are attempted.
-8. The workflow commits any accepted/partial Claude fixes to the PR branch.
-9. Any final non-approval fails `AI Review Gate` and requires a human.
+1. Claude or a human opens/updates a same-repository, non-draft PR.
+2. Codex reviews the exact PR head read-only under
+   `.ai/REVIEW_CONTRACT.md`.
+3. `APPROVE` passes `AI Review Gate`.
+4. `CHANGES_REQUESTED` is handed to Claude as structured JSON.
+5. Claude fixes only those findings, runs the repository gate, and the Claude
+   GitHub App pushes a fix commit to the same PR branch.
+6. That push creates a new PR head and triggers fresh CI + Codex review.
+7. At most two Claude fix attempts are allowed per PR.
+8. `HUMAN_REQUIRED` and `ARCHITECTURE_BLOCKED` stop immediately.
+9. The workflow never merges.
+
+The sticky PR comment stores the automatic-fix count and the latest review, so
+the state survives across workflow runs without adding state files to the
+repository.
+
+## Why the fixer pushes itself
+
+The workflow intentionally does not commit Claude's edits with the default
+GitHub Actions token. A commit made with that token does not reliably trigger
+the next workflow run. Using Claude's GitHub App makes the new head observable
+to normal PR automation, so branch protection can require checks on the exact
+commit being merged.
 
 ## Cost and credentials
 
-This workflow uses the OpenAI and Anthropic APIs, so it is billed through those
-API accounts rather than ChatGPT/Claude subscription message allowances. Keep
-the keys repository-scoped and rotate them if exposed.
+The loop uses the OpenAI and Anthropic APIs and is billed through those API
+accounts rather than ChatGPT/Claude subscription message allowances.
 
-## Local phase branch
+## Active local AlphaTrader branch
 
-The long-running AlphaTrader execution work may be ahead of GitHub `main`.
-Merge this automation PR first, then merge/rebase that automation commit into
-the active local feature branch before opening its first automated PR.
+The long-running AlphaTrader execution branch may be ahead of GitHub `main`.
+Merge this automation PR first, then bring the automation commit into that local
+feature branch before opening its first automated PR.

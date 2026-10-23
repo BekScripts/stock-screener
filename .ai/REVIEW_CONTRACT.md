@@ -95,8 +95,10 @@ Claude receives the structured review file, fixes only
 allows at most two automatic fix rounds. If the final Codex review still does
 not approve, automation stops and the PR remains blocked for a human.
 
-Claude does not commit or push directly in review-fix mode; the workflow commits
-the resulting workspace diff after independent re-review.
+Claude's GitHub App may create and push ordinary review-fix commits to the
+current PR branch only. Each pushed fix produces a new PR head, so CI and Codex
+review run again against the exact commit that could be merged. Claude never
+merges, rebases, force-pushes, or changes another branch.
 
 ## Review finding quality
 
