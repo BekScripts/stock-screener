@@ -45,6 +45,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          set -o pipefail
           state=$(gh api --paginate \
             "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments?per_page=100" \
             | jq -sr 'add | map(select(.body | contains("<!-- ai-pr-loop-state -->"))) | last | .body // ""')
@@ -107,6 +108,7 @@ jobs:
           CAN_FIX: ${{ steps.verdict.outputs.can_fix }}
           NEXT_ROUNDS: ${{ steps.verdict.outputs.next_rounds }}
         run: |
+          set -o pipefail
           body="${RUNNER_TEMP}/ai-review.md"
           {
             echo '<!-- ai-pr-loop-state -->'
