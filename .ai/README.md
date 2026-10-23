@@ -10,7 +10,7 @@ authority.
 Add repository Actions secrets:
 
 - `OPENAI_API_KEY` — used by the read-only Codex reviewer.
-- `ANTHROPIC_API_KEY` — used by Claude when a review is fixable.
+- `CLAUDE_CODE_OAUTH_TOKEN` — used by Claude Code when a review is fixable. Generate it with `claude setup-token` while signed into the intended Claude subscription.
 
 Add the repository Actions variable:
 
@@ -61,8 +61,7 @@ commit being merged.
 
 ## Cost and credentials
 
-The loop uses the OpenAI and Anthropic APIs and is billed through those API
-accounts rather than ChatGPT/Claude subscription message allowances.
+The Codex reviewer uses the OpenAI API and is billed through the OpenAI API account. Claude fixes use `CLAUDE_CODE_OAUTH_TOKEN`, so Claude Code runs against the limits of the connected Claude subscription instead of the separate Anthropic API credit balance.
 
 ## Active local AlphaTrader branch
 
