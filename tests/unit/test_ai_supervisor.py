@@ -97,14 +97,18 @@ def _supervisor(
 
 
 def test_checked_in_supervisor_state_is_shadow_and_has_no_mutation_authority() -> None:
-    state = json.loads(
+    raw: object = json.loads(
         (ROOT / ".ai" / "supervisor-state.json").read_text(encoding="utf-8")
     )
+    assert isinstance(raw, dict)
+    state = raw
+    actions = state["actions"]
+    assert isinstance(actions, dict)
 
     assert state["mode"] == "SHADOW"
     assert state["max_tasks_proposed"] == 1
-    assert set(state["actions"]) == ACTION_KEYS
-    assert not any(state["actions"].values())
+    assert set(actions) == ACTION_KEYS
+    assert not any(actions.values())
 
 
 def test_validate_rejects_any_enabled_mutation_action(tmp_path: Path) -> None:
