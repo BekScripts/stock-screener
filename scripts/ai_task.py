@@ -8,10 +8,12 @@ import re
 import shutil
 import subprocess
 from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from collections.abc import Callable, Sequence
-from typing import cast
+from typing import TYPE_CHECKING, cast
+
+if TYPE_CHECKING:
+    from collections.abc import Callable, Sequence
 
 STATE_VERSION = 1
 ISSUE_URL_RE = re.compile(r"/issues/(?P<number>[1-9][0-9]*)/?$")
@@ -85,7 +87,7 @@ def _read_state(root: Path) -> TaskState | None:
     raw: object = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(raw, dict):
         raise TaskStateError("AI task state must be a JSON object")
-    payload = cast(dict[str, object], raw)
+    payload = cast("dict[str, object]", raw)
 
     def expect_str(key: str) -> str:
         value = payload.get(key)
@@ -111,8 +113,7 @@ def _read_state(root: Path) -> TaskState | None:
     )
     if state.version != STATE_VERSION:
         raise TaskStateError(
-            f"unsupported AI task state version {state.version}; "
-            f"expected {STATE_VERSION}"
+            f"unsupported AI task state version {state.version}; expected {STATE_VERSION}"
         )
     return state
 
@@ -137,10 +138,7 @@ def _write_state(root: Path, state: TaskState) -> None:
 def _parse_issue_number(issue_url: str) -> int:
     match = ISSUE_URL_RE.search(issue_url)
     if match is None:
-        raise TaskStateError(
-            "issue URL must end with /issues/<number>, "
-            f"got {issue_url!r}"
-        )
+        raise TaskStateError(f"issue URL must end with /issues/<number>, got {issue_url!r}")
     return int(match.group("number"))
 
 
@@ -173,7 +171,7 @@ def _bind(args: argparse.Namespace) -> int:
         title=title,
         branch=branch,
         body=body,
-        created_at=datetime.now(timezone.utc).isoformat(),
+        created_at=datetime.now(UTC).isoformat(),
     )
     _write_state(root, state)
     print(f"bound task #{issue_number} to {branch}")
@@ -228,7 +226,7 @@ def _prepare_update(args: argparse.Namespace) -> int:
     state = _require_state(root)
     update_text = _read_text(args.text_file, label="task update").rstrip()
     body = state.body.rstrip()
-    timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    timestamp = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
     if "## Requirement updates" not in body:
         body += (
@@ -361,7 +359,7 @@ def main() -> int:
     parser = _parser()
     args = parser.parse_args()
     try:
-        handler = cast(Callable[[argparse.Namespace], int], args.func)
+        handler = cast("Callable[[argparse.Namespace], int]", args.func)
         return handler(args)
     except (OSError, subprocess.CalledProcessError, TaskStateError, json.JSONDecodeError) as exc:
         parser.error(str(exc))

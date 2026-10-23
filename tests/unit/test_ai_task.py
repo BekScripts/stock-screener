@@ -54,8 +54,7 @@ def _task(
 
 def _bind(repo: Path, tmp_path: Path, *, issue_number: int = 42) -> str:
     original_prompt = (
-        "Build the execution engine exactly as specified.\n"
-        "Do not rerank persisted decisions.\n"
+        "Build the execution engine exactly as specified.\nDo not rerank persisted decisions.\n"
     )
     title_file = tmp_path / "title.txt"
     body_file = tmp_path / "body.md"
@@ -215,15 +214,9 @@ def test_render_pr_rejects_wrong_branch(tmp_path: Path) -> None:
 
 
 def test_project_wires_user_only_task_skills_and_session_context() -> None:
-    task_skill = (ROOT / ".agents" / "skills" / "task" / "SKILL.md").read_text(
-        encoding="utf-8"
-    )
-    ship_skill = (ROOT / ".agents" / "skills" / "ship" / "SKILL.md").read_text(
-        encoding="utf-8"
-    )
-    settings = json.loads(
-        (ROOT / ".claude" / "settings.json").read_text(encoding="utf-8")
-    )
+    task_skill = (ROOT / ".agents" / "skills" / "task" / "SKILL.md").read_text(encoding="utf-8")
+    ship_skill = (ROOT / ".agents" / "skills" / "ship" / "SKILL.md").read_text(encoding="utf-8")
+    settings = json.loads((ROOT / ".claude" / "settings.json").read_text(encoding="utf-8"))
 
     assert "disable-model-invocation: true" in task_skill
     assert "$ARGUMENTS" in task_skill
