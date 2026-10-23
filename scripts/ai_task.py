@@ -1,16 +1,24 @@
+"""Manage local task state for the Claude /task and /ship workflow."""
+
 from __future__ import annotations
 
 import argparse
 import json
 import re
+import shutil
 import subprocess
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Sequence
+from collections.abc import Callable, Sequence
+from typing import cast
 
 STATE_VERSION = 1
 ISSUE_URL_RE = re.compile(r"/issues/(?P<number>[1-9][0-9]*)/?$")
+_GIT = shutil.which("git")
+if _GIT is None:
+    raise RuntimeError("git is required for AI task state")
+GIT: str = _GIT
 
 
 class TaskStateError(RuntimeError):
@@ -31,8 +39,8 @@ class TaskState:
 
 
 def _run_git(args: Sequence[str], *, cwd: Path | None = None) -> str:
-    completed = subprocess.run(
-        ["git", *args],
+    completed = subprocess.run(  # noqa: S603
+        [GIT, *args],
         cwd=cwd,
         check=True,
         text=True,
@@ -74,8 +82,33 @@ def _read_state(root: Path) -> TaskState | None:
     path = _state_path(root)
     if not path.exists():
         return None
-    payload = json.loads(path.read_text(encoding="utf-8"))
-    state = TaskState(**payload)
+    raw: object = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(raw, dict):
+        raise TaskStateError("AI task state must be a JSON object")
+    payload = cast(dict[str, object], raw)
+
+    def expect_str(key: str) -> str:
+        value = payload.get(key)
+        if not isinstance(value, str):
+            raise TaskStateError(f"AI task state field {key!r} must be a string")
+        return value
+
+    version = payload.get("version")
+    issue_number = payload.get("issue_number")
+    if not isinstance(version, int) or isinstance(version, bool):
+        raise TaskStateError("AI task state field 'version' must be an integer")
+    if not isinstance(issue_number, int) or isinstance(issue_number, bool):
+        raise TaskStateError("AI task state field 'issue_number' must be an integer")
+
+    state = TaskState(
+        version=version,
+        issue_number=issue_number,
+        issue_url=expect_str("issue_url"),
+        title=expect_str("title"),
+        branch=expect_str("branch"),
+        body=expect_str("body"),
+        created_at=expect_str("created_at"),
+    )
     if state.version != STATE_VERSION:
         raise TaskStateError(
             f"unsupported AI task state version {state.version}; "
@@ -324,10 +357,12 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def main() -> int:
+    """Run the task-state command-line interface."""
     parser = _parser()
     args = parser.parse_args()
     try:
-        return int(args.func(args))
+        handler = cast(Callable[[argparse.Namespace], int], args.func)
+        return handler(args)
     except (OSError, subprocess.CalledProcessError, TaskStateError, json.JSONDecodeError) as exc:
         parser.error(str(exc))
         return 2
