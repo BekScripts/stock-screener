@@ -89,7 +89,9 @@ clarify the prompt but may not replace or narrow it.
    surface the side effect:
 
 ```bash
-gh issue create --title "<title>" --body-file .claude/tmp/ai-task-body.md
+gh issue create \
+  --title "$(cat .claude/tmp/ai-task-title.txt)" \
+  --body-file .claude/tmp/ai-task-body.md
 ```
 
 Do not hide GitHub mutation inside another script.
