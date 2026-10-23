@@ -36,3 +36,22 @@ primary database, which is why
 `tests/integration/test_migrations.py::test_migrating_a_populated_database_preserves_its_rows`
 exists: it populates every one of those tables against a temp database and
 counts the rows on the other side. Run that rather than the real thing.
+
+
+### Automated review-fix mode
+
+When `.ai/current-review.json` exists, Claude is running as the implementation
+agent in the GitHub AI review loop.
+
+- Read `.ai/REVIEW_CONTRACT.md` and the review JSON before editing.
+- Address only findings whose verdict is `CHANGES_REQUESTED`; do not broaden
+  scope while fixing review comments.
+- A `HUMAN_REQUIRED` or `ARCHITECTURE_BLOCKED` verdict is a stop condition,
+  not permission to invent a policy or workaround.
+- Do not modify `.github/workflows/**` automatically in response to an ordinary
+  product-code review finding.
+- Run `make check` after fixes. If frontend code changed, run `make check-web`
+  too.
+- Do not commit, push, merge, re-arm a runtime, touch broker state, or perform a
+  deployment/state transition. The workflow owns the review-fix commit; humans
+  own privileged state changes.

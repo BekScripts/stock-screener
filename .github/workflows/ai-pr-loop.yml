@@ -1,0 +1,194 @@
+name: AI PR review loop
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, ready_for_review]
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+  actions: read
+
+concurrency:
+  group: ai-pr-loop-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  review:
+    name: AI Review Gate
+    if: >-
+      vars.AI_PR_LOOP_ENABLED == 'true' &&
+      github.event.pull_request.draft == false &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+      BASE_REF: ${{ github.event.pull_request.base.ref }}
+      HEAD_REF: ${{ github.event.pull_request.head.ref }}
+      HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+
+    steps:
+      - name: Check out PR branch
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+          fetch-depth: 0
+
+      - name: Fetch base ref
+        run: git fetch --no-tags origin "${BASE_REF}:refs/remotes/origin/${BASE_REF}"
+
+      - name: Codex review — round 1
+        id: codex1
+        uses: openai/codex-action@bdf19a4a223ec2549a3e2274a0cf61556bc07675 # v1
+        with:
+          openai-api-key: ${{ secrets.OPENAI_API_KEY }}
+          permission-profile: ":read-only"
+          output-schema-file: .ai/review-output-schema.json
+          output-file: ${{ runner.temp }}/codex-review-1.json
+          prompt: |
+            Read AGENTS.md, .ai/REVIEW_CONTRACT.md, and .ai/CODEX_REVIEW_PROMPT.md.
+            Review PR #${{ github.event.pull_request.number }} in ${{ github.repository }}.
+            Base is origin/${{ github.event.pull_request.base.ref }}.
+            Head is ${{ github.event.pull_request.head.sha }}.
+            Inspect the PR diff and relevant surrounding code. Return only the
+            structured review object required by .ai/review-output-schema.json.
+
+      - name: Parse review — round 1
+        id: review1
+        run: |
+          verdict=$(jq -r '.verdict' "${RUNNER_TEMP}/codex-review-1.json")
+          echo "verdict=${verdict}" >> "${GITHUB_OUTPUT}"
+          cp "${RUNNER_TEMP}/codex-review-1.json" .ai/current-review.json
+          echo '.ai/current-review.json' >> .git/info/exclude
+
+      - name: Claude fixes — round 1
+        id: claude1
+        if: steps.review1.outputs.verdict == 'CHANGES_REQUESTED'
+        uses: anthropics/claude-code-action@ae68417a745a5df4b2124873632bd73a2255e6f6 # v1.0.259
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          prompt: |
+            You are the implementation agent for PR #${{ github.event.pull_request.number }}.
+            Read AGENTS.md, CLAUDE.md, .ai/REVIEW_CONTRACT.md, and
+            .ai/current-review.json. Address only the actionable
+            CHANGES_REQUESTED findings. Do not make architecture/owner decisions.
+            Do not commit or push; the workflow owns the commit.
+            Run make check after fixes, and make check-web if frontend/ changed.
+          claude_args: >-
+            --permission-mode auto
+            --allowedTools "Read,Write,Edit,Bash(make:*),Bash(git diff:*),Bash(git status:*),Bash(rg:*),Bash(uv run:*)"
+
+      - name: Codex review — round 2
+        id: codex2
+        if: steps.review1.outputs.verdict == 'CHANGES_REQUESTED'
+        uses: openai/codex-action@bdf19a4a223ec2549a3e2274a0cf61556bc07675 # v1
+        with:
+          openai-api-key: ${{ secrets.OPENAI_API_KEY }}
+          permission-profile: ":read-only"
+          output-schema-file: .ai/review-output-schema.json
+          output-file: ${{ runner.temp }}/codex-review-2.json
+          prompt: |
+            Read AGENTS.md, .ai/REVIEW_CONTRACT.md, and .ai/CODEX_REVIEW_PROMPT.md.
+            This is review round 2 for PR #${{ github.event.pull_request.number }}.
+            Claude has modified the working tree but has not committed yet.
+            Review both the PR diff against origin/${{ github.event.pull_request.base.ref }}
+            and the current uncommitted workspace changes. Return only the
+            structured review object required by .ai/review-output-schema.json.
+
+      - name: Parse review — round 2
+        id: review2
+        if: steps.review1.outputs.verdict == 'CHANGES_REQUESTED'
+        run: |
+          verdict=$(jq -r '.verdict' "${RUNNER_TEMP}/codex-review-2.json")
+          echo "verdict=${verdict}" >> "${GITHUB_OUTPUT}"
+          cp "${RUNNER_TEMP}/codex-review-2.json" .ai/current-review.json
+
+      - name: Claude fixes — round 2
+        id: claude2
+        if: steps.review2.outputs.verdict == 'CHANGES_REQUESTED'
+        uses: anthropics/claude-code-action@ae68417a745a5df4b2124873632bd73a2255e6f6 # v1.0.259
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          prompt: |
+            This is the final automatic fix round for PR #${{ github.event.pull_request.number }}.
+            Read AGENTS.md, CLAUDE.md, .ai/REVIEW_CONTRACT.md, and
+            .ai/current-review.json. Fix only the remaining actionable findings.
+            Do not broaden scope, make owner/architecture decisions, commit, or push.
+            Run make check after fixes, and make check-web if frontend/ changed.
+          claude_args: >-
+            --permission-mode auto
+            --allowedTools "Read,Write,Edit,Bash(make:*),Bash(git diff:*),Bash(git status:*),Bash(rg:*),Bash(uv run:*)"
+
+      - name: Codex final review — round 3
+        id: codex3
+        if: steps.review2.outputs.verdict == 'CHANGES_REQUESTED'
+        uses: openai/codex-action@bdf19a4a223ec2549a3e2274a0cf61556bc07675 # v1
+        with:
+          openai-api-key: ${{ secrets.OPENAI_API_KEY }}
+          permission-profile: ":read-only"
+          output-schema-file: .ai/review-output-schema.json
+          output-file: ${{ runner.temp }}/codex-review-3.json
+          prompt: |
+            Read AGENTS.md, .ai/REVIEW_CONTRACT.md, and .ai/CODEX_REVIEW_PROMPT.md.
+            This is the final automated review for PR #${{ github.event.pull_request.number }}.
+            Review the PR plus all current uncommitted Claude fixes.
+            Return only the structured review object required by
+            .ai/review-output-schema.json.
+
+      - name: Parse final review and choose verdict
+        id: final
+        run: |
+          if [ "${{ steps.review1.outputs.verdict }}" != "CHANGES_REQUESTED" ]; then
+            file="${RUNNER_TEMP}/codex-review-1.json"
+          elif [ "${{ steps.review2.outputs.verdict }}" != "CHANGES_REQUESTED" ]; then
+            file="${RUNNER_TEMP}/codex-review-2.json"
+          else
+            file="${RUNNER_TEMP}/codex-review-3.json"
+          fi
+          verdict=$(jq -r '.verdict' "$file")
+          echo "verdict=${verdict}" >> "${GITHUB_OUTPUT}"
+          echo "file=${file}" >> "${GITHUB_OUTPUT}"
+
+      - name: Remove transient review file
+        run: rm -f .ai/current-review.json
+
+      - name: Commit Claude fixes to the PR branch
+        run: |
+          if git diff --quiet && [ -z "$(git ls-files --others --exclude-standard)" ]; then
+            echo 'No Claude fixes to commit.'
+            exit 0
+          fi
+          git status --short
+          git config user.name 'claude-review-fixer[bot]'
+          git config user.email 'claude-review-fixer[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m 'fix(ai): address Codex review findings'
+          git push origin "HEAD:${HEAD_REF}"
+
+      - name: Publish final review
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FINAL_REVIEW_FILE: ${{ steps.final.outputs.file }}
+        run: |
+          {
+            echo '<!-- ai-pr-loop -->'
+            echo '## Automated Codex review'
+            echo
+            printf '**Verdict:** `%s`\n\n' "$(jq -r '.verdict' "$FINAL_REVIEW_FILE")"
+            jq -r '.summary' "$FINAL_REVIEW_FILE"
+            echo
+            jq -r '.findings[]? | "- **\(.severity)** `\(.file // \"repository\"):\(.line // 0)` — **\(.title)**\n  - Rule: `\(.rule)`\n  - \(.details)\n  - Required fix: \(.required_fix)"' "$FINAL_REVIEW_FILE"
+          } > "${RUNNER_TEMP}/ai-review.md"
+          gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body-file "${RUNNER_TEMP}/ai-review.md"
+
+      - name: Enforce independent review verdict
+        if: steps.final.outputs.verdict != 'APPROVE'
+        run: |
+          echo "AI Review Gate stopped with verdict: ${{ steps.final.outputs.verdict }}"
+          exit 1
+
+      - name: Approved
+        if: steps.final.outputs.verdict == 'APPROVE'
+        run: echo 'Independent Codex review approved the current workspace.'

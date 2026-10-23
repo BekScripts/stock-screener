@@ -419,3 +419,37 @@ means running both.
 State what you changed, what you ran, and what the result was. If `make check`
 did not pass, say that plainly and show the failure — do not describe work as
 finished when it is not. If you skipped part of a task, say which part and why.
+
+
+## Pull request review contract
+
+GitHub pull requests are the shared handoff between implementation and independent
+review. Claude may implement changes; Codex is the independent automated reviewer.
+Both follow `.ai/REVIEW_CONTRACT.md`.
+
+When reviewing a PR:
+
+- Verify claims against the diff, production call sites, persisted contracts, and
+  tests. A PR description or agent report is context, not proof.
+- A declared contract with no production consumer is a defect. The same applies
+  to an event with no emitter, a serialized field with no reader/validator, and a
+  safety gate with no authoritative evidence source.
+- Missing safety evidence is never a clean zero.
+- Do not spend review budget on formatting or lint issues that deterministic CI
+  already enforces.
+- Never resolve an architecture decision, operator authorization, production
+  state transition, broker mutation, credential change, or live-trading boundary
+  by silently choosing on the user's behalf. Escalate it.
+- Automated review may request code changes, but it never merges a PR.
+
+For portfolio, execution, paper-trading, or soak code when those subsystems are
+present, also protect these boundaries:
+
+- durable security identity is not a ticker or CIK;
+- strategy chooses desired exposure; risk may reduce but never expand that
+  authority;
+- execution consumes a persisted decision and never reranks;
+- broker state is reconciliation evidence, not accounting authority;
+- missing/tampered deployment artifacts fail closed with no fallback;
+- historical versioned contracts and evidence are immutable;
+- PAPER authorization never implies LIVE authorization.
