@@ -57,6 +57,9 @@ Read `.agents/skills/git-workflow/SKILL.md` before doing anything.
 
 ## Build the PR description
 
+Create `.claude/tmp/ai-pr-title.txt` containing a concise PR title that
+follows the repository's naming conventions.
+
 Create `.claude/tmp/ai-pr-implementation.md` containing a concise summary of
 what the branch actually implements. Claims must be supported by the diff.
 
@@ -81,7 +84,7 @@ contract with a summary of the conversation.
 Before creating anything, check whether this branch already has an open PR:
 
 ```bash
-gh pr view --head "<current-branch>"
+gh pr view "<current-branch>" --json number,url,title
 ```
 
 If one exists, report it instead of creating a duplicate.
@@ -92,7 +95,7 @@ Otherwise create one directly so Claude Code's permission rule remains visible:
 gh pr create \
   --base main \
   --head "<current-branch>" \
-  --title "<concise PR title>" \
+  --title "$(cat .claude/tmp/ai-pr-title.txt)" \
   --body-file .claude/tmp/ai-pr-body.md
 ```
 
