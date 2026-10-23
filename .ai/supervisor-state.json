@@ -1,0 +1,37 @@
+{
+  "version": 1,
+  "mode": "SHADOW",
+  "current_checkpoint": null,
+  "current_task": null,
+  "authoritative_project_state": "docs/reference/PROJECT_STATE.md",
+  "planning_sources": [
+    "docs/reference/roadmap.md"
+  ],
+  "max_tasks_proposed": 1,
+  "selection_policy": "SMALLEST_SAFE_TRANSITION",
+  "actions": {
+    "create_or_edit_issue": false,
+    "create_or_switch_branch": false,
+    "commit": false,
+    "push": false,
+    "open_or_edit_pr": false,
+    "merge": false,
+    "modify_workflow": false,
+    "deploy": false,
+    "mutate_runtime": false,
+    "mutate_broker": false,
+    "use_or_rotate_secrets": false,
+    "authorize_live_trading": false
+  },
+  "allowed_verdicts": [
+    "READY_TASK",
+    "HUMAN_REQUIRED",
+    "ARCHITECTURE_BLOCKED",
+    "NO_SAFE_TASK"
+  ],
+  "notes": [
+    "Shadow mode is advisory only.",
+    "The authoritative project-state file must exist in the current checkout before a task can be proposed.",
+    "Unmerged feature branches are not authoritative project state."
+  ]
+}

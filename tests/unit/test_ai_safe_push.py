@@ -172,7 +172,7 @@ def test_safe_push_ignores_restored_root_symlink_replacement(tmp_path: Path) -> 
     _clone(remote, author)
     (author / "claude-config").mkdir()
     (author / "claude-config" / "settings.json").write_text("{}\n", encoding="utf-8")
-    (author / ".claude").symlink_to("claude-config")
+    (author / ".claude").symlink_to("claude-config", target_is_directory=True)
     _git(author, "add", ".claude", "claude-config/settings.json")
     _git(author, "commit", "-m", "test: track claude root symlink")
     reviewed_head = _git(author, "rev-parse", "HEAD").stdout.strip()
