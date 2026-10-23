@@ -159,7 +159,7 @@ def test_changed_external_evidence_produces_a_second_report(
             "Acme Corporation said it had signed a multi-year supply agreement with "
             "Vertex covering platform components through 2030."
         ),
-        published_at=date(2026, 6, 28),
+        published_at=datetime.now(UTC).date() - timedelta(days=1),
     )
     with_news = _run(session, settings, external=MockExternalResearch({"": [article]}))
     session.flush()
@@ -369,7 +369,7 @@ def _article(url: str = "https://reuters.com/business/acme-vertex") -> ExternalS
             "Acme Corporation said it had signed a multi-year supply agreement with "
             "Vertex covering platform components through 2030."
         ),
-        published_at=date(2026, 6, 28),
+        published_at=datetime.now(UTC).date() - timedelta(days=1),
     )
 
 
