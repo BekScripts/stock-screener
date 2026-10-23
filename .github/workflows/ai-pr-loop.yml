@@ -45,9 +45,9 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          state=$(gh api --paginate --slurp \
+          state=$(gh api --paginate \
             "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments?per_page=100" \
-            --jq '[.[][] | select(.body | contains("<!-- ai-pr-loop-state -->"))][-1].body // ""')
+            | jq -sr 'add | map(select(.body | contains("<!-- ai-pr-loop-state -->"))) | last | .body // ""')
           rounds=$(printf '%s\n' "$state" \
             | grep -o '<!-- ai-fix-rounds:[0-9][0-9]* -->' \
             | tail -1 \
@@ -125,9 +125,9 @@ jobs:
             fi
           } > "$body"
 
-          comment_id=$(gh api --paginate --slurp \
+          comment_id=$(gh api --paginate \
             "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments?per_page=100" \
-            --jq '[.[][] | select(.body | contains("<!-- ai-pr-loop-state -->"))][-1].id // ""')
+            | jq -sr 'add | map(select(.body | contains("<!-- ai-pr-loop-state -->"))) | last | .id // ""')
           if [ -n "$comment_id" ]; then
             gh api --method PATCH \
               "repos/${GITHUB_REPOSITORY}/issues/comments/${comment_id}" \
