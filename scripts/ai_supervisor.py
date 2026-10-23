@@ -4,13 +4,20 @@ from __future__ import annotations
 
 import argparse
 import json
+import shutil
 import subprocess
 from pathlib import Path
+from collections.abc import Callable
 from typing import cast
 
 STATE_RELATIVE_PATH = Path(".ai/supervisor-state.json")
 CONTRACT_RELATIVE_PATH = Path(".ai/SUPERVISOR_CONTRACT.md")
 PROMPT_RELATIVE_PATH = Path(".ai/CODEX_SUPERVISOR_PROMPT.md")
+
+_GIT = shutil.which("git")
+if _GIT is None:
+    raise RuntimeError("git is required for AI supervisor state")
+GIT: str = _GIT
 
 EXPECTED_ACTION_KEYS = {
     "create_or_edit_issue",
@@ -40,7 +47,7 @@ class SupervisorStateError(RuntimeError):
 
 def _repo_root() -> Path:
     completed = subprocess.run(  # noqa: S603
-        ["git", "rev-parse", "--show-toplevel"],
+        [GIT, "rev-parse", "--show-toplevel"],
         check=True,
         text=True,
         capture_output=True,
@@ -216,7 +223,8 @@ def main() -> int:
     parser = _parser()
     args = parser.parse_args()
     try:
-        return int(args.func(args))
+        handler = cast(Callable[[argparse.Namespace], int], args.func)
+        return handler(args)
     except (
         OSError,
         json.JSONDecodeError,
