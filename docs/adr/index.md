@@ -24,3 +24,4 @@ See the `adr` skill for when to write one and the format to use.
 | [0008](0008-broad-scan-on-free-data-metered-enrichment-last.md) | Scan on free data; spend metered requests on candidates only | Accepted |
 | [0009](0009-the-research-contract-is-its-own-package.md) | The AI research contract is its own package, and holds no model client | Accepted |
 | [0010](0010-deep-research-is-its-own-package.md) | Deep research is its own package, and appends its reports rather than replacing them | Accepted |
+| [0011](0011-use-github-as-the-ai-review-bus.md) | Use GitHub pull requests as the AI implementation/review bus | Accepted |
